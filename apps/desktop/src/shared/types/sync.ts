@@ -578,7 +578,7 @@ export function describeUnpublishedAccountDirectory(
       // its sync host is failing and retrying, and telling someone sync is off
       // sends them looking for a switch that is already on.
       return {
-        summary: "sync hasn't started on this computer yet",
+        summary: "other devices can't reach this computer yet",
         nextAction: "Start sync",
       };
     case "missing_pairing_connect_info":

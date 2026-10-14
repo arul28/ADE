@@ -1438,7 +1438,7 @@ Desktop connection UI:
   host is still failing and retrying. Both used to report `sync_disabled`, which
   told a user whose sync host was crash-looping that sync was switched off and
   sent them hunting for a switch that was already on. `sync_not_started` reads
-  "sync hasn't started on this computer yet" and offers `ade doctor`, which is
+  "other devices can't reach this computer yet" and offers `ade doctor`, which is
   the surface that can actually say why. It is produced by `syncService.ts` and
   `projectlessSyncSnapshot.ts`, and by the account publisher's initial health
   before its first attempt. The Machines panel treats it as a non-publishing
@@ -1498,17 +1498,26 @@ Desktop connection UI:
   a single sentence from `describeUnpublishedAccountDirectory` and one button
   whose label `thisComputerAction` decodes from the brain's refusal code
   (`Reconnect this computer`, `Sign in again`, `Retry`, or `Repair`), with the
-  channel-prefixed brain version beneath it. The list no longer renders a second
-  banner under the Machines heading; the card is the only reconnect affordance.
+  machine's version chip beside it. The state line carries a quiet status dot
+  rather than a check or warning icon, because it is a state with a fix beside
+  it. The list no longer renders a second banner under the Machines heading;
+  the card is the only reconnect affordance.
   A device sign-in it starts shows the browser-open confirmation (the code and a
   lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
   `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
   popover's top identity card cannot repeat the same sentence.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
-  shared **This computer** card. The card owns the pairing-PIN manager and the
-  internal phone QR; the Phone tab explains sign-in, QR + PIN, and Nearby + PIN,
-  while Web is account-sign-in only. When a configured PIN is available only
+  shared **This computer** card. The card draws the computer as its
+  machine-identity tile with a version chip (`MachineIdentity.tsx`), reading
+  this computer's machine key and last power report once per sign-in so the tile
+  matches what other devices draw for it. The card owns the pairing-PIN manager
+  and the internal phone QR; the Phone tab explains sign-in, QR + PIN, and
+  Nearby + PIN, while Web is account-sign-in only. When the status line already
+  says sync has not started, the card drops the listener's line for the same
+  state so it is not said twice; the listener's internal "no active sync project
+  scope" reason reads "Other devices can reach this computer once a project is
+  open in ADE". When a configured PIN is available only
   as its at-rest PBKDF2 hash after a runtime restart, the This computer card can
   generate and set a new six-digit PIN instead of leaving copy disabled.
   Initial-load failures show a short recovery action while keeping the raw
@@ -1588,7 +1597,9 @@ Desktop connection UI:
   (`thisComputerAction`), beside **Repair**, with session-state-aware copy from
   `describeThisComputerMissing` that does not treat absence as proven removal.
   Its version line names the brain's channel-stamped version, falling back to the
-  package version only when the brain cannot answer and saying which it used. See
+  package version only when the brain cannot answer and saying which it used. Each
+  row's glyph is the machine's identity tile (`MachineIdentity.tsx`), the same
+  drawing and color the Machines list and This computer card use. See
   [onboarding and settings](../onboarding-and-settings/README.md).
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,

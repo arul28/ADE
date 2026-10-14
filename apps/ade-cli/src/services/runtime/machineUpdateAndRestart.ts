@@ -68,6 +68,13 @@ export type MachineUpdateOutcome = {
 
 export type MachineUpdateAndRestartDeps = {
   /**
+   * The version this brain runs. A request for that version or an older one
+   * is refused before anything restarts: the asking machine may be reading a
+   * stale version, and a restart here stops every agent running on this
+   * machine for nothing (or, with no app open, installs an older build).
+   */
+  currentVersion?: string | null;
+  /**
    * Is a newer build actually published for this machine's channel?
    *
    * `targetVersion` is what the CLIENT believes is newest. The client is the
@@ -118,16 +125,27 @@ export type MachineUpdateControlsArgs = {
 const sameVersion = (left: string, right: string): boolean =>
   compareUpdateVersions(left, right) === 0;
 
+/**
+ * True when `version` is `targetVersion` or newer. An unknown own version never
+ * covers anything, so a brain that cannot say what it runs still updates.
+ */
+export function machineVersionCovers(version: string | null | undefined, targetVersion: string): boolean {
+  const current = version?.trim();
+  if (!current) return false;
+  return compareUpdateVersions(current, targetVersion) >= 0;
+}
+
 /** The host half of "Update & restart", wired to this machine's installed runtime. */
 export function createMachineUpdateControls(
   args: MachineUpdateControlsArgs,
 ): MachineUpdateAndRestartDeps {
   return {
+    currentVersion: args.version,
     checkForUpdate: async (targetVersion) => {
       const normalizedTarget = targetVersion?.trim() || null;
       // The one thing the host can decide on its own: it will not "update" to
-      // the version it is already running.
-      if (normalizedTarget && sameVersion(normalizedTarget, args.version)) {
+      // the version it is already running, nor back to an older one.
+      if (normalizedTarget && machineVersionCovers(args.version, normalizedTarget)) {
         return {
           available: false,
           currentVersion: args.version,
@@ -263,6 +281,17 @@ async function runStandaloneUpdateAndRestart(
   steps.push(step("check", "ok", check.detail));
 
   let updateApplied = false;
+  if (!check.available && targetVersion) {
+    // An update was asked for and this machine already has it. A plain
+    // restart (no version named) is the "fix a stuck machine" button; an
+    // update request that would only restart is not.
+    return alreadyCurrentResult(
+      check.currentVersion ?? targetVersion,
+      check.targetVersion ?? targetVersion,
+      "standalone",
+      check.detail,
+    );
+  }
   if (!check.available) {
     // Still worth doing. A machine that is merely stuck -- reachable but not
     // answering properly -- is the other reason this button exists.
@@ -410,10 +439,34 @@ function desktopAppResult(
   }
 }
 
+/** The answer to a request this machine already satisfies: nothing installed, nothing restarted. */
+function alreadyCurrentResult(
+  currentVersion: string,
+  targetVersion: string,
+  route: RemoteRuntimeUpdateRoute,
+  detail: string,
+): MachineUpdateAndRestartResult {
+  return {
+    ok: true,
+    updateApplied: false,
+    currentVersion,
+    targetVersion,
+    steps: [
+      step("check", "ok", detail),
+      step("apply", "skipped", "Already on this version or newer."),
+      step("restart", "skipped", "Not restarted — nothing to update."),
+    ],
+    message: `Already on ${currentVersion} — nothing to update, nothing restarted.`,
+    route,
+    pendingVersion: null,
+  };
+}
+
 export async function runMachineUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
   targetVersion: string | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
+  const ownVersion = deps.currentVersion?.trim() || null;
   if (deps.requestDesktopAppUpdate) {
     let routing: DesktopAppUpdateRouting;
     try {
@@ -428,6 +481,17 @@ export async function runMachineUpdateAndRestart(
       // "already_current" means the app is already there and only the brain
       // lags -- a restart picks the app's runtime back up, an apply would not.
       if (answer.outcome === "already_current") {
+        // The app is there. Restart only when this brain lags behind it; a
+        // brain that already covers the target has nothing to pick up, and
+        // restarting it would stop every agent on this machine.
+        if (targetVersion && ownVersion && machineVersionCovers(ownVersion, targetVersion)) {
+          return alreadyCurrentResult(
+            ownVersion,
+            targetVersion,
+            "desktop_app",
+            answer.message || `The ADE app is already on ${answer.currentVersion ?? ownVersion}.`,
+          );
+        }
         const restart = deps.requestRestart();
         return {
           ok: restart.ok,

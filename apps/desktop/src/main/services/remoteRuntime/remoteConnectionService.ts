@@ -309,6 +309,26 @@ export class RemoteConnectionService {
     private readonly options: RemoteConnectionServiceOptions = {},
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
+    // A call that finds the machine gone reconnects on its own, without
+    // `connect()`. The machine may have restarted on a new version (an update
+    // it was just sent), so what it reports now replaces what it reported at
+    // the last explicit Connect. Without this the list kept the old version
+    // and called a finished update "didn't apply".
+    this.pool.onEntryConnected((targetId, result) => {
+      // A connect that finishes after the machine was removed or disconnected
+      // by hand must not write it back.
+      if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
+      this.mergeStatus(targetId, {
+        version: result.version,
+        arch: result.arch,
+        ...(result.route ? { route: result.route } : {}),
+        ...(result.capabilities ? { capabilities: result.capabilities } : {}),
+        // Warnings come from the version too ("missing capabilities … update
+        // ADE on that machine"); an updated machine must not keep the old ones.
+        compatibilityWarnings: result.compatibilityWarnings,
+        connectedAt: result.target.lastConnectedAt ?? Date.now(),
+      });
+    });
     this.pool.onEntryEvicted((targetId, error) => {
       const current = this.statusById.get(targetId);
       if (current?.state !== "connected" && current?.state !== "connecting") {

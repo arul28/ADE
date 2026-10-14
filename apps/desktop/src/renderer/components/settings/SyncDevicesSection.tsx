@@ -1,20 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AppleLogo,
   ArrowSquareOut,
   CaretRight,
   Check,
   Cloud,
   CloudSlash,
   Globe,
-  Laptop,
-  LinuxLogo,
   PencilSimple,
-  WindowsLogo,
   X,
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
-import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
+import { MachineAvatar, VersionChip, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import {
@@ -33,6 +29,7 @@ import {
   isLocalReleaseBuildOutputError,
   isProjectRegistrationRequiredError,
 } from "../../../shared/runtimeErrors";
+import { fetchAccountMachines } from "../../lib/account";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -143,34 +140,30 @@ function isCrdtSyncUnavailable(status: SyncRoleSnapshot): boolean {
 // This-Mac card — persistent header block above the Connections tabs.
 // ---------------------------------------------------------------------------
 
-// The platform mark that fills the identity tile. It replaces the old generic
-// laptop glyph *and* the "· Windows" suffix that used to trail the version — the
-// logo is the platform statement, so spelling it out again is pure duplication.
-function PlatformGlyph({ platform }: { platform: string | undefined }) {
-  const props = { size: 18, weight: "regular" as const, color: COLORS.textSecondary };
-  switch (platform) {
-    case "darwin":
-      return <AppleLogo {...props} />;
-    case "win32":
-      return <WindowsLogo {...props} />;
-    case "linux":
-      return <LinuxLogo {...props} />;
-    default:
-      return <Laptop {...props} />;
-  }
-}
-
-function platformAccessibleName(platform: string | undefined): string {
-  switch (platform) {
-    case "darwin":
-      return "macOS";
-    case "win32":
-      return "Windows";
-    case "linux":
-      return "Linux";
-    default:
-      return "This computer";
-  }
+/**
+ * This computer as the account directory knows it: its machine key, so its
+ * tile's color matches the one other devices draw for it, and its last power
+ * report, which says laptop or desktop. Read once per sign-in.
+ */
+function useLocalMachineTile(accountSignedIn: boolean): { colorKey: string; power: { battery?: unknown } | null } {
+  const [tile, setTile] = useState<{ machineKey: string | null; power: { battery?: unknown } | null }>({ machineKey: null, power: null });
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const account = window.ade?.account;
+      const identity = await account?.getLocalMachineIdentity?.().catch(() => null);
+      const machineKey = identity?.machineKey?.trim() || null;
+      // The shared, cached read the machine list uses: opening the panel does
+      // not cost a second directory request.
+      const listed = machineKey && accountSignedIn ? await fetchAccountMachines().catch(() => null) : null;
+      const own = listed?.machines?.find((machine) => machine.machineKey === machineKey) ?? null;
+      if (!cancelled) setTile({ machineKey, power: own?.power ?? null });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountSignedIn]);
+  return { colorKey: tile.machineKey ?? "this-computer", power: tile.power };
 }
 
 // One-shot fetch of the local build/platform. `platform` stays the raw Node
@@ -234,13 +227,10 @@ export function ThisMacCard({
   const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
-  const versionLine = appInfo
-    ? formatThisComputerVersion({
-        brainVersion: appInfo.brainVersion,
-        packageVersion: appInfo.packageVersion,
-        channel: appInfo.channel,
-      })
-    : null;
+  // The version the brain runs (what actually answers other machines), else
+  // the app package's. The chip shows the number alone; a prerelease already
+  // names its channel ("1.2.28-beta.1").
+  const runningVersion = appInfo?.brainVersion?.trim() || appInfo?.packageVersion?.trim() || null;
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   // Forced: a repair is a user action, so it must not wait out the degraded
@@ -278,6 +268,7 @@ export function ThisMacCard({
   }, [sync]);
 
   const { saveRuntimeName } = sync;
+  const localTile = useLocalMachineTile(accountSignedIn);
   // The runtime name is what this card renders, so it is written first and the
   // rename is visible immediately. The account directory then gets the same
   // value so the account page and other clients agree — best effort, since a
@@ -330,7 +321,12 @@ export function ThisMacCard({
   // account line — "Ready to accept connections" and the route breakdown told
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
-  const problem = connectionProblem(status, host);
+  // The status line in the slot already says sync has not started; the
+  // listener's line for the same state would only repeat it. Any other
+  // listener reason (a port in use, the service unreachable) still shows.
+  const problem = hideDirectorySummary && status.routeHealth?.accountDirectory?.state === "sync_not_started"
+    ? null
+    : connectionProblem(status, host);
   const syncNotHosted = !host
     && !isRemoteBound
     && status.routeHealth?.accountDirectory?.state === "sync_not_started";
@@ -353,52 +349,53 @@ export function ThisMacCard({
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
-          <div
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 600,
-              color: COLORS.textSecondary,
-              minWidth: 0,
-            }}
-          >
-            {versionLine ? `This machine — ${versionLine.text}` : "This machine"}
-          </div>
-          {onOpenYourComputers ? (
-            <button
-              type="button"
-              onClick={onOpenYourComputers}
-              title="Open Settings > Account > Your computers"
-              style={outlineButton({ height: 24, padding: "0 9px", fontSize: 12, flexShrink: 0 })}
-            >
-              Your computers
-            </button>
-          ) : null}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
-          <span
-            aria-label={platformAccessibleName(appInfo?.platform)}
-            role="img"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 28,
-              height: 28,
-              flexShrink: 0,
-            }}
-          >
-            <PlatformGlyph platform={appInfo?.platform} />
-          </span>
-          <div style={{ minWidth: 0, flex: 1, display: "grid", gap: 2 }}>
-            <MachineNameRow
-              name={machineName}
-              busy={busy}
-              accountSignedIn={accountSignedIn}
-              onSave={saveMachineName}
-            />
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          <MachineAvatar
+            colorKey={localTile.colorKey}
+            name={machineName}
+            platform={machinePlatform(appInfo?.platform)}
+            formFactor={machineFormFactor({ name: machineName, power: localTile.power })}
+            size={36}
+            editable
+          />
+          <div style={{ minWidth: 0, flex: 1, display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                <MachineNameRow
+                  name={machineName}
+                  busy={busy}
+                  accountSignedIn={accountSignedIn}
+                  onSave={saveMachineName}
+                />
+                <span style={{ ...helperTextStyle, fontSize: 11, whiteSpace: "nowrap" }}>This computer</span>
+                {runningVersion ? <VersionChip version={runningVersion} /> : null}
+              </div>
+              {onOpenYourComputers ? (
+                <button
+                  type="button"
+                  onClick={onOpenYourComputers}
+                  title="Open Settings > Account > Your computers"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    height: 24,
+                    padding: "0 6px",
+                    border: "none",
+                    borderRadius: 6,
+                    background: "transparent",
+                    color: COLORS.textMuted,
+                    fontFamily: SANS_FONT,
+                    fontSize: 11.5,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  All computers
+                  <ArrowSquareOut size={12} />
+                </button>
+              ) : null}
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               {!hideDirectorySummary && accountSignedIn ? (
                 <Cloud
@@ -579,6 +576,11 @@ function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | nu
     // reason is the whole point of this line and it never resolves on its own.
     const listener = status.routeHealth?.listener;
     const reason = listener?.listenerBound === false ? listener.reason?.trim() : null;
+    // The brain's own wording for "no project to host sync for" is internal
+    // vocabulary; say what it means for the reader.
+    if (reason && /no active sync project scope/i.test(reason)) {
+      return "Other devices can reach this computer once a project is open in ADE";
+    }
     return reason || "Starting up — connection details will appear shortly";
   }
   return null;

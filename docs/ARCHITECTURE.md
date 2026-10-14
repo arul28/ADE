@@ -291,13 +291,15 @@ wherever the user is. The runtime method `machine.updateAndRestart`
 (`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role, exists
 only on the authenticated runtime RPC endpoint, and is never automatic. The
 caller names the version it believes is newest (`targetVersion`); a host already
-on that version refuses to "update" and just restarts, which is still the useful
-action for a wedge-adjacent machine. The reply is step-attributed —
+on that version or newer refuses to "update" and, for a versioned request,
+installs and restarts nothing (it answers "already current"), because a needless
+restart stops every agent on that machine; a request naming no version is the
+"fix a stuck machine" restart. The reply is step-attributed —
 `check`, `apply`, `restart` — and `restart` comes back `pending` by design: it
 tears down the process answering the call, so the client confirms by
 reconnecting and reading the version. A brain cannot report on its own
 replacement. Embedded/test runtimes have no installed service and refuse rather
-than pretend. The desktop surfaces this as **Update & restart** on a connected
+than pretend. The desktop surfaces this as **Update** on a connected
 machine that is behind, over `ade.remoteRuntime.updateAndRestart`. When the
 host's desktop app is open, the brain hands the request to that app over the
 desktop bridge (`app_update.install`) instead, because an open app owns the
@@ -314,7 +316,7 @@ feed), so `releaseAssetUrl` in `apps/ade-cli/src/lib/releaseAssets.ts` maps a
 bare semver onto its tag through `releaseTagForVersion` before building the
 download URL; an already-tagged value and the `latest` alias pass through
 unchanged. Without that mapping every asset URL built from a bare version points
-at a release that does not exist, and the remote **Update & restart** fails on a
+at a release that does not exist, and the remote update fails on a
 404 rather than on anything the user could act on. The bare version reaches it
 from the desktop's Connections pane, which sends the newest version it knows
 through `machine.updateAndRestart` to the target machine's `ade brain update`.

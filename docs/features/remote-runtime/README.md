@@ -396,21 +396,32 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   is also a row in this ADE account's directory (there is otherwise nothing to
   re-adopt); pressing it re-runs `account.pairMachine`. Nothing re-pairs on its
   own.
-- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx` and
-  `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
-  `isMachineVersionOutdated`, `newestKnownAdeVersion`) — the **Update &
-  restart** button on a connected machine that is behind. "Behind" is measured
-  against the newest ADE *this* computer knows about — what it runs, or a newer
-  build it has already seen published — using the shared
+- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx`,
+  `MachineIdentity.tsx`, and `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
+  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `newestKnownAdeVersion`)
+  — one machine row. `MachineIdentity.tsx` draws the computer with its platform's
+  logo in the machine's own color (`machinePlatform`, `machineFormFactor`), on
+  the stable key `machineColorKey` picks, so every device paints the same
+  machine the same color; a hand-picked color overrides it for this computer
+  only (`ade.machineColors.v1`). Beside it sit a presence dot, a version chip
+  that reads `from → to` when the machine is behind, and a detail line naming
+  the winning route ("Local network", "Tailscale", "ADE relay", "SSH") and its
+  latency. The **Update** button appears on a connected machine that is behind.
+  "Behind" is measured against the newest ADE *this* computer knows about — what
+  it runs, or a newer build it has already seen published — using the shared
   `compareUpdateVersions`; a machine level with us gets no button. The click
   calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
   renders the host's step-attributed message in the row, then checks the
   machine's reported version against the reply's `pendingVersion`
-  (`describeMachineUpdateAttempt`) to say whether the update landed.
-- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
-  connected / available / unavailable sections, Pair and SSH entry paths,
-  share-this-machine and connection-doctor cards, saved/discovered machine
-  rows, route and latency status, SSH host-key trust, structured connection
+  (`describeMachineUpdateAttempt`) to say whether the update landed. While it
+  runs, `UpdateSteps.tsx` shows Sending → Restarting → Back on <version>
+  (`machineUpdatePhase`), and the row stays under Connected for the restart even
+  though the update drops its connection on purpose.
+- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel ("Your
+  machines") with connected / available / unavailable sections, Pair and SSH
+  entry paths, share-this-machine and connection-doctor cards, saved/discovered
+  machine rows, machine-identity tiles and colors (`MachineIdentity.tsx`),
+  route and latency status, SSH host-key trust, structured connection
   errors, project picker, and the This-computer
   route-publish health indicator. A connect stopped because the host key still
   has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
@@ -1332,9 +1343,9 @@ won the same connection attempt; nothing is wrong.
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
+Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
-- Runtime version mismatch, shown as a quiet Connections-row note from the two versions (`This machine is on ADE X. {name} is on Y. They can still connect — update the older machine when you can.`).
+- Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `beta`, remote runtime advertises `stable`).
 - Missing `machineProjects` capabilities — `browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`. These map to the `projects.*` RPCs the renderer uses for the project picker / new-project / clone flows. Missing capabilities do not block connect, but the connection pool refuses the matching call with a self-describing error when the renderer attempts it (e.g. `Remote ADE service 0.7.2 does not support cloning remote projects.`).
 - The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-beta because .ade did not contain an ADE service for darwin-arm64.`).
@@ -1769,10 +1780,14 @@ inherits the paired/authenticated channel; it is never automatic and never
 silent.
 
 The client names the version it believes is newest (`targetVersion`); the host
-refuses to "update" to the version it is already running and just restarts,
-which is still the useful action for a wedge-adjacent machine. The reply is
-step-attributed — `check`, `apply`, `restart` — so a failure names the step
-instead of saying "something went wrong". The `restart` step comes back
+refuses to "update" to a version it already runs or has passed. A versioned
+request the machine already satisfies installs nothing and restarts nothing — it
+answers "Already on X — nothing to update, nothing restarted"
+(`alreadyCurrentResult`) — because a needless restart stops every agent on that
+machine. A request naming no version is the "fix a stuck machine" button and
+still restarts. The reply is step-attributed — `check`, `apply`, `restart` — so
+a failure names the step instead of saying "something went wrong". The `restart`
+step comes back
 `pending` on purpose: it tears down the process answering the call, so the
 client confirms by reconnecting and reading the version. A brain cannot report
 on its own replacement.
@@ -1804,12 +1819,18 @@ remote one that fell back to the standalone route) writes its progress to
 connection pool treats it as an update window and does not repair the service,
 so an open app cannot put its older runtime back over the new one.
 
-The client does not trust "reconnecting…". It records `pendingVersion` (or,
-from a host that predates it, `targetVersion` for an applied update) and checks
-the machine against it: once the machine reports that version the row says
+The client does not trust "reconnecting…". Before it sends anything it re-reads
+each machine's live version and skips one already on the target (or newer) with
+the same "Already on X — nothing to update, nothing restarted" answer, so a
+stale list cannot stop work on a machine that needs nothing. It then records
+`pendingVersion` (or, from a host that predates it, `targetVersion` for an
+applied update) and checks the machine against it: once the machine reports that
+version the row says
 "Updated to X"; if it has not after 5 minutes (35 for a download) it says
 "Still on Y — the update to X didn't apply" with the version it is actually on.
-The button stays busy until then.
+A call that reconnects the machine after its restart refreshes the recorded
+version (`RemoteConnectionPool.onEntryConnected`), so a finished update is never
+called a failed one. The button stays busy until then.
 
 Nothing restarts without a yes. Before the call, the desktop asks the machine
 what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
@@ -1822,8 +1843,9 @@ falls back to `runtime.activitySummary` and says only "Work is running" or
 "Nothing is running". One 3-second deadline covers both asks; a machine that
 has not answered by then (or is no longer saved) reads "Couldn't check what's
 running", never as idle. The IPC never rejects. When two or more connected
-machines are behind, the Connected header offers **Update all N**: one
-confirmation with a block per machine, then the same per-machine update in
+machines are behind, a banner above the section header offers **Update all**
+(`MachinesBehindBanner`, "N machines are behind", naming the target version):
+one confirmation with a block per machine, then the same per-machine update in
 parallel.
 
 The same action is offered where this computer's own update lives: **Update
