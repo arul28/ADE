@@ -1515,8 +1515,8 @@ struct WorkChatSessionView: View {
           pendingSteers.isEmpty,
           let usage = composerContextMeter?.usage, usage.state == .measured,
           let context = usage.usedTokens, context >= chatSummaryContext.compactFirstMinTokens,
-          let lastDone = transcript.last(where: { if case .done = $0.event { return true }; return false }),
-          let ended = workParsedDate(lastDone.timestamp) else { return nil }
+          let lastDoneIndex = transcript.lastIndex(where: { if case .done = $0.event { return true }; return false }),
+          let ended = workParsedDate(transcript[lastDoneIndex].timestamp) else { return nil }
     let post = transcript.reversed().compactMap { entry -> Int? in
       guard case .contextCompact(let summary, false, let tokens, _, _) = entry.event,
             !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
@@ -1524,7 +1524,8 @@ struct WorkChatSessionView: View {
     }.first
     // A `since` older than the last turn's start is from an earlier turn (the
     // summary has not caught up); that turn restarted the cache, so its end is nearer.
-    let started = transcript.last(where: { if case .status("started", _, _) = $0.event { return true }; return false })
+    // The start of the turn that `lastDoneIndex` ended, as desktop's `lastFinishedTurnMs`.
+    let started = transcript[..<lastDoneIndex].last(where: { if case .status("started", _, _) = $0.event { return true }; return false })
       .flatMap { workParsedDate($0.timestamp) }
     var since = chatSummaryContext.promptCacheSince ?? ended
     if let started, since < started { since = ended }

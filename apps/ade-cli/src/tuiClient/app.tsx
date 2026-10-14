@@ -5919,11 +5919,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     if (compactFirstEligibleAt == null) return;
     const wait = compactFirstEligibleAt - Date.now();
-    // Already past: the next event or session update re-checks the offer.
-    if (wait <= 0) return;
+    if (wait <= 0) {
+      // Already past (a chat opened after its cache ran out): catch the clock up once.
+      if (compactFirstNow < compactFirstEligibleAt) setCompactFirstNow(Date.now());
+      return;
+    }
     const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.min(wait + 1_000, 2_147_483_647));
     return () => clearTimeout(timer);
-  }, [compactFirstEligibleAt]);
+  }, [compactFirstEligibleAt, compactFirstNow]);
   const compactFirstFooter = useMemo(() => compactFirstState?.offer ? {
     enabled: compactFirstState.enabled,
     contextTokens: compactFirstState.offer.contextTokens,
