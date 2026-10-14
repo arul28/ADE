@@ -539,6 +539,23 @@ same re-encode runs on a keepalive. The codec record is broadcast on the
 transition as well as sent on attach, so a reader that arrived before the first
 keyframe can still configure its decoder.
 
+Both of those re-encode the LAST frame, so both are empty-handed when there has
+never been one: `SCStream` can report a successful start and then never call
+`didOutputSampleBuffer` at all (this machine logs `-3805` and then goes quiet),
+which left every reader a config record, no picture, and a pane that never left
+"Connecting video". `CaptureEngine.refreshFallbackFrame` takes one still through
+`SCScreenshotManager` — a different ScreenCaptureKit API, which keeps working —
+and re-takes it on each reader attach and keepalive tick, so the fallback is a
+slow live picture rather than one frozen moment. It stops for good the moment a
+frame of ScreenCaptureKit's own arrives (`hadRealFrame`), and a screenshot that
+comes back empty slows the retakes down (to at most one every 30 s) instead of
+stopping them, so a watching reader is never left with a still the desktop has
+moved on from. The renderer's half is a slow heartbeat (`RECOVER_SLOW_MS` in
+`useMacDesktopLiveView.ts`): once the quick re-dials after a frame-less address,
+or the start retries after a host that refused, are spent, it keeps asking every
+thirty seconds while somebody is watching, instead of sitting on a dead address
+until they press Reconnect.
+
 The pane is the picture, a 40px strip above it, and an Apps section under it.
 The strip carries only a small coloured state dot at the far left (green live,
 amber starting, red reconnecting) with the state in its tooltip, plus the icon

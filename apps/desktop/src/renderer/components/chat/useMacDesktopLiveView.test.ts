@@ -13,7 +13,9 @@ import {
   FIRST_FRAME_TIMEOUT_MS,
   RECOVER_DELAY_MS,
   RECOVER_MAX_TRIES,
+  RECOVER_SLOW_MS,
   RETRY_MAX_ATTEMPTS,
+  RETRY_MS,
   shouldRetryLiveView,
   useMacDesktopLiveView,
 } from "./useMacDesktopLiveView";
@@ -266,6 +268,56 @@ describe("useMacDesktopLiveView reconnects by itself", () => {
     await pass(RECOVER_DELAY_MS + 50);
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(4));
     expect(api.startStream.mock.calls[3]?.[0]).not.toMatchObject({ fresh: true });
+  });
+
+  /*
+   * The slow heartbeat. Once the automatic attempts are spent — the quick
+   * re-dials after an address that never drew, the start/URL retries after a
+   * host that refused — nothing used to ask again, so a host that came back on
+   * its own (a runtime that reconnected, a capture that started delivering)
+   * left the pane dead until somebody pressed Retry.
+   */
+  it("keeps asking on its own after the quick re-dials are spent", async () => {
+    const view = mount();
+    await waitFor(() => expect(view.result.current.url).toBeTruthy());
+    // Nothing ever draws, so each first-frame wait spends one re-dial; the
+    // last round is the one that finds the budget spent.
+    for (let round = 0; round <= RECOVER_MAX_TRIES; round += 1) {
+      await pass(FIRST_FRAME_TIMEOUT_MS + RECOVER_DELAY_MS * (round + 1) + 50);
+    }
+    await waitFor(() => expect(view.result.current.gaveUp).toBe(true));
+
+    const spent = api.startStream.mock.calls.length;
+    await pass(RECOVER_SLOW_MS + 50);
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(spent));
+    // And it still says the picture is not coming through while it keeps
+    // trying, rather than blinking back to a promise it has stopped keeping.
+    expect(view.result.current.gaveUp).toBe(true);
+  });
+
+  it("keeps asking on a slow tick after the start retries are spent too", async () => {
+    // A host that was offline: the quick start retries burn out, and the pane
+    // used to sit on its error from then on.
+    api.startStream.mockRejectedValue(new Error("runtime offline"));
+    const view = mount();
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+
+    // Advance until the dense retries go quiet — several stretches in a row
+    // adding nothing means the budget is spent, whatever its cadence — and
+    // prove they asked more than once first.
+    let quietRounds = 0;
+    for (let round = 0; round < 40 && quietRounds < 3; round += 1) {
+      const before = api.startStream.mock.calls.length;
+      await pass(RETRY_MS + 50);
+      quietRounds = api.startStream.mock.calls.length === before ? quietRounds + 1 : 0;
+    }
+    const spent = api.startStream.mock.calls.length;
+    expect(spent).toBeGreaterThan(1);
+    expect(view.result.current.status).toBe("error");
+
+    // Nothing asks again without a person... until the slow heartbeat does.
+    await pass(RECOVER_SLOW_MS + 50);
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(spent));
   });
 
   it("a viewer that no longer wants the lane never asks again", async () => {

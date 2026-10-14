@@ -1499,20 +1499,14 @@ describe("TerminalsPage chat session activation", () => {
       );
     };
 
-    it("opens the Apple tool, the browser, or Mac Desktop for the chat in front", async () => {
+    it("activates the tool in a pane the person already has open", async () => {
       paneMountsWhatIsWritten();
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-background",
         { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
-      );
-      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
-      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
-        "/repo",
-        "lane-background",
-        expect.objectContaining({ workSidebarTool: "browser" }),
       );
       await expect(answerWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
@@ -1523,15 +1517,62 @@ describe("TerminalsPage chat session activation", () => {
     });
 
     /*
+     * A screen, app or device show with the pane CLOSED is answered by the
+     * lane's floating player. Whether the pane is open is the person's own
+     * preference, and the surface an agent drives continuously re-opening it
+     * every time they close it is what the owner reported on 2026-10-14.
+     */
+    it.each([
+      ["apple", "floating-apple"],
+      ["mac-desktop", "floating-mac-desktop"],
+      ["app-control", "floating-app-control"],
+    ] as const)("never opens a closed pane for %s, floating %s instead", async (surface, floating) => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      const answer = await answerWorkToolShowRequest(showRequest({ surface }));
+      // Nothing activated in a pane, so nothing could have opened one.
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+      // And when it does report a picture, it names the floating surface, not
+      // the pane it did not open.
+      if (answer?.status === "shown") expect(answer.shownAs).toBe(floating);
+    });
+
+    it("opens the pane when the float it would use declines", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      // A lane with no device to float: the player refuses, and the ask would
+      // otherwise be a `held` for a chat whose handler is right here.
+      floatMocks.floatAppleMiniPlayerForChat.mockResolvedValueOnce(false);
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
+      );
+    });
+
+    it("answers an apple show with the pane closed as the floating device", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" })))
+        .resolves.toEqual({ status: "shown", shownAs: "floating-apple" });
+      expect(floatMocks.floatAppleMiniPlayerForChat).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-background", chatSessionId: "chat-1", auto: false }),
+      );
+    });
+
+    /*
      * Regression, 2026-09-23 (chat 13d65dd4): `apple show` printed "shown"
-     * while only the floating player was on screen. "shown" now waits for the
-     * Apple tool to mount in a pane the user can see.
+     * while only the floating player was on screen. The answer must describe
+     * what is really on screen — which is now either the pane the user has
+     * open (this test) or the floating surface the ack names (`shownAs`), never
+     * a pane that stayed shut.
      */
     it("answers shown for the Apple tool only once it is on screen", async () => {
       // The pane does not mount on its own here: this test mounts it.
       workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
       setDocumentVisibleForTests(true);
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       let answer: string | null = "pending";
       const pending = answerWorkToolShowRequest(showRequest({ surface: "apple" }))
         .then((reply) => { answer = reply?.status ?? null; });
