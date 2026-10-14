@@ -9465,8 +9465,11 @@ function buildSpawnSelfReportGuidance(
   if (opts?.parentReachable === false) {
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
-  const selfReportCommandGuidance =
-    "For Bash/zsh, use `ade actions run chat.messageSession --arg \"sessionId=$ADE_PARENT_CHAT_SESSION_ID\" --arg kind=auto --arg \"text=<summary>\"`; in PowerShell, use `ade actions run chat.messageSession --arg \"sessionId=$env:ADE_PARENT_CHAT_SESSION_ID\" --arg kind=auto --arg \"text=<summary>\"`.";
+  const selfReportCommandGuidance = [
+    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Keep report text out of the command source.",
+    "In Bash/zsh, put it in a quoted here-doc (`summary=$(cat <<'REPORT_END' ... REPORT_END)`) using an end marker absent from the report, then run `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text \"$summary\"`.",
+    "In PowerShell, pass it as a single-quoted string and double each embedded apostrophe (`'` becomes `''`), then run `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text '<escaped report>'`; `$()` and backticks stay literal inside the single quotes.",
+  ].join(" ");
   if (session.spawnKind === "subagent") {
     return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
   }
@@ -44941,25 +44944,26 @@ export function createAgentChatService(args: {
       const permissionCeiling = permissionsPinned
         ? null
         : resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId, actor: runtimeActor });
+      const hasExplicitPermissionSettings = callerPermissionPolicy != null
+        || effectivePermissionMode != null
+        || requestedPermMode != null
+        || requestedInteractionMode != null
+        || requestedClaudePermissionMode != null
+        || requestedCodexApprovalPolicy != null
+        || requestedCodexSandbox != null
+        || requestedCodexConfigSource != null
+        || requestedOpenCodePermissionModeArg != null
+        || requestedAcpPermissionModeArg != null
+        || requestedDroidPermissionModeArg != null
+        || requestedMusePermissionModeArg != null
+        || requestedCursorModeId != null
+        || requestedCursorConfigValues != null;
       // An unspecified child mode follows the full-auto parent rather than
       // falling back to machine-wide ask defaults. Explicit child restrictions
       // and host policies remain authoritative; the ceiling still applies.
       const inheritedPermissionFields = requestedSpawnKind === "subagent"
         && permissionCeiling === "full-auto"
-        && !callerPermissionPolicy
-        && effectivePermissionMode == null
-        && requestedPermMode == null
-        && requestedInteractionMode == null
-        && requestedClaudePermissionMode == null
-        && requestedCodexApprovalPolicy == null
-        && requestedCodexSandbox == null
-        && requestedCodexConfigSource == null
-        && requestedOpenCodePermissionModeArg == null
-        && requestedAcpPermissionModeArg == null
-        && requestedDroidPermissionModeArg == null
-        && requestedMusePermissionModeArg == null
-        && requestedCursorModeId == null
-        && requestedCursorConfigValues == null
+        && !hasExplicitPermissionSettings
         ? { permissionMode: "full-auto" as const, ...permissionFieldsForLevel(effectiveProvider, "full-auto") }
         : null;
       const parentPermissionCeiling = permissionCeiling

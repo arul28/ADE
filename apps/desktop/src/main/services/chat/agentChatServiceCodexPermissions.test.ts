@@ -39,7 +39,7 @@ describe("createAgentChatService", () => {
           expect(child.codexSandbox).toBe(expectedMode === "full-auto" ? "danger-full-access" : "workspace-write");
           expect(child.codexApprovalPolicy).toBe(expectedMode === "full-auto" ? "never" : "on-request");
         } else {
-          expect(child.claudePermissionMode).toBe(expectedMode === "full-auto" ? "bypassPermissions" : expectedMode);
+          expect(child.claudePermissionMode).toBe(expectedMode === "full-auto" ? "bypassPermissions" : "default");
           expect(child.interactionMode).toBe(expectedMode === "plan" ? "plan" : "default");
         }
         expect(readPersistedChatState(child.id).permissionMode).toBe(expectedMode);
