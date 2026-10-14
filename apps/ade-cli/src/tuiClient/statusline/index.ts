@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { claudeHomePath } from "../keybindings";
+import { terminateProcessTree } from "../../../../desktop/src/main/services/shared/processExecution";
 
 export type ClaudeStatusLineConfig = {
   type: string;
@@ -167,6 +168,7 @@ export async function runClaudeStatusLineCommand(
       shell: true,
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
@@ -178,7 +180,7 @@ export async function runClaudeStatusLineCommand(
       resolve(result);
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      terminateProcessTree(child);
       finish({ ok: false, error: `statusLine timed out after ${timeoutMs}ms` });
     }, timeoutMs);
     child.stdout.setEncoding("utf8");

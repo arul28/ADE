@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as SharedUtils from "../../shared/utils";
 
 /** What the spawned agent answers to `session/new`, and how many agents were started. */
 const agent = vi.hoisted(() => ({ sessionNew: {} as Record<string, unknown>, started: 0 }));
@@ -20,6 +21,10 @@ vi.mock("../../ai/acpExecutables", () => ({
   resolveAcpExecutable: (provider: string) => ({ path: provider, source: "path" }),
 }));
 vi.mock("../../ai/acpAuthProbe", () => ({ acpProbeConfigHome: () => undefined }));
+vi.mock("../../shared/utils", async (importOriginal) => ({
+  ...await importOriginal<typeof SharedUtils>(),
+  spawnAsync: async () => ({ status: 0, stdout: '{"mcpServers":{}}', stderr: "" }),
+}));
 
 function modelOption(ids: string[]): Record<string, unknown> {
   return {

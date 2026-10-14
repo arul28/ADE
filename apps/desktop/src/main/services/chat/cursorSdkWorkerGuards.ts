@@ -12,6 +12,49 @@
  * fake. The worker passes the real `process`.
  */
 
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
+
+let commandsPatched = false;
+
+// Cursor's SDK invokes git/gh with execFile({ cwd, timeout }) and exposes no
+// child-process options. Hiding the forked worker does not hide those children
+// on Windows. Set the default before loading the SDK, only in this dedicated
+// worker; the brain and user-launched terminals keep their own spawn policy.
+export function ensureCursorSdkWorkerCommandsAreWindowless(): void {
+  if (commandsPatched || process.platform !== "win32") return;
+  commandsPatched = true;
+  const originalExecFile = childProcess.execFile;
+  const windowlessArgs = (args: unknown[]): unknown[] => {
+    const optionsIndex = Array.isArray(args[1]) ? 2 : 1;
+    const options = args[optionsIndex];
+    if (options && typeof options === "object") {
+      const record = options as Record<string, unknown>;
+      args[optionsIndex] = { ...record, windowsHide: record.windowsHide ?? true };
+    } else if (typeof options === "function") {
+      args.splice(optionsIndex, 0, { windowsHide: true });
+    } else {
+      args[optionsIndex] = { windowsHide: true };
+    }
+    return args;
+  };
+  const patchedExecFile = ((...args: unknown[]) => {
+    return Reflect.apply(originalExecFile, childProcess, windowlessArgs(args));
+  }) as typeof childProcess.execFile;
+  // Node's custom promisifier returns both stdout and stderr (and .child).
+  // Preserve it, while giving its underlying launch the same hidden options.
+  const custom = Object.getOwnPropertyDescriptor(originalExecFile, promisify.custom);
+  if (typeof custom?.value === "function") {
+    Object.defineProperty(patchedExecFile, promisify.custom, {
+      ...custom,
+      value: (...args: unknown[]) => Reflect.apply(custom.value, originalExecFile, windowlessArgs(args)),
+    });
+  }
+  childProcess.execFile = patchedExecFile;
+  syncBuiltinESMExports();
+}
+
 /**
  * The argv marker that names the brain which forked a worker.
  *
