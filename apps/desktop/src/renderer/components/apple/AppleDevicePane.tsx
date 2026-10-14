@@ -910,16 +910,12 @@ export function AppleDevicePane({
               /*
                * §A4: while Inspect owns the pointer, so does the overlay.
                *
-               * This is what tells the presenter's gesture layer it may take
-               * the pointer. In FLAT that layer is the container the overlay
-               * is drawn INSIDE, and on pointer-down it calls
-               * `setPointerCapture` — which retargets the pointer-up, and so
-               * the click, to the container. Left live while Inspect is on,
-               * it swallowed every click the overlay was there to receive:
-               * frames were drawn, hovering highlighted them, clicking
-               * selected nothing to attach. The input hook already refuses to
-               * send while inspecting (`enabled` above); this is the other
-               * half of that gate.
+               * In FLAT that gesture layer IS the container the overlay is
+               * drawn inside, and its pointer-down calls `setPointerCapture`,
+               * which retargets the click to the container — so a layer left
+               * live swallowed every click the overlay was there to receive.
+               * The input hook already refuses to send while inspecting
+               * (`enabled` above); this is the other half of that gate.
                */
               interactive={appleInputAllowed(state) && !inspectOn}
               duo={duoProps}
