@@ -1760,8 +1760,8 @@ Renderer surfaces:
    and model, and rewrites the launch to
    `opencode --server <lease url> --session <id>` — see
    [OpenCode CLI: attach to ADE's server](#opencode-cli-attach-to-ades-server).
-   Tracked launches have no reasoning/fast variant flag, so variants remain
-   a chat-runtime feature. ADE session guidance is
+   OpenCode tracked launches have no reasoning/fast `--variant` flag, so those
+   variants remain a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
   through `--append-system-prompt`; Codex and Droid receive

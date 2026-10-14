@@ -84,6 +84,7 @@ describe("createAgentChatService", () => {
         provider: "codex",
         model: "gpt-5.5",
         fastMode: true,
+        fastTier: "ultrafast",
       });
 
       const onOpus = await service.updateSession({
@@ -92,6 +93,9 @@ describe("createAgentChatService", () => {
       });
       expect(onOpus.provider).toBe("claude");
       expect(onOpus.fastMode).toBe(true);
+      // Fast carries over; Codex's Ultrafast tier does not.
+      expect(onOpus.fastTier).toBeUndefined();
+      expect(readPersistedChatState(session.id).fastTier).toBeUndefined();
       expect(readPersistedChatState(session.id).fastMode).toBe(true);
 
       const onSonnet = await service.updateSession({
@@ -101,6 +105,57 @@ describe("createAgentChatService", () => {
       expect(onSonnet.fastMode).not.toBe(true);
       expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
       expect(readPersistedChatState(session.id).fastMode).not.toBe(true);
+    });
+
+    it("runs Codex turns on Ultrafast until Fast turns off, whatever Fast-only clients send", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(session.fastTier).toBe("ultrafast");
+      expect(readPersistedChatState(session.id).fastTier).toBe("ultrafast");
+
+      await service.sendMessage({ sessionId: session.id, text: "Ultrafast turn." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      // No catalog has said this model lacks the tier, so the chosen tier is sent.
+      const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect((turnStart?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("ultrafast");
+
+      // The TUI and the phone know Fast only and resend it with other changes.
+      const fromFastOnlyClient = await service.updateSession({
+        sessionId: session.id,
+        fastMode: true,
+        reasoningEffort: "high",
+      });
+      expect(fromFastOnlyClient.fastTier).toBe("ultrafast");
+
+      const off = await service.updateSession({ sessionId: session.id, fastMode: false });
+      expect(off.fastTier).toBeUndefined();
+      const backOn = await service.updateSession({ sessionId: session.id, fastMode: true });
+      expect(backOn.fastMode).toBe(true);
+      expect(backOn.fastTier).toBeUndefined();
+      expect(readPersistedChatState(session.id).fastTier).toBeUndefined();
+    });
+
+    it("never stores Ultrafast for a provider that has no such tier", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-5",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(session.fastMode).toBe(true);
+      expect(session.fastTier).toBeUndefined();
+      const updated = await service.updateSession({ sessionId: session.id, fastTier: "ultrafast" });
+      expect(updated.fastTier).toBeUndefined();
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {

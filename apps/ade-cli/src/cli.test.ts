@@ -4537,6 +4537,22 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("asks for Codex Ultrafast with --ultrafast, which means Fast on", () => {
+    const base = ["chat", "create", "--lane", "lane-1", "--provider", "codex", "--model", "openai/gpt-6.1-sol"];
+    const value = expectStaticPlan(buildCliPlan([...base, "--ultrafast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(value.input).toMatchObject({ provider: "codex", fastMode: true, fastTier: "ultrafast" });
+
+    const plainFast = expectStaticPlan(buildCliPlan([...base, "--fast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(plainFast.input.fastMode).toBe(true);
+    expect(plainFast.input).not.toHaveProperty("fastTier");
+
+    expect(() => buildCliPlan([...base, "--ultrafast", "--standard", "--dry-run"])).toThrow(/not both/);
+  });
+
   // ADE-135: `ade prs checks` printed nothing but the row table, so three
   // third-party bot rows each rendering `OK` read as a passing commit. The
   // canonical rollup now travels with the rows and leads the output.

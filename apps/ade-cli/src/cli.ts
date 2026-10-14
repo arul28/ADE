@@ -1856,6 +1856,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                            Aliases: --droid-autonomy, --autonomy.
     --fast                 Request fast service tier when supported.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
 
@@ -2357,6 +2358,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
     --fast                  Request fast service tier when the model advertises it.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
     --print-config          Print the createSession payload and permission mapping.
     --dry-run               Alias for --print-config; does not create a chat.
@@ -2423,6 +2425,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                             Droid only: read-only | auto-low | auto-medium | auto-high | agi.
                             Aliases: --droid-autonomy, --autonomy.
     --fast                  Request fast service tier when supported.
+    --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
     --print                 Start the session runtime in print mode.
     --print-config          Print the resolved CLI launch config.
@@ -6096,6 +6099,8 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     // Mirror to the deprecated alias so older daemons (pre-rename) still see the selection.
     config.codexFastMode = fastMode;
   }
+  const fastTier = readFastTierFlag(args);
+  if (fastTier) config.fastTier = fastTier;
   return config;
 }
 
@@ -6265,7 +6270,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
-  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
+  // `--ultrafast` is Fast at Codex's Ultrafast tier, so it turns Fast on too.
+  // Only peeked here: `readFastTierFlag` consumes it.
+  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]) || args.includes("--ultrafast");
   const standardRequested = readFlag(args, [
     "--standard",
     "--no-fast",
@@ -6273,10 +6280,15 @@ function readFastModeFlag(args: string[]): boolean | undefined {
   ]);
   if (fastRequested && standardRequested) {
     throw new CliUsageError(
-      "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
+      "Use either --fast/--codex-fast/--ultrafast or --standard/--no-fast/--no-codex-fast, not both.",
     );
   }
   return fastRequested ? true : standardRequested ? false : undefined;
+}
+
+/** `--ultrafast`: Codex's tier above Fast, on models whose catalog offers it. */
+function readFastTierFlag(args: string[]): "ultrafast" | undefined {
+  return readFlag(args, ["--ultrafast"]) ? "ultrafast" : undefined;
 }
 
 function autoLaneGenericSuffix(date = new Date()): string {
@@ -6458,6 +6470,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       }, launchOptions)
     : collectLaunchArgs(args, {
         provider,
@@ -6472,6 +6485,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
         // have — plain shell terminals can't persist it, so don't pretend. A
         // shell launch read the lineage with `allowSpawnType: false`, so
@@ -8763,6 +8777,7 @@ function buildCliSessionStartPlan(
     modelId: readValue(args, ["--model-id"]),
     reasoningEffort: readValue(args, ["--reasoning", "--reasoning-effort"]),
     fastMode: readFastModeFlag(args),
+    ...(readFastTierFlag(args) ? { fastTier: "ultrafast" as const } : {}),
     cols: readIntOption(args, ["--cols"], 120),
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
@@ -9340,6 +9355,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   maybePut(create, "presetId", presetId);
   maybePut(create, "credentialId", credentialId);
   if (fastMode !== undefined) create.fastMode = fastMode;
+  if (readFastTierFlag(args)) create.fastTier = "ultrafast";
   const launchArgs: JsonObject = {
     kind: "chat",
     // Nothing on this side opens the chat; "foreground" is for a client that does.
@@ -9558,6 +9574,7 @@ function readHandoffTarget(args: string[], sub: string): {
     settings: {
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
       ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(permissionMode !== null ? { permissionMode } : {}),
       ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
       ...(codexSandbox !== null ? { codexSandbox } : {}),
@@ -10071,6 +10088,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
     }, launchOptions);
     const createStep = actionStep("result", "chat", "createSession", actionArgs);
@@ -11670,6 +11688,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
       ...(droidPermissionMode ? { droidPermissionMode } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
     });
     requireValue(asString(createArgs.provider), "provider");
@@ -11812,6 +11831,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
         ...(permissionMode ? { permissionMode } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode } : {}),
+        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       }))],
     };
   }

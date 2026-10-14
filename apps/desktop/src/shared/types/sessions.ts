@@ -249,6 +249,8 @@ export type TerminalResumeLaunchConfig = {
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** "ultrafast" when a Codex CLI launched with Fast set to Ultrafast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for resume metadata written before the fast-mode rename. */
   codexFastMode?: boolean | null;
   claudePermissionMode?: AgentChatClaudePermissionMode | null;
@@ -659,6 +661,8 @@ export type PtyCreateArgs = {
     model?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
+    /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+    fastTier?: "ultrafast" | null;
     initialPrompt?: string | null;
     /**
      * Provider account ("instance") to launch under, for `claude` and `codex`

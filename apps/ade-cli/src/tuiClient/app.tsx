@@ -8305,7 +8305,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .filter(matchesMentionQuery);
     // Models show only when the query names one (same rule as desktop), so a
     // plain @ search is not flooded with the whole catalog.
-    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query);
+    // Recently picked models lead, as on desktop.
+    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query, undefined, {
+      recentModelIds: modelPickerRecents,
+    });
     const modelSuggestions: MentionSuggestion[] = rankedModels.rows.map((model) => ({
       kind: "model" as const,
       label: model.title,
@@ -8452,7 +8455,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, selectedMentions]);
+  // Recents change on a pick or when they finish loading; an open @ list re-sorts.
+  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, modelPickerRecents, selectedMentions]);
 
   const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;
@@ -14397,6 +14401,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A model chip is pure text: the token carries the model, the thinking
       // level, and the permission mode. The follow-up steps rewrite it.
       const model = suggestion.model;
+      setModelPickerRecents((prev) => [model.modelId, ...prev.filter((entry) => entry !== model.modelId)].slice(0, 10));
+      const recentsConn = connectionRef.current;
+      if (recentsConn) {
+        void pushModelPickerRecent(recentsConn, model.modelId)
+          .then((recents) => setModelPickerRecents(recents))
+          .catch(() => undefined);
+      }
       const mention: ModelMention = {
         modelId: model.modelId,
         effort: model.defaultEffort,

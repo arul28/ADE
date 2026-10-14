@@ -1779,7 +1779,12 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
     alias caused the TUI to drop straight into auto-approval and was
     surprising in the Work tab). `full-auto` keeps the explicit
     `--dangerously-bypass-approvals-and-sandbox` flag, and `config-toml`
-    mode defers to `.codex/config.toml`. ADE does not rewrite
+    mode defers to `.codex/config.toml`. Fast adds `-c
+    service_tier="fast"` (or `"ultrafast"` when Fast is set to Codex
+    Ultrafast) plus `-c features.fast_mode=true`; Fast off writes
+    `service_tier="default"`. A resume that overrides Fast itself means plain
+    Fast, so it does not inherit the launch's `ultrafast` tier. ADE does not
+    rewrite
     `mcp_servers` for Codex CLI launches; Codex config remains
     host-owned so ADE does not synthesize partial MCP tables that the
     CLI rejects during config validation.
