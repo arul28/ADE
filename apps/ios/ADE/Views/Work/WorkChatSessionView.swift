@@ -1511,6 +1511,8 @@ struct WorkChatSessionView: View {
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
     guard chatSummaryContext.compactFirstSupported, chatSummaryContext.provider == "claude", chatSummaryContext.compactionIdleMode != "never",
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
+          // A queued message is about to send on its own; the offer would only flash.
+          pendingSteers.isEmpty,
           let usage = composerContextMeter?.usage, usage.state == .measured,
           let context = usage.usedTokens, context >= chatSummaryContext.compactFirstMinTokens,
           let lastDone = transcript.last(where: { if case .done = $0.event { return true }; return false }),
@@ -1520,7 +1522,14 @@ struct WorkChatSessionView: View {
             !workCompactSummaryHeader(summary).contains("state:failed") else { return nil }
       return tokens
     }.first
-    return WorkCompactFirstOffer(endedAt: chatSummaryContext.promptCacheSince ?? ended, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
+    // A `since` older than the last turn's start is from an earlier turn (the
+    // summary has not caught up); that turn restarted the cache, so its end is nearer.
+    let started = transcript.last(where: { if case .status(.started, _, _) = $0.event { return true }; return false })
+      .flatMap { workParsedDate($0.timestamp) }
+    let since = chatSummaryContext.promptCacheSince.flatMap { since in
+      started.map { since < $0 ? ended : since } ?? since
+    } ?? ended
+    return WorkCompactFirstOffer(endedAt: since, contextTokens: context, estimatedPostTokens: post ?? max(5_000, Int(Double(context) * 0.02)), mode: chatSummaryContext.compactionIdleMode, idleSeconds: chatSummaryContext.compactFirstIdleSeconds)
   }
 
   /// The chat's goal for the composer chip: the transcript's live Claude goal

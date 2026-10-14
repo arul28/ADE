@@ -7,6 +7,7 @@ import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
+import { compactFirstEligibleAtMs, compactFirstOffer } from "../../../desktop/src/shared/compactFirst";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -5901,6 +5902,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return questions[pendingQuestionState?.activeQuestionIndex ?? 0]?.isSecret === true;
   }, [pendingApproval, pendingQuestionState]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
+  // Compact first, as on desktop and iOS: once a Claude chat's prompt cache has
+  // expired, `/compact-first` makes the next send compact the chat before it.
+  // The choice covers one send: it is kept with the turn end it was made after.
+  const [compactFirstNow, setCompactFirstNow] = useState(() => Date.now());
+  const [compactFirstChoices, setCompactFirstChoices] = useState<Record<string, { value: boolean; turnEndedAt: string | null }>>({});
+  const compactFirstState = useMemo(() => {
+    const session = sessions.find((entry) => entry.sessionId === activeSessionId) ?? null;
+    if (!session || session.provider !== "claude" || !session.compactionIdleMode) return null;
+    let turnEndedAt: string | null = null;
+    let turnStartedAt: string | null = null;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const entry = events[index]!;
+      if (turnEndedAt == null && entry.event.type === "done") turnEndedAt = entry.timestamp;
+      else if (turnEndedAt != null && entry.event.type === "status" && entry.event.turnStatus === "started") { turnStartedAt = entry.timestamp; break; }
+    }
+    // A queued message is about to send on its own; the offer would only flash.
+    const offer = pendingApproval || pendingSteers.length > 0 ? null : compactFirstOffer({
+      provider: session.provider,
+      events,
+      cache: session.promptCache,
+      minTokens: session.compactFirstMinTokens,
+      mode: session.compactionIdleMode,
+      now: compactFirstNow,
+    });
+    const choice = compactFirstChoices[session.sessionId];
+    const enabled = choice && choice.turnEndedAt === turnEndedAt ? choice.value : session.compactionIdleMode === "always";
+    return { sessionId: session.sessionId, offer, enabled, turnEndedAt, turnStartedAt, cache: session.promptCache, mode: session.compactionIdleMode };
+  }, [activeSessionId, compactFirstChoices, compactFirstNow, events, pendingApproval, pendingSteers.length, sessions]);
+  // Re-render when the cache runs out, so the footer offer appears on time.
+  useEffect(() => {
+    if (!compactFirstState?.turnEndedAt || compactFirstState.offer) return;
+    const eligibleAt = compactFirstEligibleAtMs(
+      compactFirstState.cache,
+      Date.parse(compactFirstState.turnEndedAt),
+      compactFirstState.turnStartedAt ? Date.parse(compactFirstState.turnStartedAt) : null,
+    );
+    if (eligibleAt == null) return;
+    const wait = eligibleAt - Date.now();
+    const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.max(1_000, Math.min(wait + 1_000, 2_147_483_647)));
+    return () => clearTimeout(timer);
+  }, [compactFirstState]);
+  const compactFirstSendRef = useRef<string | null>(null);
+  compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
     : null;
@@ -11041,6 +11085,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     };
     setSessionStreaming(sessionId, true);
+    if (compactFirstSendRef.current === sessionId) {
+      // Only chat.sendMessage carries Compact first. The brain starts the
+      // compaction and queues the message behind it.
+      await sendChatMessage(conn, sessionId, text, attachments, { compactFirst: true });
+      addNotice("Compacting first. Your message is queued and sends right after.", "info");
+      recordPromptHistoryForSession(sessionId, text);
+      await refreshState();
+      return;
+    }
     try {
       const result = await messageChatSession(conn, sessionId, text, "auto", attachments);
       if (result.delivery === "queued") {
@@ -13000,6 +13053,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
       return;
     }
+    if (name === "/compact-first") {
+      const state = compactFirstState;
+      if (!state?.offer) {
+        addNotice("Compact first is offered once a Claude chat's prompt cache has expired and its context is large.", "info");
+        return;
+      }
+      const requested = args.trim().toLowerCase();
+      const value = requested === "on" ? true : requested === "off" ? false : !state.enabled;
+      setCompactFirstChoices((current) => ({ ...current, [state.sessionId]: { value, turnEndedAt: state.turnEndedAt } }));
+      addNotice(value
+        ? "Your next message compacts this chat first."
+        : "Your next message sends the full chat.", "info");
+      return;
+    }
     const conn = connectionRef.current;
     if (!conn) return;
     const laneId = activeLaneIdRef.current;
@@ -13425,7 +13492,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, compactFirstState, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -19079,6 +19146,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
           workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
+          compactFirst={compactFirstState?.offer ? {
+            enabled: compactFirstState.enabled,
+            contextTokens: compactFirstState.offer.contextTokens,
+            estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
+          } : null}
         />
           </Box>
           {rightPaneVisible ? (

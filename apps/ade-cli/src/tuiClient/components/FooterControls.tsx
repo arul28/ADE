@@ -75,6 +75,10 @@ export function TokenBar({ percent }: { percent: number }) {
   );
 }
 
+function formatTokensK(tokens: number): string {
+  return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}k` : String(tokens);
+}
+
 // Pie-circle glyphs filling by quarter (0 / 25 / 50 / 75 / 100%).
 const CONTEXT_DIAL_GLYPHS = ["○", "◔", "◑", "◕", "●"] as const;
 
@@ -173,6 +177,7 @@ function FooterControlsComponent({
   multiViewActive,
   multiViewMap,
   workPaneFocused,
+  compactFirst,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -200,6 +205,8 @@ function FooterControlsComponent({
   multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
   /** The sessions pane has keyboard focus: show ITS keys, not the chat's. */
   workPaneFocused?: boolean;
+  /** A Claude chat whose prompt cache expired: whether the next send compacts first, and the sizes. */
+  compactFirst?: { enabled: boolean; contextTokens: number; estimatedPostTokens: number } | null;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -328,6 +335,19 @@ function FooterControlsComponent({
                 <Text color={theme.color.t2}>{tokenSummary}</Text>
               </>
             ) : null}
+          </>
+        ) : null}
+        {compactFirst ? (
+          <>
+            <Text color={theme.color.t4}>{"  "}</Text>
+            {compactFirst.enabled ? (
+              <Text color={theme.color.accent}>{`⇣ compacts on next send (~${formatTokensK(compactFirst.estimatedPostTokens)})`}</Text>
+            ) : (
+              <>
+                <Text color={theme.color.warning}>{`⇣ cache expired · ${formatTokensK(compactFirst.contextTokens)}`}</Text>
+                <Text dimColor>{" · /compact-first"}</Text>
+              </>
+            )}
           </>
         ) : null}
         {multiViewMap ? (

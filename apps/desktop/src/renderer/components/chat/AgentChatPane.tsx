@@ -13666,6 +13666,9 @@ export function AgentChatPane({
       });
     }
 
+    // Set once the message is handed to the chat, so a transport timeout can
+    // tell "may still arrive" from "never left".
+    let handedOff: { sessionId: string; submittedAt: string; texts: string[] } | null = null;
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
@@ -13775,6 +13778,7 @@ export function AgentChatPane({
       }
 
       const submittedAt = new Date().toISOString();
+      handedOff = { sessionId, submittedAt, texts: [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean) };
       touchSession(sessionId, submittedAt);
       patchSessionSummary(
         sessionId,
@@ -13804,7 +13808,13 @@ export function AgentChatPane({
 
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
         try {
-          setOptimisticIfAllowed(sessionId);
+          // Compact first queues the message behind the compaction; the brain's
+          // queued row shows it, not a bubble that reads as already sent.
+          if (compactFirst.sendRef.current?.sessionId === sessionId && compactFirst.sendRef.current.value) {
+            setOptimisticOutgoingMessageSynced(null);
+          } else {
+            setOptimisticIfAllowed(sessionId);
+          }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
           await agentChatApiRef.current.send({
@@ -13879,6 +13889,38 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
+      if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
+        // The call gave up, not the send: the chat's machine usually still
+        // delivers it. Put the text back only if it never shows up.
+        const pending = handedOff;
+        const waitingMessage = "Sending is taking longer than expected. If the message does not appear, it goes back in the composer.";
+        setOptimisticOutgoingMessageSynced(null);
+        setError(waitingMessage);
+        // Matched by text, with slack for the chat machine's clock.
+        const since = Date.parse(pending.submittedAt) - 5 * 60_000;
+        const arrived = () => (eventsBySessionRef.current[pending.sessionId] ?? []).some(({ event, timestamp }) =>
+          event.type === "user_message"
+          && Date.parse(timestamp) >= since
+          && pending.texts.some((text) => text === event.text.trim() || text === event.displayText?.trim()));
+        const checkDelays = [15_000, 45_000, 120_000];
+        checkDelays.forEach((delayMs, index) => {
+          window.setTimeout(() => {
+            if (!paneMountedRef.current) return;
+            if (arrived()) {
+              setError((current) => (current === waitingMessage ? null : current));
+            } else if (index === checkDelays.length - 1) {
+              setDraft((current) => (current.trim().length ? current : draftSnapshot));
+              setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+              setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
+              setError((current) => (current === waitingMessage ? "Message not sent. It is back in the composer." : current));
+            } else {
+              void refreshSessions({ force: true }).catch(() => {});
+            }
+          }, delayMs);
+        });
+        await refreshSessions({ force: true }).catch(() => {});
+        return null;
+      }
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
       setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
@@ -16181,7 +16223,8 @@ export function AgentChatPane({
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
-  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
+  // A queued message is about to send on its own; the offer would only flash.
+  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
     ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
   const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;

@@ -5,9 +5,13 @@ import type { AgentChatEventEnvelope } from "./types/chat";
 export function compactFirstIdleMs(cache: ClaudePromptCache | null | undefined): number {
   return CLAUDE_PROMPT_CACHE_TTL_MS[cache?.ttl ?? "1h"];
 }
-/** When the chat's prompt cache is gone, given when its last turn ended; null with no finished turn. */
-export function compactFirstEligibleAtMs(cache: ClaudePromptCache | null | undefined, turnEndedAtMs: number | null): number | null {
-  const sinceMs = claudePromptCacheSinceMs(cache, turnEndedAtMs);
+/**
+ * When the chat's prompt cache is gone, given when its last turn ended (and
+ * started, so a `since` from an earlier turn is not trusted); null with no
+ * finished turn.
+ */
+export function compactFirstEligibleAtMs(cache: ClaudePromptCache | null | undefined, turnEndedAtMs: number | null, turnStartedAtMs?: number | null): number | null {
+  const sinceMs = claudePromptCacheSinceMs(cache, turnEndedAtMs, turnStartedAtMs);
   return turnEndedAtMs == null || sinceMs == null ? null : sinceMs + compactFirstIdleMs(cache);
 }
 /**
@@ -47,10 +51,14 @@ export function compactFirstOffer({ provider, events, contextTokens, cache, minT
 }): CompactFirstOffer | null {
   if (provider !== "claude" || mode === "never") return null;
   let endedAt: number | null = null;
+  let startedAt: number | null = null;
   let measured = contextTokens;
   let lastPost: number | null = null;
   for (const { event, timestamp } of events) {
-    if (event.type === "status" && event.turnStatus === "started") endedAt = null;
+    if (event.type === "status" && event.turnStatus === "started") {
+      endedAt = null;
+      startedAt = Date.parse(timestamp);
+    }
     if (event.type === "done") {
       endedAt = Date.parse(timestamp);
       if (contextTokens == null && event.usage?.contextTokens != null) measured = event.usage.contextTokens;
@@ -63,7 +71,7 @@ export function compactFirstOffer({ provider, events, contextTokens, cache, minT
   }
   if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;
   const idleMs = compactFirstIdleMs(cache);
-  const eligibleAt = compactFirstEligibleAtMs(cache, endedAt) ?? endedAt + idleMs;
+  const eligibleAt = compactFirstEligibleAtMs(cache, endedAt, Number.isFinite(startedAt) ? startedAt : null) ?? endedAt + idleMs;
   if (now < eligibleAt) return null;
   return { contextTokens: measured, estimatedPostTokens: lastPost ?? estimateCompactedTokens(measured), eligibleAt, idleMs };
 }

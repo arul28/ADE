@@ -21,19 +21,27 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
   const [now, setNow] = useState(Date.now());
   const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
-  // Walks back only to the last `done`, so streaming deltas stay cheap.
-  const lastTurnEndedAt = useMemo(() => {
+  // Walks back only to the last turn start, so streaming deltas stay cheap.
+  const { lastTurnEndedAt, lastTurnStartedAt } = useMemo(() => {
+    let endedAt: number | null = null;
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const entry = events[index];
-      if (entry?.event.type === "done") return Date.parse(entry.timestamp);
+      if (endedAt == null && entry?.event.type === "done") endedAt = Date.parse(entry.timestamp);
+      else if (endedAt != null && entry?.event.type === "status" && entry.event.turnStatus === "started") {
+        return { lastTurnEndedAt: endedAt, lastTurnStartedAt: Date.parse(entry.timestamp) };
+      }
     }
-    return null;
+    return { lastTurnEndedAt: endedAt, lastTurnStartedAt: null };
   }, [events]);
   const cacheTtl = cache?.ttl;
   const cacheSince = cache?.since;
   const eligibleAt = useMemo(
-    () => compactFirstEligibleAtMs(cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null, Number.isFinite(lastTurnEndedAt) ? lastTurnEndedAt : null),
-    [cacheTtl, cacheSince, lastTurnEndedAt],
+    () => compactFirstEligibleAtMs(
+      cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null,
+      Number.isFinite(lastTurnEndedAt) ? lastTurnEndedAt : null,
+      Number.isFinite(lastTurnStartedAt) ? lastTurnStartedAt : null,
+    ),
+    [cacheTtl, cacheSince, lastTurnEndedAt, lastTurnStartedAt],
   );
   useEffect(() => {
     if (eligibleAt == null) return;

@@ -390,6 +390,7 @@ Inline chat commands (forwarded through the active chat runtime):
 | `/compact [instructions]` | Compact the active Claude or Codex context window. |
 | `/usage` | Show Claude usage / rate-limit window through the active SDK session. |
 | `/insights` | Generate Claude session insights through the active SDK session. |
+| `/compact-first [on\|off]` | Once a Claude chat's prompt cache has expired (the footer reads `⇣ cache expired · 412k`), compact the chat before the next message. That send uses `chat.sendMessage` with `compactFirst: true`; the message queues behind the compaction. |
 | `/fast [on\|off]` | Toggle Claude fast mode through the active SDK session. |
 | `/goal [<objective>\|clear\|status active\|paused\|complete]` | Set, clear, or inspect the active Claude/Codex chat goal. Token-budget management is intentionally not exposed — when a Codex thread reports `budget_limited`, ADE auto-clears the runtime budget and the goal banner stays in the active state. |
 

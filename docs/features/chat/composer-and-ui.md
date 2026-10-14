@@ -1333,16 +1333,25 @@ chat pane mount, which happens either way.
   5k). The action turns it on for the next
   send only; the chip then reads `Compacts on next send · 412k` in the accent
   tone with **Cancel** to undo. The × hides the chip until the next turn
-  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true` and the brain runs
-  `/compact` as its own turn (90 s limit) before the message. If that compaction
-  does not complete, the message stays unsent and the user sees "Compaction did
-  not finish. Your message was not sent." The Claude provider setting "After
+  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true`. The brain starts
+  `/compact` as its own turn and, once that turn is running, queues the message
+  behind it like any message sent during a turn, so the send returns at once
+  and the thread shows the message as queued, not sent. It is delivered when
+  the compaction ends. If the compaction fails or does not shrink the chat, the
+  message is kept and sent with the full chat, with the notice "Compaction did
+  not finish, so your message was sent with the full chat." Stop during the
+  compaction cancels it like any queued message. There is no ADE time limit;
+  Stop ends the compaction, as for a typed `/compact`. A send whose call times
+  out (`isRuntimeTransportTimeoutError`) does not go back in the composer
+  unless it never appears in the chat within two minutes. The Claude provider setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
   `never` (no chip). Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
   `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
-  Desktop, web, and iOS share the rule. To try it on a small chat, start the
+  Desktop, web, iOS and `ade code` (`/compact-first`, see the ade-code README)
+  share the rule. iOS fetches the summary for a Claude chat in another project
+  too, since only the summary says whether its cache expired. To try it on a small chat, start the
   brain with `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`: the brain uses that limit and
   sends it to the clients on the session summary (`compactFirstMinTokens`).
 - **The real cache lifetime.** Claude Code picks the prompt cache lifetime of
