@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
-import { AppleMusicAppIcon } from "../music/musicParts";
+import { MusicProviderIcon } from "../music/musicProvider";
 import { musicActions } from "../music/musicStore";
 import { musicTabAvailable } from "../music/musicTab";
 import {
@@ -714,7 +714,7 @@ export function ProjectWelcomePage() {
       entries.push({
         kind: "item",
         key: "music",
-        label: "Open Apple Music",
+        label: "Open Music",
         icon: MusicNotes,
         onSelect: musicActions.open,
       });
@@ -869,11 +869,11 @@ export function ProjectWelcomePage() {
                 <button
                   type="button"
                   className="ade-home-apple-music"
-                  aria-label="Apple Music"
-                  title="Apple Music"
+                  aria-label="Music"
+                  title="Apple Music and Spotify"
                   onClick={musicActions.open}
                 >
-                  <AppleMusicAppIcon size={34} />
+                  <MusicProviderIcon size={34} />
                 </button>
               ) : null}
               {showSide ? (

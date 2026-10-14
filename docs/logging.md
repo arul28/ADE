@@ -361,6 +361,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
+| `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in

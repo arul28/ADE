@@ -134,6 +134,7 @@
   padding: 36px 40px;
   text-align: center;
 }
+.ade-music-gate.is-setup { width: 100%; max-width: 620px; padding: 24px; }
 .ade-music-gate h1 { margin: 6px 0 0; font-size: 19px; font-weight: 680; }
 .ade-music-gate p { margin: 0 0 6px; color: var(--kit-text-2); font-size: 12.5px; line-height: 1.5; }
 

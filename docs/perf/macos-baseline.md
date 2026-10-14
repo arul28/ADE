@@ -706,3 +706,26 @@ host call are context, not ceilings.
 - Host commands rose by a few `prs.getGitHubSnapshot` reads that follow the
   host's own revision bumps; switching to Merged still reads it three times,
   which is the next thing to trim.
+
+### Spotify Connect request and push budget
+
+The Spotify addition is based on `e3bf1ff82` (working tree). The service budget
+is checked through the public service API in `spotifyService.test.ts`, using
+fake time and synthetic Spotify responses. These are request counts, **not CPU,
+GPU or memory measurements**, and do not replace the native Music baselines.
+
+| Scenario (10 minutes of fake time) | Before | Budget verified |
+| --- | --- | --- |
+| Spotify never opened | No Spotify service | 0 HTTP requests, 0 state pushes |
+| Spotify playing, 200-second tracks | No Spotify service | At most 46 playback reads and 6 state pushes |
+| After the Spotify tab closes | No Spotify service | 0 additional playback reads |
+
+Playback polls every 15 seconds while playing (also at track boundaries) and
+30 seconds while paused; the renderer interpolates position. A rate limit
+backs off for Retry-After, with at least 30 seconds between polling retries.
+No Spotify host or DRM subprocess is started. Native before/after CPU, GPU,
+memory and live Spotify latency are **not measured**: the Electron dev build
+waited for macOS Keychain access before opening its window, and no real Spotify
+application ID or Premium test account was supplied. The signed-out provider
+switch and setup form were checked in ADE's browser preview at 960×600 and
+1280×900; this does not establish native playback performance on either OS.

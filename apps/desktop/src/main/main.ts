@@ -9305,20 +9305,27 @@ app.whenReady().then(async () => {
     },
   });
 
-  // The Music tab: Apple Music through an on-demand player host. The user's
-  // Music-User-Token stays in this app's own user data (see musicTokenStore).
+  // The Music tab: Apple Music through an on-demand player host, or Spotify as
+  // a Connect remote. Each sign-in stays in its own encrypted file in this
+  // app's user data (see musicTokenStore).
   registerMusicIpc({
     credentials: createMusicTokenStore({ dir: path.join(app.getPath("userData"), "music-player"), logger: getMachineMainLogger() }),
+    spotifyCredentials: createMusicTokenStore({
+      dir: path.join(app.getPath("userData"), "music-player"),
+      fileName: "spotify-session.enc",
+      serviceName: "Spotify",
+      logger: getMachineMainLogger(),
+    }),
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
     getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
       secretsDir: machineAdeLayout.secretsDir,
     })),
     logger: getMachineMainLogger(),
-    onConnectOutcome: (outcome) => captureFeatureUsedAnalytics({
+    onConnectOutcome: (outcome, provider) => captureFeatureUsedAnalytics({
       analytics: productAnalyticsService,
       surface: "desktop",
       feature: "home",
-      action: "music_connected",
+      action: provider === "spotify" ? "spotify_connected" : "music_connected",
       outcome,
     }),
   });

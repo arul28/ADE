@@ -270,3 +270,6 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   .ade-np2-pill { gap: 2px; padding: 3px; }
   .ade-np2-main { gap: 6px; }
 }
+
+/* Spotify artwork stays whole and unblurred, including its compact player. */
+.ade-np2[data-spotify] .ade-np2-cover-fill { display: none; }

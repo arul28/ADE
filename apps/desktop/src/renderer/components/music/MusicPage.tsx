@@ -17,7 +17,6 @@ import { Banner } from "../ui/notice/Banner";
 import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { MusicNowPlayingBar } from "./MusicNowPlayingBar";
 import { MusicPlayerCard } from "./MusicPlayer";
-import { AppleMusicMark } from "./musicParts";
 import { queueableId } from "./musicQueue";
 import { friendlyMusicError, musicActions, useMusicLastError, useMusicState } from "./musicStore";
 import { ConnectButton, ConnectHero, SignInControls } from "./MusicWelcome";
@@ -26,6 +25,8 @@ import { DetailView } from "./MusicDetailView";
 import { LibraryView, RecentView } from "./MusicLibraryView";
 import { QueueView } from "./MusicQueueView";
 import { SearchView } from "./MusicSearchView";
+import { MusicProviderPicker, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
+import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import "./music.css";
 
 type View =
@@ -77,6 +78,13 @@ function useWideEnough(ref: React.RefObject<HTMLElement | null>, minWidth: numbe
 }
 
 export function MusicPage() {
+  const provider = useMusicProvider();
+  return <MusicPageContent key={provider} />;
+}
+
+function MusicPageContent() {
+  const provider = useMusicProvider();
+  const providerName = useMusicProviderName();
   // Field selectors, not the whole state: the main process pushes once a second
   // while playing, and only the scrubber needs that.
   const hasState = useMusicState((s) => s !== null);
@@ -84,6 +92,7 @@ export function MusicPage() {
   const message = useMusicState((s) => s?.message ?? null);
   const queueRevision = useMusicState((s) => s?.queueRevision ?? 0);
   const hostStatus = useMusicState((s) => s?.host.status ?? "stopped");
+  const spotifyConfigured = useMusicState((s) => Boolean(s?.spotify?.configured));
   const authorized = useMusicState((s) => Boolean(s?.authorized));
   const nowPlayingId = useMusicState((s) => s?.playback.nowPlaying?.id ?? null);
   const isPlaying = useMusicState((s) => Boolean(s?.playback.isPlaying));
@@ -135,7 +144,10 @@ export function MusicPage() {
   if (!hasState) {
     return (
       <MusicFrame>
-        <div className="ade-music-center"><CircleNotch size={20} className="animate-spin text-muted-fg" /></div>
+        <div className="ade-music-center">{lastError ? <section className="ade-music-gate">
+          <h1>Couldn't load Music</h1><p>{lastError}</p>
+          <button type="button" className="kit-btn" onClick={() => void musicActions.refresh()}>Try again</button>
+        </section> : <CircleNotch size={20} className="animate-spin text-muted-fg" />}</div>
       </MusicFrame>
     );
   }
@@ -147,8 +159,8 @@ export function MusicPage() {
           <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unsupported">
             <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
             <h1>Music isn't available here</h1>
-            <p>{message ?? "Apple Music plays in ADE on Windows and macOS."}</p>
-            <AppleMusicMark />
+            <p>{message ?? `${providerName} is available on Windows and macOS.`}</p>
+            <MusicProviderBadge linked={false} height={24} />
           </section>
         </div>
       </MusicFrame>
@@ -159,10 +171,12 @@ export function MusicPage() {
     return (
       <MusicFrame>
         <div className="ade-music-center">
-          <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unavailable">
+          <section className={`ade-music-gate ade-chat-scene-plane${provider === "spotify" ? " is-setup" : ""}`} data-testid="music-unavailable">
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
-            <h1>Music isn't available right now</h1>
+            <h1>{provider === "spotify" && !spotifyConfigured ? "Set up Spotify" : `${providerName} isn't available right now`}</h1>
             <p>{message ?? "ADE couldn't reach its music service."}</p>
+            {lastError ? <p role="alert">{lastError}</p> : null}
+            {provider === "spotify" ? <SpotifySetup /> : null}
             <button type="button" className="kit-btn" onClick={() => void musicActions.refresh()}>
               <ArrowClockwise size={13} /> Try again
             </button>
@@ -222,8 +236,9 @@ export function MusicPage() {
       <div className="ade-music-layout">
         <aside className="ade-music-rail ade-chat-scene-plane" aria-label="Music">
           <div className="ade-music-rail-head">
-            <AppleMusicMark />
+            <MusicProviderBadge linked={false} height={24} />
           </div>
+          {provider === "spotify" && authorized ? <SpotifyDevices /> : null}
           <nav className="ade-music-nav">
             <RailItem icon={<MagnifyingGlass size={15} />} label="Search" active={isActive({ kind: "search" })} onClick={() => setView({ kind: "search" })} />
             <RailItem icon={<ClockCounterClockwise size={15} />} label="Recently played" active={isActive({ kind: "recent" })} onClick={() => setView({ kind: "recent" })} />
@@ -285,7 +300,7 @@ function MusicFrame({ children, pageRef }: { children: React.ReactNode; pageRef?
   return (
     <div ref={pageRef} className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
       <ChatSceneBackdrop />
-      <div className="ade-music-frame">{children}</div>
+      <div className="ade-music-frame"><MusicProviderPicker />{children}</div>
     </div>
   );
 }

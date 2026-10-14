@@ -266,11 +266,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // failed. Never the title, the body, the link, or which phones got it.
   "notification_sent",
   // The dev home. Which machine-level top tab was opened, which widget was
-  // added to the home page, and how connecting Apple Music ended. Never a URL,
-  // a tab, a song, a layout, an account, or a widget's settings.
+  // added to the home page, and how connecting Apple Music or Spotify ended.
+  // Never a URL, a tab, a song, a layout, an account, or a widget's settings.
   "tab_opened",
   "widget_added",
   "music_connected",
+  "spotify_connected",
   // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.

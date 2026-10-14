@@ -3,7 +3,8 @@ import { musicArtworkUrl, type MusicCommand, type MusicState } from "../../../sh
 import type { NowPlayingService } from "../home/nowPlayingService";
 
 /**
- * Puts the Music tab's player in the home page's Now Playing list.
+ * Puts the Music tab's player (Apple Music, or the Spotify device ADE drives)
+ * in the home page's Now Playing list.
  *
  * While ADE's own player has a track loaded it is a Now Playing source (the
  * first one while it plays) and the widget's buttons drive it; when it has
@@ -35,7 +36,7 @@ export function createMusicNowPlayingBridge(args: {
       session: {
         id: "ade-music",
         kind: "ade-music",
-        app: "Apple Music",
+        app: state.provider === "spotify" ? "Spotify" : "Apple Music",
         appIcon: null,
         title: track.title,
         artist: track.artist,

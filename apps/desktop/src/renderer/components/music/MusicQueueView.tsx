@@ -2,12 +2,13 @@ import { CaretRight, Queue, WarningCircle } from "@phosphor-icons/react";
 
 import type { MusicQueue } from "../../../shared/types/music";
 import { MusicEmpty, SongRow } from "./musicParts";
-import { musicActions } from "./musicStore";
+import { musicActions, useMusicState } from "./musicStore";
 import { useLoad, ViewHeader, type RowProps } from "./musicViewParts";
 
 /** Up Next: the player's own queue (catalog songs), the current one first. */
 export function QueueView({ nowPlayingId, isPlaying, revision, hostStatus }: RowProps & { revision: number; hostStatus: string }) {
   const { data, error } = useLoad<MusicQueue>(() => window.ade!.music!.queue(), [revision, nowPlayingId, hostStatus]);
+  const canPlayAt = useMusicState((state) => state?.capabilities?.playAt ?? true);
   const position = data?.position ?? -1;
   const items = data?.items ?? [];
   const current = position >= 0 ? items[position] : undefined;
@@ -45,7 +46,7 @@ export function QueueView({ nowPlayingId, isPlaying, revision, hostStatus }: Row
                     index={i}
                     current={false}
                     playing={false}
-                    onPlay={() => void musicActions.playAt(index)}
+                    onPlay={canPlayAt ? () => void musicActions.playAt(index) : undefined}
                   />
                 );
               })}

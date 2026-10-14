@@ -4,8 +4,10 @@ import path from "node:path";
 import { safeStorage } from "electron";
 
 /**
- * Where the Apple Music user token lives: one small file in this app's own
- * user data, encrypted with this app's safeStorage key.
+ * Where a music provider's sign-in lives: one small file per provider in this
+ * app's own user data, encrypted with this app's safeStorage key. Apple Music
+ * keeps its Music-User-Token in `apple-music-user-token.enc`, Spotify its
+ * refresh token in `spotify-session.enc`.
  *
  * Not the shared machine credential files. safeStorage's key belongs to the
  * app's user-data folder, so a second build (a dev app, another channel)
@@ -16,9 +18,13 @@ import { safeStorage } from "electron";
  */
 export function createMusicTokenStore(args: {
   dir: string;
+  /** The file's name in `dir`; Apple Music's by default. */
+  fileName?: string;
+  /** Who the sign-in is for, in the error shown when secure storage is missing. */
+  serviceName?: string;
   logger?: { warn: (event: string, data?: Record<string, unknown>) => void };
 }) {
-  const file = path.join(args.dir, "apple-music-user-token.enc");
+  const file = path.join(args.dir, args.fileName ?? "apple-music-user-token.enc");
   const values = new Map<string, string>();
   let loaded = false;
 
@@ -41,7 +47,7 @@ export function createMusicTokenStore(args: {
 
   const save = () => {
     if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("This computer's secure storage is unavailable, so ADE can't remember your Apple Music sign-in.");
+      throw new Error(`This computer's secure storage is unavailable, so ADE can't remember your ${args.serviceName ?? "Apple Music"} sign-in.`);
     }
     fs.mkdirSync(args.dir, { recursive: true });
     const tmp = `${file}.tmp`;
