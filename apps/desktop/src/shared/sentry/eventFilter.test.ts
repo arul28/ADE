@@ -101,6 +101,7 @@ describe("createSentryEventHooks", () => {
     ["a GitHub outage", "GitHub API request failed (HTTP 502)", true],
     ["a GitHub client error, which is ADE's", "GitHub API request failed (HTTP 422)", false],
     ["a screenshot cleaned up while a chat still shows it", "Path does not exist: C:\p\.ade\cache\obs-1.png", true],
+    ["any other missing file", "Path does not exist: /app/config.json", false],
     ["a path the renderer may not read", "Path is outside allowed directories.", false],
     ["an agent's bad selector", "Invalid element selector: [aria-label=6 more companies:]", true],
     ["an agent driving a lane with no screen", "MAC_DESKTOP_NO_DISPLAY: Lane l1 has no Mac Desktop screen. Start one first.", true],

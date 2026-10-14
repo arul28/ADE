@@ -39,8 +39,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /nothing to commit, working tree clean/,
   /Lane worktree is missing\. Restore or recreate/,
   /GitHub auth missing\. Run gh auth login/,
-  // A screenshot or attachment that was cleaned up while a chat still shows it.
-  /\bPath does not exist: /,
+  // A screenshot or image attachment cleaned up while a chat still shows it.
+  /\bPath does not exist: .+\.(png|jpe?g|gif|webp)$/i,
   // Answers to an agent driving a browser or a desktop: it fixes its call and retries.
   /Invalid element selector: /,
   /\b(MAC|WINDOWS)_DESKTOP_(NO_DISPLAY|NO_WINDOW|HANDLE_EXPIRED|CONSENT_REQUIRED|OUT_PATH_OUTSIDE_ROOT):/,
