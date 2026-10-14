@@ -9483,12 +9483,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.setCodexGoal(arg);
+    // The goal RPCs record whether a person or the harness acted, so a renderer
+    // must not be able to claim it was an agent — the same rule as the actor
+    // every other chat action follows.
+    return ctx.agentChatService.setCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.setCodexGoalStatus(arg);
+    return ctx.agentChatService.setCodexGoalStatus(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexRealtimeStart, async (_event, arg: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
@@ -9522,7 +9525,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.clearCodexGoal(arg);
+    return ctx.agentChatService.clearCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {

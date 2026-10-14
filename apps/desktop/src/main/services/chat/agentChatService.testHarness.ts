@@ -185,6 +185,13 @@ const mockState = vi.hoisted(() => ({
   droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexResponseOverrides: new Map<string, Record<string, unknown> | ((payload: Record<string, unknown>) => Record<string, unknown>)>(),
+  /**
+   * The mocked app-server's `initialize` result. Empty by default — no
+   * `userAgent`, so the runtime learns no version and every version-gated
+   * request takes its "server predates this" path. A test that exercises a
+   * gate sets `{ userAgent: "codex_app_server/0.162.1" }` here.
+   */
+  codexInitializeResult: {} as Record<string, unknown>,
   delayedCodexMethods: new Set<string>(),
   pendingCodexResponses: [] as Array<() => void>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
@@ -340,6 +347,8 @@ vi.mock("node:child_process", () => ({
             } else {
               result = override;
             }
+          } else if (payload.method === "initialize") {
+            result = mockState.codexInitializeResult;
           } else if (payload.method === "thread/start") {
             mockState.codexThreadCounter += 1;
             result = { thread: { id: `thread-${mockState.codexThreadCounter}` } };
@@ -2160,6 +2169,7 @@ beforeEach(() => {
   mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexResponseOverrides.clear();
+  mockState.codexInitializeResult = {};
   mockState.delayedCodexMethods.clear();
   mockState.pendingCodexResponses = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];

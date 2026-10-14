@@ -1088,7 +1088,21 @@ export type AgentChatDevinCloudConfig = {
   pinned?: boolean;
 };
 
-export type AgentChatTextPhase = "commentary" | "final_answer";
+/**
+ * The provider's own label for a piece of assistant text, when it sends one.
+ *
+ * - `commentary` — mid-turn narration (preamble, progress). Never the answer.
+ * - `partial_answer` — stable answer text that more output may follow. This is
+ *   *content*, not narration: codex emits it for a result it has finished
+ *   stating while it goes on to produce another, so the turn's terminal answer
+ *   does not repeat it.
+ * - `final_answer` — the turn's declared terminal answer.
+ *
+ * Only Codex labels these, and not for every model; absent means unknown and
+ * the reader falls back to position. See `chatTurnFold.ts` for how each one is
+ * treated at turn end.
+ */
+export type AgentChatTextPhase = "commentary" | "partial_answer" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
 export type AgentChatImportProvider = ExternalSessionProvider;
@@ -5533,7 +5547,10 @@ export type AgentChatCodexGetGoalArgs = {
   sessionId: string;
 };
 
-export type AgentChatCodexSetGoalArgs = {
+/** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+type CodexGoalCaller = { runtimeActor?: AgentChatRuntimeActor };
+
+export type AgentChatCodexSetGoalArgs = CodexGoalCaller & {
   sessionId: string;
   objective: string;
 };
@@ -5587,12 +5604,12 @@ export type AgentChatCodexRealtimeState = {
   error: string | null;
 };
 
-export type AgentChatCodexSetGoalStatusArgs = {
+export type AgentChatCodexSetGoalStatusArgs = CodexGoalCaller & {
   sessionId: string;
   status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
 };
 
-export type AgentChatCodexClearGoalArgs = {
+export type AgentChatCodexClearGoalArgs = CodexGoalCaller & {
   sessionId: string;
 };
 

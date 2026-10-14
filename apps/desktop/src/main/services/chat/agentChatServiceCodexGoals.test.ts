@@ -57,6 +57,111 @@ describe("createAgentChatService", () => {
       });
     });
 
+    describe("goal mutation provenance", () => {
+      // Codex 0.162 added `origin` to the goal RPCs, and reads a missing
+      // provenance as "supplies no user authorization". ADE has to say who
+      // acted, and has to leave the field off entirely for a server that
+      // predates it.
+      const goalSetParams = () =>
+        mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params;
+
+      const goalSession = async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+        return { service, session };
+      };
+
+      it("marks a goal set through the chat controls as the user's", async () => {
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service, session } = await goalSession();
+
+        await service.setCodexGoal({ sessionId: session.id, objective: "Ship CLI parity" });
+
+        expect(goalSetParams()).toMatchObject({ origin: "user" });
+      });
+
+      it("marks a goal an agent set through `ade chat goal` as automatic", async () => {
+        // The runtime stamps `runtimeActor` on an agent's or the CTO's call and
+        // never lets a renderer or a phone send one, so its presence is the one
+        // trustworthy signal that this was not a person. An agent must not be
+        // able to claim the user's authorization for a goal.
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service, session } = await goalSession();
+
+        await service.setCodexGoal({
+          sessionId: session.id,
+          objective: "Ship CLI parity",
+          runtimeActor: { kind: "agent", chatSessionId: null },
+        });
+
+        expect(goalSetParams()).toMatchObject({ origin: "automatic" });
+      });
+
+      it("carries the caller onto a clear as well as a set", async () => {
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service, session } = await goalSession();
+        await service.setCodexGoal({ sessionId: session.id, objective: "Ship CLI parity" });
+
+        await service.clearCodexGoal({
+          sessionId: session.id,
+          runtimeActor: { kind: "cto" },
+        });
+
+        expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/clear")?.params)
+          .toMatchObject({ origin: "automatic" });
+      });
+
+      it("marks a goal the user typed as theirs", async () => {
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service, session } = await goalSession();
+
+        await service.sendMessage({ sessionId: session.id, text: "/goal pause" }, { awaitDispatch: true });
+
+        expect(goalSetParams()).toMatchObject({ status: "paused", origin: "user" });
+      });
+
+      it("omits origin on a server that predates it", async () => {
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.161.0" };
+        const { service, session } = await goalSession();
+
+        await service.sendMessage({ sessionId: session.id, text: "/goal pause" }, { awaitDispatch: true });
+
+        const params = goalSetParams() as Record<string, unknown>;
+        expect(params).toMatchObject({ status: "paused" });
+        expect(params).not.toHaveProperty("origin");
+      });
+
+      it("omits origin when the server reports no version at all", async () => {
+        const { service, session } = await goalSession();
+
+        await service.sendMessage({ sessionId: session.id, text: "/goal pause" }, { awaitDispatch: true });
+
+        expect(goalSetParams()).not.toHaveProperty("origin");
+      });
+
+      it("does not claim the user authorized ADE's own goal bookkeeping", async () => {
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          // A session goal with no codex goal yet is what ADE seeds into the
+          // thread on its own, with no user action behind it.
+          goal: "Ship CLI parity",
+        });
+        mockState.codexRequestPayloads = [];
+
+        await service.sendMessage({ sessionId: session.id, text: "carry on" }, { awaitDispatch: true });
+
+        expect(goalSetParams()).toMatchObject({ objective: "Ship CLI parity", origin: "automatic" });
+      });
+    });
+
     it("sets typed Codex /goal text and starts a real app-server turn", async () => {
       mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
         const params = payload.params as Record<string, unknown>;

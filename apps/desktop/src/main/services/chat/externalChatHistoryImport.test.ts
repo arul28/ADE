@@ -246,11 +246,12 @@ describe("codexTurnsToChatEvents", () => {
     });
   });
 
-  it("keeps the Codex commentary/final-answer phase on imported assistant text", () => {
+  it("keeps every Codex phase label on imported assistant text", () => {
     const events = codexTurnsToChatEvents([{
       id: "turn-phase",
       items: [
         { type: "agentMessage", id: "item-commentary", text: "Checking the tests.", phase: "commentary" },
+        { type: "agentMessage", id: "item-partial", text: "The first result is ready.", phase: "partial_answer" },
         { type: "agentMessage", id: "item-unknown", text: "No label.", phase: null },
         { type: "message", role: "assistant", content: [{ type: "output_text", text: "All green." }], phase: "final_answer" },
         { type: "agentMessage", id: "item-bogus", text: "Odd label.", phase: "summary" },
@@ -264,11 +265,14 @@ describe("codexTurnsToChatEvents", () => {
     const texts = events.flatMap((envelope) => envelope.event.type === "text" ? [envelope.event] : []);
     expect(texts.map((event) => [event.text, event.phase])).toEqual([
       ["Checking the tests.", "commentary"],
+      // 0.162's third label. Unknown words and a missing label both stay
+      // unlabelled; only the three codex defines are read.
+      ["The first result is ready.", "partial_answer"],
       ["No label.", undefined],
       ["All green.", "final_answer"],
       ["Odd label.", undefined],
     ]);
-    expect(texts[1]).not.toHaveProperty("phase");
+    expect(texts.find((event) => event.text === "No label.")).not.toHaveProperty("phase");
   });
 
   it("maps rollout-style message and function call items", () => {

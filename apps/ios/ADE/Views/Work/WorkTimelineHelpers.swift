@@ -2574,8 +2574,15 @@ private func workTurnFoldProseStaysVisible(_ message: WorkChatMessage) -> Bool {
     || text.range(of: workTurnFoldProseImagePattern, options: .regularExpression) != nil {
     return true
   }
-  if message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
+  let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if phase == "commentary" {
     return false
+  }
+  // A partial answer is content the terminal answer does not repeat, so it is
+  // never narration to fold away — no matter how short it is (desktop
+  // `proseStaysVisible`). The length bar governs providers that label nothing.
+  if phase == "partial_answer" {
+    return true
   }
   // UTF-16 code units, matching desktop `String.length`.
   return text.utf16.count >= workTurnFoldSubstantiveProseMinChars

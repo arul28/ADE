@@ -3420,6 +3420,13 @@ const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
   "launchHeadless",
   "startLaunch",
   "launchCli",
+  // The Codex goal RPCs record whether a person or the harness mutated the
+  // goal, and `ade chat goal` reaches the same method the chat's goal controls
+  // use. Without the actor an agent's call would be indistinguishable from the
+  // user's and would claim their authorization.
+  "setCodexGoal",
+  "setCodexGoalStatus",
+  "clearCodexGoal",
 ]);
 
 /**

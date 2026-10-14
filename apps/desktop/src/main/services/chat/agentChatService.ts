@@ -152,6 +152,7 @@ import {
   type CodexCompactionFailReason,
   codexServerSupportsBackgroundTerminals,
   codexServerSupportsDeferGoalContinuation,
+  codexServerSupportsGoalMutationOrigin,
   codexServerSupportsMemoryRpc,
   codexServerSupportsPaginatedHistory,
   codexServerSupportsThreadQueue,
@@ -2547,9 +2548,10 @@ type CodexRuntime = {
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   /**
-   * Codex `phase` ("commentary" | "final_answer") per `agentMessage` item,
-   * learned from `item/started` (or `item/completed`) and stamped onto that
-   * item's streamed `text` deltas. Cleared at every turn boundary.
+   * Codex `phase` ("commentary" | "partial_answer" | "final_answer") per
+   * `agentMessage` item, learned from `item/started` (or `item/completed`) and
+   * stamped onto that item's streamed `text` deltas. Cleared at every turn
+   * boundary.
    */
   agentMessagePhaseByItemId: Map<string, AgentChatTextPhase>;
   recentNotificationKeys: Set<string>;
@@ -5968,10 +5970,59 @@ function normalizeAdeCodexGoal(goal: CodexThreadGoal | null): CodexThreadGoal | 
   };
 }
 
-function codexGoalSetParams(params: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Who mutated a Codex goal. Codex 0.162 records this and reads a missing
+ * provenance as "no user authorization", so every ADE goal mutation has to
+ * state it.
+ *
+ * `"user"` means a person acted: the composer's `/goal` command, the goal
+ * controls in the chat, and the goal RPCs when the runtime stamped no actor
+ * (the runtime stamps one only for an agent's or the CTO's call, so `ade chat
+ * goal` run by an agent is not the user — see {@link codexGoalOrigin}).
+ * Everything ADE does on its own — seeding a goal into a fresh thread, clearing
+ * a token budget the user never set, tidying up around a fork or handoff — is
+ * `"automatic"`, which is also what an unclassified path falls back to:
+ * claiming the user authorized something they did not is worse than claiming
+ * nothing.
+ */
+type CodexGoalMutationOrigin = "user" | "automatic";
+
+/** `origin` on the goal RPCs. Omitted entirely on servers that predate it. */
+function codexGoalOriginParams(
+  origin: CodexGoalMutationOrigin,
+  serverVersion: CodexServerVersion | null,
+): { origin?: CodexGoalMutationOrigin } {
+  return codexServerSupportsGoalMutationOrigin(serverVersion) ? { origin } : {};
+}
+
+function codexGoalSetParams(
+  params: Record<string, unknown>,
+  origin: CodexGoalMutationOrigin,
+  serverVersion: CodexServerVersion | null,
+): Record<string, unknown> {
   return {
     ...params,
     tokenBudget: null,
+    ...codexGoalOriginParams(origin, serverVersion),
+  };
+}
+
+/**
+ * `thread/goal/clear`, which takes the same provenance as `set`.
+ *
+ * The id is typed loosely on purpose: the composer's `/goal clear` sends the
+ * session's current thread id, which callers have always passed through as-is
+ * rather than inventing an empty string, and a missing one is the server's to
+ * reject. Behaviour here is unchanged from the inline params this replaced.
+ */
+function codexGoalClearParams(
+  threadId: string | undefined,
+  origin: CodexGoalMutationOrigin,
+  serverVersion: CodexServerVersion | null,
+): Record<string, unknown> {
+  return {
+    threadId,
+    ...codexGoalOriginParams(origin, serverVersion),
   };
 }
 
@@ -23611,9 +23662,11 @@ export function createAgentChatService(args: {
     if (retryAfter > Date.now()) return;
 
     const nextStatus = goal.status === "budget_limited" ? "active" : goal.status;
+    // ADE drops the budget on its own; the user never asked for the limit it
+    // is removing, so this is not their authorization.
     const params = codexGoalSetParams({
       threadId,
-    });
+    }, "automatic", runtime.serverVersion);
     if (goal.objective) params.objective = goal.objective;
     if (nextStatus === "active" || nextStatus === "paused" || nextStatus === "blocked" || nextStatus === "complete") {
       params.status = nextStatus;
@@ -23984,11 +24037,14 @@ export function createAgentChatService(args: {
       return;
     }
     try {
+      // The objective came from the user, but ADE is the one re-seeding it into
+      // a fresh thread, at a moment the user did not ask for anything. "automatic"
+      // is also what this sent before the field existed, so it cannot regress.
       const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId,
         objective: normalizedObjective,
         status: "active",
-      }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      }, "automatic", runtime.serverVersion), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
       const goal = normalizeCodexGoalPayload(response)
         ?? {
           objective: normalizedObjective,
@@ -25722,13 +25778,17 @@ export function createAgentChatService(args: {
       const sanitizedFallback = normalizeAdeCodexGoal(fallback);
       return setCodexGoalAndMaybeEmitUpdate(managed, runtime, sanitizedFallback, updateKind);
     };
+    // Every caller below is the user's own `/goal` command, or the card ADE
+    // shows to confirm replacing or clearing a goal, so these carry their
+    // authorization. ADE's own goal bookkeeping goes through the call sites
+    // that pass "automatic".
     const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
       const normalizedObjective = validateCodexGoalObjectiveText(objective);
       const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
         objective: normalizedObjective,
         status: "active",
-      }), "Goal update failed");
+      }, "user", runtime.serverVersion), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, {
         objective: normalizedObjective,
@@ -25741,16 +25801,18 @@ export function createAgentChatService(args: {
       const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
         status,
-      }), "Goal update failed");
+      }, "user", runtime.serverVersion), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, previous
         ? { ...previous, status, tokenBudget: null }
         : { status, tokenBudget: null }, "status");
     };
     const clearCodexGoal = async (): Promise<boolean> => {
-      const response = await requestCodexGoalControl("thread/goal/clear", {
-        threadId: managed.session.threadId,
-      }, "Goal update failed");
+      const response = await requestCodexGoalControl("thread/goal/clear", codexGoalClearParams(
+        managed.session.threadId,
+        "user",
+        runtime.serverVersion,
+      ), "Goal update failed");
       if (!response) return false;
       clearKnownCodexGoal(managed, runtime);
       return true;
@@ -45368,9 +45430,12 @@ export function createAgentChatService(args: {
       }
       const runtime = await ensureCodexSessionRuntime(managed);
       try {
-        await runtime.request("thread/goal/clear", {
-          threadId: sourceThreadId,
-        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+        // Tidying the source thread before a fork is ADE's own housekeeping.
+        await runtime.request("thread/goal/clear", codexGoalClearParams(
+          sourceThreadId,
+          "automatic",
+          runtime.serverVersion,
+        ), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
       } catch (error) {
         logger.warn("agent_chat.codex_goal_clear_before_fork_failed", {
           sessionId: managed.session.id,
@@ -45596,9 +45661,11 @@ export function createAgentChatService(args: {
       try {
         const runtime = await ensureCodexSessionRuntime(createdManaged);
         const threadId = await ensureCodexControlThread(createdManaged, runtime, "handoff goal cleanup");
-        await runtime.request("thread/goal/clear", {
+        await runtime.request("thread/goal/clear", codexGoalClearParams(
           threadId,
-        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+          "automatic",
+          runtime.serverVersion,
+        ), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
         clearKnownCodexGoal(createdManaged, runtime);
         persistChatState(createdManaged);
       } catch (error) {
@@ -66571,18 +66638,25 @@ export function createAgentChatService(args: {
     return goal;
   };
 
-  const setCodexGoal = async ({
-    sessionId,
-    objective,
-  }: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
-    const normalizedObjective = validateCodexGoalObjectiveText(objective);
-    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+  /**
+   * `runtimeActor` is stamped by the runtime on an agent's or the CTO's call
+   * and never by a renderer (`registerIpc` drops a renderer's copy), so an
+   * absent actor means a person. That distinction is exactly what the goal
+   * RPCs' `origin` records, and `ade chat goal` — an agent command — lands on
+   * the same method as the chat's goal controls.
+   */
+  const codexGoalOrigin = (args: { runtimeActor?: AgentChatRuntimeActor }): CodexGoalMutationOrigin =>
+    args.runtimeActor ? "automatic" : "user";
+
+  const setCodexGoal = async (args: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
+    const normalizedObjective = validateCodexGoalObjectiveText(args.objective);
+    const { managed, runtime } = await ensureCodexGoalRuntime(args.sessionId);
     const threadId = await ensureCodexGoalThread(managed, runtime);
     const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
       threadId,
       objective: normalizedObjective,
       status: "active",
-    }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    }, codexGoalOrigin(args), runtime.serverVersion), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
     const goal = applyCodexGoalRpcResponse(managed, runtime, response, {
       objective: normalizedObjective,
       status: "active",
@@ -66592,10 +66666,8 @@ export function createAgentChatService(args: {
     return goal;
   };
 
-  const setCodexGoalStatus = async ({
-    sessionId,
-    status,
-  }: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
+  const setCodexGoalStatus = async (args: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
+    const { sessionId, status } = args;
     if (status !== "active" && status !== "paused" && status !== "blocked" && status !== "complete") {
       throw new Error("Goal status must be active, paused, blocked, or complete.");
     }
@@ -66608,7 +66680,7 @@ export function createAgentChatService(args: {
     const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
       threadId,
       status,
-    }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    }, codexGoalOrigin(args), runtime.serverVersion), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
     const goal = applyCodexGoalRpcResponse(managed, runtime, response, previous
       ? { ...previous, status, tokenBudget: null }
       : { status, tokenBudget: null }, "status");
@@ -66616,13 +66688,15 @@ export function createAgentChatService(args: {
     return goal;
   };
 
-  const clearCodexGoal = async ({
-    sessionId,
-  }: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
-    const { managed, runtime } = await ensureCodexGoalRuntime(sessionId);
+  const clearCodexGoal = async (args: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
+    const { managed, runtime } = await ensureCodexGoalRuntime(args.sessionId);
     if (resolveExistingCodexControlThreadId(managed)) {
       const threadId = await ensureCodexGoalThread(managed, runtime);
-      await runtime.request("thread/goal/clear", { threadId }, {
+      await runtime.request("thread/goal/clear", codexGoalClearParams(
+        threadId,
+        codexGoalOrigin(args),
+        runtime.serverVersion,
+      ), {
         timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
       });
     }

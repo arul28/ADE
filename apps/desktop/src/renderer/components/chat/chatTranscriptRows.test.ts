@@ -5120,6 +5120,41 @@ describe("turn fold (desktop adapter)", () => {
       expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
         .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
     });
+
+    it("keeps a partial answer apart from the narration it shares a message id with", () => {
+      // Codex reuses one message id across consecutive assistant text until a
+      // tool call flushes it, and 0.162 labels a finished-but-not-terminal
+      // answer `partial_answer`. Merging the two would leave the partial answer
+      // wearing the narration's label, which the turn fold then hides.
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "text", text: "The first result is ready. ", turnId: "t1", messageId: "msg-1", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the rest. ", turnId: "t1", messageId: "msg-1", phase: "commentary" }),
+        ev({ type: "text", text: "Both results are in.", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+      ]);
+      expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
+        .toEqual([
+          ["The first result is ready. ", "partial_answer"],
+          ["Checking the rest. ", "commentary"],
+          ["Both results are in.", "final_answer"],
+        ]);
+    });
+
+    it("keeps a partial answer out of the fold at turn end", () => {
+      // The sequence codex 0.162 actually emits (its own
+      // `scenarios_partial_answers` suite): a partial answer, then narration,
+      // then the terminal answer, which restates only its own part. The user
+      // asked for both results, so folding the first one away loses content.
+      const { display } = fold([
+        ev({ type: "user_message", text: "Give me both results.", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "The first result is ready.", turnId: "t1", messageId: "m", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the remaining result.", turnId: "t1", messageId: "m", phase: "commentary" }),
+        ev({ type: "text", text: "The second result is ready.", turnId: "t1", messageId: "m", phase: "final_answer" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ]);
+      const shown = display.flatMap((row) => row.event.type === "text" ? [(row.event as { text: string }).text] : []);
+      expect(shown).toEqual(["The first result is ready.", "The second result is ready."]);
+    });
   });
 });
 
