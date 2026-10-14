@@ -187,7 +187,6 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
-import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -16789,32 +16788,6 @@ export function AgentChatPane({
       <div {...{ [CHAT_COMPOSER_JUMP_SLOT_ATTR]: "" }} className="flex shrink-0 pb-1.5 empty:hidden" />
     </div>
   );
-  /**
-   * The turn's time-lapse of the lane's macOS screen, when there was one.
-   *
-   * Rendered in the notice overlay rather than inline in the transcript because
-   * it is context about the turn that just ended, not a message in it — and it
-   * renders null (and subscribes to nothing that can produce one) for every
-   * chat whose lane never used the desktop.
-   */
-  const macDesktopTimeLapseCard = laneId ? (
-    <ChatMacDesktopTimeLapseCard
-      laneId={laneId}
-      sessionId={composerSessionId}
-      runtimePin={renderedChatRuntimePin}
-      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
-    />
-  ) : null;
-  const composerNoticeOverlay = macDesktopTimeLapseCard ? (
-    <ChatComposerOverlayClear
-      basePx={8}
-      data-testid="chat-composer-notice-overlay"
-      className="pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-1.5 px-3"
-    >
-      {macDesktopTimeLapseCard}
-    </ChatComposerOverlayClear>
-  ) : null;
-
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
   // subagentEventsForDisplay useMemo are computed earlier (with the subagent state
   // cluster) so the hook is never called after the `if (!laneId) return` guard.
@@ -17431,7 +17404,6 @@ export function AgentChatPane({
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
-                    {!appPanelOpen ? composerNoticeOverlay : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-fg/[0.06]">
                         {authStickyBar}

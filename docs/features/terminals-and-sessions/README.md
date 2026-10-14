@@ -981,6 +981,14 @@ Renderer surfaces:
   the user opens it. A show answers `shown` only when the surface is mounted,
   its pane has real width, and the window is visible. The same hook decides
   whether an agent's automatic request may raise the floating Apple player.
+  Whether the pane is open is the person's own preference, so a show for a
+  screen, app or device tool activates it in an already-open pane and floats the
+  player instead of opening a closed one (`useWorkSidebarTool.showTool`), and
+  the ack names the surface that really appeared (`WorkToolShowAck.shownAs`).
+  The browser, a lane-less chat and a request naming another lane are the
+  exceptions: none of them has a player to float that surface, so their ask
+  opens the pane. So does an ask whose float declines (a lane with no device to
+  float), which would otherwise be a `held` that never lands.
   See [chat › Agents open panes](../chat/README.md#agents-open-panes-ade-ui-show).
 - `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`,
   `LaneAppleDeviceMarker.tsx` — the small Apple mark beside a lane name in the

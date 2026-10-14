@@ -87,12 +87,28 @@ export type WorkToolShowAck = {
    * replayed later.
    */
   opened?: boolean;
+  /**
+   * With `shown`: the surface that is actually on screen, when it is not the
+   * one the request named.
+   *
+   * A screen or app show whose tools pane the person has CLOSED is answered by
+   * the lane's floating player instead (see `useWorkShowRequests`), and
+   * "Showing the Mac Desktop in the tools pane" would then name a container the
+   * agent can check and find empty. Null and absent both mean the requested
+   * surface itself, which is every other case.
+   */
+  shownAs?: WorkToolShowSurface | null;
 };
 
 export type WorkToolShowStatus = WorkToolShowAckStatus | "no_desktop";
 
 export type WorkToolShowResult = {
   status: WorkToolShowStatus;
+  /**
+   * The surface that is actually on screen: the request's own, unless a desktop
+   * answered with `shownAs` because it floated a different one. `message` is
+   * written from this, so what the agent reads is what it can find.
+   */
   surface: WorkToolShowSurface;
   chatSessionId: string;
   requestId: string;

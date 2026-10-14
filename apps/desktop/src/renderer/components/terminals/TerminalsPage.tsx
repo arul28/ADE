@@ -1206,6 +1206,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     tool: workSidebarTool,
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
+    showTool: showWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
@@ -1233,6 +1234,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     workSidebarVisible,
     workSidebarTool,
     setWorkSidebarTool,
+    showWorkSidebarTool,
   });
 
   useEffect(() => {

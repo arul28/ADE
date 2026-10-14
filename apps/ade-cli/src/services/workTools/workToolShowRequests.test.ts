@@ -42,6 +42,37 @@ describe("workToolShowRequests", () => {
     });
   });
 
+  it("names the surface a desktop really showed, not the one that was asked for", async () => {
+    // A Mac Desktop show with the person's tools pane closed is answered by the
+    // lane's floating card. The agent is told what is on screen, not the pane
+    // it asked for and can check.
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "mac-desktop", chatSessionId: "chat-1", laneId: "lane-1" });
+    service.acknowledgeShow({
+      requestId: emitted[0]!.requestId,
+      status: "shown",
+      desktopLabel: "Studio",
+      shownAs: "floating-mac-desktop",
+    });
+    await expect(pending).resolves.toMatchObject({
+      status: "shown",
+      surface: "floating-mac-desktop",
+      message: "Showing the floating Mac Desktop on Studio.",
+    });
+  });
+
+  it("ignores a shownAs that names no surface", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "mac-desktop", chatSessionId: "chat-1", laneId: "lane-1" });
+    service.acknowledgeShow({
+      requestId: emitted[0]!.requestId,
+      status: "shown",
+      shownAs: "not-a-surface",
+    });
+    await expect(pending).resolves.toMatchObject({ surface: "mac-desktop" });
+    await expect(pending).resolves.toMatchObject({ message: "Showing the Mac Desktop in the tools pane." });
+  });
+
   it("answers no_desktop when nobody takes it, never shown", async () => {
     const { service } = setup();
     const pending = service.show({ surface: "proof", chatSessionId: "chat-1" });
