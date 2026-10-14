@@ -423,8 +423,13 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // A record the user dismissed is kept in state only for the continue rows it
+  // still owes; it must not bring the notice back on the next launch.
+  const noticeableInstall = nextState.recentlyInstalledUpdate?.noticeDismissedAt
+    ? null
+    : nextState.recentlyInstalledUpdate ?? null;
   const recentlyInstalled = withGithubReleaseUrl(
-    cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    cloneRecentlyInstalledUpdate(noticeableInstall),
     args.releaseRepository,
   );
   if (
@@ -1910,9 +1915,18 @@ export function createAutoUpdateService({
   function dismissInstalledNotice(): void {
     if (!snapshot.recentlyInstalled) return;
     const currentState = readGlobalState(globalStatePath);
+    const installed = currentState.recentlyInstalledUpdate;
+    // The notice and the resume are two promises. Dismissing the notice is not
+    // a refusal to resume, so a continue row this install still owes a chat
+    // — the launch that lands it may not have managed to arm one — outlives
+    // the notice instead of being deleted with it. The record goes entirely
+    // once there is nothing left to arm for.
+    const unarmed = installed?.resumedChats ?? [];
     writeGlobalState(globalStatePath, {
       ...currentState,
-      recentlyInstalledUpdate: undefined,
+      recentlyInstalledUpdate: installed && unarmed.length > 0
+        ? { ...installed, noticeDismissedAt: now() }
+        : undefined,
     });
     patchSnapshot({
       recentlyInstalled: null,
