@@ -278,10 +278,7 @@ function MusicPageContent() {
                 title: lastError ?? friendlyMusicError(message) ?? message ?? "",
                 actions: [{
                   label: "Try again",
-                  onClick: () => {
-                    musicActions.clearError();
-                    void musicActions.refresh();
-                  },
+                  onClick: musicActions.retry,
                 }],
                 dismiss: lastError ? { onDismiss: musicActions.clearError } : false,
               }}

@@ -31,11 +31,13 @@ import { isWebClientMode } from "../../lib/webClientMode";
 type Store = {
   state: MusicState | null;
   lastError: string | null;
+  /** `lastError` is a failed Connect, so "Try again" connects again instead of re-reading state. */
+  lastErrorFromConnect: boolean;
   /** Love state per rating id, shared by every Love button. */
   likes: Record<string, boolean | null>;
 };
 
-const useMusicStore = create<Store>(() => ({ state: null, lastError: null, likes: {} }));
+const useMusicStore = create<Store>(() => ({ state: null, lastError: null, lastErrorFromConnect: false, likes: {} }));
 
 /** The last state the main process sent. `state` is this, unless a dev preview is on. */
 let realState: MusicState | null = null;
@@ -97,7 +99,7 @@ function ensureSubscription(): void {
       realState = state;
       publish();
     },
-    (error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)) }),
+    (error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false }),
   );
   if (import.meta.env.DEV) installDevPreview();
 }
@@ -217,7 +219,7 @@ async function run(command: MusicCommand): Promise<MusicCommandResult> {
     ok: false as const,
     error: error instanceof Error ? error.message : String(error),
   }));
-  useMusicStore.setState({ lastError: result.ok ? null : friendlyMusicError(result.error) });
+  useMusicStore.setState({ lastError: result.ok ? null : friendlyMusicError(result.error), lastErrorFromConnect: false });
   return result;
 }
 
@@ -231,11 +233,11 @@ async function updateMusic(action: () => Promise<unknown>, returnsState = false)
   try {
     const result = await action();
     realState = returnsState ? result as MusicState : await musicBridge()!.getState();
-    useMusicStore.setState({ likes: {}, lastError: null });
+    useMusicStore.setState({ likes: {}, lastError: null, lastErrorFromConnect: false });
     likeReads.clear();
     publish();
   } catch (error) {
-    useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)) });
+    useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false });
   }
 }
 
@@ -271,7 +273,8 @@ export const musicActions = {
       error: error instanceof Error ? error.message : String(error),
       cancelled: false,
     }));
-    useMusicStore.setState({ lastError: result.ok || result.cancelled ? null : friendlyMusicError(result.error) });
+    const failed = !result.ok && !result.cancelled;
+    useMusicStore.setState({ lastError: failed ? friendlyMusicError(result.error) : null, lastErrorFromConnect: failed });
     return result;
   },
   /** Bring Apple's sign-in window to the front (it can open behind ADE). */
@@ -291,13 +294,19 @@ export const musicActions = {
   },
   /** Start the player ahead of a play. Cheap when it is already running. */
   warm: () => {
-    void musicBridge()?.warm().catch((error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)) }));
+    void musicBridge()?.warm().catch((error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false }));
   },
   /** Show the Music tab. */
   open: () => {
     openMusicTab?.();
   },
-  clearError: () => useMusicStore.setState({ lastError: null }),
+  clearError: () => useMusicStore.setState({ lastError: null, lastErrorFromConnect: false }),
+  /** "Try again" on the error banner: Connect again after a failed Connect, otherwise re-read the state. */
+  retry: () => {
+    const fromConnect = useMusicStore.getState().lastErrorFromConnect;
+    useMusicStore.setState({ lastError: null, lastErrorFromConnect: false });
+    void (fromConnect ? musicActions.connect() : musicActions.refresh());
+  },
   /** Re-read the state (re-checks availability after a sign-in or a fixed connection). */
   refresh: async () => {
     const bridge = musicBridge();
