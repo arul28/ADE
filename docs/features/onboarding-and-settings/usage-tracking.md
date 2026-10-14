@@ -54,9 +54,10 @@ weekly window resets soonest is the default choice: it is spent first, and
 accounts that reset later keep their room for after it. Claude adds a limited
 five-hour reserve rotation when another usable account has at least 30
 percentage points more five-hour headroom than that weekly-first choice: two
-new chats follow weekly order, then one goes to the account with the most
-five-hour room. The rotation stays active while the gap is above 15 points and
-ends at or below 15; after it ends, that pair must reach 30 points again to
+consecutive new chats go to the weekly-first account, then the third goes to
+the account with the most five-hour room. The rotation stays active while the
+gap is above 15 points and ends at or below 15; after it ends, that pair must
+reach 30 points again to
 restart. A changed pair starts fresh at the 30-point threshold. The slot count
 resets to the weekly-first account when ADE's usage service restarts. The
 Settings **Next chat** mark previews the next slot without consuming it. Codex

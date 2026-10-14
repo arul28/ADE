@@ -2312,10 +2312,11 @@ not carry the install command.
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
   and one line saying where new chats go. Smart balance normally sends new
   chats to the account whose weekly room resets soonest, so room is used before
-  it resets. Claude sends two new chats in weekly order, then one to the eligible
-  account with the most five-hour room when that account has at least 30
-  percentage points more headroom; this rotation ends when the gap reaches 15
-  points. **Next chat** previews the next slot. Codex remains weekly-first. A
+  it resets. When another usable account has at least 30 percentage points
+  more five-hour headroom, Claude routes two consecutive new chats to the
+  weekly-first account, then one to the account with the most five-hour room.
+  This rotation ends when the gap reaches 15 points. **Next chat** previews
+  the next slot. Codex remains weekly-first. A
   running chat stays on its account; one that hits a usage limit moves to
   another account with room (with the switch off, the limit offers that move
   instead). Auto-start sends one tiny request on the cheapest model when a

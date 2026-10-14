@@ -4881,8 +4881,12 @@ export function createUsageTrackingService({
         ) {
           balanceRotationStates.delete(provider);
         }
-      } catch {
+      } catch (error) {
         // A transient preview failure must not disturb the next real selection.
+        logger.warn("usage.account_balance_rotation_reconcile_failed", {
+          provider,
+          error: getErrorMessage(error),
+        });
       }
     }
   }
@@ -4917,6 +4921,12 @@ export function createUsageTrackingService({
       ...(balanceNext.length > 0 ? { balanceNext } : {}),
     };
   }
+
+  // Cached `balanceNext` may contain a Claude rotation slot from the previous
+  // process. Rotation state is intentionally in-memory and restarts at the
+  // weekly-first account, so refresh the cached marker before this service can
+  // return its initial snapshot.
+  lastSnapshot = withBalanceIssues(lastSnapshot);
 
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
     reconcileBalanceRotationStates(snapshot);

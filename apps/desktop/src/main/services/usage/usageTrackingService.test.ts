@@ -7755,7 +7755,7 @@ describe("per-account quota attribution", () => {
           errors: [] as never[],
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
+        listProviderInstances: (provider: string) => (provider === "claude"
           ? [defaultInstance(), workInstance()]
           : []),
         ...scannerStubs(),
@@ -7818,7 +7818,7 @@ describe("per-account quota attribution", () => {
           errors: [] as never[],
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
+        listProviderInstances: (provider: string) => (provider === "claude"
           ? [
             { ...defaultInstance(), isDefault: defaultId === "claude" },
             { ...workInstance(), isDefault: defaultId === "work" },
@@ -7847,56 +7847,56 @@ describe("per-account quota attribution", () => {
       { ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
       { ...workInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
     ];
-    const service = createUsageTrackingService({
-      logger,
-      dependencies: {
-        pollClaudeUsage: vi.fn(async () => ({
-          windows: [
-            {
-              provider: "claude" as const,
-              windowType: "five_hour" as const,
-              accountId: "claude:claude",
-              percentUsed: 44,
-              resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
-              resetsInMs: 47 * 60_000,
-            },
-            {
-              provider: "claude" as const,
-              windowType: "weekly" as const,
-              accountId: "claude:claude",
-              percentUsed: 76,
-              resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
-              resetsInMs: (2 * 24 + 13) * 60 * 60_000,
-              windowDurationMs: 7 * 24 * 60 * 60_000,
-            },
-            {
-              provider: "claude" as const,
-              windowType: "five_hour" as const,
-              accountId: "claude:work",
-              percentUsed: 0,
-              resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
-              resetsInMs: (2 * 60 + 7) * 60_000,
-            },
-          ],
-          errors: [] as never[],
-        })),
-        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-        listProviderInstances: (provider) => (provider === "claude"
-          ? [defaultInstance(), workInstance()]
-          : []),
-        providerInstanceStore: {
-          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
-          list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
-        },
-        ...scannerStubs(),
+    const dependencies = {
+      pollClaudeUsage: vi.fn(async () => ({
+        windows: [
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:claude",
+            percentUsed: 44,
+            resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
+            resetsInMs: 47 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "weekly" as const,
+            accountId: "claude:claude",
+            percentUsed: 76,
+            resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
+            resetsInMs: (2 * 24 + 13) * 60 * 60_000,
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "five_hour" as const,
+            accountId: "claude:work",
+            percentUsed: 0,
+            resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
+            resetsInMs: (2 * 60 + 7) * 60_000,
+          },
+        ],
+        errors: [] as never[],
+      })),
+      pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+      listProviderInstances: (provider: string) => (provider === "claude"
+        ? [defaultInstance(), workInstance()]
+        : []),
+      providerInstanceStore: {
+        getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+        list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
       },
-    });
+      ...scannerStubs(),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
 
     const initial = await service.poll({ reason: "user" });
 
     // The default has the sooner weekly reset; work has a fresh 100% five-hour
     // window and no weekly reading, so it receives the third capacity slot.
     expect(initial.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
     expect(service.resolveBalancedInstance("claude")).toMatchObject({
       instanceId: "claude",
       reason: "soonest weekly reset",
@@ -7906,15 +7906,51 @@ describe("per-account quota attribution", () => {
     // A quota poll recomputes the preview without consuming another slot.
     const afterPoll = await service.poll({ reason: "user" });
     expect(afterPoll.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
     expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
     expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
 
+    const staleCachedSnapshot = service.getUsageSnapshot();
+    expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
     expect(service.resolveBalancedInstance("claude")).toMatchObject({
       instanceId: "work",
       reason: "higher five-hour headroom",
     });
     expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
     service.dispose();
+
+    const originalVitest = process.env.VITEST;
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalReadFileSync = fs.readFileSync.bind(fs);
+    process.env.NODE_ENV = "production";
+    delete process.env.VITEST;
+    const cacheRead = vi.spyOn(fs, "readFileSync");
+    cacheRead.mockImplementation(((filePath: unknown, ...args: unknown[]) => {
+      if (String(filePath).endsWith("usage-snapshot.json")) {
+        return JSON.stringify({
+          version: _testing.USAGE_SNAPSHOT_CACHE_VERSION,
+          snapshot: staleCachedSnapshot,
+        }) as never;
+      }
+      return Reflect.apply(originalReadFileSync, fs, [filePath, ...args]) as never;
+    }) as typeof fs.readFileSync);
+    let restartedService: ReturnType<typeof createUsageTrackingService> | undefined;
+    try {
+      restartedService = createUsageTrackingService({ logger, dependencies });
+      const reloaded = restartedService.getUsageSnapshot();
+
+      expect(reloaded.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+      expect(reloaded.revision).toMatchObject({ producerId: restartedService.producerId, seq: 1 });
+      expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    } finally {
+      restartedService?.dispose();
+      cacheRead.mockRestore();
+      if (originalVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = originalVitest;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
   });
 
   it("leaves a skipped balance pick off the snapshot's next-account mark", async () => {

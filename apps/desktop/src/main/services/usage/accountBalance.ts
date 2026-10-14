@@ -180,7 +180,7 @@ function compareReserveRoom(a: RankedInstance, b: RankedInstance, defaultId: str
   if (weeklyOrder !== 0) return weeklyOrder;
   if (a.instance.id === defaultId) return -1;
   if (b.instance.id === defaultId) return 1;
-  return a.instance.id.localeCompare(b.instance.id);
+  return a.instance.id < b.instance.id ? -1 : a.instance.id > b.instance.id ? 1 : 0;
 }
 
 function nextRotationState(

@@ -10313,8 +10313,8 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 export type ChatAccountUsage = {
   getUsageSnapshot: () => Pick<UsageSnapshot, "windows" | "accounts">;
   resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
-  /** Optional for older service adapters; production previews do not consume a rotation slot. */
-  peekBalancedInstance?: (provider: "claude" | "codex") => AccountBalanceResult | null;
+  /** Preview the upcoming account without consuming a Claude rotation slot. */
+  peekBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
 };
 
 /** Claude could not resume the thread id it was given. */
@@ -11128,9 +11128,7 @@ export function createAgentChatService(args: {
     if (provider !== "claude" && provider !== "codex") return undefined;
     try {
       const accountUsage = getAccountUsage();
-      const pick = accountUsage?.peekBalancedInstance
-        ? accountUsage.peekBalancedInstance(provider)
-        : accountUsage?.resolveBalancedInstance(provider);
+      const pick = accountUsage?.peekBalancedInstance(provider);
       // As in chat creation, a pick that no longer names an account falls back
       // to the default.
       const instance = pick?.instanceId ? resolveProviderInstanceForLaunch(provider, pick.instanceId) : null;

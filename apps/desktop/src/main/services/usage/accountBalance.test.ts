@@ -139,8 +139,8 @@ describe("pickInstanceForNewChat", () => {
   it("sends every third Claude chat to the account with more five-hour room", () => {
     const args = {
       provider: "claude" as const,
-      instances: [instance("claude"), instance("work")],
-      accounts: accounts("claude", "work"),
+      instances: [instance("claude"), instance("work"), instance("other")],
+      accounts: accounts("claude", "work", "other"),
       windowsByAccountId: windows(
         windowSet("claude", { fiveHour: 44, weekly: 76 }, {
           fiveHour: WEEK_START + 47 * 60_000,
@@ -149,6 +149,10 @@ describe("pickInstanceForNewChat", () => {
         // No weekly reading is treated as a later reset, but the fresh 100%
         // five-hour reading can still provide the limited capacity slot.
         windowSet("work", { fiveHour: 0 }, { fiveHour: WEEK_START + (2 * 60 + 7) * 60_000 }),
+        // A third account is eligible but has less five-hour room than work.
+        windowSet("other", { fiveHour: 35, weekly: 20 }, {
+          weekly: WEEK_START + 4 * 24 * 60 * 60_000,
+        }),
       ),
       nowMs: WEEK_START,
     };
@@ -171,18 +175,56 @@ describe("pickInstanceForNewChat", () => {
     });
   });
 
+  it("uses a locale-independent id order when reserve accounts tie", () => {
+    const args = {
+      provider: "claude" as const,
+      instances: [instance("claude"), instance("ä"), instance("z")],
+      accounts: accounts("claude", "ä", "z"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 50, weekly: 20 }, {
+          weekly: WEEK_START + 24 * 60 * 60_000,
+        }),
+        windowSet("ä", { fiveHour: 20, weekly: 40 }, {
+          weekly: WEEK_START + 6 * 24 * 60 * 60_000,
+        }),
+        windowSet("z", { fiveHour: 20, weekly: 40 }, {
+          weekly: WEEK_START + 6 * 24 * 60 * 60_000,
+        }),
+      ),
+      nowMs: WEEK_START,
+    };
+
+    const first = pickInstanceForNewChat(args);
+    const second = pickInstanceForNewChat({ ...args, rotationState: first.rotationState });
+    const third = pickInstanceForNewChat({ ...args, rotationState: second.rotationState });
+
+    expect(first.instanceId).toBe("claude");
+    expect(second.instanceId).toBe("claude");
+    expect(third).toMatchObject({
+      instanceId: "z",
+      reason: "higher five-hour headroom",
+      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "z", nextSlot: 0 },
+    });
+  });
+
   it("starts at a 30-point gap, keeps the rotation through 15 points, and stops at the floor", () => {
-    const pick = (primaryFiveHour: number, reserveFiveHour: number, rotationState?: AccountBalanceRotationState) => (
+    const pick = (
+      primaryFiveHour: number,
+      reserveFiveHour: number,
+      rotationState?: AccountBalanceRotationState,
+      primaryId = "claude",
+      reserveId = "work",
+    ) => (
       pickInstanceForNewChat({
         provider: "claude",
-        instances: [instance("claude"), instance("work")],
-        accounts: accounts("claude", "work"),
+        instances: [instance(primaryId), instance(reserveId)],
+        accounts: accounts(primaryId, reserveId),
         windowsByAccountId: windows(
-          windowSet("claude", { fiveHour: primaryFiveHour, weekly: 20 }, {
+          windowSet(primaryId, { fiveHour: primaryFiveHour, weekly: 20 }, {
             fiveHour: WEEK_START + 2 * 60 * 60_000,
             weekly: WEEK_START + 24 * 60 * 60_000,
           }),
-          windowSet("work", { fiveHour: reserveFiveHour, weekly: 20 }, {
+          windowSet(reserveId, { fiveHour: reserveFiveHour, weekly: 20 }, {
             weekly: WEEK_START + 6 * 24 * 60 * 60_000,
           }),
         ),
@@ -193,10 +235,17 @@ describe("pickInstanceForNewChat", () => {
 
     const started = pick(50, 20);
     expect(started.rotationState).toEqual({ primaryInstanceId: "claude", reserveInstanceId: "work", nextSlot: 1 });
-    expect(pick(40, 20, started.rotationState).rotationState).toEqual({
+    const active = pick(40, 20, started.rotationState);
+    expect(active.rotationState).toEqual({
       primaryInstanceId: "claude",
       reserveInstanceId: "work",
       nextSlot: 2,
+    });
+
+    const changedPair = pick(50, 20, active.rotationState, "claude", "other");
+    expect(changedPair).toMatchObject({
+      instanceId: "claude",
+      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "other", nextSlot: 1 },
     });
 
     const stopped = pick(35, 20, started.rotationState);
