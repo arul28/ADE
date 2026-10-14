@@ -12,7 +12,8 @@
 import { ipcMain } from "electron";
 import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
 import { parseCodedErrorMessage } from "../../shared/codedError";
-import { isExpectedFailure } from "../../shared/sentry/expectedFailure";
+import { isExpectedFailure, isExpectedOutcome } from "../../shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../shared/sentry/logBridge";
 
 const SLOW_CALL_BREADCRUMB_MS = 250;
 
@@ -41,6 +42,14 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
+        if (isExpectedOutcome(error)) {
+          // An answer ("Lane not found", "Can't reach …"): a Sentry Log, not an issue.
+          forwardLogToSentry("warn", `ipc.expected.${label}`, {
+            message: error instanceof Error ? error.message : String(error),
+            durationMs,
+          });
+          throw error;
+        }
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
         if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";

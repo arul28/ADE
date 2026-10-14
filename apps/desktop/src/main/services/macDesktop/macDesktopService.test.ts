@@ -152,7 +152,6 @@ function makeService(options: {
   requestChatInput?: MacDesktopRequestChatInput;
   /** Replaces the fake demo engine; `[]` is a host with none. */
   demoEngines?: DemoEngine[];
-  isArtifactFileReferenced?: (filePath: string) => boolean;
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
@@ -178,7 +177,6 @@ function makeService(options: {
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
     ...(options.requestChatInput ? { requestChatInput: options.requestChatInput } : {}),
-    ...(options.isArtifactFileReferenced ? { isArtifactFileReferenced: options.isArtifactFileReferenced } : {}),
     demoEngines: { engines: () => options.demoEngines ?? [demoEngine] },
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
@@ -1520,103 +1518,6 @@ describe("macDesktopService wait and the gesture gate", () => {
 });
 
 describe("macDesktopService recordings", () => {
-  it("a user recording stops the turn clip first — one lane, one writer", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-
-    await service.startRecording({ laneId: "lane-1", caption: "the bug" });
-    const ops = driver.calls.map((call) => call.op);
-    const firstStop = ops.indexOf(MAC_DESKTOP_DRIVER_OPS.stopRecording);
-    const secondStart = ops.lastIndexOf(MAC_DESKTOP_DRIVER_OPS.startRecording);
-    expect(firstStop).toBeGreaterThanOrEqual(0);
-    expect(secondStart).toBeGreaterThan(firstStop);
-
-    // And the turn clip is gone, so the turn ending cannot stop the user's
-    // recording out from under them.
-    driver.calls.length = 0;
-    expect(await service.noteTurnEnded({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" }))
-      .toBeNull();
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(0);
-    service.dispose();
-  });
-
-  /*
-   * The lane's recorder is shared by every chat's clip and the user's
-   * recording. A start refused because someone else holds it must leave that
-   * recording alone; only a start the helper's watchdog answered for (which
-   * may still install its recording late) is followed by a stop.
-   */
-  it.each([
-    ["refused because another chat's clip holds the recorder", "internal_error: Lane lane-1 is already recording.", 0],
-    [
-      "answered for by the helper's watchdog",
-      "internal_error: record.start did not complete within 15s. The driver gave up waiting and answered on its behalf; the operation may still be running.",
-      1,
-    ],
-  ] as const)("a second chat's clip start %s stops the recorder only when the start was its own", async (_label, message, expectedStops) => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-
-    driver.overrides[MAC_DESKTOP_DRIVER_OPS.startRecording] = () => {
-      throw new Error(message);
-    };
-    driver.calls.length = 0;
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-2", turnId: "turn-2" });
-
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
-    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(expectedStops);
-    service.dispose();
-  });
-
-  it("ends a turn clip whose turn id no longer matches", async () => {
-    const driver = createFakeDriver({
-      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
-    });
-    const { service, events } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    // A turn that never emitted its own `done`: the next one closes the clip
-    // rather than leaving the helper's one recorder held forever.
-    const lapse = await service.noteTurnEnded({
-      laneId: "lane-1",
-      chatSessionId: "chat-1",
-      turnId: "turn-2",
-    });
-    expect(lapse).toMatchObject({ laneId: "lane-1", turnId: "turn-1", durationMs: 1_200 });
-    expect(lapse?.filePath).toMatch(/mac-desktop-turn-turn-1-[a-f0-9-]+\.mp4$/);
-    expect(events.some((event) => event.type === "time-lapse")).toBe(true);
-    service.dispose();
-  });
-
-  it("stops the turn clip when the lane's display is destroyed", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    driver.calls.length = 0;
-    await service.destroyForLane("lane-1");
-    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
-    service.dispose();
-  });
-
-  it("stops the turn clip when the chat that opened it ends", async () => {
-    const driver = createFakeDriver();
-    const { service } = makeService({ driver });
-    await service.start({ laneId: "lane-1" });
-    await service.takeControl({ laneId: "lane-1", controllerId: "chat-1" });
-    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
-    driver.calls.length = 0;
-    await service.releaseIfOwnedBy("chat-1");
-    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(true);
-    service.dispose();
-  });
-
   it("a stop that fails marks the recording failed instead of leaving it running", async () => {
     // The driver removed its recorder before it finalised, so a stop that
     // timed out left the local status on `running: true` with no file while
@@ -1680,67 +1581,6 @@ describe("macDesktopService recordings", () => {
     expect(unusable).toMatchObject({ running: false, filePath: null, proofArtifactId: null, durationMs: 0, wallDurationMs: 2_000 });
     expect(unusable.lastError).toMatch(/not filed/);
     expect(broker.requests).toHaveLength(1);
-    service.dispose();
-  });
-
-  it.each([
-    // The driver names the clip exactly as ADE did.
-    ["darwin", "as ADE spelled it", (filePath: string) => filePath],
-    // Both seats' file systems fold case, and Windows takes either separator:
-    // a clip the driver names another way is still the clip being published.
-    ["darwin", "in another case", (filePath: string) => filePath.toUpperCase()],
-    ["win32", "as ADE spelled it", (filePath: string) => filePath],
-    ["win32", "in another case and separator", (filePath: string) => filePath.toUpperCase().replace(/\//g, "\\")],
-  ] as const)("prunes a chat's superseded turn clip, but never one a proof points at or another chat's current one (%s, driver path %s)", async (platform, _spelling, driverSpelling) => {
-    const referenced = new Set<string>();
-    const isArtifactFileReferenced = (filePath: string) => referenced.has(path.resolve(filePath));
-    const driver = createFakeDriver(platform === "win32" ? {
-      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => ({ state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" }),
-    } : {});
-    // Only the newest clip is reported in the driver's own spelling: it is the
-    // one that must survive its own publication. (An older one is deleted by
-    // the name the driver gave, which a case-sensitive test host cannot do.)
-    let spellLikeDriver = false;
-    const answer = driver.request.bind(driver);
-    driver.request = async (op, payload, options) => {
-      const reply = await answer(op, payload, options);
-      if (!spellLikeDriver || op !== MAC_DESKTOP_DRIVER_OPS.stopRecording) return reply;
-      const values = reply as Record<string, unknown>;
-      return typeof values.filePath === "string" ? { ...values, filePath: driverSpelling(values.filePath) } : reply;
-    };
-    const { service } = platform === "win32"
-      ? makeService({
-        platform,
-        seat: { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null },
-        driver,
-        hostIsLocal: () => true,
-        isArtifactFileReferenced,
-      })
-      : makeService({ driver, isArtifactFileReferenced });
-    await service.start({ laneId: "lane-1" });
-    let turn = 0;
-    /** The clip's file as ADE asked the driver to write it. */
-    const clip = async (chatSessionId: string): Promise<string> => {
-      turn += 1;
-      await service.beginTurn({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
-      const lapse = await service.noteTurnEnded({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
-      expect(lapse?.filePath, "setup: the turn produced a clip").toBeTruthy();
-      const started = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording).at(-1);
-      return String(started!.payload.filePath);
-    };
-
-    const filedAsProof = await clip("chat-1");
-    referenced.add(path.resolve(filedAsProof));
-    const otherChats = await clip("chat-2");
-    const superseded = await clip("chat-1");
-    spellLikeDriver = true;
-    const current = await clip("chat-1");
-
-    expect(fs.existsSync(filedAsProof)).toBe(true);
-    expect(fs.existsSync(otherChats)).toBe(true);
-    expect(fs.existsSync(current)).toBe(true);
-    // Only the newest clip per chat is shown, so the one before it goes.
-    expect(fs.existsSync(superseded)).toBe(false);
     service.dispose();
   });
 

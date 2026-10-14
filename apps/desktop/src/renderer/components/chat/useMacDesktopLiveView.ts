@@ -55,6 +55,18 @@ export const RECOVER_DELAY_MS = 750;
  */
 export const RECOVER_MAX_TRIES = 3;
 /**
+ * How long a viewer that has spent its quick re-dials waits before asking once
+ * more.
+ *
+ * The small, slow budget above exists so a dead encoder is not hammered; it
+ * must not turn into a picture that can never come back on its own. A stream
+ * that drew nothing at 10:00 because the host's own capture was not delivering
+ * frames is fine at 10:01, and the person watching the pane should not have to
+ * press Reconnect to find out. This is a heartbeat, not a poll: it stops with
+ * the demand, which is the moment nobody is watching any more.
+ */
+export const RECOVER_SLOW_MS = 30_000;
+/**
  * Times in a row a viewer that gave up takes the picture back on its own when
  * the host announces one. Reset by a drawn frame or a person's Retry, so a host
  * that keeps announcing a capture this viewer cannot draw costs a bounded
@@ -216,6 +228,15 @@ export function useMacDesktopLiveView(args: {
    * again, not restarted.
    */
   const freshNextRef = useRef(false);
+
+  /**
+   * The restart in flight came from the slow heartbeat rather than from a
+   * person or the automatic re-dials, so it must not reset the give-up state:
+   * a surface that has said the picture is not coming through keeps saying it
+   * while the heartbeat asks again, instead of flicking back to "Connecting"
+   * every thirty seconds.
+   */
+  const slowRestartRef = useRef(false);
   const releaseWhenGivenUpRef = useRef(releaseWhenGivenUp);
   releaseWhenGivenUpRef.current = releaseWhenGivenUp;
   const scheduleRecover = useCallback((options?: { fresh?: boolean }) => {
@@ -304,6 +325,10 @@ export function useMacDesktopLiveView(args: {
 
   /** Tear down and start again with a fresh re-dial budget. */
   const restartStream = useCallback(() => {
+    // A heartbeat tick and this can land in one React batch, and the effect
+    // that runs then sees only one intent. Ours is the person's, so it wins:
+    // the start it causes resets the budgets like any other.
+    slowRestartRef.current = false;
     setResolveFailures(0);
     recoverTriesRef.current = 0;
     // `gaveUp` clears when the new start begins, so the surface does not
@@ -317,6 +342,36 @@ export function useMacDesktopLiveView(args: {
     eventRestartsRef.current = 0;
     restartStream();
   }, [restartStream]);
+
+  /*
+   * A viewer that has run out of automatic attempts keeps asking, slowly, for
+   * as long as it still wants the lane.
+   *
+   * Two budgets can run out: the quick re-dials after an address that never
+   * drew a frame (`gaveUp`), and the start/URL retries after a host that
+   * refused to hand one out (`resolveFailures`). Both mean the same thing to
+   * the surface — nothing is asking again on its own — and both end the same
+   * way, so one heartbeat serves them: without it a host that was simply
+   * unreachable for a minute leaves the pane on a dead error until somebody
+   * presses Retry.
+   *
+   * Each tick is one fresh run — a plain re-dial would be handed the same run
+   * that sent nothing — and every budget stays spent, so this never re-enters
+   * the dense retry loops. A surface that let go of the stream (the floating
+   * player does) wants nothing and is left alone.
+   */
+  const outOfRetries = gaveUp || (status === "error" && resolveFailures >= RETRY_MAX_ATTEMPTS);
+  useEffect(() => {
+    if (!outOfRetries) return undefined;
+    const timer = setInterval(() => {
+      if (!wantedRef.current) return;
+      slowRestartRef.current = true;
+      freshNextRef.current = true;
+      recoverTriesRef.current = RECOVER_MAX_TRIES;
+      setRestartNonce((nonce) => nonce + 1);
+    }, RECOVER_SLOW_MS);
+    return () => clearInterval(timer);
+  }, [outOfRetries]);
 
   /*
    * A viewer that gave up takes the picture back once the host has one again.
@@ -343,17 +398,24 @@ export function useMacDesktopLiveView(args: {
   /* ── Start and stop ──────────────────────────────────────────────────── */
 
   useEffect(() => {
+    // Read before the guard below: a start that never happens must not leave a
+    // heartbeat's intent behind for the next one, which would then skip the
+    // resets a genuine start owes the surface.
+    const slowRestart = slowRestartRef.current;
+    slowRestartRef.current = false;
     if (!ownsDecoder || !enabled || !laneId) {
       setUrl(null);
       setStatus("idle");
       return undefined;
     }
     let cancelled = false;
-    setResolveFailures(0);
+    if (!slowRestart) {
+      setResolveFailures(0);
+      // A start is under way again, so the viewer has not given up on it yet.
+      setGaveUp(false);
+    }
     setStatus("starting");
     setError(null);
-    // A start is under way again, so the viewer has not given up on it yet.
-    setGaveUp(false);
 
     const fresh = freshNextRef.current;
     freshNextRef.current = false;

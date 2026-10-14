@@ -122,7 +122,24 @@ let windowStart = 0;
 let total = 0;
 const perFailure = new Map<string, number>();
 
+// Cloudflare's own storage failures. Each carries a fresh "reference = …", so
+// left alone every occurrence opens a new issue; one issue per kind is enough.
+// A Durable Object reset by a deploy is the deploy, not a failure.
+const CLOUDFLARE_DEPLOY_RESET = /Durable Object reset because its code was updated/;
+const CLOUDFLARE_TRANSIENT: ReadonlyArray<[RegExp, string]> = [
+  [/D1_ERROR: internal error/, "d1-internal-error"],
+  [/Internal error in Durable Object storage|Durable Object storage is no longer accessible/, "durable-object-storage"],
+];
+
+function groupCloudflareTransient(event: WorkerEvent, text: string): void {
+  const match = CLOUDFLARE_TRANSIENT.find(([pattern]) => pattern.test(text));
+  if (match && !event.fingerprint?.length) event.fingerprint = ["cloudflare", match[1]];
+}
+
 export function admitEvent(event: WorkerEvent, nowMs = Date.now()): boolean {
+  const text = event.exception?.values?.map((value) => value.value ?? "").join("\n") || event.message || "";
+  if (CLOUDFLARE_DEPLOY_RESET.test(text)) return false;
+  groupCloudflareTransient(event, text);
   if (nowMs - windowStart >= HOUR_MS) {
     windowStart = nowMs;
     total = 0;

@@ -2,9 +2,8 @@
  * Everything the service keeps about what the lane's screen looked like.
  *
  * Observations and their handles, where capture files are written, whether a
- * caller-supplied `out` path is allowed to be written at all, how a captioned
- * capture reaches the proof drawer, and the bookkeeping for the per-turn
- * time-lapse.
+ * caller-supplied `out` path is allowed to be written at all, and how a
+ * captioned capture reaches the proof drawer.
  *
  * Kept out of `macDesktopService.ts` because all of it is decidable without a
  * display: a handle either belongs to a retained observation or it does not, a
@@ -50,12 +49,6 @@ export const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(...MAC_DESKTOP_OBSERV
 /** Observations retained per lane. Older handles resolve to "expired". */
 export const MAC_DESKTOP_OBSERVATION_RETENTION = 8;
 
-/** Frames the per-turn time-lapse keeps before it stops growing. */
-export const MAC_DESKTOP_TIME_LAPSE_MAX_FRAMES = 120;
-
-/** No more than one time-lapse frame a second, whatever the agent is doing. */
-export const MAC_DESKTOP_TIME_LAPSE_MIN_FRAME_GAP_MS = 1_000;
-
 export class MacDesktopObservationError extends Error {
   readonly code: string;
 
@@ -74,16 +67,6 @@ export type MacDesktopHandleResolution = {
   element: MacDesktopElement;
 };
 
-export type MacDesktopTurnRecording = {
-  laneId: string;
-  chatSessionId: string;
-  turnId: string;
-  filePath: string;
-  startedAtMs: number;
-  frameCount: number;
-  lastFrameAtMs: number;
-};
-
 export type MacDesktopObservationsDeps = {
   projectRoot: string;
   /** Maps a lane to its worktree, so a relative `out` resolves where the agent works. */
@@ -96,7 +79,6 @@ export type MacDesktopObservationsDeps = {
   ingestArtifacts?: (request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult;
   /** The lane's primary pull request URL, when it has one. */
   resolvePrimaryPrUrl?: (laneId: string) => Promise<string | null> | string | null;
-  now?: () => number;
 };
 
 const isPathInside = (parent: string, candidate: string): boolean => {
@@ -122,13 +104,8 @@ function removeObservationFiles(observation: MacDesktopObservation): void {
 }
 
 export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
-  const now = deps.now ?? (() => Date.now());
   /** laneId → most recent observations, newest last. */
   const byLane = new Map<string, MacDesktopObservation[]>();
-  /** `${laneId}:${chatSessionId}` → the recording that will become a time-lapse. */
-  const turnRecordings = new Map<string, MacDesktopTurnRecording>();
-
-  const turnKey = (laneId: string, chatSessionId: string): string => `${laneId}:${chatSessionId}`;
 
   return {
     // -- observations -----------------------------------------------------
@@ -158,9 +135,6 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
     forgetLane(laneId: string): void {
       for (const observation of byLane.get(laneId) ?? []) removeObservationFiles(observation);
       byLane.delete(laneId);
-      for (const key of [...turnRecordings.keys()]) {
-        if (key.startsWith(`${laneId}:`)) turnRecordings.delete(key);
-      }
     },
 
     /**
@@ -204,16 +178,16 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
      *
      * The computer-use scratch root, which the proof broker already lists as an
      * allowed import root, so a scratch capture can still be promoted to proof.
-     * Video does NOT come here — recordings and turn clips go to
-     * `artifactPath`, because the thread plays them back over
-     * `ade-artifact://`, which only serves `.ade/artifacts`.
+     * Video does NOT come here — recordings go to `artifactPath`, because the
+     * thread plays them back over `ade-artifact://`, which only serves
+     * `.ade/artifacts`.
      */
     scratchPath(stem: string, extension: string): string {
       return createComputerUseScratchPath(deps.projectRoot, stem, extension);
     },
 
     /**
-     * Where video lands: recordings and per-turn clips.
+     * Where video lands: recordings.
      *
      * The artifact store rather than the scratch root, because the thread plays
      * these back through `ade-artifact://<path>` and the main process serves
@@ -393,91 +367,6 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
         }],
         owners,
       });
-    },
-
-    // -- the per-turn time-lapse -----------------------------------------
-    /**
-     * Records that a turn has started touching the desktop.
-     *
-     * Returns the recording to start when this is the first action of the turn,
-     * and null when one is already running — the caller then only has to note
-     * the frame.
-     */
-    beginTurnRecording(args: {
-      laneId: string;
-      chatSessionId: string;
-      turnId: string;
-      filePath: string;
-    }): MacDesktopTurnRecording | null {
-      const key = turnKey(args.laneId, args.chatSessionId);
-      const existing = turnRecordings.get(key);
-      if (existing && existing.turnId === args.turnId) return null;
-      const atMs = now();
-      const recording: MacDesktopTurnRecording = {
-        laneId: args.laneId,
-        chatSessionId: args.chatSessionId,
-        turnId: args.turnId,
-        filePath: args.filePath,
-        startedAtMs: atMs,
-        frameCount: 0,
-        lastFrameAtMs: 0,
-      };
-      turnRecordings.set(key, recording);
-      return recording;
-    },
-
-    /**
-     * Counts one action against the turn's clip.
-     *
-     * Rate-limited to one frame a second and capped, so a loop of two hundred
-     * clicks produces a clip somebody can watch rather than a flicker.
-     */
-    noteTurnFrame(laneId: string, chatSessionId: string): boolean {
-      const recording = turnRecordings.get(turnKey(laneId, chatSessionId));
-      if (!recording) return false;
-      const atMs = now();
-      if (recording.frameCount >= MAC_DESKTOP_TIME_LAPSE_MAX_FRAMES) return false;
-      if (atMs - recording.lastFrameAtMs < MAC_DESKTOP_TIME_LAPSE_MIN_FRAME_GAP_MS) return false;
-      recording.frameCount += 1;
-      recording.lastFrameAtMs = atMs;
-      return true;
-    },
-
-    getTurnRecording(laneId: string, chatSessionId: string): MacDesktopTurnRecording | null {
-      return turnRecordings.get(turnKey(laneId, chatSessionId)) ?? null;
-    },
-
-    /**
-     * The turn clip running on this lane, whichever chat opened it.
-     *
-     * One lane has one writer in the helper, so "is a clip recording on this
-     * lane" is a lane question, not a chat question. Asking it per chat is what
-     * let a user recording start on top of a running turn clip and take its
-     * file over.
-     */
-    findTurnRecordingForLane(laneId: string): MacDesktopTurnRecording | null {
-      for (const recording of turnRecordings.values()) {
-        if (recording.laneId === laneId) return recording;
-      }
-      return null;
-    },
-
-    /** Forgets every turn clip on the lane and says which ones there were. */
-    endTurnRecordingsForLane(laneId: string): MacDesktopTurnRecording[] {
-      const ended: MacDesktopTurnRecording[] = [];
-      for (const [key, recording] of [...turnRecordings]) {
-        if (recording.laneId !== laneId) continue;
-        turnRecordings.delete(key);
-        ended.push(recording);
-      }
-      return ended;
-    },
-
-    endTurnRecording(laneId: string, chatSessionId: string): MacDesktopTurnRecording | null {
-      const key = turnKey(laneId, chatSessionId);
-      const recording = turnRecordings.get(key) ?? null;
-      turnRecordings.delete(key);
-      return recording;
     },
   };
 }

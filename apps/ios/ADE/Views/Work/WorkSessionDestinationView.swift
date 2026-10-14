@@ -1866,9 +1866,11 @@ struct WorkSessionDestinationView: View {
     // registry and would spin up that project's runtime just to look.
     // A chat on another machine is the exception: the command goes to that
     // machine (where the chat is live), and without it the composer shows no
-    // access mode, or a wrong one.
+    // access mode, or a wrong one. A Claude chat is the other one: only its
+    // summary says whether its cache expired, so without it the Compact first
+    // chip never shows.
     let onOtherMachine = isRemoteMachineChat || syncService.isRemoteMachineChat(sessionId: sessionId)
-    guard !isCrossProject || onOtherMachine else { return }
+    guard !isCrossProject || onOtherMachine || subagentProvider == "claude" else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
@@ -1885,6 +1887,7 @@ struct WorkSessionDestinationView: View {
     // chat that lives on another one.
     guard !personalChat,
           !onOtherMachine,
+          !isCrossProject,
           let laneId = (session ?? initialSession)?.laneId,
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),

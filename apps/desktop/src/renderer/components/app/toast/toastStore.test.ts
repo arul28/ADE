@@ -182,24 +182,24 @@ describe("toastStore", () => {
     expect(getToasts()).toHaveLength(0);
   });
 
-  it("reports error toasts to Sentry as one issue per kind of failure, not per lane or file name", () => {
-    const reports: Array<{ message: string; fingerprint: string[] | null; extras: Record<string, unknown> }> = [];
+  it("logs error toasts to Sentry under one event name per kind of failure, not per lane or file name", () => {
+    const logs: Array<{ message: string; attributes: Record<string, unknown> }> = [];
+    const captured: unknown[] = [];
     connectSentry({
       withScope: (callback) => {
-        const report = { message: "", fingerprint: null as string[] | null, extras: {} as Record<string, unknown> };
-        reports.push(report);
         callback({
           setTag: () => undefined,
-          setExtras: (extras) => { report.extras = extras; },
-          setFingerprint: (fingerprint) => { report.fingerprint = fingerprint; },
+          setExtras: () => undefined,
+          setFingerprint: () => undefined,
           setLevel: () => undefined,
         });
       },
-      captureException: (error) => {
-        reports[reports.length - 1]!.message = (error as Error).message;
-      },
+      captureException: (error) => { captured.push(error); },
       addBreadcrumb: () => undefined,
-      logger: { warn: () => undefined, error: () => undefined },
+      logger: {
+        warn: (message, attributes) => { logs.push({ message, attributes: attributes ?? {} }); },
+        error: () => undefined,
+      },
     });
     try {
       showToast({ title: "Push failed: lane-one", tone: "error" });
@@ -207,13 +207,18 @@ describe("toastStore", () => {
       showToast({ title: "Could not open \"notes.md\"", tone: "error" });
       showToast({ title: "Pushed lane-one", tone: "success" });
 
-      expect(reports.map((report) => [report.message, report.fingerprint])).toEqual([
-        ["Toast: Push failed", ["toast", "Push failed"]],
-        ["Toast: Push failed", ["toast", "Push failed"]],
-        ["Toast: Could not open", ["toast", "Could not open"]],
-      ]);
+      // An error toast is a Sentry Log and a breadcrumb, never an issue of its
+      // own: the failure behind it (an IPC call, a render crash) already opened
+      // one, with a stack; a toast only repeats it under its title.
+      expect(captured).toHaveLength(0);
+      // One log per error toast; the success toast says nothing.
+      expect(logs).toHaveLength(3);
+      for (const log of logs) expect(log.message.startsWith("toast.")).toBe(true);
+      // Titles that differ only by the lane (or file) name share one event name.
+      expect(logs[0]!.message).toBe(logs[1]!.message);
+      expect(logs[0]!.message).not.toBe(logs[2]!.message);
       // The text rides along, cut short: an error message can quote what it failed on.
-      expect(reports[1]!.extras).toEqual({ title: "Push failed: lane-two", message: "x".repeat(300) });
+      expect(logs[1]!.attributes).toMatchObject({ title: "Push failed: lane-two", message: "x".repeat(300) });
     } finally {
       connectSentry(null as never);
     }

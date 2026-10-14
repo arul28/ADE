@@ -531,8 +531,6 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
       return event.status.laneId;
     case "window-not-parked":
       return event.laneId;
-    case "time-lapse":
-      return event.timeLapse.laneId;
     case "permission-changed":
     case "driver-health":
     // Windows host state is host-wide too: a lock, a holder change, or setup

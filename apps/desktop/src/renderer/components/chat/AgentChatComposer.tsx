@@ -1394,6 +1394,8 @@ function PendingSteerItem({
   onInterrupt,
   reorder,
   attachmentTray,
+  statusLabel,
+  statusHint,
 }: {
   steer: {
     steerId: string;
@@ -1410,15 +1412,22 @@ function PendingSteerItem({
   reorder?: PendingSteerReorder;
   /** The message's files and context, as the composer's own tray draws them. */
   attachmentTray?: React.ReactNode;
+  /** Where the message stands in the queue ("Sends next", "Queued"). */
+  statusLabel: string;
+  /** What the user can do with it, and why it waits; shown on the status tag. */
+  statusHint: string;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
   const rowRef = useRef<HTMLDivElement | null>(null);
   return (
     <div
       ref={rowRef}
+      role="listitem"
+      // The hint tooltip opens on pointer hover only; assistive tech reads it here.
+      aria-description={statusHint}
       data-testid="pending-steer-item"
       className={cn(
-        "group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5 transition-opacity",
+        "group relative flex items-center gap-2 rounded-[10px] bg-fg/[0.035] px-2.5 py-1.5 transition-[background-color,opacity] hover:bg-fg/[0.055] focus-within:bg-fg/[0.055]",
         reorder?.dragging && "opacity-40",
         reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
         reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
@@ -1445,7 +1454,7 @@ function PendingSteerItem({
             data-testid="pending-steer-reorder-handle"
             aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
             aria-keyshortcuts="ArrowUp ArrowDown Home End"
-            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-[var(--chat-accent)]/45 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-fg/30 hover:text-fg/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
             onDragStart={(event) => {
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
@@ -1469,25 +1478,33 @@ function PendingSteerItem({
           </button>
         </SmartTooltip>
       ) : (
-        <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+        <Clock size={12} weight="bold" className="shrink-0 text-fg/30" aria-hidden />
       )}
       <div className="flex-1 min-w-0">
-        <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
-          Sends after turn
-        </div>
-        <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
-          {steer.text}
-        </div>
+        {/* The hint sits on the text: the status tag hides under the actions on hover. */}
+        <SmartTooltip forceEnabled content={{ label: statusLabel, description: statusHint }} wrapperStyle={{ display: "flex", minWidth: 0 }}>
+          <div className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/80">
+            {steer.text}
+          </div>
+        </SmartTooltip>
         {attachmentTray}
       </div>
+      <span
+        data-testid="pending-steer-status"
+        className="shrink-0 rounded-full bg-fg/[0.05] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45 [@media(hover:hover)]:group-hover:hidden [@media(hover:hover)]:group-focus-within:hidden"
+      >
+        {statusLabel}
+      </span>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
           control invisible on mobile and ADE Web. Both rules sit inside the
           same media query and `group-hover` outranks the base class on
-          specificity, so the reveal never depends on stylesheet order. */}
+          specificity, so the reveal never depends on stylesheet order. With a
+          pointer the actions sit over the status tag, which hides on hover, so
+          every tag lines up at the row's right edge. */}
       <div
         data-testid="pending-steer-actions"
-        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
+        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:absolute [@media(hover:hover)]:right-2 [@media(hover:hover)]:top-1/2 [@media(hover:hover)]:-translate-y-1/2 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
       >
           {onSendNow ? (
             <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
@@ -8021,33 +8038,36 @@ export function AgentChatComposer({
           );
         }
 
+        // The one thing the tags cannot say, kept visible because tooltips
+        // never show on a touch pointer: why a message has to wait.
+        const queueLimitNote = !pendingSteers.length ? null
+          : activeTurnSendCapability.modes.every((mode) => mode === "queue")
+            ? `${activeTurnSendCapability.agentLabel} cannot take a message mid-turn, so ${pendingSteers.length === 1 ? "it sends" : "they send"} when the turn ends.`
+            : onDispatchSteerInline ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null : null;
+        const firstSteerLabel = usageViewModel?.state === "compacting" ? "After compaction" : "Sends next";
         return (
           <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
-        <div className="border-b border-fg/[0.06] bg-fg/[0.02] px-3 py-2 space-y-1.5">
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-fg/30">
-              Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
-            </span>
-            <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {stagedSteerHint({
-                capability: activeTurnSendCapability,
-                canSendNow: Boolean(onDispatchSteerInline)
-                  && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
-                canInterrupt: Boolean(onDispatchSteerInterrupt),
-                canReorder: canReorderSteers,
-                inlineBlockedReason: onDispatchSteerInline
-                  ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
-                  : null,
-              })}
-            </span>
-          </div>
+        <div className="px-2 pb-1 pt-2">
+        <div
+          className="space-y-1"
+          role="list"
+          aria-label={pendingSteers.length === 1 ? "Queued message" : `${pendingSteers.length} queued messages`}
+        >
           {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              statusLabel={index > 0 ? "Queued" : firstSteerLabel}
+              statusHint={stagedSteerHint({
+                capability: activeTurnSendCapability,
+                canSendNow: Boolean(onDispatchSteerInline) && !stagedSteerInlineBlock(steer),
+                canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
+                inlineBlockedReason: onDispatchSteerInline ? stagedSteerInlineBlock(steer) ?? null : null,
+              })}
               attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
                 <ChatAttachmentTray
                   attachments={steer.attachments}
@@ -8071,6 +8091,10 @@ export function AgentChatComposer({
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}
+        </div>
+          {queueLimitNote ? (
+            <p className="px-1 pt-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">{queueLimitNote}</p>
+          ) : null}
         </div>
       ) : null}
 

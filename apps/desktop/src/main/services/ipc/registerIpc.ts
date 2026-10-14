@@ -7566,7 +7566,7 @@ export function registerIpc({
     _event,
     arg: { laneId: string },
   ): Promise<LaneReclaimRisk> => {
-    return ensureLaneContext().laneService.getReclaimRisk(arg.laneId);
+    return ensureLaneContext().laneService.getReclaimRisk({ laneId: arg.laneId });
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {

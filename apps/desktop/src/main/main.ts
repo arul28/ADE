@@ -572,9 +572,10 @@ configureDesktopUserDataPath();
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
 initMainSentry({
-  // `localRuntime.callAction` carries every brain action; name the action.
+  // The runtime action channels (this machine's brain and a paired machine's)
+  // carry every action; name the action.
   ipcLabel: (channel, args) => {
-    if (channel !== IPC.localRuntimeCallAction) return channel;
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
     const request = readRuntimeActionRequest(args);
     if (!request) return channel;
     return request.action ? `${request.domain}.${request.action}` : request.domain;
@@ -4545,11 +4546,9 @@ app.whenReady().then(async () => {
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
       // this same bootstrap, and every call here is read per-turn.
-      macDesktopTurnRecorder: {
+      macDesktopRuntime: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
         supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-        beginTurn: (args) => macDesktopService.beginTurn(args),
-        noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
       },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
@@ -5217,7 +5216,6 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
-      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
