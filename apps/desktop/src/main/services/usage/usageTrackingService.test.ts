@@ -7840,7 +7840,7 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
-  it("marks the account smart balance would use next for a new chat", async () => {
+  it("keeps the next-chat preview in sync with Claude's capacity rotation", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
     writeClaudeAccount(workHome, "work@example.com");
     const signedInInstances = (): ProviderInstance[] => [
@@ -7854,21 +7854,28 @@ describe("per-account quota attribution", () => {
           windows: [
             {
               provider: "claude" as const,
-              windowType: "weekly" as const,
+              windowType: "five_hour" as const,
               accountId: "claude:claude",
-              percentUsed: 50,
-              resetsAt: new Date(Date.now() + 6 * 24 * 60 * 60_000).toISOString(),
-              resetsInMs: 6 * 24 * 60 * 60_000,
-              windowDurationMs: 7 * 24 * 60 * 60_000,
+              percentUsed: 44,
+              resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
+              resetsInMs: 47 * 60_000,
             },
             {
               provider: "claude" as const,
               windowType: "weekly" as const,
-              accountId: "claude:work",
-              percentUsed: 50,
-              resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-              resetsInMs: 60 * 60_000,
+              accountId: "claude:claude",
+              percentUsed: 76,
+              resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
+              resetsInMs: (2 * 24 + 13) * 60 * 60_000,
               windowDurationMs: 7 * 24 * 60 * 60_000,
+            },
+            {
+              provider: "claude" as const,
+              windowType: "five_hour" as const,
+              accountId: "claude:work",
+              percentUsed: 0,
+              resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
+              resetsInMs: (2 * 60 + 7) * 60_000,
             },
           ],
           errors: [] as never[],
@@ -7885,10 +7892,28 @@ describe("per-account quota attribution", () => {
       },
     });
 
-    const snapshot = await service.poll({ reason: "user" });
+    const initial = await service.poll({ reason: "user" });
 
-    // `work`'s weekly room resets in an hour, `claude`'s in six days.
-    expect(snapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    // The default has the sooner weekly reset; work has a fresh 100% five-hour
+    // window and no weekly reading, so it receives the third capacity slot.
+    expect(initial.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "claude",
+      reason: "soonest weekly reset",
+    });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+
+    // A quota poll recomputes the preview without consuming another slot.
+    const afterPoll = await service.poll({ reason: "user" });
+    expect(afterPoll.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({
+      instanceId: "work",
+      reason: "higher five-hour headroom",
+    });
+    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
     service.dispose();
   });
 

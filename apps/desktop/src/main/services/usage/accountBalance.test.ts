@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { UsageAccount, UsageAccountLogin, UsageWindow } from "../../../shared/types/usage";
-import { pickAlternateInstanceForLimitedChat, pickInstanceForNewChat } from "./accountBalance";
+import {
+  pickAlternateInstanceForLimitedChat,
+  pickInstanceForNewChat,
+  type AccountBalanceRotationState,
+} from "./accountBalance";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const WEEK_START = Date.parse("2026-09-14T00:00:00.000Z");
@@ -29,12 +33,21 @@ function windowSet(
   values: { fiveHour?: number; weekly?: number },
   resets: { weekly?: number; fiveHour?: number } = {},
 ): [string, UsageWindow[]] {
-  const key = `claude:${instanceId}`;
+  return windowSetForProvider("claude", instanceId, values, resets);
+}
+
+function windowSetForProvider(
+  provider: "claude" | "codex",
+  instanceId: string,
+  values: { fiveHour?: number; weekly?: number },
+  resets: { weekly?: number; fiveHour?: number } = {},
+): [string, UsageWindow[]] {
+  const key = `${provider}:${instanceId}`;
   const windows: UsageWindow[] = [];
   if (values.fiveHour !== undefined) {
     const resetsAtMs = resets.fiveHour ?? WEEK_START + 60 * 60 * 1000;
     windows.push({
-      provider: "claude",
+      provider,
       windowType: "five_hour",
       accountId: key,
       percentUsed: values.fiveHour,
@@ -45,7 +58,7 @@ function windowSet(
   if (values.weekly !== undefined) {
     const resetsAtMs = resets.weekly ?? WEEK_START + WEEK_MS;
     windows.push({
-      provider: "claude",
+      provider,
       windowType: "weekly",
       accountId: key,
       percentUsed: values.weekly,
@@ -62,9 +75,13 @@ function windows(...entries: Array<[string, UsageWindow[]]>): Map<string, UsageW
 }
 
 function accounts(...ids: string[]): UsageAccount[] {
+  return accountsForProvider("claude", ...ids);
+}
+
+function accountsForProvider(provider: "claude" | "codex", ...ids: string[]): UsageAccount[] {
   return ids.map((instanceId) => ({
-    id: `claude:${instanceId}`,
-    provider: "claude",
+    id: `${provider}:${instanceId}`,
+    provider,
     instanceId,
     label: instanceId,
     machines: [{ label: "test" }],
@@ -117,6 +134,105 @@ describe("pickInstanceForNewChat", () => {
     });
 
     expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
+  });
+
+  it("sends every third Claude chat to the account with more five-hour room", () => {
+    const args = {
+      provider: "claude" as const,
+      instances: [instance("claude"), instance("work")],
+      accounts: accounts("claude", "work"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 44, weekly: 76 }, {
+          fiveHour: WEEK_START + 47 * 60_000,
+          weekly: WEEK_START + (2 * 24 + 13) * 60 * 60_000,
+        }),
+        // No weekly reading is treated as a later reset, but the fresh 100%
+        // five-hour reading can still provide the limited capacity slot.
+        windowSet("work", { fiveHour: 0 }, { fiveHour: WEEK_START + (2 * 60 + 7) * 60_000 }),
+      ),
+      nowMs: WEEK_START,
+    };
+
+    const first = pickInstanceForNewChat(args);
+    expect(first).toMatchObject({
+      instanceId: "claude",
+      reason: "soonest weekly reset",
+      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "work", nextSlot: 1 },
+    });
+
+    const second = pickInstanceForNewChat({ ...args, rotationState: first.rotationState });
+    expect(second).toMatchObject({ instanceId: "claude", rotationState: { nextSlot: 2 } });
+
+    const third = pickInstanceForNewChat({ ...args, rotationState: second.rotationState });
+    expect(third).toMatchObject({
+      instanceId: "work",
+      reason: "higher five-hour headroom",
+      rotationState: { nextSlot: 0 },
+    });
+  });
+
+  it("starts at a 30-point gap, keeps the rotation through 15 points, and stops at the floor", () => {
+    const pick = (primaryFiveHour: number, reserveFiveHour: number, rotationState?: AccountBalanceRotationState) => (
+      pickInstanceForNewChat({
+        provider: "claude",
+        instances: [instance("claude"), instance("work")],
+        accounts: accounts("claude", "work"),
+        windowsByAccountId: windows(
+          windowSet("claude", { fiveHour: primaryFiveHour, weekly: 20 }, {
+            fiveHour: WEEK_START + 2 * 60 * 60_000,
+            weekly: WEEK_START + 24 * 60 * 60_000,
+          }),
+          windowSet("work", { fiveHour: reserveFiveHour, weekly: 20 }, {
+            weekly: WEEK_START + 6 * 24 * 60 * 60_000,
+          }),
+        ),
+        nowMs: WEEK_START,
+        rotationState,
+      })
+    );
+
+    const started = pick(50, 20);
+    expect(started.rotationState).toEqual({ primaryInstanceId: "claude", reserveInstanceId: "work", nextSlot: 1 });
+    expect(pick(40, 20, started.rotationState).rotationState).toEqual({
+      primaryInstanceId: "claude",
+      reserveInstanceId: "work",
+      nextSlot: 2,
+    });
+
+    const stopped = pick(35, 20, started.rotationState);
+    expect(stopped.instanceId).toBe("claude");
+    expect(stopped.rotationState).toBeUndefined();
+    expect(pick(40, 20).rotationState).toBeUndefined();
+  });
+
+  it("keeps near-limit reserve accounts out and leaves Codex on weekly-first routing", () => {
+    const nearLimitReserve = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work")],
+      accounts: accounts("claude", "work"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 44, weekly: 76 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
+        windowSet("work", { fiveHour: 0, weekly: 95 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
+      ),
+      nowMs: WEEK_START,
+    });
+    expect(nearLimitReserve).toMatchObject({ instanceId: "claude", reason: "soonest weekly reset" });
+    expect(nearLimitReserve.rotationState).toBeUndefined();
+
+    const codex = pickInstanceForNewChat({
+      provider: "codex",
+      instances: [
+        { ...instance("codex", { provider: "codex" }), isDefault: true },
+        instance("work", { provider: "codex" }),
+      ],
+      accounts: accountsForProvider("codex", "codex", "work"),
+      windowsByAccountId: windows(
+        windowSetForProvider("codex", "codex", { fiveHour: 44, weekly: 76 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
+        windowSetForProvider("codex", "work", { fiveHour: 0 }, { fiveHour: WEEK_START + 2 * 60 * 60_000 }),
+      ),
+      nowMs: WEEK_START,
+    });
+    expect(codex).toEqual({ instanceId: "codex", reason: "soonest weekly reset" });
   });
 
   it("ranks a nearly-spent five-hour window last when it is not about to reset", () => {

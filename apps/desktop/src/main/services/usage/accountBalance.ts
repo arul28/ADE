@@ -14,6 +14,13 @@ export type AccountBalancePick = {
   reason: string;
 };
 
+/** Internal continuation state for Claude's deterministic capacity rotation. */
+export type AccountBalanceRotationState = {
+  primaryInstanceId: string;
+  reserveInstanceId: string;
+  nextSlot: number;
+};
+
 /**
  * Why smart balance did not choose an account, next to the account the chat
  * uses instead. `skip` is absent when the pick is a real balance decision.
@@ -22,6 +29,8 @@ export type AccountBalanceResult = AccountBalancePick & {
   skip?: AccountBalanceSkipReason;
   /** Signed-in accounts whose stored login is gone. */
   signedOutInstanceIds?: string[];
+  /** Internal state to save after a real new-chat selection; previews only read it. */
+  rotationState?: AccountBalanceRotationState;
 };
 
 export type PickInstanceForNewChatArgs = {
@@ -32,6 +41,8 @@ export type PickInstanceForNewChatArgs = {
     | ReadonlyMap<string, readonly UsageWindow[]>
     | Readonly<Record<string, readonly UsageWindow[]>>;
   nowMs: number;
+  /** The last consumed Claude rotation slot, if its account pair is still active. */
+  rotationState?: AccountBalanceRotationState | null;
 };
 
 /**
@@ -52,6 +63,12 @@ const FIVE_HOUR_RESET_SOON_HOURS = 1;
 const DEFAULT_WEEKLY_DURATION_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_FIVE_HOUR_DURATION_MS = 5 * 60 * 60_000;
 const SCORE_EPSILON = 1e-9;
+/** Start a two-primary / one-reserve cycle when five-hour headroom differs materially. */
+const CLAUDE_SPILL_START_GAP = 30;
+/** Keep the rotation active through the hysteresis band, then return to weekly order. */
+const CLAUDE_SPILL_STOP_GAP = 15;
+const CLAUDE_SPILL_CYCLE_LENGTH = 3;
+const CLAUDE_SPILL_RESERVE_SLOT = 2;
 
 function windowsForAccount(
   windowsByAccountId: PickInstanceForNewChatArgs["windowsByAccountId"],
@@ -138,6 +155,7 @@ function accountRoom(windows: readonly UsageWindow[], nowMs: number): AccountRoo
 }
 
 type RankedRoom = Extract<AccountRoom, { kind: "room" }>;
+type RankedInstance = { instance: ProviderInstance; room: RankedRoom };
 
 /**
  * Orders two accounts for a new chat; negative means `a` goes first. An
@@ -153,6 +171,47 @@ function compareRoom(a: RankedRoom, b: RankedRoom): number {
     return b.fiveHourHeadroom - a.fiveHourHeadroom;
   }
   return 0;
+}
+
+function compareReserveRoom(a: RankedInstance, b: RankedInstance, defaultId: string): number {
+  const headroomDifference = b.room.fiveHourHeadroom - a.room.fiveHourHeadroom;
+  if (Math.abs(headroomDifference) > SCORE_EPSILON) return headroomDifference;
+  const weeklyOrder = compareRoom(a.room, b.room);
+  if (weeklyOrder !== 0) return weeklyOrder;
+  if (a.instance.id === defaultId) return -1;
+  if (b.instance.id === defaultId) return 1;
+  return a.instance.id.localeCompare(b.instance.id);
+}
+
+function nextRotationState(
+  provider: ProviderInstanceProvider,
+  primary: RankedInstance,
+  reserve: RankedInstance,
+  priorState: AccountBalanceRotationState | null | undefined,
+): { state: AccountBalanceRotationState; useReserve: boolean } | null {
+  // The behavior is intentionally limited to the Claude account-balancing
+  // policy discussed with the user. Codex retains its existing weekly-first
+  // selection until its own policy is explicitly changed.
+  if (provider !== "claude") return null;
+
+  const gap = reserve.room.fiveHourHeadroom - primary.room.fiveHourHeadroom;
+  const sameRegime = priorState?.primaryInstanceId === primary.instance.id
+    && priorState.reserveInstanceId === reserve.instance.id;
+  const active = sameRegime ? gap > CLAUDE_SPILL_STOP_GAP : gap >= CLAUDE_SPILL_START_GAP;
+  if (!active) return null;
+
+  const priorSlot = sameRegime ? priorState.nextSlot : 0;
+  const slot = Number.isInteger(priorSlot) && priorSlot >= 0 && priorSlot < CLAUDE_SPILL_CYCLE_LENGTH
+    ? priorSlot
+    : 0;
+  return {
+    state: {
+      primaryInstanceId: primary.instance.id,
+      reserveInstanceId: reserve.instance.id,
+      nextSlot: (slot + 1) % CLAUDE_SPILL_CYCLE_LENGTH,
+    },
+    useReserve: slot === CLAUDE_SPILL_RESERVE_SLOT,
+  };
 }
 
 /**
@@ -171,6 +230,7 @@ export function pickInstanceForNewChat({
   accounts = [],
   windowsByAccountId,
   nowMs,
+  rotationState,
 }: PickInstanceForNewChatArgs): AccountBalanceResult {
   const defaultId = defaultInstanceId(provider, instances);
   // A copy of another account's login is that account's quota, counted once.
@@ -182,7 +242,7 @@ export function pickInstanceForNewChat({
   }
 
   const signedOutInstanceIds: string[] = [];
-  let best: { instance: ProviderInstance; room: RankedRoom } | null = null;
+  const rankedInstances: RankedInstance[] = [];
   let unknownCount = 0;
   for (const instance of signedIn) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
@@ -197,14 +257,37 @@ export function pickInstanceForNewChat({
       continue;
     }
     if (room.kind === "full") continue;
-    const order = best ? compareRoom(room, best.room) : -1;
-    // A tie goes to the default account.
-    if (order < 0 || (order === 0 && instance.id === defaultId)) best = { instance, room };
+    rankedInstances.push({ instance, room });
   }
 
   const signedOut = signedOutInstanceIds.length > 0 ? { signedOutInstanceIds } : {};
+  const best = rankedInstances.reduce<RankedInstance | null>((current, candidate) => {
+    if (!current) return candidate;
+    const order = compareRoom(candidate.room, current.room);
+    // A tie goes to the default account.
+    return order < 0 || (order === 0 && candidate.instance.id === defaultId) ? candidate : current;
+  }, null);
   if (best) {
-    return { instanceId: best.instance.id, reason: "soonest weekly reset", ...signedOut };
+    const reserve = rankedInstances
+      .filter((candidate) => candidate.instance.id !== best.instance.id)
+      .sort((a, b) => compareReserveRoom(a, b, defaultId))[0];
+    const rotation = reserve
+      ? nextRotationState(provider, best, reserve, rotationState)
+      : null;
+    if (rotation?.useReserve && reserve) {
+      return {
+        instanceId: reserve.instance.id,
+        reason: "higher five-hour headroom",
+        rotationState: rotation.state,
+        ...signedOut,
+      };
+    }
+    return {
+      instanceId: best.instance.id,
+      reason: "soonest weekly reset",
+      ...(rotation ? { rotationState: rotation.state } : {}),
+      ...signedOut,
+    };
   }
   if (signedOutInstanceIds.length === signedIn.length) {
     return { instanceId: defaultId, reason: "every login is signed out", skip: "all_signed_out", ...signedOut };
