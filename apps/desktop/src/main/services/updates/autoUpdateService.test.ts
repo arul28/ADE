@@ -3131,12 +3131,15 @@ describe("the installed notice and the resume it still owes", () => {
     githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
   };
 
+  // No update checks: this block sits outside `createAutoUpdateService`'s
+  // `afterEach`, so it must not lean on that teardown to clean up a scheduler.
   const startServiceOn = (globalStatePath: string) => createAutoUpdateService({
     logger: makeLogger(),
     currentVersion: "1.2.3",
     globalStatePath,
     startupDelayMs: 60_000,
     periodicCheckMs: 60_000,
+    autoCheckEnabled: false,
     now: () => "2026-04-06T15:21:00.000Z",
     updater: new FakeAutoUpdater(),
   });
