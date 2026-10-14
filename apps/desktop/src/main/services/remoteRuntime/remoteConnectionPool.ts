@@ -413,6 +413,9 @@ export class RemoteConnectionPool {
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
+  private readonly connectedListeners = new Set<
+    (targetId: string, result: RemoteRuntimeConnectResult) => void
+  >();
   private readonly portForwardInvalidationListeners = new Set<
     (targetId: string) => void
   >();
@@ -434,6 +437,18 @@ export class RemoteConnectionPool {
     options: RemoteConnectionPoolConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target, options)).result;
+  }
+
+  /**
+   * Every connection that opens, including the quiet reconnect a call makes
+   * after the machine restarted. Its result carries the version the machine
+   * runs now, which is how a finished update is seen.
+   */
+  onEntryConnected(listener: (targetId: string, result: RemoteRuntimeConnectResult) => void): () => void {
+    this.connectedListeners.add(listener);
+    return () => {
+      this.connectedListeners.delete(listener);
+    };
   }
 
   onEntryEvicted(listener: (targetId: string, error: Error) => void): () => void {
@@ -517,6 +532,13 @@ export class RemoteConnectionPool {
       }
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
+      for (const listener of [...this.connectedListeners]) {
+        try {
+          listener(target.id, entry.result);
+        } catch {
+          // Lifecycle notifications are best-effort.
+        }
+      }
       return entry;
     });
     this.entries.set(target.id, entryPromise);

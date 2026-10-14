@@ -721,6 +721,30 @@ export function describeMachineUpdateAttempt(
   };
 }
 
+/**
+ * The key a machine's color is picked from. The account's machine key when the
+ * machine has one, so every device that can see it lands on the same color;
+ * the saved target's id otherwise.
+ */
+export function machineColorKey(target: Pick<RemoteRuntimeTarget, "id" | "pairedMachine">): string {
+  return target.pairedMachine?.machineKey?.trim() || target.id;
+}
+
+/**
+ * Where an update to one machine is, for the row: being asked about, being
+ * sent, or waiting on the machine to come back on the new version.
+ */
+export function machineUpdatePhase(args: {
+  checking: boolean;
+  sending: boolean;
+  status: MachineUpdateStatus | null;
+}): "checking" | "sending" | "restarting" | null {
+  if (args.sending) return "sending";
+  if (args.status?.inFlight) return "restarting";
+  if (args.checking) return "checking";
+  return null;
+}
+
 /** A connected machine and the ADE version it runs, as an update needs it. */
 export type ConnectedMachine = {
   id: string;

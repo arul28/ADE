@@ -7,6 +7,7 @@ import {
   describeMachineUpdateAttempt,
   machineUpdateAttemptFromResult,
   machineUpdateGraceMs,
+  isMachineVersionOutdated,
   outdatedMachines,
   type ConnectedMachine,
   type MachineUpdateAttempt,
@@ -101,6 +102,30 @@ export async function readMachinesUpdateImpact(
   })));
 }
 
+/**
+ * The version each machine reports right now, read just before an update is
+ * sent. The confirmation asked every machine a question first, which reconnects
+ * one that restarted, so this is fresher than the list the person clicked on.
+ */
+async function readLiveVersions(): Promise<Map<string, string | null>> {
+  try {
+    const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
+    return new Map(connectedMachinesFromSnapshot(snapshot).map((machine) => [machine.id, machine.version]));
+  } catch {
+    return new Map();
+  }
+}
+
+function alreadyCurrentAttempt(version: string): MachineUpdateAttempt {
+  return {
+    ok: true,
+    message: `Already on ${version} — nothing to update, nothing restarted.`,
+    pendingVersion: null,
+    downloading: false,
+    startedAtMs: Date.now(),
+  };
+}
+
 async function runMachineUpdate(machine: ConnectedMachine, targetVersion: string | null): Promise<MachineUpdateAttempt> {
   const { [machine.id]: _previous, ...otherAttempts } = state.attempts;
   setState({
@@ -138,10 +163,20 @@ export async function runMachineUpdates(
   // The person already said yes to these machines, so only one whose update
   // call is still running is left out (the host would coalesce it anyway).
   const idle = machines.filter((machine) => !state.updatingIds.has(machine.id));
-  return await Promise.all(idle.map(async (machine) => ({
-    machine,
-    attempt: await runMachineUpdate(machine, targetVersion),
-  })));
+  // A machine that already runs the target (the list read a stale version)
+  // is not sent anything: an update it does not need would still restart it
+  // on older hosts, stopping whatever runs there. The host refuses too; this
+  // is the first of the two guards.
+  const live = targetVersion ? await readLiveVersions() : new Map<string, string | null>();
+  return await Promise.all(idle.map(async (machine) => {
+    const liveVersion = live.get(machine.id) ?? null;
+    if (targetVersion && liveVersion && !isMachineVersionOutdated(liveVersion, targetVersion)) {
+      const attempt = alreadyCurrentAttempt(liveVersion);
+      setState({ attempts: { ...state.attempts, [machine.id]: attempt } });
+      return { machine, attempt };
+    }
+    return { machine, attempt: await runMachineUpdate(machine, targetVersion) };
+  }));
 }
 
 /**
