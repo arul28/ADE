@@ -30,7 +30,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /Remote ADE service connection failed recently/,
   /is not sharing this project/,
   // Git states the user is told about and resolves themselves.
-  /^(?:Error: )?DIRTY_WORKTREE:/,
+  /\bDIRTY_WORKTREE:/,
   /nothing to commit, working tree clean/,
   // An agent filing the same proof twice; the caller is told which one it matches.
   /\bPROOF_DUPLICATE:/,

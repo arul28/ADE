@@ -48,10 +48,10 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
             message: error instanceof Error ? error.message : String(error),
             durationMs,
           });
-        } else {
-          addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
+          throw error;
         }
-        if (!isExpectedFailure(error) && !isExpectedOutcome(error)) {
+        addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
+        if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";
           const code = parseCodedErrorMessage(error).code ?? null;
           captureError(error, {

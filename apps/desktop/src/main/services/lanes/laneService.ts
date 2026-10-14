@@ -7632,11 +7632,10 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
-    async getReclaimRisk(laneIdOrArgs: string | { laneId: string }): Promise<LaneReclaimRisk> {
-      // IPC and storage pass the id; the `lane.getReclaimRisk` action (CLI,
-      // TUI, desktop over the runtime) passes its `{ laneId }` object.
-      const laneId = typeof laneIdOrArgs === "string" ? laneIdOrArgs : laneIdOrArgs?.laneId;
-      if (typeof laneId !== "string" || !laneId) throw new Error("getReclaimRisk requires laneId.");
+    // Takes the `lane.getReclaimRisk` action's `{ laneId }`, like `unarchive`
+    // and `archiveAndReclaim`: the CLI, the TUI and a paired desktop call it
+    // through the action, not only through IPC.
+    async getReclaimRisk({ laneId }: { laneId: string }): Promise<LaneReclaimRisk> {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const deleteRisk = await laneServiceApi.getDeleteRisk(laneId);
@@ -7773,7 +7772,7 @@ export function createLaneService({
         throw new Error("ADE will not reclaim a folder through a symbolic link.");
       }
 
-      const risk = await laneServiceApi.getReclaimRisk(args.laneId);
+      const risk = await laneServiceApi.getReclaimRisk({ laneId: args.laneId });
       const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
       if (hardBlock) throw new Error(hardBlock.message);
       if (risk.dirty && args.forceDirty !== true) {

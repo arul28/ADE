@@ -4651,7 +4651,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getDeleteRisk", { viewerAllowed: true }, async (payload) =>
     args.laneService.getDeleteRisk(requireString(payload.laneId, "lanes.getDeleteRisk requires laneId.")));
   register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
+    args.laneService.getReclaimRisk({ laneId: requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.") }));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
   // Both route through the one shared setup path (template merged over the
   // project config). Active lanes only, as the sync host always resolved them.

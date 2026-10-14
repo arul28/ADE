@@ -7966,7 +7966,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const conn = connectionRef.current;
       if (conn) {
         try {
-          const risk = await conn.action<LaneDeleteRisk>("lane", "getDeleteRisk", { laneId });
+          const risk = await conn.actionList<LaneDeleteRisk>("lane", "getDeleteRisk", [laneId]);
           description = formatLaneDeleteRisk(risk);
         } catch {
           // Risk is advisory; fall back to the plain form if it can't be fetched.

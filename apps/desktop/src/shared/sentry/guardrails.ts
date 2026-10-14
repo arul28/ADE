@@ -105,10 +105,14 @@ export function eventBudgetKey(event: FingerprintSource): string {
 }
 
 export function isIgnoredEvent(event: FingerprintSource): boolean {
+  const values = event.exception?.values ?? [];
   const texts = [
     event.message ?? "",
-    ...(event.exception?.values ?? []).map((value) => `${value.type ?? ""}: ${value.value ?? ""}`),
+    ...values.map((value) => `${value.type ?? ""}: ${value.value ?? ""}`),
   ];
-  return texts.some((text) =>
-    text && (IGNORED_ERROR_PATTERNS.some((pattern) => pattern.test(text)) || isExpectedOutcomeText(text)));
+  if (texts.some((text) => text && IGNORED_ERROR_PATTERNS.some((pattern) => pattern.test(text)))) return true;
+  // An expected outcome names the event only as its own error: one quoted in a
+  // `cause` must not drop the crash around it.
+  const primary = values[values.length - 1];
+  return isExpectedOutcomeText(primary ? primary.value ?? "" : event.message ?? "");
 }
