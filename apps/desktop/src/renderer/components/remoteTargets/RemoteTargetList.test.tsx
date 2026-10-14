@@ -2144,6 +2144,45 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
   });
 
+  it.each([
+    // The machine finished an earlier update while the question was open: the
+    // list said 1.1.9, the machine now says 1.3.0. Sending would restart it
+    // for nothing.
+    ["already on the target", "1.3.0", false],
+    // A version the client cannot read is not proof the machine is current;
+    // the host decides.
+    ["reporting an unreadable version", "nightly", true],
+  ])("re-reads a machine %s before sending the update (sent: %s)", async (label, liveVersion, sent) => {
+    const id = `target-live-${label.replace(/\W+/g, "-")}`;
+    installConnectedMachine("1.1.9", id);
+    installAdeMock();
+    updateGetStateMock.mockResolvedValue(autoUpdateSnapshot("1.2.0", "1.3.0"));
+    remoteRuntimeMock.updateAndRestart.mockResolvedValue({
+      ok: true,
+      updateApplied: true,
+      currentVersion: "1.1.9",
+      targetVersion: "1.3.0",
+      steps: [],
+      message: "Studio Mac updated to 1.3.0 — restarting.",
+    });
+
+    render(<RemoteTargetList />);
+    fireEvent.click(await screen.findByRole("button", { name: "Update" }));
+    const question = await screen.findByRole("alertdialog");
+    remoteRuntimeMock.updateAndRestart.mockClear();
+    installConnectedMachine(liveVersion, id);
+    fireEvent.click(within(question).getByRole("button", { name: "Update & restart" }));
+
+    if (sent) {
+      await waitFor(() =>
+        expect(remoteRuntimeMock.updateAndRestart).toHaveBeenCalledWith(id, "1.3.0"),
+      );
+    } else {
+      expect(await screen.findByText(/Already on 1\.3\.0/)).toBeTruthy();
+      expect(remoteRuntimeMock.updateAndRestart).not.toHaveBeenCalled();
+    }
+  });
+
   it("shows the machine's own failure line when the update does not land", async () => {
     installConnectedMachine("1.1.9", "target-update-fails");
     installAdeMock();
