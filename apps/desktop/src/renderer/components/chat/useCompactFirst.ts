@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
-import { compactFirstEligibleAtMs } from "../../../shared/compactFirst";
+import { compactFirstEligibleAtMs, lastFinishedTurnMs } from "../../../shared/compactFirst";
 import { contextCompactMergeKey } from "../../../shared/contextCompaction";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 
@@ -21,19 +21,16 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
   const [now, setNow] = useState(Date.now());
   const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
-  // Walks back only to the last `done`, so streaming deltas stay cheap.
-  const lastTurnEndedAt = useMemo(() => {
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index];
-      if (entry?.event.type === "done") return Date.parse(entry.timestamp);
-    }
-    return null;
-  }, [events]);
+  const { endedAtMs: lastTurnEndedAt, startedAtMs: lastTurnStartedAt } = useMemo(() => lastFinishedTurnMs(events), [events]);
   const cacheTtl = cache?.ttl;
   const cacheSince = cache?.since;
   const eligibleAt = useMemo(
-    () => compactFirstEligibleAtMs(cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null, Number.isFinite(lastTurnEndedAt) ? lastTurnEndedAt : null),
-    [cacheTtl, cacheSince, lastTurnEndedAt],
+    () => compactFirstEligibleAtMs(
+      cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null,
+      lastTurnEndedAt,
+      lastTurnStartedAt,
+    ),
+    [cacheTtl, cacheSince, lastTurnEndedAt, lastTurnStartedAt],
   );
   useEffect(() => {
     if (eligibleAt == null) return;

@@ -1095,25 +1095,26 @@ function formatCompactDuration(durationMs: number): string {
   return rem ? `${minutes}m ${rem}s` : `${minutes}m`;
 }
 
+/**
+ * One quiet line per queued message: a clock, the message, and where it stands
+ * ("sends next" / "queued"). The full text is in `/steer`; the line truncates.
+ */
 function queuedSteerRows(block: Extract<AggregatedBlock, { kind: "queued-steer" }>, width: number): RenderedChatRow[] {
-  const out: RenderedChatRow[] = [{
+  const status = block.sendsNext ? "sends next" : "queued";
+  const textWidthAvailable = Math.max(8, width - 2 - status.length - 4);
+  const text = truncateEnd(block.text.replace(/\s+/g, " ").trim(), textWidthAvailable);
+  const runs: InlineRun[] = [
+    { text: "◷ ", color: theme.color.t4 },
+    { text, color: theme.color.t2 },
+    { text: `  ${status}`, color: theme.color.t4, dim: true },
+  ];
+  return [{
     id: block.id,
     tone: "work",
-    text: "staged message · sends after turn",
-    color: theme.color.violet,
-    bold: true,
+    text: runs.map((run) => run.text).join(""),
+    runs,
     rail: null,
   }];
-  for (const line of wrapText(block.text, Math.max(8, width - 2), "  ", "  ")) {
-    out.push({
-      id: `${block.id}:text`,
-      tone: "work",
-      text: line,
-      color: theme.color.t2,
-      rail: null,
-    });
-  }
-  return out;
 }
 
 function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: string): RenderedChatRow[] {

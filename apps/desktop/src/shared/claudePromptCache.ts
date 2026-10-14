@@ -25,10 +25,21 @@ export function normalizeClaudePromptCache(value: unknown): ClaudePromptCache | 
   return typeof since === "string" && Number.isFinite(Date.parse(since)) ? { ttl, since } : { ttl };
 }
 
-/** When the lifetime started, in ms: `since`, else the turn end the caller knows. */
-export function claudePromptCacheSinceMs(cache: ClaudePromptCache | null | undefined, turnEndedAtMs: number | null): number | null {
+/**
+ * When the lifetime started, in ms: `since`, else the turn end the caller knows.
+ * Pass the start of that same turn when the turn comes from the event stream
+ * rather than the summary that carries `since`: a `since` older than the turn
+ * belongs to an earlier one (the summary has not caught up yet), and the turn
+ * itself restarted the cache, so its end is the nearer moment.
+ */
+export function claudePromptCacheSinceMs(
+  cache: ClaudePromptCache | null | undefined,
+  turnEndedAtMs: number | null,
+  turnStartedAtMs?: number | null,
+): number | null {
   const since = cache?.since ? Date.parse(cache.since) : Number.NaN;
-  return Number.isFinite(since) ? since : turnEndedAtMs;
+  if (!Number.isFinite(since)) return turnEndedAtMs;
+  return turnStartedAtMs != null && turnEndedAtMs != null && since < turnStartedAtMs ? turnEndedAtMs : since;
 }
 
 /**

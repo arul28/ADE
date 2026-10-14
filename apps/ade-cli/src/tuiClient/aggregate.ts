@@ -104,7 +104,8 @@ export type AggregatedBlock =
   | { kind: "activity-bundle"; id: string; turnId: string | null; entries: ActivityBundleEntry[]; live: boolean }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto" | "ade_fallback"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
   | { kind: "conversation-reset"; id: string }
-  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
+  /** `sendsNext`: first in the queue. */
+  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string; sendsNext: boolean }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
   | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[]; fileEntries: FileChangeEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
@@ -954,7 +955,7 @@ export function aggregateChatBlocks(args: {
   for (const line of lines) linesById.set(line.id, line);
 
   const blocks: AggregatedBlock[] = [];
-  const pendingSteerIds = new Set((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer) => steer.steerId));
+  const pendingSteerPositions = new Map((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer, index) => [steer.steerId, index] as const));
   const resolvedSubagentKeysByParent = buildResolvedSubagentKeysByParent(args.events);
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
@@ -1080,13 +1081,15 @@ export function aggregateChatBlocks(args: {
         continue;
       }
       if (event.steerId && event.deliveryState === "queued") {
-        if (pendingSteerIds.has(event.steerId)) {
+        const position = pendingSteerPositions.get(event.steerId);
+        if (position != null) {
           blocks.push({
             kind: "queued-steer",
             id,
             turnId,
             steerId: event.steerId,
             text: event.displayText ?? event.text,
+            sendsNext: position === 0,
           });
         }
         continue;
