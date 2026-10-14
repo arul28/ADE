@@ -57,7 +57,6 @@ function harness(options: { stored?: boolean; routes: (url: string, init?: Reque
     credentials,
     clientId: () => CLIENT_ID,
     openExternal: async () => {},
-    launchSpotifyApp: async () => {},
     broadcast: (state) => states.push(state),
     fetchImpl,
   });
@@ -108,8 +107,7 @@ describe("spotify service races", () => {
       credentials: { get: async (k) => files.get(k) ?? null, set: async (k, v) => void files.set(k, v), delete: async (k) => void files.delete(k) },
       clientId: () => CLIENT_ID,
       openExternal: async (url) => opened.resolve(url),
-      launchSpotifyApp: async () => {},
-      broadcast: () => {},
+        broadcast: () => {},
       fetchImpl: ((input: string | URL | Request) => {
         const url = String(input);
         if (url.includes("/api/token")) return Promise.resolve(json(tokenBody));

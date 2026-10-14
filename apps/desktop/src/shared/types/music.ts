@@ -7,10 +7,11 @@
  *   WKWebView on macOS) that the main process starts on demand and unloads
  *   when idle. Catalog and library reads go straight from the main process to
  *   the Apple Music API, so browsing never needs the host.
- * - Spotify does not play inside ADE. ADE drives a Spotify Connect device (the
- *   Spotify app on this computer, a phone, a speaker) through the Web API, so
- *   it needs Spotify Premium and a running Spotify device, and nothing DRM
- *   runs here. Item ids are Spotify URIs (`spotify:track:…`).
+ * - Spotify plays inside ADE too: its Web Playback SDK runs in the same player
+ *   host on its own page, and ADE shows up in Spotify as a Connect device. It
+ *   can also drive another device (the Spotify app, a phone, a speaker)
+ *   through the Web API. Spotify Premium is required. Item ids are Spotify
+ *   URIs (`spotify:track:…`).
  * See docs/features/music/README.md.
  */
 
@@ -36,77 +37,10 @@ export const MUSIC_IPC = {
   configureSpotify: "ade.music.configureSpotify",
   devices: "ade.music.devices",
   transfer: "ade.music.transfer",
-  openSpotify: "ade.music.openSpotify",
   stateEvent: "ade.music.state",
 } as const;
 
 export type MusicProvider = "apple" | "spotify";
-
-export const MUSIC_PROVIDERS: readonly MusicProvider[] = ["apple", "spotify"];
-
-/**
- * What the selected provider can do. The UI hides what a provider cannot do
- * instead of showing a control that fails.
- */
-export type MusicCapabilities = {
-  /** `charts()` returns popular items. Spotify: false (no charts API). */
-  charts: boolean;
-  /** Search and album/playlist pages work before Connect. Spotify: false. */
-  catalogBeforeConnect: boolean;
-  /** Playback works before Connect (Apple: 30-second previews). */
-  previewsBeforeConnect: boolean;
-  /** `scope: "library"` search. Spotify: false (no library search API). */
-  librarySearch: boolean;
-  /** `playNext` and `playLater` are distinct. Spotify has one "Add to queue" (use `playLater`). */
-  playNext: boolean;
-  /** `playAt` jumps within the Up Next list. Spotify: false. */
-  playAt: boolean;
-  /** `setRating` with `liked: false` (dislike). Spotify: false (save / remove only). */
-  dislike: boolean;
-  /** Playback runs on another device that `devices()` and `transfer()` choose. */
-  devices: boolean;
-  /** Connect opens a sign-in window ADE can bring forward (`showSignIn`). Spotify signs in in the default browser. */
-  signInWindow: boolean;
-  /** Repeat one / all and shuffle. */
-  repeat: boolean;
-  shuffle: boolean;
-};
-
-export const MUSIC_CAPABILITIES: Record<MusicProvider, MusicCapabilities> = {
-  apple: {
-    charts: true,
-    catalogBeforeConnect: true,
-    previewsBeforeConnect: true,
-    librarySearch: true,
-    playNext: true,
-    playAt: true,
-    dislike: true,
-    devices: false,
-    signInWindow: true,
-    repeat: true,
-    shuffle: true,
-  },
-  spotify: {
-    charts: false,
-    catalogBeforeConnect: false,
-    previewsBeforeConnect: false,
-    librarySearch: false,
-    playNext: false,
-    playAt: false,
-    dislike: false,
-    devices: true,
-    signInWindow: false,
-    repeat: true,
-    shuffle: true,
-  },
-};
-
-/** One provider's standing, for the provider picker. */
-export type MusicProviderSummary = {
-  availability: MusicAvailability;
-  authorized: boolean;
-  message: string | null;
-};
 
 /** A Spotify Connect device, as `GET /me/player/devices` lists it. */
 export type MusicDevice = {
@@ -128,14 +62,25 @@ export type MusicSpotifyState = {
   configured: boolean;
   clientId: string | null;
   /**
-   * The redirect URI to register in that Spotify app, exactly. ADE listens on
-   * this loopback address with a port chosen per sign-in, which Spotify allows
-   * for 127.0.0.1 when the URI is registered without a port.
+   * The redirect URI to register in that Spotify app, exactly, port included.
+   * ADE's sign-in always listens on `MUSIC_SPOTIFY_CALLBACK_PORT`: Spotify's
+   * dashboard rejects a portless loopback URI as "not secure".
    */
   redirectUri: string;
   /** The device playback runs on, when Spotify reports one. */
   device: MusicDevice | null;
 };
+
+/** The `transfer` device id for ADE's own Spotify player, which has no Spotify id until it runs. */
+export const MUSIC_SPOTIFY_ADE_DEVICE = "ade";
+
+/** The name ADE's own Spotify player has in Spotify's device list. */
+export const MUSIC_SPOTIFY_ADE_DEVICE_NAME = "ADE";
+
+/** Whether a Spotify device is ADE's own player. */
+export function isAdeSpotifyDevice(device: Pick<MusicDevice, "name" | "type"> | null | undefined): boolean {
+  return device?.name === MUSIC_SPOTIFY_ADE_DEVICE_NAME && device.type === "Computer";
+}
 
 /**
  * The loopback port ADE's Spotify sign-in listens on. Spotify's dashboard
@@ -229,10 +174,6 @@ export type MusicRepeatMode = 0 | 1 | 2; // none, one, all
 export type MusicState = {
   /** The provider this state describes (the selected one). Absent means Apple Music. */
   provider?: MusicProvider;
-  /** What the selected provider can do. Absent means Apple Music's. */
-  capabilities?: MusicCapabilities;
-  /** Every provider's standing, for the picker. */
-  providers?: Record<MusicProvider, MusicProviderSummary>;
   /** Spotify's setup and device; present when the state carries `provider`. */
   spotify?: MusicSpotifyState;
   availability: MusicAvailability;
@@ -355,7 +296,6 @@ export type MusicBridge = {
   /** Move Spotify playback to a device (`play` keeps it playing there, default true). */
   transfer: (args: { deviceId: string; play?: boolean }) => Promise<MusicCommandResult>;
   /** Start the Spotify app on this computer and wait for it to appear as a device. */
-  openSpotify: () => Promise<MusicCommandResult>;
   onState: (cb: (state: MusicState) => void) => () => void;
 };
 

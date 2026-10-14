@@ -291,7 +291,7 @@ async function assertBundledAdeMedia(resourcesPath, description) {
 }
 
 /**
- * The Apple Music player host and its page. Missing, the Music tab says the
+ * The music player host and its pages (Apple Music's and Spotify's). Missing, the Music tab says the
  * install is broken; one arch short, Music fails on half the Macs.
  */
 async function assertBundledMusicHost(resourcesPath, description) {
@@ -303,6 +303,8 @@ async function assertBundledMusicHost(resourcesPath, description) {
   // which only WebView2 (Windows) serves; the macOS host never loads it.
   for (const pageFile of ["index.html", "player.js"]) {
     await assertPathExists(path.join(hostDir, "page", pageFile), `Apple Music player page ${pageFile} for ${description}`);
+    // Spotify plays inside ADE from its own page in the same host.
+    await assertPathExists(path.join(hostDir, "page-spotify", pageFile), `Spotify player page ${pageFile} for ${description}`);
   }
   await assertUniversalBinary(helperPath, "Apple Music player host", description);
 }

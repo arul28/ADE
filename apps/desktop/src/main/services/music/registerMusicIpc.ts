@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 
 import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
 import {
@@ -98,8 +98,6 @@ export function registerMusicIpc(args: {
     credentials: args.spotifyCredentials,
     clientId: () => settings.get().spotifyClientId,
     openExternal: openExternalUrl,
-    // The Spotify app registers `spotify:` on macOS and Windows; with no app, opening it fails.
-    launchSpotifyApp: () => shell.openExternal("spotify:"),
     broadcast: (state) => router?.onSpotifyState(state),
     logger: args.logger,
   });
@@ -156,7 +154,6 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.devices, () => service.devices());
   handle(MUSIC_IPC.transfer, (input: { deviceId: string; play?: boolean }) =>
     service.transfer({ deviceId: str(input?.deviceId), play: input?.play !== false }));
-  handle(MUSIC_IPC.openSpotify, () => service.openSpotify());
 
   // The player host must never outlive ADE.
   app.once("will-quit", () => {

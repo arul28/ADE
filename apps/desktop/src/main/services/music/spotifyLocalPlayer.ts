@@ -1,4 +1,6 @@
+import { MUSIC_SPOTIFY_ADE_DEVICE_NAME } from "../../../shared/types/music";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
+import type { SpotifyTrack } from "./spotifyApi";
 
 /**
  * Spotify playing inside ADE: Spotify's Web Playback SDK on a page
@@ -30,6 +32,20 @@ export type SpotifyLocalState = {
   } | null;
 };
 
+/** The SDK's track in the Web API's shape, so `spotifyTrackItem` reads both alike. */
+export function sdkTrack(track: SpotifyLocalState["track"]): SpotifyTrack | null {
+  if (!track) return null;
+  return {
+    uri: track.uri,
+    name: track.name,
+    duration_ms: track.duration_ms,
+    type: track.type,
+    album: track.album ? { name: track.album.name, uri: track.album.uri, images: track.album.images } : undefined,
+    artists: track.artists,
+    external_urls: track.id ? { spotify: `https://open.spotify.com/track/${track.id}` } : undefined,
+  };
+}
+
 type Logger = {
   info: (event: string, data?: Record<string, unknown>) => void;
   warn: (event: string, data?: Record<string, unknown>) => void;
@@ -48,12 +64,13 @@ export function createSpotifyLocalPlayer(args: {
   /** The player stopped on its own (a crash, a lost device). */
   onLost: (reason: string) => void;
   logger?: Logger;
-  name?: string;
 }) {
   let host: MusicHost | null = null;
   let deviceId: string | null = null;
   let starting: Promise<string> | null = null;
   let stopping: Promise<void> | null = null;
+  /** Moves on every stop, so a start that finishes after one is abandoned, not published. */
+  let generation = 0;
   let volume = 0.8;
 
   const available = () => Boolean(args.hostExecutable);
@@ -64,7 +81,9 @@ export function createSpotifyLocalPlayer(args: {
       case "needToken":
         void args.accessToken().then(
           (token) => { if (token) h.send({ cmd: "token", rid: "t", token }); },
-          () => {},
+          (error: unknown) => {
+            args.logger?.warn("music.spotify.local_token_failed", { error: error instanceof Error ? error.message : String(error) });
+          },
         );
         break;
       case "state":
@@ -85,8 +104,10 @@ export function createSpotifyLocalPlayer(args: {
     if (host && deviceId) return Promise.resolve(deviceId);
     if (starting) return starting;
     if (!args.hostExecutable) return Promise.reject(new Error("Spotify plays in ADE on Windows and macOS."));
+    const gen = generation;
     starting = (async () => {
       if (stopping) await stopping;
+      if (gen !== generation) throw new Error("Spotify's player was stopped while it started.");
       const t0 = Date.now();
       const h = startMusicHost({
         executable: args.hostExecutable!,
@@ -132,8 +153,10 @@ export function createSpotifyLocalPlayer(args: {
       try {
         await h.ready;
         await Promise.race([loaded, ready.then(() => undefined)]);
-        await h.request("configure", { name: args.name ?? "ADE", volume }, READY_TIMEOUT_MS);
+        await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume }, READY_TIMEOUT_MS);
         const id = await ready;
+        // Stopped (tab closed, sign-out, switch) while this start was in flight.
+        if (gen !== generation) throw new Error("Spotify's player was stopped while it started.");
         host = h;
         deviceId = id;
         args.logger?.info("music.spotify.local_started", { pid: h.pid, ms: Date.now() - t0 });
@@ -151,6 +174,7 @@ export function createSpotifyLocalPlayer(args: {
   };
 
   const stop = async (): Promise<void> => {
+    generation += 1;
     const h = host;
     host = null;
     deviceId = null;
@@ -177,6 +201,8 @@ export function createSpotifyLocalPlayer(args: {
     /** The SDK device id while the player runs. */
     deviceId: (): string | null => deviceId,
     running: (): boolean => host !== null,
+    /** Running or starting: something `stop` has to end. */
+    active: (): boolean => host !== null || starting !== null,
     pause: () => send("pause"),
     resume: () => send("resume"),
     toggle: () => send("toggle"),

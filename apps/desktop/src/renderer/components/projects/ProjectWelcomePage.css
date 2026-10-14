@@ -160,7 +160,8 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-app-button:hover { filter: brightness(1.08); }
 .ade-home-app-button:active { transform: scale(0.95); }
 .ade-home-app-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.ade-spotify-app-tile { display: inline-grid; place-items: center; flex: none; border-radius: 8px; background: #121212; }
+/* Spotify's mark on its own black, as an app tile; the radius scales with the tile like Apple's icon. */
+.ade-spotify-app-tile { display: inline-grid; place-items: center; flex: none; border-radius: 23%; background: #121212; }
 .ade-home-action[data-primary] {
   background: var(--color-accent);
   border-color: transparent;

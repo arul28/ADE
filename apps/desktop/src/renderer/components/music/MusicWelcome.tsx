@@ -13,7 +13,7 @@ import {
 
 import type { MusicCharts, MusicItem, MusicSearchResult } from "../../../shared/types/music";
 import { MusicArt } from "./musicParts";
-import { useMusicReducedMotion } from "./MusicPlayer";
+import { useMusicArtworkStill } from "./MusicPlayer";
 import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import { SpotifySetup } from "./MusicProviderControls";
 import { musicActions, useMusicState } from "./musicStore";
@@ -115,7 +115,7 @@ export function SignInControls({ compact = false }: { compact?: boolean }) {
 
 /** A grid of real album covers behind the hero, softened so the text reads. */
 function ArtMosaic({ items }: { items: MusicItem[] }) {
-  const reduced = useMusicReducedMotion();
+  const reduced = useMusicArtworkStill();
   const tiles = items.slice(0, 24);
   return (
     <div className="ade-music-mosaic" aria-hidden>

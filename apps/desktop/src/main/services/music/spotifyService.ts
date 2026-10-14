@@ -15,10 +15,11 @@ import type {
   MusicSearchResult,
   MusicState,
 } from "../../../shared/types/music";
-import { MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
+import { isAdeSpotifyDevice as isAdeDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
 import {
   createSpotifyApi,
   SPOTIFY_NO_DEVICE_MESSAGE,
+  SPOTIFY_PREMIUM_MESSAGE,
   SpotifyApiError,
   spotifyDevice,
   spotifyTrackItem,
@@ -32,27 +33,34 @@ import {
   type SpotifySignIn,
   type SpotifyTokens,
 } from "./spotifyAuth";
-import { createSpotifyLocalPlayer, type SpotifyLocalState } from "./spotifyLocalPlayer";
+import { createSpotifyLocalPlayer, sdkTrack, type SpotifyLocalState } from "./spotifyLocalPlayer";
 
 /**
- * Spotify in the main process, as a Spotify Connect remote.
+ * Spotify in the main process.
  *
- * Spotify's audio never runs in ADE. The user's Spotify app (or a phone, a
- * speaker) plays, and ADE reads and drives it over the Web API: browsing,
- * the queue, transport, devices. That needs Spotify Premium and no DRM, so it
- * works the same on macOS and Windows.
+ * Spotify plays inside ADE: `spotifyLocalPlayer.ts` runs Spotify's Web
+ * Playback SDK in the music host, which shows up in Spotify as a Connect
+ * device named "ADE" and is where every play goes unless the user picked
+ * another device in the tab. Browsing, the queue and devices go through the
+ * Web API; pause, resume, seek and volume go straight to ADE's player when it
+ * is the one playing. Spotify Premium is required on macOS and Windows alike.
  *
  * - Sign-in is PKCE in the default browser (`spotifyAuth.ts`) with the
  *   user's own Client ID. The refresh token is kept in `credentials` (this
  *   app's safeStorage file); the access token stays in memory.
- * - Spotify sends no events, so ADE polls `GET /me/player`, and only while the
- *   Music tab is open on Spotify (`engage`): at the end of the playing track
- *   and at least every 15 s while playing, every 30 s otherwise, and once
- *   shortly after each command (Connect applies commands a moment later).
+ * - ADE's player reports its own changes (`applyLocal`). For anything else
+ *   Spotify sends no events, so ADE polls `GET /me/player`, and only while the
+ *   Music tab is open on Spotify (`engage`): once a minute while ADE's player
+ *   plays, otherwise at the end of the playing track and at least every 15 s
+ *   while playing, every 30 s when not, and once shortly after each command
+ *   (Connect applies commands a moment later).
  *   Polling stops when the tab closes, the provider changes or Spotify signs
  *   out. A 429 pauses every call for the time Spotify asks.
- * - When a play finds no active device, ADE picks one (the device it last
- *   used, this computer's Spotify app, or the only one) and transfers to it.
+ * - ADE's player starts when the tab opens or a play needs it, stops after
+ *   `SPOTIFY_LOCAL_IDLE_MS` without playing, and closing the tab pauses and
+ *   stops it. Without it (no host on this OS), a play with no active device
+ *   goes to the device ADE last used, this computer's Spotify app, or the
+ *   only one.
  * - Two generations keep late answers from undoing newer facts. `sessionGen`
  *   moves on every sign-in and sign-out, so a session read, token refresh or
  *   Connect that finishes after a sign-out cannot bring the session back;
@@ -62,14 +70,11 @@ import { createSpotifyLocalPlayer, type SpotifyLocalState } from "./spotifyLocal
  */
 
 export const SPOTIFY_CREDENTIAL_KEY = "music.spotify.session";
-/** The device id the renderer uses for ADE's own player (`transfer`). */
-export const SPOTIFY_ADE_DEVICE = "ade";
 const POLL_PLAYING_MS = 15_000;
 const POLL_IDLE_MS = 30_000;
 const POLL_AFTER_COMMAND_MS = 400;
 /** Renderers interpolate the position; a poll within this of it is not news. */
 const POSITION_DRIFT_S = 1.25;
-const OPEN_SPOTIFY_WAIT_MS = 15_000;
 /** While ADE's own player plays, its SDK reports every change; the Web API poll only catches the rest. */
 const POLL_LOCAL_MS = 60_000;
 /** ADE's own player stops after this long without playing, like Apple Music's host. */
@@ -94,6 +99,8 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 
 const REPEAT_FROM_SPOTIFY: Record<string, MusicRepeatMode> = { off: 0, track: 1, context: 2 };
 const REPEAT_TO_SPOTIFY = ["off", "track", "context"] as const;
+/** The SDK's repeat_mode: 0 off, 1 the album or playlist, 2 the song. */
+const REPEAT_FROM_SDK: Record<number, MusicRepeatMode> = { 0: 0, 1: 2, 2: 1 };
 
 const toNowPlaying = (item: MusicItem | null): MusicNowPlaying | null =>
   item
@@ -117,8 +124,6 @@ export function createSpotifyService(args: {
   clientId: () => string | null;
   /** Open a URL in the default browser (the consent page). */
   openExternal: (url: string) => Promise<void>;
-  /** Start the Spotify desktop app; rejects when it is not installed. */
-  launchSpotifyApp: () => Promise<void>;
   broadcast: (state: MusicState) => void;
   /** Where ADE's own Spotify player runs: the music host and a profile folder. Null executable: no local player. */
   playerHost?: { executable: string | null; userDataDir: string };
@@ -138,6 +143,8 @@ export function createSpotifyService(args: {
   let disposed = false;
   let broadcastTimer: NodeJS.Timeout | null = null;
   let lastBroadcast = "";
+  /** `state.message` holds a poll's rate-limit or connection failure, cleared by the next good poll. */
+  let pollFailed = false;
   let sessionGen = 0;
   let watchGen = 0;
   let persisting: Promise<unknown> = Promise.resolve();
@@ -368,49 +375,6 @@ export function createSpotifyService(args: {
   };
 
   /** A change reported by ADE's own player: applied at once, no Web API call. */
-  const applyLocal = (localState: SpotifyLocalState | null) => {
-    if (!localState) {
-      scheduleIdle();
-      return;
-    }
-    const id = local.deviceId();
-    if (id) {
-      device = { id, name: "ADE", type: "Computer", isActive: true, isRestricted: false, volume: state.playback.volume, supportsVolume: true };
-      lastDeviceId = id;
-    }
-    const p = state.playback;
-    const prevPlaying = p.isPlaying;
-    const item = localState.track
-      ? spotifyTrackItem({
-        uri: localState.track.uri,
-        id: localState.track.id,
-        name: localState.track.name,
-        duration_ms: localState.track.duration_ms,
-        type: localState.track.type,
-        album: localState.track.album ? { name: localState.track.album.name, uri: localState.track.album.uri, images: localState.track.album.images } : undefined,
-        artists: localState.track.artists,
-        external_urls: localState.track.id ? { spotify: `https://open.spotify.com/track/${localState.track.id}` } : undefined,
-      } as Parameters<typeof spotifyTrackItem>[0])
-      : null;
-    p.isPlaying = !localState.paused && Boolean(item);
-    p.state = p.isPlaying ? "playing" : item ? "paused" : "stopped";
-    p.shuffle = localState.shuffle;
-    p.repeat = (localState.repeat === 1 ? 2 : localState.repeat === 2 ? 1 : 0) as MusicRepeatMode;
-    const trackChanged = (item?.id ?? null) !== lastTrackId;
-    if (trackChanged) {
-      lastTrackId = item?.id ?? null;
-      p.nowPlaying = toNowPlaying(item);
-      state.queueRevision += 1;
-    }
-    p.duration = localState.duration > 0 ? localState.duration / 1000 : (item?.durationMs ?? 0) / 1000;
-    p.queuePosition = item ? 0 : -1;
-    p.queueLength = Math.max(p.queueLength, item ? 1 : 0);
-    reanchor(localState.position / 1000, trackChanged || p.isPlaying !== prevPlaying);
-    if (p.isPlaying) clearIdle();
-    else scheduleIdle();
-    emit();
-  };
-
   const reanchor = (seconds: number, force: boolean): boolean => {
     const p = state.playback;
     if (!force && Math.abs(musicPositionNow(p) - seconds) <= POSITION_DRIFT_S) return false;
@@ -419,10 +383,67 @@ export function createSpotifyService(args: {
     return true;
   };
 
-  const applyPlayer = (player: SpotifyPlayer | undefined) => {
+  /** What one report says (ADE's player or a Web API read); the rest of the playback state follows from it. */
+  const applyFacts = (facts: {
+    item: MusicItem | null;
+    isPlaying: boolean;
+    shuffle: boolean;
+    repeat: MusicRepeatMode;
+    durationSeconds: number;
+    positionSeconds: number;
+  }) => {
     const p = state.playback;
     const prevPlaying = p.isPlaying;
     const prevState = p.state;
+    p.isPlaying = facts.isPlaying;
+    p.state = p.isPlaying ? "playing" : facts.item ? "paused" : "stopped";
+    p.shuffle = facts.shuffle;
+    p.repeat = facts.repeat;
+    const trackChanged = (facts.item?.id ?? null) !== lastTrackId;
+    if (trackChanged) {
+      lastTrackId = facts.item?.id ?? null;
+      p.nowPlaying = toNowPlaying(facts.item);
+      state.queueRevision += 1;
+    }
+    p.duration = facts.durationSeconds;
+    p.queuePosition = facts.item ? 0 : -1;
+    p.queueLength = Math.max(p.queueLength, facts.item ? 1 : 0);
+    reanchor(facts.positionSeconds, trackChanged || p.isPlaying !== prevPlaying || p.state !== prevState);
+  };
+
+  /** A change reported by ADE's own player: applied at once, no Web API call. */
+  const applyLocal = (localState: SpotifyLocalState | null) => {
+    if (!localState) {
+      // The player is gone: a song it was playing is not playing anywhere now.
+      if (isAdeDevice(device)) {
+        resetPlayback();
+        emit();
+      }
+      scheduleIdle();
+      return;
+    }
+    // The tab closed (or Spotify was switched away) and this report came after.
+    if (!engaged) return;
+    const id = local.deviceId();
+    if (id) {
+      device = { id, name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, type: "Computer", isActive: true, isRestricted: false, volume: state.playback.volume, supportsVolume: true };
+      lastDeviceId = id;
+    }
+    const item = spotifyTrackItem(sdkTrack(localState.track));
+    applyFacts({
+      item,
+      isPlaying: !localState.paused && Boolean(item),
+      shuffle: localState.shuffle,
+      repeat: REPEAT_FROM_SDK[localState.repeat] ?? 0,
+      durationSeconds: localState.duration > 0 ? localState.duration / 1000 : (item?.durationMs ?? 0) / 1000,
+      positionSeconds: localState.position / 1000,
+    });
+    if (state.playback.isPlaying) clearIdle();
+    else scheduleIdle();
+    emit();
+  };
+
+  const applyPlayer = (player: SpotifyPlayer | undefined) => {
     if (!player || !player.device) {
       resetPlayback();
       state.playback.state = "none";
@@ -436,22 +457,16 @@ export function createSpotifyService(args: {
       emit();
       return;
     }
+    if (device?.volume !== null && device?.volume !== undefined) state.playback.volume = device.volume;
     const item = spotifyTrackItem(player.item ?? null);
-    p.isPlaying = Boolean(player.is_playing);
-    p.state = p.isPlaying ? "playing" : item ? "paused" : "stopped";
-    p.shuffle = Boolean(player.shuffle_state);
-    p.repeat = REPEAT_FROM_SPOTIFY[player.repeat_state ?? "off"] ?? 0;
-    if (device?.volume !== null && device?.volume !== undefined) p.volume = device.volume;
-    const trackChanged = (item?.id ?? null) !== lastTrackId;
-    if (trackChanged) {
-      lastTrackId = item?.id ?? null;
-      p.nowPlaying = toNowPlaying(item);
-      state.queueRevision += 1;
-    }
-    p.duration = item?.durationMs ? item.durationMs / 1000 : 0;
-    p.queuePosition = item ? 0 : -1;
-    p.queueLength = Math.max(p.queueLength, item ? 1 : 0);
-    reanchor((player.progress_ms ?? 0) / 1000, trackChanged || p.isPlaying !== prevPlaying || p.state !== prevState);
+    applyFacts({
+      item,
+      isPlaying: Boolean(player.is_playing),
+      shuffle: Boolean(player.shuffle_state),
+      repeat: REPEAT_FROM_SPOTIFY[player.repeat_state ?? "off"] ?? 0,
+      durationSeconds: item?.durationMs ? item.durationMs / 1000 : 0,
+      positionSeconds: (player.progress_ms ?? 0) / 1000,
+    });
     emit();
   };
 
@@ -483,7 +498,11 @@ export function createSpotifyService(args: {
         // Watching stopped (tab closed, sign-out, switch) while this was in flight.
         if (gen !== watchGen) return;
         applyPlayer(player);
-        if (state.message?.startsWith("Spotify is rate limiting") || state.message?.startsWith("Couldn't reach Spotify")) state.message = null;
+        // The poll works again: the rate-limit or connection message it set is over.
+        if (pollFailed) {
+          pollFailed = false;
+          state.message = null;
+        }
         delay = nextPollDelay();
       } catch (error) {
         if (gen !== watchGen) return;
@@ -494,6 +513,7 @@ export function createSpotifyService(args: {
           }
           if (error.reason === "RATE_LIMITED") delay = Math.max(POLL_IDLE_MS, (error.retryAfter ?? 30) * 1000);
           if (error.reason === "RATE_LIMITED" || error.reason === "NETWORK") {
+            pollFailed = true;
             state.message = error.message;
             emit();
           }
@@ -525,6 +545,8 @@ export function createSpotifyService(args: {
     // ADE's own player is part of the tab, like Apple Music's: closing it stops the music.
     if (local.running()) {
       void local.pause().catch(() => {}).finally(() => void local.stop());
+    } else if (local.active()) {
+      void local.stop();
     }
     state.host = { status: "stopped", pid: null, unloadAt: null };
     // Spotify keeps playing; ADE just stops watching it. Clearing the song
@@ -695,7 +717,7 @@ export function createSpotifyService(args: {
           state.queueRevision += 1;
           break;
       }
-      if (state.message === SPOTIFY_NO_DEVICE_MESSAGE || state.message?.startsWith("Spotify Premium")) state.message = null;
+      if (state.message === SPOTIFY_NO_DEVICE_MESSAGE || state.message === SPOTIFY_PREMIUM_MESSAGE) state.message = null;
       p.state = p.isPlaying ? "playing" : p.nowPlaying ? "paused" : p.state;
       if (cmd.type !== "seek") {
         p.position = newTrack ? 0 : carried;
@@ -779,36 +801,6 @@ export function createSpotifyService(args: {
     }
   };
 
-  const openSpotify = async (): Promise<MusicCommandResult> => {
-    try {
-      await loadSession();
-      if (!state.authorized) throw new Error("Connect Spotify first.");
-      const before = new Set((await api.devices().catch(() => [] as MusicDevice[])).map((d) => d.id));
-      try {
-        await args.launchSpotifyApp();
-      } catch {
-        throw new Error("Spotify isn't installed on this computer. Get it from spotify.com/download, or pick another device.");
-      }
-      const deadline = Date.now() + OPEN_SPOTIFY_WAIT_MS;
-      while (Date.now() < deadline && !disposed) {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        const devices = await api.devices().catch(() => [] as MusicDevice[]);
-        const local =
-          devices.find((d) => d.type === "Computer" && !before.has(d.id) && !d.isRestricted) ??
-          devices.find((d) => d.type === "Computer" && d.name.toLowerCase().startsWith(hostName) && !d.isRestricted);
-        if (local) {
-          if (!local.isActive) await api.transfer(local.id, false);
-          lastDeviceId = local.id;
-          repeatAfterCommand();
-          return { ok: true };
-        }
-      }
-      throw new Error("Spotify opened but didn't show up as a device yet. Sign in to the Spotify app, then try again.");
-    } catch (error) {
-      return { ok: false, error: errorMessage(error) };
-    }
-  };
-
   const browse = async <T>(fn: () => Promise<T>): Promise<T> => {
     await loadSession();
     try {
@@ -849,9 +841,14 @@ export function createSpotifyService(args: {
       // This computer is the default every time the tab opens; a device picked last time is not.
       if (!engaged) remoteDeviceId = null;
       engage();
+      // Start ADE's player now, like Apple Music's host, so the first play
+      // does not wait about a second for it; it stops again when idle.
+      if (state.authorized && !remoteDeviceId && local.available() && !local.running()) {
+        void playDevice().then(scheduleIdle, (error: unknown) => {
+          args.logger?.warn("music.spotify.local_prestart_failed", { error: errorMessage(error) });
+        });
+      }
     },
-    /** Whether Spotify can play inside ADE on this computer. */
-    playsInAde: (): boolean => local.available(),
     connect,
     disconnect: async () => {
       signIn?.cancel();
@@ -880,7 +877,7 @@ export function createSpotifyService(args: {
     devices: (): Promise<MusicDevice[]> => browse(() => api.devices()),
     transfer: async (input: { deviceId: string; play?: boolean }): Promise<MusicCommandResult> => {
       // "ade" is ADE's own player, which may not be running (and so has no Spotify id) yet.
-      if (input.deviceId === SPOTIFY_ADE_DEVICE) {
+      if (input.deviceId === MUSIC_SPOTIFY_ADE_DEVICE) {
         try {
           remoteDeviceId = null;
           const id = await playDevice();
@@ -901,7 +898,6 @@ export function createSpotifyService(args: {
         return { ok: false, error: errorMessage(error) };
       }
     },
-    openSpotify,
     /** The Music tab closed or the provider changed: stop polling. Spotify keeps playing. */
     unloadPlayer: async () => {
       disengage();

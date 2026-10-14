@@ -8,11 +8,10 @@ import type {
   MusicDevice,
   MusicLibraryKind,
   MusicProvider,
-  MusicProviderSummary,
   MusicSearchScope,
   MusicState,
 } from "../../../shared/types/music";
-import { MUSIC_CAPABILITIES, MUSIC_SPOTIFY_REDIRECT_URI } from "../../../shared/types/music";
+import { MUSIC_SPOTIFY_REDIRECT_URI } from "../../../shared/types/music";
 import type { MusicService } from "./musicService";
 import { normalizeSpotifyClientId } from "./spotifyAuth";
 import type { SpotifyService } from "./spotifyService";
@@ -64,12 +63,6 @@ function createMusicSettings(dir: string, logger?: { warn: (event: string, data?
 export type MusicSettingsStore = ReturnType<typeof createMusicSettings>;
 export { createMusicSettings };
 
-const summary = (state: MusicState | null): MusicProviderSummary => ({
-  availability: state?.availability ?? "ready",
-  authorized: Boolean(state?.authorized),
-  message: state?.message ?? null,
-});
-
 export type MusicRouter = ReturnType<typeof createMusicRouter>;
 
 export function createMusicRouter(args: {
@@ -91,8 +84,6 @@ export function createMusicRouter(args: {
     return {
       ...state,
       provider,
-      capabilities: MUSIC_CAPABILITIES[provider],
-      providers: { apple: summary(latest.apple), spotify: summary(latest.spotify) },
       spotify: {
         configured: Boolean(clientId),
         clientId,
@@ -108,26 +99,20 @@ export function createMusicRouter(args: {
     if (state) args.broadcast(decorate(provider, state));
   };
 
-  /** Each provider's own broadcasts land here; only the selected one is pushed. */
+  /** Each provider's own broadcasts land here; only the selected one's reach the renderer. */
   const onProviderState = (provider: MusicProvider, state: MusicState) => {
     latest[provider] = state;
-    // The other provider's summary (the picker's badge) changed too.
-    push();
+    if (provider === selected()) push();
   };
+
+  /** What both services do alike; the calls that differ are routed by hand below. */
+  type SharedCalls = Pick<MusicService & SpotifyService, "warm" | "connect" | "disconnect" | "command" | "queue" | "library" | "recent" | "showSignIn" | "cancelSignIn">;
+  const current = (): SharedCalls => (selected() === "apple" ? args.apple : args.spotify);
 
   const getState = async (): Promise<MusicState> => {
     const provider = selected();
-    const other: MusicProvider = provider === "apple" ? "spotify" : "apple";
     const state = provider === "apple" ? await args.apple.getState() : await args.spotify.getState();
     latest[provider] = state;
-    // The picker shows the other provider too. Apple's read checks its developer token, so it never blocks this one.
-    if (!latest[other]) {
-      void (other === "apple" ? args.apple.getState() : args.spotify.getState())
-        .then((otherState) => {
-          if (!latest[other]) onProviderState(other, otherState);
-        })
-        .catch(() => {});
-    }
     return decorate(provider, state);
   };
 
@@ -147,7 +132,8 @@ export function createMusicRouter(args: {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           args.logger?.warn("music.provider_pause_failed", { provider: previous, error: message });
-          throw new Error(`ADE couldn't pause Spotify, so it stayed on Spotify: ${message}`);
+          const name = previous === "apple" ? "Apple Music" : "Spotify";
+          throw new Error(`ADE couldn't pause ${name}, so it stayed on ${name}: ${message}`);
         }
         args.settings.set({ provider });
         args.logger?.info("music.provider_selected", { provider });
@@ -195,21 +181,20 @@ export function createMusicRouter(args: {
     warm: async () => {
       tabOpen = true;
       if (switching) await switching;
-      return selected() === "apple" ? args.apple.warm() : args.spotify.warm();
+      return current().warm();
     },
-    connect: () => (selected() === "apple" ? args.apple.connect() : args.spotify.connect()),
-    disconnect: () => (selected() === "apple" ? args.apple.disconnect() : args.spotify.disconnect()),
-    command: (command: MusicCommand) => (selected() === "apple" ? args.apple.command(command) : args.spotify.command(command)),
-    queue: () => (selected() === "apple" ? args.apple.queue() : args.spotify.queue()),
+    connect: () => current().connect(),
+    disconnect: () => current().disconnect(),
+    command: (command: MusicCommand) => current().command(command),
+    queue: () => current().queue(),
     search: (input: { term: string; scope: MusicSearchScope; limit?: number }) => {
       if (selected() === "apple") return args.apple.search(input);
       // Spotify has no library search.
       if (input.scope === "library") return Promise.resolve({ songs: [], albums: [], playlists: [], artists: [] });
       return args.spotify.search(input);
     },
-    library: (input: { kind: MusicLibraryKind; offset?: number; limit?: number }) =>
-      selected() === "apple" ? args.apple.library(input) : args.spotify.library(input),
-    recent: () => (selected() === "apple" ? args.apple.recent() : args.spotify.recent()),
+    library: (input: { kind: MusicLibraryKind; offset?: number; limit?: number }) => current().library(input),
+    recent: () => current().recent(),
     tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }) =>
       selected() === "apple" ? args.apple.tracks(input) : args.spotify.tracks(input),
     rating: (input: { id: string; library: boolean }) =>
@@ -223,12 +208,11 @@ export function createMusicRouter(args: {
       tabOpen = false;
       return selected() === "apple" ? args.apple.unloadPlayer() : args.spotify.unloadPlayer();
     },
-    showSignIn: () => (selected() === "apple" ? args.apple.showSignIn() : args.spotify.showSignIn()),
-    cancelSignIn: () => (selected() === "apple" ? args.apple.cancelSignIn() : args.spotify.cancelSignIn()),
+    showSignIn: () => current().showSignIn(),
+    cancelSignIn: () => current().cancelSignIn(),
     devices: (): Promise<MusicDevice[]> => (selected() === "spotify" ? args.spotify.devices() : Promise.resolve([])),
     transfer: (input: { deviceId: string; play?: boolean }) =>
       selected() === "spotify" ? args.spotify.transfer(input) : Promise.resolve(notSpotify()),
-    openSpotify: () => (selected() === "spotify" ? args.spotify.openSpotify() : Promise.resolve(notSpotify())),
     dispose: async () => {
       args.spotify.dispose();
       await args.apple.dispose();

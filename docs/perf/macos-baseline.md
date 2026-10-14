@@ -722,12 +722,18 @@ Spotify's service sets when Spotify accepts the play, not when audio starts.
 | Same, playing: physical footprint | same | 75-81 MB | 77-82 MB | 120 MB |
 | Same, paused: CPU / footprint | same, 3 runs | 0.0-0.2% / 73-75 MB | 0.1-0.2% / 75 MB | 1% / 120 MB |
 | Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0/s | 0/s | 0.2/s |
-| Play accepted, player not running | `music.mjs first-play cold`, 2 runs | 0.76-1.15 s | 1.19-1.48 s | 2 s |
+| Tab opened, then play 2.5 s later (the player starts with the tab) | `cdp.mjs eval`: `unload`, `warm`, wait, `playItems`, 5 runs | — | 0.15-0.35 s (was 1.2-1.5 s before the player started with the tab) | 0.6 s |
+| Play accepted, player not running (play the instant it starts) | `music.mjs first-play cold`, 4 runs | 0.76-1.15 s | 1.19-1.61 s | 2 s |
 | Same, player running | `music.mjs first-play warm`, 3 runs | 0.16-0.39 s | 0.16-0.17 s | 0.6 s |
 | Tab closed: player processes / audio output | `pgrep`, `pmset -g assertions` | 0 / none | 0 / none | 0 / none |
 
 - `music.mjs first-play` plays five songs of a search for Spotify (it has no
   charts).
+- A cold start is about 0.25 s to launch the host, 0.2 s to load the SDK,
+  0.2 s until the SDK asks for a token, then 0.4-0.8 s for Spotify to register
+  the device over the network. None of it can be skipped, so the player starts
+  when the tab opens (like Apple Music's host) and stops after five minutes
+  without playing.
 - While ADE's own player plays, the Web API is read once a minute instead of
   every 15 s: the SDK reports track, pause and position changes itself.
 - The service's request budget (`spotifyService.test.ts`, fake time): a closed

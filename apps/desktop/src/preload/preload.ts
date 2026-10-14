@@ -13816,7 +13816,6 @@ const adeBridge = {
     configureSpotify: (args) => ipcRenderer.invoke(MUSIC_IPC.configureSpotify, args),
     devices: () => ipcRenderer.invoke(MUSIC_IPC.devices),
     transfer: (args) => ipcRenderer.invoke(MUSIC_IPC.transfer, args),
-    openSpotify: () => ipcRenderer.invoke(MUSIC_IPC.openSpotify),
     onState: (cb: (state: MusicState) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
       ipcRenderer.on(MUSIC_IPC.stateEvent, listener);

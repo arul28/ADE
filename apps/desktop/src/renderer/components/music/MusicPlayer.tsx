@@ -36,9 +36,17 @@ import { formatMusicTime, musicActions, useMusicLike, useMusicPosition, useMusic
 
 /** Reduce motion: the OS preference or ADE's own (`html[data-motion="reduced"]`). */
 export function useMusicReducedMotion(): boolean {
-  const spotify = useMusicState((s) => s?.provider === "spotify");
   const os = useReducedMotion();
-  return spotify || Boolean(os) || (typeof document !== "undefined" && document.documentElement.dataset.motion === "reduced");
+  return Boolean(os) || (typeof document !== "undefined" && document.documentElement.dataset.motion === "reduced");
+}
+
+/**
+ * Keep the artwork still: Reduce motion, or Spotify, whose design guidelines
+ * do not allow its artwork to be blurred, scaled or animated.
+ */
+export function useMusicArtworkStill(): boolean {
+  const spotify = useMusicState((s) => s?.provider === "spotify");
+  return useMusicReducedMotion() || spotify;
 }
 
 const MotionButton = motion.create(Button);
@@ -424,7 +432,7 @@ export function MusicPlayerCard({
   onToggleQueue: () => void;
   onCollapse: () => void;
 }) {
-  const reduced = useMusicReducedMotion();
+  const reduced = useMusicArtworkStill();
   const nowPlaying = useMusicState((s) => s?.playback.nowPlaying ?? null);
   const isPlaying = useMusicState((s) => Boolean(s?.playback.isPlaying));
   const suspended = useMusicState((s) => s?.host.status === "suspended");

@@ -2,10 +2,10 @@ import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Globe, MusicNotes, Pause, Play, Repeat, RepeatOnce, Shuffle, SkipBack, SkipForward } from "@phosphor-icons/react";
-import type { HomeNowPlayingCommand, HomeNowPlayingSession, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
+import { SPOTIFY_APP_NAME, type HomeNowPlayingCommand, type HomeNowPlayingSession, type HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
 import type { MusicRepeatMode } from "../../../../shared/types/music";
 import { showTabInBrowserTab } from "../../browser/browserTab";
-import { MusicSlider, PlayerIconButton, useMusicReducedMotion } from "../../music/MusicPlayer";
+import { MusicSlider, PlayerIconButton, useMusicArtworkStill } from "../../music/MusicPlayer";
 import { MusicProviderBadge, useMusicProvider } from "../../music/musicProvider";
 import { formatMusicTime, musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "../../music/musicStore";
 import { useWidgetPreview, useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
@@ -286,7 +286,7 @@ function Cover({ model, reduced }: { model: CardModel; reduced: boolean }) {
 }
 
 function PlayerCard({ model, seek, still, top }: { model: CardModel; seek: React.ReactNode; still: boolean; top: React.ReactNode }) {
-  const reduced = useMusicReducedMotion() || still;
+  const reduced = useMusicArtworkStill() || still;
   return (
     <motion.div
       className="ade-np2-player"
@@ -451,7 +451,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const shape = useArtShape(artwork);
   // A source with no cover tints the card with its own icon (YouTube red, Spotify green).
   const provider = useMusicProvider();
-  const spotify = (own && provider === "spotify") || session?.app === "Spotify";
+  const spotify = (own && provider === "spotify") || session?.app === SPOTIFY_APP_NAME;
   const backdrop = spotify ? null : artwork ?? (own ? null : appIcon);
   const hasBridge = Boolean(window.ade?.home?.nowPlaying);
   const top = hasBridge ? <TopRow current={own ? null : session} sessions={sessions} appleMusic={own && Boolean(window.ade?.music)} /> : null;

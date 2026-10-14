@@ -8,7 +8,8 @@ import { useLoad, ViewHeader, type RowProps } from "./musicViewParts";
 /** Up Next: the player's own queue (catalog songs), the current one first. */
 export function QueueView({ nowPlayingId, isPlaying, revision, hostStatus }: RowProps & { revision: number; hostStatus: string }) {
   const { data, error } = useLoad<MusicQueue>(() => window.ade!.music!.queue(), [revision, nowPlayingId, hostStatus]);
-  const canPlayAt = useMusicState((state) => state?.capabilities?.playAt ?? true);
+  // Spotify has no "jump to a song in Up Next".
+  const canPlayAt = useMusicState((state) => state?.provider !== "spotify");
   const position = data?.position ?? -1;
   const items = data?.items ?? [];
   const current = position >= 0 ? items[position] : undefined;

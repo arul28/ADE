@@ -40,6 +40,9 @@ export type HomeNowPlayingCommand = "play" | "pause" | "toggle" | "next" | "prev
  */
 export type HomeNowPlayingSourceKind = "ade-music" | "browser" | "app";
 
+/** The `app` name a Spotify session carries (`nowPlayingSources.ts`). */
+export const SPOTIFY_APP_NAME = "Spotify";
+
 export type HomeNowPlayingSession = {
   /** Stable while the source lives: "ade-music", "tab:<id>" or "app:<OS session id>". */
   id: string;

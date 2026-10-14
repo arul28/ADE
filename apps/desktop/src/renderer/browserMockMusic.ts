@@ -1,4 +1,4 @@
-import { MUSIC_CAPABILITIES, MUSIC_SPOTIFY_REDIRECT_URI, type MusicBridge, type MusicProvider, type MusicState } from "../shared/types/music";
+import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicBridge, type MusicProvider, type MusicState } from "../shared/types/music";
 
 /** Signed-out UI preview only. This never signs in, opens Spotify or plays audio. */
 export function createBrowserMockMusic(): MusicBridge {
@@ -7,7 +7,6 @@ export function createBrowserMockMusic(): MusicBridge {
   const listeners = new Set<(state: MusicState) => void>();
   const state = (): MusicState => ({
     provider,
-    capabilities: MUSIC_CAPABILITIES[provider],
     availability: provider === "spotify" && !clientId ? "unavailable" : "ready",
     authorized: false,
     connecting: false,
@@ -44,7 +43,6 @@ export function createBrowserMockMusic(): MusicBridge {
     cancelSignIn: async () => {},
     devices: async () => [],
     transfer: unavailable,
-    openSpotify: unavailable,
     onState: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
 }

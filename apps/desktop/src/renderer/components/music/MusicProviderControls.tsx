@@ -1,4 +1,4 @@
-import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicDevice } from "../../../shared/types/music";
+import { isAdeSpotifyDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_REDIRECT_URI, type MusicDevice } from "../../../shared/types/music";
 import React from "react";
 import { ArrowSquareOut, Check, CircleNotch, Copy } from "@phosphor-icons/react";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
@@ -125,7 +125,7 @@ export function SpotifyOnboarding() {
             <h2>Copy your Client ID</h2>
             <p>Spotify opens your new app after <b>Save</b>. Its <b>Client ID</b> is under <b>Basic information</b>: 32 letters and numbers. You don't need the client secret.</p>
             <input
-              className="ade-spotify-client-id"
+              className="kit-input ade-spotify-client-id"
               value={clientId}
               onChange={(event) => setClientId(event.target.value)}
               autoComplete="off"
@@ -213,9 +213,6 @@ export function SpotifySetup() {
   );
 }
 
-/** ADE's own player, which `transfer` starts on demand. */
-const ADE_DEVICE = "ade";
-
 /**
  * Where Spotify plays. ADE itself by default; the menu can send it to the
  * Spotify app, a phone or a speaker instead.
@@ -231,15 +228,15 @@ export function SpotifyDevices() {
     try { setDevices(await window.ade!.music!.devices()); }
     catch (error) { setError(friendlyMusicError(error instanceof Error ? error.message : String(error)) ?? "Couldn't load devices. Try again."); }
   }, []);
-  // ADE's player reports itself as "ADE"; the menu lists it once, as this computer.
-  const isAde = (device: MusicDevice | null) => Boolean(device && device.name === "ADE" && device.type === "Computer");
-  const others = (devices ?? []).filter((device) => !isAde(device));
-  const value = !active || isAde(active) ? ADE_DEVICE : active.id;
+  // ADE's own player is listed once, as this computer.
+  const others = (devices ?? []).filter((device) => !isAdeSpotifyDevice(device));
+  const value = !active || isAdeSpotifyDevice(active) ? MUSIC_SPOTIFY_ADE_DEVICE : active.id;
   return (
     <div className="ade-spotify-device">
       <label>
         <span>Playing on</span>
         <select
+          className="kit-input"
           aria-label="Spotify playback device"
           value={value}
           disabled={busy}
@@ -254,8 +251,8 @@ export function SpotifyDevices() {
             }, () => setError("Couldn't switch devices. Try again.")).finally(() => setBusy(false));
           }}
         >
-          <option value={ADE_DEVICE}>This computer (ADE)</option>
-          {active && !isAde(active) && !others.some((device) => device.id === active.id) ? <option value={active.id}>{active.name}</option> : null}
+          <option value={MUSIC_SPOTIFY_ADE_DEVICE}>This computer (ADE)</option>
+          {active && !isAdeSpotifyDevice(active) && !others.some((device) => device.id === active.id) ? <option value={active.id}>{active.name}</option> : null}
           {others.map((device) => <option key={device.id} value={device.id} disabled={device.isRestricted}>{device.name}{device.isRestricted ? " (restricted)" : ""}</option>)}
         </select>
       </label>
