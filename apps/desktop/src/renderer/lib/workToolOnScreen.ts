@@ -59,23 +59,11 @@ function subscribeMountChanges(listener: () => void): () => void {
  * Whether a surface's element is mounted, kept current across mounts.
  *
  * Mounted, not measured: this answers "is the pane showing it", which a
- * surface that must never duplicate the pane (the Mac Desktop's floating
- * player, the turn's time-lapse) needs even while the pane slides open.
+ * surface that must never duplicate the pane — the Mac Desktop's floating
+ * player, App Control's — needs even while the pane slides open.
  */
 export function useWorkSurfaceElementMounted(key: string | null): boolean {
   const snapshot = () => (key ? isWorkSurfaceElementMounted(key) : false);
-  return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
-}
-
-/**
- * Whether a surface is showing: laid out in the tools pane, or floating over
- * the chat. `useWorkSurfaceElementMounted` answers only the first, so a card
- * that must not duplicate the floating player — the turn's time-lapse — needs
- * this one. A floating surface is never laid out in the pane, so its key only
- * ever appears in the `floating` map.
- */
-export function useWorkSurfaceMounted(key: string | null): boolean {
-  const snapshot = () => (key ? isWorkSurfaceMounted(key) : false);
   return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
 }
 

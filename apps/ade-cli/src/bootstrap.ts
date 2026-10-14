@@ -1993,7 +1993,6 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
-        isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
         // A lane may not claim another lane's App Control app onto its screen.
         appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
           appControlService?.laneForAppProcess(pid) ?? null,
@@ -2319,16 +2318,13 @@ export async function createAdeRuntime(args: {
         getUsageService: () => usageTrackingServiceRef,
         conflictService,
         computerUseArtifactBrokerService,
-        // One line of system prompt and the per-turn time-lapse clip, both
-        // behind the same synchronous gate: the send path must not await a
-        // service to decide to say nothing, so it reads the in-memory display
-        // registry, and an idle lane pays nothing.
+        // One line of system prompt, behind a synchronous gate: the send path
+        // must not await a service to decide to say nothing, so it reads the
+        // in-memory display registry, and an idle lane pays nothing.
         macDesktopTurnRecorder: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
             supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-            beginTurn: (args) => macDesktopService.beginTurn(args),
-            noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
           }
           : null,
         laneService,

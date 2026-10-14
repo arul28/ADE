@@ -39,17 +39,22 @@ function showPaneTool({
   tool,
   scopeKey,
   activeLaneId,
-  setWorkSidebarTool,
+  showWorkSidebarTool,
 }: {
   chatSessionId: string;
   tool: "ios" | DesktopWorkTool | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
-  setWorkSidebarTool: (tool: WorkSidebarTab) => void;
+  showWorkSidebarTool: (tool: WorkSidebarTab) => void;
 }): Promise<WorkToolShowOutcome> {
   // The preview marker is keyed `mac-desktop` on both hosts (see `MacDesktopMiniPlayer`).
   setWorkLivePreviewEnabledForChat(chatSessionId, tool === "windows-desktop" ? "mac-desktop" : tool, true);
-  setWorkSidebarTool(tool);
+  // Activates the tool in an open pane and never opens a closed one: the
+  // person's layout is not an agent's to rearrange, and the surface an agent
+  // drives continuously would otherwise re-open the pane every time they
+  // closed it. `showWorkSurface` floats the player instead when the pane is
+  // closed.
+  showWorkSidebarTool(tool);
   return showOutcomeWhenOnScreen(workSurfaceKey(tool, scopeKey, activeLaneId));
 }
 
@@ -84,6 +89,7 @@ export function useWorkShowRequests({
   workSidebarVisible,
   workSidebarTool,
   setWorkSidebarTool,
+  showWorkSidebarTool,
 }: {
   active: boolean;
   activeWorkSession: TerminalSessionSummary | null;
@@ -97,7 +103,13 @@ export function useWorkShowRequests({
   activeLaneId: string | null;
   workSidebarVisible: boolean;
   workSidebarTool: WorkSidebarTab | null;
+  /** A person's pick: activates the tool and reveals the pane. */
   setWorkSidebarTool: (tool: WorkSidebarTab) => void;
+  /**
+   * A surface request's tool: activates it in an already-open pane and leaves a
+   * closed one closed (`useWorkSidebarTool.showTool`).
+   */
+  showWorkSidebarTool: (tool: WorkSidebarTab) => void;
 }): AppleMiniPlayerSurface | null {
   /*
    * Built from the SESSION in front, never from `activeLaneId`: on the
@@ -125,102 +137,75 @@ export function useWorkShowRequests({
   const desktopTool = hostDesktopTool({ hostPlatform: desktopSupport?.platform ?? null });
   const macDesktopToolOpening = workSidebarVisible && workSidebarTool === desktopTool;
   const appControlToolOpening = workSidebarVisible && workSidebarTool === "app-control";
-  const showWorkSurface = useCallback((
-    request: WorkToolShowRequest,
-  ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
-    if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
-    /*
-     * A floating card shows one lane's screen or app, so it floats only when
-     * the chat's own lane is the lane the pane grants it on, and the request
-     * (when it names a lane) names that same lane. A lane-less chat, whose
-     * tools borrow the pane's fallback lane, gets none.
-     */
-    const chatLaneId = activeWorkSession.laneId || null;
-    const floatsOnChatLane = Boolean(
+  /*
+   * A floating card shows one lane's screen or app, so it floats only when the
+   * chat's own lane is the lane the pane grants it on, and the request (when it
+   * names a lane) names that same lane. A lane-less chat, whose tools borrow
+   * the pane's fallback lane, gets none.
+   */
+  const floatsOnChatLane = useCallback((request: WorkToolShowRequest): boolean => {
+    const chatLaneId = activeWorkSession?.laneId || null;
+    return Boolean(
       chatLaneId
         && chatLaneId === activeLaneId
         && (!request.laneId || request.laneId === chatLaneId),
     );
-    /*
-     * One lane for every surface: `activeLaneId`, the one the pane mounts its
-     * tools under. Writing the tool into the store is a request, not a result:
-     * "shown" is answered only once the tool is on screen there.
-     */
-    if (request.surface === "browser") {
-      setWorkSidebarTool("browser");
-      return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId));
-    }
-    if (request.surface === "apple") {
-      // An explicit ask undoes an earlier × for this chat's floating device.
-      // Mounting the Apple tool takes the device back from a floating player.
-      return showPaneTool({
-        chatSessionId: request.chatSessionId,
-        tool: "ios",
-        scopeKey,
-        activeLaneId,
-        setWorkSidebarTool,
-      });
-    }
-    if (request.surface === "mac-desktop") {
-      // The pane outranks the card for the lane's one decoder
-      // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
-      return showPaneTool({
-        chatSessionId: request.chatSessionId,
-        tool: desktopTool,
-        scopeKey,
-        activeLaneId,
-        setWorkSidebarTool,
-      });
-    }
-    if (request.surface === "floating-mac-desktop") {
-      // Like the floating device: only over a chat of the card's own lane.
-      if (!floatsOnChatLane) return "declined";
-      if (isWorkSurfaceOnScreen(workSurfaceKey(desktopTool, scopeKey, activeLaneId))) return "shown";
-      if (request.auto) {
-        if (macDesktopToolOpening) return "declined";
-        if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "mac-desktop")) {
-          return "declined";
-        }
-        return grantMacDesktopCardForChat(activeLaneId, request.chatSessionId) ? "shown" : "declined";
+  }, [activeLaneId, activeWorkSession]);
+
+  /**
+   * The lane's screen as the floating player, for an ask the pane cannot take.
+   *
+   * Named by `floating-mac-desktop`, and reached from `mac-desktop` while the
+   * person has the pane closed: their layout is theirs, so the surface an agent
+   * drives continuously floats over the chat instead of re-opening the pane
+   * every time they close it.
+   */
+  const showFloatingMacDesktop = useCallback((request: WorkToolShowRequest): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
+    // Like the floating device: only over a chat of the card's own lane.
+    if (!floatsOnChatLane(request)) return "declined";
+    if (isWorkSurfaceOnScreen(workSurfaceKey(desktopTool, scopeKey, activeLaneId))) return "shown";
+    if (request.auto) {
+      if (macDesktopToolOpening) return "declined";
+      if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "mac-desktop")) {
+        return "declined";
       }
-      // Asked for by name: undo an earlier × and float the card now, with the
-      // Off state and its Start when there is no display.
-      floatWorkLiveCardForChat(request.chatSessionId, "mac-desktop");
-      grantMacDesktopCardForChat(activeLaneId, request.chatSessionId);
-      return showOutcomeWhenOnScreen(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
+      return grantMacDesktopCardForChat(activeLaneId, request.chatSessionId) ? "shown" : "declined";
     }
-    if (request.surface === "app-control") {
-      return showPaneTool({
-        chatSessionId: request.chatSessionId,
-        tool: "app-control",
-        scopeKey,
-        activeLaneId,
-        setWorkSidebarTool,
-      });
-    }
-    if (request.surface === "floating-app-control") {
-      // Like the floating Mac Desktop: only over a chat of the app's own lane,
-      // and never beside the pane already showing it.
-      if (!floatsOnChatLane) return "declined";
-      if (isWorkSurfaceOnScreen(workSurfaceKey("app-control", scopeKey, activeLaneId))) return "shown";
-      if (request.auto) {
-        if (appControlToolOpening) return "declined";
-        if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "app-control")) {
-          return "declined";
-        }
-        return grantAppControlCardForChat(activeLaneId, request.chatSessionId) ? "shown" : "declined";
+    // Asked for by name: undo an earlier × and float the card now, with the
+    // Off state and its Start when there is no display.
+    floatWorkLiveCardForChat(request.chatSessionId, "mac-desktop");
+    grantMacDesktopCardForChat(activeLaneId, request.chatSessionId);
+    return showOutcomeWhenOnScreen(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
+  }, [activeLaneId, desktopTool, floatsOnChatLane, macDesktopToolOpening, scopeKey]);
+
+  /** The lane's app as the floating player. Same rule as the screen above. */
+  const showFloatingAppControl = useCallback((request: WorkToolShowRequest): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
+    // Like the floating Mac Desktop: only over a chat of the app's own lane,
+    // and never beside the pane already showing it.
+    if (!floatsOnChatLane(request)) return "declined";
+    if (isWorkSurfaceOnScreen(workSurfaceKey("app-control", scopeKey, activeLaneId))) return "shown";
+    if (request.auto) {
+      if (appControlToolOpening) return "declined";
+      if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "app-control")) {
+        return "declined";
       }
-      // Asked for by name: undo an earlier × and float the player now.
-      floatWorkLiveCardForChat(request.chatSessionId, "app-control");
-      grantAppControlCardForChat(activeLaneId, request.chatSessionId);
-      return showOutcomeWhenOnScreen(workSurfaceKey(APP_CONTROL_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
+      return grantAppControlCardForChat(activeLaneId, request.chatSessionId) ? "shown" : "declined";
     }
-    if (request.surface !== "floating-apple") return "declined";
+    // Asked for by name: undo an earlier × and float the player now.
+    floatWorkLiveCardForChat(request.chatSessionId, "app-control");
+    grantAppControlCardForChat(activeLaneId, request.chatSessionId);
+    return showOutcomeWhenOnScreen(workSurfaceKey(APP_CONTROL_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
+  }, [activeLaneId, appControlToolOpening, floatsOnChatLane, scopeKey]);
+
+  /** The lane's Apple device as the floating player. */
+  const showFloatingApple = useCallback((
+    request: WorkToolShowRequest,
+  ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
     // The Apple tool is already on screen in the pane.
     if (isWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, activeLaneId))) return "shown";
     // The player only floats over a chat of its own lane, so a lane-less chat
     // (whose tools borrow the pane's fallback lane) gets none.
-    if (!activeWorkSession.laneId) return "declined";
+    if (!activeWorkSession?.laneId) return "declined";
     // Opening, not yet visible: an automatic float would only be taken back
     // by the pane a moment later.
     if (request.auto && appleToolOpening) return "declined";
@@ -233,16 +218,83 @@ export function useWorkShowRequests({
       if (!floated) return "declined";
       return isDocumentVisible() ? "shown" : "opened";
     });
+  }, [activeLaneId, activeWorkSession, appleToolOpening, runtimePin, scopeKey]);
+
+  const showWorkSurface = useCallback((
+    request: WorkToolShowRequest,
+  ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
+    if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
+    /*
+     * One lane for every surface: `activeLaneId`, the one the pane mounts its
+     * tools under. Writing the tool into the store is a request, not a result:
+     * "shown" is answered only once the tool is on screen there.
+     *
+     * A screen or app tool the agent drives continuously never opens a closed
+     * pane. Openness is the person's workspace preference — the pane is where
+     * they put it, and a request that arrived while they were elsewhere is not
+     * a reason to take their layout back. With the pane open the tool activates
+     * in it as before; with the pane closed the floating player shows the same
+     * surface over the chat, which is what the ask was for anyway.
+     *
+     * Two asks keep the pane, and both would otherwise be answered with
+     * nothing: a lane-less chat, whose screen is the pane's fallback lane and
+     * so has no player to float it (`floatsOnChatLane`), and the browser —
+     * `ade browser handoff` is an agent saying it cannot get past a page and
+     * the person has to act there.
+     */
+    if (request.surface === "browser") {
+      setWorkSidebarTool("browser");
+      return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId));
+    }
+    if (request.surface === "apple") {
+      if (!workSidebarVisible && activeWorkSession.laneId) return showFloatingApple(request);
+      // An explicit ask undoes an earlier × for this chat's floating device.
+      // Mounting the Apple tool takes the device back from a floating player.
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: "ios",
+        scopeKey,
+        activeLaneId,
+        showWorkSidebarTool,
+      });
+    }
+    if (request.surface === "mac-desktop") {
+      if (!workSidebarVisible && activeWorkSession.laneId) return showFloatingMacDesktop(request);
+      // The pane outranks the card for the lane's one decoder
+      // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: desktopTool,
+        scopeKey,
+        activeLaneId,
+        showWorkSidebarTool,
+      });
+    }
+    if (request.surface === "app-control") {
+      if (!workSidebarVisible && activeWorkSession.laneId) return showFloatingAppControl(request);
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: "app-control",
+        scopeKey,
+        activeLaneId,
+        showWorkSidebarTool,
+      });
+    }
+    if (request.surface === "floating-mac-desktop") return showFloatingMacDesktop(request);
+    if (request.surface === "floating-app-control") return showFloatingAppControl(request);
+    if (request.surface !== "floating-apple") return "declined";
+    return showFloatingApple(request);
   }, [
     activeLaneId,
     activeWorkSession,
-    appControlToolOpening,
-    appleToolOpening,
     desktopTool,
-    macDesktopToolOpening,
-    runtimePin,
     scopeKey,
     setWorkSidebarTool,
+    showFloatingAppControl,
+    showFloatingApple,
+    showFloatingMacDesktop,
+    showWorkSidebarTool,
+    workSidebarVisible,
   ]);
 
   useWorkToolShowHandler(

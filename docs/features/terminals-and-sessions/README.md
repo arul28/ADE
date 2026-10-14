@@ -981,6 +981,11 @@ Renderer surfaces:
   the user opens it. A show answers `shown` only when the surface is mounted,
   its pane has real width, and the window is visible. The same hook decides
   whether an agent's automatic request may raise the floating Apple player.
+  Whether the pane is open is the person's own preference, so a show for a
+  screen or app tool activates it in an already-open pane and floats the player
+  instead of opening a closed one (`useWorkSidebarTool.showTool`); the browser
+  is the exception, because `ade browser handoff` is an agent asking the person
+  to act on a page.
   See [chat › Agents open panes](../chat/README.md#agents-open-panes-ade-ui-show).
 - `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`,
   `LaneAppleDeviceMarker.tsx` — the small Apple mark beside a lane name in the

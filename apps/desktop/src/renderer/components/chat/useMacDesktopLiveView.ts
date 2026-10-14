@@ -55,6 +55,18 @@ export const RECOVER_DELAY_MS = 750;
  */
 export const RECOVER_MAX_TRIES = 3;
 /**
+ * How long a viewer that has spent its quick re-dials waits before asking once
+ * more.
+ *
+ * The small, slow budget above exists so a dead encoder is not hammered; it
+ * must not turn into a picture that can never come back on its own. A stream
+ * that drew nothing at 10:00 because the host's own capture was not delivering
+ * frames is fine at 10:01, and the person watching the pane should not have to
+ * press Reconnect to find out. This is a heartbeat, not a poll: it stops with
+ * the demand, which is the moment nobody is watching any more.
+ */
+export const RECOVER_SLOW_MS = 30_000;
+/**
  * Times in a row a viewer that gave up takes the picture back on its own when
  * the host announces one. Reset by a drawn frame or a person's Retry, so a host
  * that keeps announcing a capture this viewer cannot draw costs a bounded
@@ -317,6 +329,29 @@ export function useMacDesktopLiveView(args: {
     eventRestartsRef.current = 0;
     restartStream();
   }, [restartStream]);
+
+  /*
+   * A viewer that gave up keeps asking, slowly, for as long as it still wants
+   * the lane.
+   *
+   * The quick re-dials are spent by then, so this is the only thing that can
+   * bring the picture back without a person; the surface says the picture is
+   * not coming through while it keeps trying, rather than sitting on a promise
+   * it has stopped keeping. Each tick is one fresh run — a plain re-dial would
+   * be handed the same run that sent nothing — and the budget stays spent, so
+   * this never re-enters the dense retry loop. A surface that let go of the
+   * stream (the floating player does) wants nothing and is left alone.
+   */
+  useEffect(() => {
+    if (!gaveUp) return undefined;
+    const timer = setInterval(() => {
+      if (!wantedRef.current) return;
+      freshNextRef.current = true;
+      recoverTriesRef.current = RECOVER_MAX_TRIES;
+      setRestartNonce((nonce) => nonce + 1);
+    }, RECOVER_SLOW_MS);
+    return () => clearInterval(timer);
+  }, [gaveUp]);
 
   /*
    * A viewer that gave up takes the picture back once the host has one again.

@@ -10188,19 +10188,16 @@ export function createAgentChatService(args: {
   getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
   getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
   /**
-   * The Mac Desktop runtime, in the three calls this service makes.
+   * The Mac Desktop runtime, in the calls this service makes.
    *
-   * One dependency, not two: whether a lane has a display is the same question
-   * for the one-line prompt directive and for the turn clip, and asking it
-   * twice through two differently-shaped deps was a second answer that could
-   * disagree with the first. Synchronous on purpose — the answer costs one line
-   * of system prompt, so it must not make the send path wait on a service call
-   * — and an unwired runtime (`ade code`, the headless brain, any non-Mac host)
-   * leaves it undefined and emits nothing.
+   * Synchronous on purpose — the answer costs one line of system prompt, so it
+   * must not make the send path wait on a service call — and an unwired runtime
+   * (`ade code`, the headless brain, any non-Mac host) leaves it undefined and
+   * emits nothing.
    */
   macDesktopTurnRecorder?: Pick<
     MacDesktopRuntimeService,
-    "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
+    "hasDisplaySync"
   > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync" | "seatHostPlatform">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
@@ -21106,7 +21103,6 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
-    noteMacDesktopTurnBoundary(managed, normalizedEvent);
     noteLaneBranchTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
@@ -21135,38 +21131,6 @@ export function createAgentChatService(args: {
     },
     chatSummary: (sessionId) => sessionService.get(sessionId) ?? null,
   });
-
-  /**
-   * Opens and closes the lane's time-lapse clip around one agent turn.
-   *
-   * Hung off the one funnel every provider's events pass through, because
-   * there is no provider-agnostic turn object to hang it off: `status/started`
-   * and `done` are the only two edges Claude, Codex, Cursor, ACP and the rest
-   * all emit. Everything is behind `hasDisplaySync`, so a lane with no screen —
-   * which is nearly all of them — costs one map lookup per event.
-   */
-  const noteMacDesktopTurnBoundary = (
-    managed: ManagedChatSession,
-    event: AgentChatEvent,
-  ): void => {
-    const recorder = macDesktopTurnRecorder;
-    if (!recorder) return;
-    const laneId = managed.session.laneId;
-    if (!laneId || !recorder.hasDisplaySync(laneId)) return;
-    const isStart = event.type === "status" && event.turnStatus === "started";
-    if (!isStart && event.type !== "done") return;
-    const turnId = event.turnId?.trim();
-    if (!turnId) return;
-    const args = { laneId, chatSessionId: managed.session.id, turnId };
-    const call = isStart ? recorder.beginTurn(args) : recorder.noteTurnEnded(args);
-    void Promise.resolve(call).catch((error: unknown) => {
-      logger.debug("mac_desktop.turn_clip_hook_failed", {
-        sessionId: managed.session.id,
-        phase: isStart ? "begin" : "end",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
 
   /**
    * The lane's recorded branch when each chat's current turn began, or null

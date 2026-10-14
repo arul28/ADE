@@ -73,7 +73,6 @@ import {
   type MacDesktopStopResult,
   type MacDesktopStreamStatus,
   type MacDesktopTakeoverArgs,
-  type MacDesktopTimeLapse,
   type MacDesktopTypeArgs,
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
@@ -220,8 +219,6 @@ export type MacDesktopServiceDeps = {
   resolvePrimaryPrUrl?: ((laneId: string) => Promise<string | null> | string | null) | null;
   /** `computerUseArtifactBrokerService.ingest`. The one proof path. */
   ingestArtifacts?: ((request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult) | null;
-  /** `computerUseArtifactBrokerService.isFileReferenced`: a proof points at this file. */
-  isArtifactFileReferenced?: ((filePath: string) => boolean) | null;
   /**
    * The lane whose App Control session runs this process, or null. `claim`
    * refuses a window of another lane's App Control app: that app is the other
@@ -273,7 +270,6 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    * parked on its screen. Host-local, so it is not on the shared contract.
    */
   laneForProcess(pid: number): string | null;
-  beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void>;
   /**
    * The sync live view's stream owner. Kept off `startStream` so a subscription
    * id never lands in `viewerChatSessionIds`, which clients read as chats.
@@ -378,7 +374,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const leases = createMacDesktopLeaseRegistry({ now });
   const observations = createMacDesktopObservations({
     projectRoot: deps.projectRoot,
-    now,
     ...(deps.resolveLaneWorktreePath ? { resolveLaneWorktreePath: deps.resolveLaneWorktreePath } : {}),
     ...(deps.ingestArtifacts ? { ingestArtifacts: deps.ingestArtifacts } : {}),
     ...(deps.resolvePrimaryPrUrl ? { resolvePrimaryPrUrl: deps.resolvePrimaryPrUrl } : {}),
@@ -632,7 +627,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     onRecordingFiled: () => captureOutcome("recorded"),
     demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: deps.logger }),
     seatPlatform: seatAdapter.platform,
-    isFileReferenced: deps.isArtifactFileReferenced ?? null,
   });
   const recordings = recording.recordings;
 
@@ -662,7 +656,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     ownership,
     leases,
     noteStreamActivity: (laneId) => streamServer.noteActivity(laneId),
-    noteTurnActivity: (laneId, chatSessionId) => recording.noteTurnActivity(laneId, chatSessionId),
     toServiceError,
     serviceError: (code, message) => new MacDesktopError(code, message),
     onAgentActed: () => captureOutcome("agent_drove"),
@@ -1176,9 +1169,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const had = ownership.hasDisplay(laneId);
     destroyingLanes.add(laneId);
     try {
-      // Before the display goes: the helper has one recorder per lane, and a
-      // turn clip still writing into it would be a file nobody ever closes.
-      await recording.stopTurnClips(laneId);
       streaming.forgetLane(laneId);
       recording.forgetLane(laneId);
       observations.forgetLane(laneId);
@@ -1659,14 +1649,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await windowLifecycle.present(args);
     },
 
-    async noteTurnEnded(args: {
-      laneId: string;
-      chatSessionId: string;
-      turnId: string;
-    }): Promise<MacDesktopTimeLapse | null> {
-      return await recording.noteTurnEnded(args);
-    },
-
     /** Runs on every platform: a closing chat must drop its lease anywhere. */
     async releaseIfOwnedBy(chatSessionId: string | null | undefined): Promise<{ released: boolean }> {
       const trimmed = chatSessionId?.trim();
@@ -1681,9 +1663,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         });
       }
       await streaming.stopOwnedBy(trimmed);
-      // The chat that opened a turn clip is gone; the helper's one recorder per
-      // lane must not stay held by a turn that can never end.
-      for (const lease of dropped) await recording.stopTurnClips(lease.laneId);
       return { released: dropped.length > 0 };
     },
 
@@ -1780,11 +1759,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const trimmed = laneId?.trim();
       if (!trimmed || !seatSupported) return;
       streamServer.noteActivity(trimmed);
-    },
-    /** Opens the turn clip. Called by the chat runtime on the turn's first act. */
-    beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {
-      if (!seatSupported) return Promise.resolve();
-      return recording.startTurnClip(args.laneId.trim(), args.chatSessionId.trim(), args.turnId);
     },
     async startStreamForSubscription(args: {
       laneId: string;

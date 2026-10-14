@@ -109,7 +109,7 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane, and `startHelperRecording`, the shared start (late-install stop, App Control orphan retry). |
+| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The captioned recording a user or an agent starts, serialized against the helper's one recorder per lane, and `startHelperRecording`, the shared start (late-install stop, App Control orphan retry). |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
@@ -742,37 +742,13 @@ calling chat, and — when the chat's lane has a primary pull request — that P
 as a `github_pr` owner with the existing `published_to` relation. There is no
 second ingestion path.
 
-A turn that used the desktop also gets a short time-lapse clip in the thread. It
-is context rather than proof and never files a record. The thread card hides
-while either the tools pane or the floating Mac Desktop player is showing that
-lane's desktop, because the clip would repeat what is on screen
-(`workToolOnScreen.ts` notifies on a floating show and unshow;
-`useWorkSurfaceMounted` reads it).
-
-**How the clip is actually made.** There is no frame assembler in the runtime —
-no ffmpeg, no encoder — so stitching kept stills was not a cheap path, it was a
-missing one. The clip is instead the helper's own recording at 4 fps: the
-service opens it on the turn's first desktop action (`beginTurn`) and closes it
-in `noteTurnEnded`. A user-started `record start` wins: one lane has one writer,
-and the reviewer-facing capture is the one that matters, so a turn that overlaps
-a real recording produces no clip. Action frames are still counted, capped at
-one a second and 120 total, and that count is what `frameCount` reports.
-
-Only the newest clip of each lane and chat is kept, because the thread card
-shows only that one: publishing a clip deletes the one before it, a clip closed
-without being published (a recording took the recorder, the stop failed, the
-lane's screen went away) is deleted at once, and the first clip after a start
-sweeps clips over an hour old that an earlier run left. A clip a proof
-artifact points at is never deleted, and neither is any clip when the artifact
-index cannot be read. This holds on both hosts.
-
 **Where the files live.** Observation frames and element maps go to
 `.ade/cache/mac-desktop-observations/<laneId>/`, with a `<name>.json` sidecar
 carrying `ownerLaneId` — that is the one root `workToolsStateService.readObservationPreview`
 serves from, so a frame written anywhere else is invisible to the phone and the
-hosted web client. Recordings and turn clips go to the computer-use artifact
-store under `.ade/artifacts`, because the thread plays them through
-`ade-artifact://` and main serves that scheme only from inside that root. A bare
+hosted web client. Recordings go to the computer-use artifact store under
+`.ade/artifacts`, because the thread plays them through `ade-artifact://` and
+main serves that scheme only from inside that root. A bare
 screenshot with no `--out` stays in the computer-use scratch root.
 
 A caller-supplied `--out` may land inside the lane worktree or the OS temp

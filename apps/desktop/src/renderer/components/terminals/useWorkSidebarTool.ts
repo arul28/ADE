@@ -123,6 +123,18 @@ export function useWorkSidebarTool(
   tool: WorkSidebarTab | null;
   openTools: WorkSidebarTab[];
   setTool: (tool: WorkSidebarTab | null) => void;
+  /**
+   * Activates a tool for a surface SHOW request (an agent's `ade ui show`),
+   * without revealing the pane.
+   *
+   * Openness is the person's workspace preference and a request is not a
+   * reason to change it, so an agent may use the pane while it is already
+   * open — that is the pane it is for — and gets the floating player instead
+   * when the person has closed it (see `useWorkShowRequests`). The tool is
+   * still remembered for the lane, so the pane shows it the next time the
+   * person opens the pane themselves.
+   */
+  showTool: (tool: WorkSidebarTab | null) => void;
   closeTool: (tool: WorkSidebarTab) => void;
 } {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
@@ -166,7 +178,14 @@ export function useWorkSidebarTool(
   latestStrip.current = { tool, openTools };
 
   const write = useCallback(
-    (next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] }) => {
+    (
+      next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] },
+      /**
+       * False for a surface show request, which may use an open pane but must
+       * not open a closed one. The person's pick always reveals.
+       */
+      options: { reveal?: boolean } = {},
+    ) => {
       if (!toolStateKey) return;
       if (laneId) {
         setLaneWorkViewState(toolStateKey, laneId, next);
@@ -177,7 +196,9 @@ export function useWorkSidebarTool(
       // call `setWorkSidebarTab` relied on that, and returning to the picker is
       // not a reason to close it. Openness is tab-owned; the strip follows the
       // session machine above.
-      if (projectStateKey) setWorkViewState(projectStateKey, { workSidebarOpen: true });
+      if (options.reveal !== false && projectStateKey) {
+        setWorkViewState(projectStateKey, { workSidebarOpen: true });
+      }
     },
     [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState, toolStateKey],
   );
@@ -194,6 +215,19 @@ export function useWorkSidebarTool(
           ? openWorkToolTab(current.openTools, next)
           : [...current.openTools],
       });
+    },
+    [write],
+  );
+
+  const showTool = useCallback(
+    (next: WorkSidebarTab | null) => {
+      const current = latestStrip.current;
+      write({
+        workSidebarTool: next,
+        workSidebarOpenTools: next
+          ? openWorkToolTab(current.openTools, next)
+          : [...current.openTools],
+      }, { reveal: false });
     },
     [write],
   );
@@ -245,7 +279,7 @@ export function useWorkSidebarTool(
 
   usePublishActiveWorkTool(laneId, tool, openTools, runtimePin);
 
-  return { tool, openTools, setTool, closeTool };
+  return { tool, openTools, setTool, showTool, closeTool };
 }
 
 /**
