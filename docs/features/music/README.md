@@ -1,27 +1,44 @@
 # Music
 
-The Music top tab supports Apple Music and Spotify with ADE's own UI: search,
-library, recently played, an Up Next queue and a player. A service picker
-remembers the selected provider on this computer. Switching pauses the previous
-provider before activating the next one. The tab exists only
+Apple Music and Spotify are two apps on the home page, each with its own
+button, and both open the one Music tab with ADE's own UI: search, library,
+recently played, an Up Next queue and a player. The tab shows the service its
+button opened (the last one is remembered on this computer); there is no
+switch inside the tab. Opening the other one pauses the first. **Customize
+home page → Apps** removes either button and adds it back (`hiddenApps` in the
+home layout, per saved layout; both show by default). The tab exists only
 while music is on, and the tab itself is the mini player. The home page's Now
 Playing widget reads the same renderer store.
 
 ## Spotify
 
-Spotify works on macOS and Windows through **Spotify Connect**. ADE browses the
-catalog and library and controls a Spotify device; audio plays in the Spotify
-app on this computer, a phone, or a speaker. It does not stream inside Electron
-or reuse Apple's DRM hosts. Spotify Premium and an available Spotify device are
-required. This is desktop-local, like Apple Music: hosted web, iOS, TUI and CLI
-have no Music account/control surface, and choosing a remote project never
-moves music to that machine. Provider adapters for coding agents are unrelated.
+Spotify plays **inside ADE** on macOS and Windows, like Apple Music. Spotify's
+Web Playback SDK runs on its own page (`native/ADEMusicHostWin/page-spotify`)
+in the same player host as Apple Music, with a profile of its own
+(`<userData>/music-player-spotify`): WebView2 plays Spotify's Widevine streams
+on Windows and WebKit its FairPlay streams on macOS. The player shows up in
+Spotify as a Connect device named **ADE**. **This computer (ADE) is the
+default every time the tab opens**; the **Playing on** menu can send playback
+to the Spotify app, a phone or a speaker instead, and back. Pause, resume,
+seek and volume go straight to ADE's player when it is the one playing; the
+rest goes through the Web API. Spotify Premium is required. This is
+desktop-local, like Apple Music: hosted web, iOS, TUI and CLI have no Music
+account/control surface, and choosing a remote project never moves music to
+that machine.
+
+Like Apple Music's host, ADE's Spotify player starts when the tab opens or a
+play needs it, stops after five minutes without playing
+(`SPOTIFY_LOCAL_IDLE_MS`), and closing the tab pauses it and stops it. Music
+playing on another device keeps playing when the tab closes.
 
 ### Connect and disconnect
 
-1. Open Music from the home page or **Mod+Shift+M** and choose Spotify.
-2. Enter a Spotify application's public **Client ID**, from
+1. Press the Spotify button on the home page. A first visit shows **Set up
+   Spotify** (and **I already have a Client ID**); the guide's steps, with
+   pictures of Spotify's own pages, appear only after that.
+2. Create a Spotify app and enter its public **Client ID**, from
    [Spotify's developer dashboard](https://developer.spotify.com/dashboard).
+   The app needs **Web API** and **Web Playback SDK** ticked.
    Register exactly `http://127.0.0.1:43219/spotify/callback` as a redirect
    URI. Spotify's docs allow a portless loopback URI, but its dashboard
    rejects one as "not secure", so ADE's sign-in always listens on port 43219.
@@ -30,9 +47,8 @@ moves music to that machine. Provider adapters for coding agents are unrelated.
    uses Authorization Code with PKCE, a random state value and a listener bound
    only to `127.0.0.1`. Cancel ends the listener; sign-in also expires after ten
    minutes. **Open sign-in page** reopens the consent page while it waits.
-4. Choose **Playback device**, or **Open Spotify** to start the desktop app.
-   Refresh devices if Spotify has not appeared yet. Restricted devices cannot
-   be selected. Volume controls appear only when the device supports them.
+4. Play. Sign-ins from before ADE played Spotify itself lack the `streaming`
+   scope and are asked to connect again once.
 
 Spotify's [development access rules](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
 limit development applications to five allowed users and require Premium.
@@ -54,9 +70,11 @@ After connecting, catalog search, playlists, saved albums, Liked Songs, recently
 played, album and playlist pages, transport, seek, shuffle, repeat, saving songs
 and Add to queue use the same Music views as Apple Music. The home Now Playing
 widget and tab mini player follow the selected provider. Spotify artwork uses
-its supplied image sizes without blur or playback overlays. Metadata links back
-to Spotify alongside its official, unmodified logo from the
-[Spotify design kit](https://developer.spotify.com/documentation/design).
+its supplied image sizes without blur or playback overlays. The official,
+unmodified logo from the
+[Spotify design kit](https://developer.spotify.com/documentation/design) marks
+the service once per surface (the rail, the player card, an album or playlist
+page's **Open in Spotify**), not on every song row or tile.
 
 Spotify capabilities differ in ways the UI makes explicit:
 
@@ -68,11 +86,13 @@ Spotify capabilities differ in ways the UI makes explicit:
 - Spotify has **Add to queue**, with no separate Play Next operation or jumping
   within Up Next. Queued songs are listed without a jump/play action, preserving the existing queue.
 - The heart saves/removes Liked Songs; there is no dislike operation.
-- Closing Music stops ADE's Spotify polling and clears its player. **Spotify
-  keeps playing on its device.** Apple Music continues to pause and unload when
-  the tab closes. Switching services pauses the old service first.
+- Closing Music pauses and stops ADE's own Spotify player, like Apple Music.
+  Music sent to another device keeps playing there. Switching services pauses
+  the old service first.
 
-Browse reads use a bounded 60-second cache. Playback is polled only while the
+Browse reads use a bounded 60-second cache. ADE's own player reports every
+change itself, so while it plays the Web API is read only once a minute
+(`POLL_LOCAL_MS`). Another device is polled only while the
 Spotify service is active, with position interpolation in the renderer and
 unchanged broadcasts suppressed; it stops when the tab unloads, on disconnect,
 on provider switch or when ADE quits. Rate limits respect Spotify's Retry-After
@@ -85,9 +105,12 @@ retry. Missing devices and Premium failures have their own messages.
 | --- | --- |
 | `apps/desktop/src/main/services/music/spotifyAuth.ts` | PKCE, loopback sign-in and token exchange/refresh. |
 | `apps/desktop/src/main/services/music/spotifyApi.ts` | Spotify Web API, pagination, normalization and error handling. |
-| `apps/desktop/src/main/services/music/spotifyService.ts` | Spotify Connect state, playback and lifecycle. |
+| `apps/desktop/src/main/services/music/spotifyService.ts` | Spotify state, playback, devices and lifecycle. |
+| `apps/desktop/src/main/services/music/spotifyLocalPlayer.ts` | ADE's own Spotify player in the music host. |
+| `apps/desktop/native/ADEMusicHostWin/page-spotify/` | The Web Playback SDK page the host runs. |
+| `apps/desktop/src/renderer/components/music/musicApps.tsx` | The Apple Music and Spotify home-page apps. |
 | `apps/desktop/src/main/services/music/musicProviderRouter.ts` | Selected provider routing and persistence. |
-| `apps/desktop/src/renderer/components/music/MusicProviderControls.tsx` | Provider selection, Spotify setup and devices. |
+| `apps/desktop/src/renderer/components/music/MusicProviderControls.tsx` | Spotify setup guide and the Playing on menu. |
 | `apps/desktop/src/renderer/components/music/musicProvider.tsx` | Selected provider labels and attribution. |
 
 ## The player

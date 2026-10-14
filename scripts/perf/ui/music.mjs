@@ -4,7 +4,8 @@
 //   node music.mjs first-play cold|warm   -> ms from a playItems command to the first "playing" push
 //                                            (cold unloads the player host first)
 //   node music.mjs pushes <seconds>       -> Music state pushes (and home Now Playing pushes) the window receives
-// Plays the first five chart songs (30 s previews when signed out). Pair with
+// Plays the first five chart songs (30 s previews when signed out), or for
+// Spotify the first five songs of a search. Pair with
 // music-host.sh (host CPU and memory) and process-cpu.sh (main, GPU, renderer).
 // Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default "//localhost:").
 const port = Number(process.env.CDP_PORT ?? 9222);
@@ -34,8 +35,11 @@ const evaluate = (expression) => new Promise((resolve, reject) => {
 const firstPlay = (mode) => `(async () => {
   const m = window.ade.music;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const charts = await m.charts();
-  const ids = charts.songs.slice(0, 5).map((s) => s.id);
+  // Apple Music plays chart songs; Spotify has no charts, so it plays a search's songs.
+  const songs = (await m.getState()).provider === "spotify"
+    ? (await m.search({ term: "lofi beats", scope: "catalog", limit: 10 })).songs
+    : (await m.charts()).songs;
+  const ids = songs.slice(0, 5).map((s) => s.id);
   if (${JSON.stringify(mode)} === "cold") {
     await m.unload();
     for (let i = 0; i < 50 && (await m.getState()).host.status === "running"; i++) await wait(200);

@@ -25,7 +25,7 @@ import { DetailView } from "./MusicDetailView";
 import { LibraryView, RecentView } from "./MusicLibraryView";
 import { QueueView } from "./MusicQueueView";
 import { SearchView } from "./MusicSearchView";
-import { MusicProviderPicker, SpotifyOnboarding, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
+import { SpotifyOnboarding, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
 import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import "./music.css";
 
@@ -308,7 +308,7 @@ function MusicFrame({ children, pageRef }: { children: React.ReactNode; pageRef?
   return (
     <div ref={pageRef} className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
       <ChatSceneBackdrop />
-      <div className="ade-music-frame"><MusicProviderPicker />{children}</div>
+      <div className="ade-music-frame">{children}</div>
     </div>
   );
 }

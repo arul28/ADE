@@ -707,25 +707,31 @@ host call are context, not ceilings.
   host's own revision bumps; switching to Merged still reads it three times,
   which is the next thing to trim.
 
-### Spotify Connect request and push budget
+### Spotify (playing inside ADE)
 
-The Spotify addition is based on `e3bf1ff82` (working tree). The service budget
-is checked through the public service API in `spotifyService.test.ts`, using
-fake time and synthetic Spotify responses. These are request counts, **not CPU,
-GPU or memory measurements**, and do not replace the native Music baselines.
+Measured 2026-10-14 on this Mac Studio, dev build in an App Control session,
+signed in with Premium, DevTools closed, other agents running. Spotify's Web
+Playback SDK runs in the same macOS host as Apple Music (`page-spotify`, its own
+WebKit profile). Apple Music's rows above are the comparison; Spotify has no
+before. "Play accepted" is from the command to the first playing state, which
+Spotify's service sets when Spotify accepts the play, not when audio starts.
 
-| Scenario (10 minutes of fake time) | Before | Budget verified |
-| --- | --- | --- |
-| Spotify never opened | No Spotify service | 0 HTTP requests, 0 state pushes |
-| Spotify playing, 200-second tracks | No Spotify service | At most 46 playback reads and 6 state pushes |
-| After the Spotify tab closes | No Spotify service | 0 additional playback reads |
+| Metric | How | Apple Music | Spotify | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10`, 4 runs | 0.5-0.8% | 0.6-1.1% | 3% |
+| Same, playing: physical footprint | same | 75-81 MB | 77-82 MB | 120 MB |
+| Same, paused: CPU / footprint | same, 3 runs | 0.0-0.2% / 73-75 MB | 0.1-0.2% / 75 MB | 1% / 120 MB |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0/s | 0/s | 0.2/s |
+| Play accepted, player not running | `music.mjs first-play cold`, 2 runs | 0.76-1.15 s | 1.19-1.48 s | 2 s |
+| Same, player running | `music.mjs first-play warm`, 3 runs | 0.16-0.39 s | 0.16-0.17 s | 0.6 s |
+| Tab closed: player processes / audio output | `pgrep`, `pmset -g assertions` | 0 / none | 0 / none | 0 / none |
 
-Playback polls every 15 seconds while playing (also at track boundaries) and
-30 seconds while paused; the renderer interpolates position. A rate limit
-backs off for Retry-After, with at least 30 seconds between polling retries.
-No Spotify host or DRM subprocess is started. Native before/after CPU, GPU,
-memory and live Spotify latency are **not measured**: the Electron dev build
-waited for macOS Keychain access before opening its window, and no real Spotify
-application ID or Premium test account was supplied. The signed-out provider
-switch and setup form were checked in ADE's browser preview at 960×600 and
-1280×900; this does not establish native playback performance on either OS.
+- `music.mjs first-play` plays five songs of a search for Spotify (it has no
+  charts).
+- While ADE's own player plays, the Web API is read once a minute instead of
+  every 15 s: the SDK reports track, pause and position changes itself.
+- The service's request budget (`spotifyService.test.ts`, fake time): a closed
+  tab makes 0 requests; a device other than ADE playing 200-second songs makes
+  at most 46 reads and 6 pushes per ten minutes.
+- Windows (WebView2, Widevine) is measured separately; see the Windows numbers
+  in the PR.

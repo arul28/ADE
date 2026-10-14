@@ -142,10 +142,6 @@
 
 /* ---------- Provider picker and Spotify setup ---------- */
 
-.ade-music-provider-bar { display: flex; flex: none; }
-.ade-music-provider-bar .kit-seg { padding: 3px; border: 1px solid var(--kit-card-edge); border-radius: 999px; }
-.ade-music-provider-bar .kit-seg > button { display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; }
-.ade-music-provider-bar .kit-seg > button:not([aria-pressed="true"]) { color: var(--kit-text-2); }
 
 .ade-spotify-setup {
   display: flex;

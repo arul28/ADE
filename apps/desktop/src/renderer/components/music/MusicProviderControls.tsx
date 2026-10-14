@@ -3,37 +3,12 @@ import React from "react";
 import { ArrowSquareOut, Check, CircleNotch, Copy } from "@phosphor-icons/react";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { friendlyMusicError, musicActions, readMusicLastError, useMusicLastError, useMusicState } from "./musicStore";
-import { useMusicProvider } from "./musicProvider";
-import { AppleMusicAppIcon, SpotifyBrand } from "./musicParts";
-import spotifyIconUrl from "./assets/spotify-icon-green.svg";
+import { SpotifyBrand } from "./musicParts";
 import setupConsentUrl from "./assets/spotify-setup-consent.jpg";
 import setupDashboardUrl from "./assets/spotify-setup-dash.jpg";
 import setupApisUrl from "./assets/spotify-setup-apis.jpg";
 import setupRedirectUrl from "./assets/spotify-setup-redirect.jpg";
 import setupTermsUrl from "./assets/spotify-setup-terms.jpg";
-
-/** The provider choice stays available even when a provider cannot load. */
-export function MusicProviderPicker() {
-  const provider = useMusicProvider();
-  const [busy, setBusy] = React.useState(false);
-  return (
-    <div className="ade-music-provider-bar">
-      <div className="kit-seg ade-chat-scene-plane" data-case="sentence" role="group" aria-label="Music service">
-        {(["apple", "spotify"] as const).map((value) => (
-          <button key={value} type="button" aria-pressed={provider === value} disabled={busy} onClick={() => {
-            setBusy(true);
-            void musicActions.selectProvider(value).finally(() => setBusy(false));
-          }}>
-            {value === "apple"
-              ? <AppleMusicAppIcon size={14} />
-              : <img src={spotifyIconUrl} width={14} height={14} alt="" aria-hidden />}
-            {value === "apple" ? "Apple Music" : "Spotify"}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 const SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard";
 const isSpotifyClientId = (value: string) => /^[a-f\d]{32}$/i.test(value.trim());
