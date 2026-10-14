@@ -714,9 +714,12 @@ enum WorkModelMentionDetector {
   /// `rankComposerModelSuggestions`: a model shows only when the query names
   /// it (word-prefix, prefix, or substring of the name, 2+ characters). A
   /// query starting with "model" lists every model and filters by the rest.
+  /// Among equally good matches, models in `recentModelIds` (the picker's
+  /// synced recents, newest first) lead; a better match still wins.
   static func rank(
     _ models: [WorkModelMentionDirectory.Entry],
-    query rawQuery: String
+    query rawQuery: String,
+    recentModelIds: [String] = []
   ) -> (rows: [WorkModelMentionDirectory.Entry], bestScore: Int?) {
     let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     let ns = query as NSString
@@ -743,8 +746,13 @@ enum WorkModelMentionDetector {
       if keyword == nil && match.score > maxMatchScore { continue }
       scored.append((model, match.score, match.prefix))
     }
+    var recentRank: [String: Int] = [:]
+    for (index, id) in recentModelIds.enumerated() where recentRank[id] == nil { recentRank[id] = index }
     scored.sort { lhs, rhs in
       if lhs.score != rhs.score { return lhs.score < rhs.score }
+      let lhsRecent = recentRank[lhs.entry.modelId] ?? recentRank.count
+      let rhsRecent = recentRank[rhs.entry.modelId] ?? recentRank.count
+      if lhsRecent != rhsRecent { return lhsRecent < rhsRecent }
       if lhs.prefix != rhs.prefix { return lhs.prefix > rhs.prefix }
       return lhs.entry.modelId < rhs.entry.modelId
     }
@@ -779,6 +787,29 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
   private let lock = NSLock()
   private var entries: [Entry] = []
   private var byId: [String: Entry] = [:]
+  private var recents: [String] = []
+
+  /// The picker's synced recents (desktop, TUI and iOS share them), newest
+  /// first. The `@` menu ranks recent models first among equal matches.
+  var recentModelIds: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return recents
+  }
+
+  func record(recents next: [String]) {
+    lock.lock()
+    recents = next
+    lock.unlock()
+  }
+
+  /// A model picked from the `@` menu becomes the newest recent, as on desktop.
+  func noteRecent(_ modelId: String) {
+    lock.lock()
+    recents = [modelId] + recents.filter { $0 != modelId }
+    if recents.count > 10 { recents = Array(recents.prefix(10)) }
+    lock.unlock()
+  }
 
   func entry(for modelId: String) -> Entry? {
     lock.lock()
@@ -1798,7 +1829,12 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// `@` rows for models the query names, from the catalog the model picker
   /// uses. Pure over the directory so the ranking stays the shared one.
   static func modelSuggestions(query: String) -> (rows: [WorkComposerSuggestion], bestScore: Int?) {
-    let ranked = WorkModelMentionDetector.rank(WorkModelMentionDirectory.shared.availableEntries, query: query)
+    let directory = WorkModelMentionDirectory.shared
+    let ranked = WorkModelMentionDetector.rank(
+      directory.availableEntries,
+      query: query,
+      recentModelIds: directory.recentModelIds
+    )
     let rows = ranked.rows.map { entry in
       WorkComposerSuggestion(
         id: "model:\(entry.modelId)",
@@ -1830,6 +1866,12 @@ final class WorkComposerSuggestionController: ObservableObject {
   private func fetchModelCatalogIfNeeded() {
     guard !modelCatalogRequested, let syncService else { return }
     modelCatalogRequested = true
+    // The `@` menu can open before the picker ever loaded recents.
+    Task {
+      if let recents = try? await syncService.getModelRecents() {
+        WorkModelMentionDirectory.shared.record(recents: recents)
+      }
+    }
     if let cached = syncService.cachedChatModelCatalog() {
       WorkModelMentionDirectory.shared.record(catalog: cached)
       return
@@ -1849,6 +1891,17 @@ final class WorkComposerSuggestionController: ObservableObject {
 
   func commit(_ suggestion: WorkComposerSuggestion) {
     guard let match = activeMatch else { return }
+    if let modelId = suggestion.modelId {
+      // Shared with the picker's Recents, so the next `@` leads with it.
+      WorkModelMentionDirectory.shared.noteRecent(modelId)
+      if let syncService {
+        Task {
+          if let recents = try? await syncService.pushModelRecent(modelId) {
+            WorkModelMentionDirectory.shared.record(recents: recents)
+          }
+        }
+      }
+    }
     let commitMatch = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
     onCommit?(suggestion, commitMatch.range)
     clear()

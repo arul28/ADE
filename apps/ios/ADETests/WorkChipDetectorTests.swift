@@ -133,6 +133,35 @@ final class WorkChipDetectorTests: XCTestCase {
     XCTAssertEqual(WorkModelMentionDetector.permissionLabel(nil), "Default")
   }
 
+  /// Mirrors `modelMentions.test.ts` "orders recents": recents break ties
+  /// among equally good matches; they never beat a better match.
+  func testModelRankingLeadsWithRecentsAmongEqualMatches() {
+    func entry(_ id: String, _ title: String) -> WorkModelMentionDirectory.Entry {
+      .init(modelId: id, title: title, subtitle: "", provider: "opencode", brandKey: "deepseek",
+            reasoningTiers: [], defaultEffort: nil, isAvailable: true)
+    }
+    let models = [
+      entry("anthropic/claude-opus-5", "Claude Opus 5"),
+      entry("opencode/deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+      entry("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    ]
+    let ids = { (rows: [WorkModelMentionDirectory.Entry]) in rows.map(\.modelId) }
+
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "deep", recentModelIds: ["opencode/opencode-go/deepseek-v4.1-flash"]).rows),
+      ["opencode/opencode-go/deepseek-v4.1-flash", "opencode/deepseek/deepseek-v4.1-flash"]
+    )
+    // "Claude" only contains "de"; DeepSeek starts with it.
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "de", recentModelIds: ["anthropic/claude-opus-5"]).rows).first,
+      "opencode/deepseek/deepseek-v4.1-flash"
+    )
+    XCTAssertEqual(
+      ids(WorkModelMentionDetector.rank(models, query: "deep").rows),
+      ["opencode/deepseek/deepseek-v4.1-flash", "opencode/opencode-go/deepseek-v4.1-flash"]
+    )
+  }
+
   func testFormatTokenRoundTrips() {
     for kind in [WorkChatMention.Kind.chat, .lane, .terminal] {
       let token = WorkChatMentionDetector.formatToken(kind: kind, id: "abc-123")

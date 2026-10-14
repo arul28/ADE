@@ -196,4 +196,47 @@ describe("model mention ranking", () => {
     expect(ranked.bestScore).toBe(1);
     expect(ranked.rows[0]?.modelId).toBe(expected);
   });
+
+  // The same model reached through several routes all match "deep" equally;
+  // the route the user picks every time must lead, not sit behind "+ N more".
+  const routes: ComposerModelSuggestion[] = [
+    ...models,
+    {
+      modelId: "opencode/deepseek/deepseek-v4.1-flash",
+      title: "DeepSeek V4.1 Flash",
+      subtitle: "OpenCode · DeepSeek",
+      reasoningTiers: [],
+      defaultEffort: null,
+    },
+  ];
+
+  it.each([
+    {
+      name: "a recent route leads equally good matches",
+      query: "deep",
+      recent: ["opencode/opencode-go/deepseek-v4.1-flash"],
+      expected: ["opencode/opencode-go/deepseek-v4.1-flash", "opencode/deepseek/deepseek-v4.1-flash"],
+    },
+    {
+      name: "a better match beats a recent one",
+      // "Claude" only contains "de"; DeepSeek starts with it.
+      query: "de",
+      recent: ["anthropic/claude-opus-5"],
+      expected: ["opencode/deepseek/deepseek-v4.1-flash", "opencode/opencode-go/deepseek-v4.1-flash", "anthropic/claude-opus-5"],
+    },
+    {
+      name: "the bare model list leads with recents, newest first",
+      query: "model",
+      recent: ["openai/gpt-5.6-sol", "opencode/deepseek/deepseek-v4.1-flash"],
+      expected: [
+        "openai/gpt-5.6-sol",
+        "opencode/deepseek/deepseek-v4.1-flash",
+        "anthropic/claude-opus-5",
+        "opencode/opencode-go/deepseek-v4.1-flash",
+      ],
+    },
+  ])("orders recents: $name", ({ query, recent, expected }) => {
+    const ranked = rankComposerModelSuggestions(routes, query, 10, { recentModelIds: recent });
+    expect(ranked.rows.map((model) => model.modelId)).toEqual(expected);
+  });
 });

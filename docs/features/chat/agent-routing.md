@@ -72,7 +72,7 @@ type ModelDescriptor = {
   capabilities: { tools, vision, reasoning, streaming };
   reasoningTiers?: string[];
   defaultReasoningEffort?: string; // runtime-recommended initial tier
-  serviceTiers?: string[]; // optional provider service tiers, currently "fast"
+  serviceTiers?: string[]; // optional provider service tiers: "fast", plus "ultrafast" from a Codex catalog
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -499,7 +499,8 @@ Windows reaches the same directory through more than one spelling and a
 duplicate root would shadow the tier below it.
 
 **Codex.** Service tier is stated only when the Fast chip is on
-(`serviceTier: "fast"`); otherwise the key is omitted so `config.toml`'s
+(`serviceTier: "fast"`, or `"ultrafast"` when the stored tier is Ultrafast and
+the model is not known to lack it); otherwise the key is omitted so `config.toml`'s
 `service_tier` resolves. Fast-off cannot mean "force default" either: `fastMode`
 is persisted only when true and rehydrated as `persisted?.fastMode === true`, so
 `false` is indistinguishable from never-set. The app-server re-resolves per
@@ -902,7 +903,8 @@ directive so resumed/continued sessions keep the same boundary.
 #### Provider service tiers (Fast Mode)
 
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional
-service tiers a model accepts (today only `"fast"`). The composer's
+service tiers a model accepts (`"fast"` from every provider catalog, and
+`"ultrafast"` only from a Codex catalog). The composer's
 **Fast** toggle (a yellow Lightning chip next to the model picker)
 shows whenever `modelSupportsFastMode(descriptor)` is true for the
 selected model, independent of provider. `AgentChatSession` carries
@@ -911,10 +913,11 @@ selected model, independent of provider. `AgentChatSession` carries
 clients.
 
 Codex forwards Fast as `serviceTier: "fast"` on every `turn/start` and
-`thread/start` JSON-RPC call, and **omits the key entirely** when Fast is off so
-the user's `config.toml` `service_tier` resolves — an explicit `null` reports
-`"default"`, which is a real downgrade ADE has no UI for. See
-[Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
+`thread/start` JSON-RPC call — `"ultrafast"` instead when the stored tier is
+Ultrafast and the model is not known to lack it — and **omits the key entirely**
+when Fast is off so the user's `config.toml` `service_tier` resolves — an
+explicit `null` reports `"default"`, which is a real downgrade ADE has no UI
+for. See [Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
 `serviceTiers: ["fast"]`; Claude chat sends the effective flag through
 the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
 pass `--settings '{"fastMode":true|false}'` so ADE can explicitly
@@ -940,6 +943,29 @@ It does not wait for a fetch, because a fetch can take up to 5 seconds. A cold
 catalog, or a model that the catalog does not list, is "unknown". Unknown keeps
 the flag. The send-time resolver applies the flag only where Cursor has a tier.
 Session create is unchanged: the raw preference is kept there.
+
+**Ultrafast** is Codex's tier above Fast, offered per account. It rides
+`fastTier?: "ultrafast" | null` beside `fastMode` on the session, its summary,
+the create/update/handoff args, the cross-machine capsule target, and the
+tracked-CLI launch and resume metadata. The Codex `model/list` is the only
+thing that can grant it, so the runtime remembers each model's advertised
+`serviceTiers` in a module cache keyed by the app-server model id and ADE's
+descriptor id; the static registry ships `fast` only. The picker cycles the
+chip Off → Fast → Ultrafast only on models whose catalog lists `ultrafast` and
+only where the surface passes `fastTier` (the composer and the handoff modal).
+At send time Codex asks for `serviceTier: "ultrafast"` when the stored tier is
+Ultrafast and the cache does not say the model lacks it; an unknown model keeps
+the stored choice, because the user could only have picked the tier from a
+catalog that offered it. `updateSession` changes the tier only when the update
+names `fastTier` — Fast-only clients (the TUI, the phone, older desktops)
+resend `fastMode: true` with every model or effort change, and reading that as
+plain Fast would drop a choice made elsewhere. Fast off clears the tier; a
+model switch keeps it only when the update names it or the new model is known
+to offer it; it is never stored for a non-Codex provider. The Codex CLI launch
+passes `-c service_tier="ultrafast"` (with `-c features.fast_mode=true`), and a
+resume that itself sets Fast means plain Fast rather than inheriting the
+launch's tier.
+
 Parallel-model rows track Fast mode per slot
 (`ParallelModelRowState.fastMode`) so launching multiple
 fast-capable runs side-by-side can mix Fast and Standard turns. Codex

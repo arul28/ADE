@@ -103,8 +103,8 @@ subagents, computer use). The pane derives all visible state from the
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). It also single-sources two pieces of user copy so emitter and renderer cannot drift: `spawnCompletedNoticeMessage(childTitle)` → `Chat "<title>" finished its turn`, and `waitingOnYouDescription(count?)` → `Waiting on your answer.` / `Waiting on your answers.` — the fallback line when a chat is blocked on the user and there is no question text to show. That second one is not local to the chat pane: it becomes the ADE Notch card's subtitle, the phone's push body, and the lock-screen preview, so the old per-provider `"<Provider> needs input before it can continue."` variants (a sentence about the agent where the user wanted a sentence about them) are gone from every runtime path. The `approval_request` event additionally carries an optional `requestKind: PendingInputKind` — see [Approval vs question](#approval-vs-question). |
-| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, `sharedCatalogFetch.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `useReasoningByFamily` / `useRuntimeCatalogForFamily` hooks. |
-| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the popover rows, where there is room. |
+| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (the segmented effort track with its signal-bar meter; stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, `sharedCatalogFetch.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `useReasoningByFamily` / `useRuntimeCatalogForFamily` hooks. |
+| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the open menu. That menu is a vertical track of modes: a header naming the current mode in its tone, one highlight that slides by `transform` to the row under the pointer or keyboard focus and takes that mode's tone, a `detail` line describing whichever mode is highlighted, and a check on the selected one. Arrow keys, Home, and End move focus (wrapping), and focus lands on the current mode when the menu opens. `permissionModeToneRgb` exports a tone as RGB for the highlight fill; the compact `ModelChipSegmentMenu` reuses the same look. |
 | `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` | The blocked-action primitive: `BlockedActionReason` (id, title, detail, and the optional fix that clears it), `BlockedReasons` to render them inline, `describeBlockedReasons` for tooltip/a11y text, and `BlockedActionButton`, which takes the reasons themselves rather than a `disabled` boolean so a caller cannot disable a control without handing over the explanation. Exists because ADE keeps regrowing the same bug — a surface computes blockers, disables the primary button, and renders none of them. |
 
 Cross-machine Work drafts do not rebind the project tab. `AgentChatPane` freezes
@@ -926,13 +926,18 @@ chat pane mount, which happens either way.
   same lane/status/time groups as real sessions.
 - **Reasoning effort.** A standalone `ReasoningEffortPicker` (extracted
   from the model row) is rendered next to the model trigger when the
-  active descriptor exposes `reasoningTiers`. The picker remembers the
-  last-used effort per model family via the `useReasoningByFamily`
-  hook. The control is a real pointer slider: click or drag previews the
-  position and release snaps to the nearest model-supported tick; arrows,
-  Home, and End provide the same keyboard path. The filled portion uses a
-  progressive low-to-high gradient and the active tier keeps the existing
-  pulse/colour treatment. A tier choice does **not** close the popover — the
+  active descriptor exposes `reasoningTiers`. Its collapsed trigger wears a
+  signal-bar `EffortMeter` — one rising bar per tier, lit up to the current
+  effort in that tier's tone — so the level reads before the label does. The
+  picker remembers the last-used effort per model family via the
+  `useReasoningByFamily` hook. The open control is a segmented track: one
+  segment per tier, with a single tinted indicator that slides between them by
+  `transform` (never `left`, which would lay the popover out on every frame).
+  Click or drag moves the indicator; the segment under the pointer wins and
+  release commits it; arrows, Home, and End provide the same keyboard path. On
+  a track with more than four levels each segment shows a short label
+  (`Min` / `Med` / `XHigh` / `Ultra`) while the accessible name and the header
+  keep the full tier name. A tier choice does **not** close the popover — the
   user can compare levels until clicking outside or pressing Escape.
   The collapsed trigger uses the full tier label on normal-width composers
   (for example, `Medium` rather than `MED`) and removes the nested label
@@ -960,36 +965,51 @@ chat pane mount, which happens either way.
 - **Voice conversation.** The waveform button beside the dictation mic
   starts a spoken conversation with the chat. See
   [Voice conversations](#voice-conversations).
-- **Fast mode.** Toggles the legacy-named `codexFastMode` bit for the
-  selected session. Fast mode is a property of a *model*, so the toggle
-  lives on the model row inside the shared `ModelPicker` rather than as a
-  separate composer chip — every surface that mounts the picker gets it,
-  and the composer toolbar keeps one control where it used to spend two.
-  The row chip renders whenever that descriptor advertises
-  `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows, GPT-5.6, and
-  older fast-capable Codex entries) *and* the caller supplied
-  `onFastModeChange`. Fast is one bit per surface but it belongs to the
-  model it was enabled for, so a chip reads as on only on the *selected*
-  row (`fastModeOn={fastMode && isActive}`) — never on every fast-capable
-  row at once. Clicking the selected row's chip is a plain on/off toggle
-  that neither closes the picker nor re-fires selection; clicking a
-  non-selected row's chip means "use this model, fast" — one press
-  commits the model selection and turns fast on. A plain row click onto a
-  different model clears the previous model's fast bit rather than
-  inheriting it. The chip's states are rest (muted outline, outline
-  lightning) → hover (darker fill, still off) → on (violet fill, filled
-  lightning). A press does not change the chip's size: ADE buttons give
-  press feedback with color, not with a scale transform, so a release near
-  the edge of a button still lands on it. The collapsed trigger names the state rather than showing a
-  separate indicator — `composeModelPickerTriggerLabel()` in
-  `ModelPicker.tsx` renders "GPT-5.6 Terra Fast", with a filled lightning
-  glyph rendered before the model name (`aria-hidden`, so the accessible
-  name stays text-only). Codex state flows into
-  the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
-  SDK state flows through the discovered model-parameter selection, and
-  Work CLI launches resolve fast Cursor rows to the matching `*-fast`
-  alias. Parallel mode passes the per-slot setter through the slot's own
-  picker (`onParallelSlotCodexFastModeChange`).
+- **Fast mode.** Toggles the `fastMode` bit for the selected session. Fast
+  mode is a property of a *model*, so the toggle lives on the model row inside
+  the shared `ModelPicker` rather than as a separate composer chip — every
+  surface that mounts the picker gets it, and the composer toolbar keeps one
+  control where it used to spend two. The row chip renders whenever that
+  descriptor advertises `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows,
+  GPT-5.6, and older fast-capable Codex entries) *and* the caller supplied
+  `onFastModeChange`. Fast is one bit per surface but it belongs to the model
+  it was enabled for, so a chip reads as on only on the *selected* row
+  (`fastModeOn={fastMode && isActive}`) — never on every fast-capable row at
+  once. Clicking the selected row's chip cycles the tier; clicking a
+  non-selected row's chip means "use this model, fast" — one press commits the
+  model selection and turns fast on. A plain row click onto a different model
+  keeps Fast when the new model has a fast tier and clears it when it does not;
+  Ultrafast carries over only to a model whose catalog offers it. The chip's
+  states are rest (muted outline, outline lightning) → hover (darker fill,
+  still off) → on (violet fill, filled lightning). A press does not change the
+  chip's size: ADE buttons give press feedback with color, not with a scale
+  transform, so a release near the edge of a button still lands on it. The
+  collapsed trigger names the state rather than showing a separate indicator —
+  `composeModelPickerTriggerLabel()` in `ModelPicker.tsx` renders "GPT-5.6
+  Terra Fast", with a filled lightning glyph rendered before the model name
+  (`aria-hidden`, so the accessible name stays text-only). Codex state flows
+  into the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
+  SDK state flows through the discovered model-parameter selection, and Work
+  CLI launches resolve fast Cursor rows to the matching `*-fast` alias.
+  Parallel mode passes the per-slot setter through the slot's own picker
+  (`onParallelSlotCodexFastModeChange`).
+
+  **Codex Ultrafast.** On a Codex model whose catalog lists the `ultrafast`
+  service tier, and only where the surface passes `fastTier`, the chip cycles
+  Off → Fast → Ultrafast (the chip reads `Ultra` and shows a double lightning).
+  A surface that omits `fastTier` (the TUI, the phone, older clients) keeps the
+  plain two-state Fast chip. The tier arrives as `onFastModeChange`'s second
+  argument; the trigger says "Ultrafast" only when the model offers the tier.
+  Ultrafast is granted per account — the Codex model/list is the only thing
+  that can say a model has it — so the runtime keeps a stored Ultrafast choice
+  until a catalog says the model lacks it, and sends `serviceTier:
+  "ultrafast"` only when that model is not known to be without it. An update
+  changes the tier only when it names `fastTier` (Fast-only clients resend
+  `fastMode: true` with every model or effort change, and that must not drop an
+  Ultrafast choice made elsewhere); Fast off clears it, and a model switch
+  keeps it only when the update names it or the new model is known to offer it.
+  It is never stored for a non-Codex provider. See
+  [Provider service tiers](agent-routing.md#provider-service-tiers-fast-mode).
 
   Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
@@ -1401,7 +1421,8 @@ chat pane mount, which happens either way.
 
 ### Launch memory
 
-What you last launched with — model, reasoning effort, fast mode, permission
+What you last launched with — model, reasoning effort, fast mode (with its
+Codex tier), permission
 level — is remembered **per machine**, under
 `ade.chat.lastLaunchConfig.v1:<surfaceProfile>:<kind>` in renderer
 `localStorage`. The key deliberately carries no project root and no lane id.
@@ -1435,11 +1456,11 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 
 | Module | Role |
 |---|---|
-| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading through `sharedCatalogFetch` (which owns the cache claim and the request key), fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Surfaces that pass neither render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Props include `hidePermissionRail` (hook for surfaces that pin the permission tier and suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list), and `runtimePin` (the prompt-box / chat machine, forwarded into auth and OpenCode-installed probes). When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the static registry even if the last discovered model-id list is incomplete. The left rail always includes those ACP families (plus Cursor / OpenCode / local runtimes) so they stay reachable before catalog refresh; Favorites only lists starred models. Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
-| `ModelPickerRail.tsx` | Left-rail tabs (Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio). The desktop, hosted renderer, TUI, and iOS catalog keep this provider order (Cursor is omitted on unsupported Windows ARM); reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
-| `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). Also renders the muted Fast chip when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; toggling it changes neither the selection nor the popover's open state. |
-| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. It also exports `resolveDisplayedReasoningEffort`, the pure function behind what the trigger shows: when nothing explicit is set the control falls back to the effort last used for the model's family, so a launch that reads the unset state instead sends the model default while the trigger says "High". `AgentChatPane` resolves the same function at the owner of the value, which keeps the two in step without a presentational component writing its parent's state on mount. |
+| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading through `sharedCatalogFetch` (which owns the cache claim and the request key), fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Pass `fastTier` (null included) too and the surface accepts Codex Ultrafast: a model whose catalog offers the `ultrafast` tier cycles Off → Fast → Ultrafast, the second `onFastModeChange` argument carries the tier, and the trigger reads `Ultrafast`. A surface that omits `fastTier` keeps the two-state Fast chip. Surfaces that pass neither render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Layout: the rail and search bar share one recessed L, and the list sits on a raised panel cut into it, led by a section label naming what the list shows (the provider, `Favorites`, `Recents`, `Custom`, or `N results`) so the icon-only rail never leaves the current provider a guess. Sub-provider tabs (e.g. `Anthropic (via Cursor)`) carry the maker's logo; a catch-all group of mixed makers gets none. Rows are a fixed 50 px (`MODEL_ROW_HEIGHT` = a 48 px row plus its gap), so the list never measures a row and `overscan` is 4; before the scroller has a height the list paints one screen (10 rows). The search field is focused after the first paint, not in a layout effect, so opening does not run a second layout pass before the panel is placed. Props include `hidePermissionRail` (hook for surfaces that pin the permission tier and suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list), `fastTier` + `ultrafastEnabled` (carry Fast's tier and let offering rows cycle to Ultrafast), and `runtimePin` (the prompt-box / chat machine, forwarded into auth and OpenCode-installed probes). Inside a provider's own rail the row detail line drops that provider's name (`omitProviderInDetail`), keeping only the route and context size; mixed lists (Search / Favorites / Recents) keep it. When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the static registry even if the last discovered model-id list is incomplete. The left rail always includes those ACP families (plus Cursor / OpenCode / local runtimes) so they stay reachable before catalog refresh; Favorites only lists starred models. |
+| `ModelPickerRail.tsx` | Left-rail tabs (Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio). The desktop, hosted renderer, TUI, and iOS catalog keep this provider order (Cursor is omitted on unsupported Windows ARM); reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. Tabs are icon-only; the selected one is raised onto the same surface as the list panel, and its rail has no scrollbar. |
+| `ModelListRow.tsx` | A single model row: fixed 48 px and two lines — the maker logo, the display name, a check on the selected row, an optional local/`Sign in` mark, a fixed two-slot capability pill (reasoning, then image input, shown faint when absent so the columns line up), a fixed-width Fast/Ultrafast slot (a blank spacer on rows without the chip, when the surface offers the control), and the favorite star at the end (revealed on hover/focus, always shown when starred). The Fast chip renders when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; a row whose catalog offers Ultrafast and whose surface enabled it cycles Off → Fast → Ultrafast, and toggling it changes neither the selection nor the popover's open state. Its context menu is stacked through `Z_LAYERS.contextMenu`. |
+| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. The trigger carries an `EffortMeter` signal-bar glyph (one rising bar per tier, lit to the current effort in its tone); the open control is a segmented track with one tinted indicator that slides between segments by `transform`, driven by click, drag, or arrows/Home/End, with short segment labels when the ladder has more than four levels (`reasoningEffortTrackLabel`). It also exports `resolveDisplayedReasoningEffort`, the pure function behind what the trigger shows: when nothing explicit is set the control falls back to the effort last used for the model's family, so a launch that reads the unset state instead sends the model default while the trigger says "High". `AgentChatPane` resolves the same function at the owner of the value, which keeps the two in step without a presentational component writing its parent's state on mount. |
 | `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. All four take the same optional catalog scope key as `runtimeCatalogCache.ts`: descriptors are remembered per machine because a catalog's `reasoningEfforts` (the thinking-level ladder) and context window are machine-reported. There is deliberately **no fallback to another machine's bucket** — answering a miss from the bound machine is the same cross-machine leak the bucketing exists to prevent. A miss falls through to the static registry and then to `createUnknownModelPlaceholder`: correct-but-generic beats confident-and-wrong. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
 | `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
@@ -1734,6 +1755,11 @@ spelling out the model id and the flags.
   starts with `model` lists every model. A name hit puts the section first, so
   `@deep` + Tab picks the model. The list is every model a new chat could start
   on (`mentionModelIds`), not the narrower list the running chat can switch to.
+  Among models that match the query **equally well**, the ones picked recently
+  lead, newest first (`rankComposerModelMatches` `recentModelIds`) — the same
+  synced recents the picker's Recents rail uses, and a pick from the `@` menu
+  now records one too (desktop and TUI). A better match always wins: `@de`
+  still puts DeepSeek above a recent model that only contains "de".
 - **Editing.** The chip has a fixed name part and two editable parts
   (`composerModelChip.ts`). After insertion the thinking part opens with the
   model's default level. Tab moves thinking → permission → out of the chip,
