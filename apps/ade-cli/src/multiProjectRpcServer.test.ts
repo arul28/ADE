@@ -3475,7 +3475,7 @@ describe("machine.updateAndRestart", () => {
     }
   });
 
-  it("restarts without updating when the machine is already current", async () => {
+  it("does not restart when the machine is already on the requested version", async () => {
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";
     try {
@@ -3495,13 +3495,14 @@ describe("machine.updateAndRestart", () => {
 
       expect(controls.checkForUpdate).toHaveBeenCalledWith("1.2.55");
       expect(controls.applyUpdate).not.toHaveBeenCalled();
-      expect(controls.requestRestart).toHaveBeenCalledTimes(1);
+      // Already on the requested version: nothing installed, nothing restarted.
+      expect(controls.requestRestart).not.toHaveBeenCalled();
       expect(result.ok).toBe(true);
       expect(result.updateApplied).toBe(false);
       expect(result.steps.map((step) => [step.id, step.status])).toEqual([
         ["check", "ok"],
         ["apply", "skipped"],
-        ["restart", "pending"],
+        ["restart", "skipped"],
       ]);
       handler.dispose();
     } finally {

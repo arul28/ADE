@@ -14,6 +14,7 @@ import {
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
+  isMachineVersionCurrent,
   isVersionSkewWarning,
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
@@ -408,6 +409,19 @@ describe("isVersionSkewWarning", () => {
     expect(isVersionSkewWarning("Remote ADE service is missing project capabilities: create.")).toBe(
       false,
     );
+  });
+});
+
+describe("isMachineVersionCurrent", () => {
+  it.each([
+    ["the same version", "1.2.55", "1.2.55", true],
+    ["a newer version", "1.2.56", "1.2.55", true],
+    ["an older version", "1.2.54", "1.2.55", false],
+    ["a v-prefixed target", "1.2.55", "v1.2.55", true],
+    ["a missing version", null, "1.2.55", false],
+    ["an unreadable version", "not-a-version", "1.2.55", false],
+  ])("is current: %s", (_label, version, target, expected) => {
+    expect(isMachineVersionCurrent(version, target)).toBe(expected);
   });
 });
 

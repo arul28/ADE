@@ -77,7 +77,7 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.message).toContain("1.2.55");
   });
 
-  it("restarts a machine that has no update pending", async () => {
+  it("does not restart a machine already on the requested version", async () => {
     const applyUpdate = vi.fn();
     const requestRestart = vi.fn(() => ({ ok: true, detail: "Restarting the background service." }));
 
@@ -89,12 +89,15 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.ok).toBe(true);
     expect(result.updateApplied).toBe(false);
     expect(applyUpdate).not.toHaveBeenCalled();
-    expect(requestRestart).toHaveBeenCalledTimes(1);
+    // A request for the version this machine already runs installs nothing and
+    // stops nothing — even though a check with no update pending still would.
+    expect(requestRestart).not.toHaveBeenCalled();
     expect(result.steps.map((step) => [step.id, step.status])).toEqual([
       ["check", "ok"],
       ["apply", "skipped"],
-      ["restart", "pending"],
+      ["restart", "skipped"],
     ]);
+    expect(result.message).toBe("Already on 1.2.55 — nothing to update, nothing restarted.");
   });
 
   it("names the failed step when the update cannot be installed", async () => {
@@ -266,6 +269,9 @@ describe("createMachineUpdateControls", () => {
     expect(applyUpdate).not.toHaveBeenCalled();
     expect(result.updateApplied).toBe(false);
     expect(result.ok).toBe(true);
+    // No version was named, so this is the "unstick a machine" restart: it
+    // still restarts even though the check found nothing to install.
+    expect(requestRestart).toHaveBeenCalledTimes(1);
   });
 
   it("fails the check step when the update check comes back not ok", async () => {
