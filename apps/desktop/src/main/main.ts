@@ -8154,6 +8154,21 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * Arms one continue row per chat this launch owes a resume, and drops them
+   * from the record.
+   *
+   * The caller waits for the update transaction that would refuse the runtime
+   * first, and there is exactly one caller per launch: a second arm of a row
+   * that has already fired tells the chat to continue twice.
+   */
+  const armOwedResumes = async (
+    owed: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+  ): Promise<void> => {
+    const armed = await armResumeForChats(owed);
+    consumeArmedResumeChats(armed.map((chat) => chat.sessionId));
+  };
+
   // Phones connected through ADE phone sync, which drop while ADE restarts.
   // Mirrors the lane-delete quit probe: in-process services in dev, runtime
   // actions against the brain in packaged builds. Best-effort — an unreachable
@@ -9451,17 +9466,11 @@ app.whenReady().then(async () => {
       // back to what it did before the wait — the tabs the renderer restores
       // itself, and a project to open by hand — rather than holding a window
       // nobody has seen yet for as long as that install takes. The resume is
-      // the exception: it needs no window, so it is armed the moment the
-      // transaction lets the pool go, however late that is.
+      // not part of that fallback: it opens no project, so it is still armed
+      // below, the moment the transaction lets the pool go.
       updateLogger.warn("autoUpdate.post_update_transaction_wait_timeout", {
         waitMs: POST_UPDATE_TRANSACTION_WAIT_MS,
       });
-      if (armsResume) {
-        void postUpdateTransactionDone
-          .then(() => armResumeForChats(resumedAfterUpdate))
-          .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
-          .catch(() => undefined);
-      }
     }
   }
 
@@ -9495,8 +9504,11 @@ app.whenReady().then(async () => {
     }
   }
   if (armsResume) {
-    void armResumeForChats(resumedAfterUpdate)
-      .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
+    // Armed once, when the pool can answer: with no update transaction running
+    // that is now, and otherwise it is the moment that transaction lets go —
+    // the same instant everything above needed, however long the install took.
+    void (postUpdateTransactionDone ?? Promise.resolve())
+      .then(() => armOwedResumes(resumedAfterUpdate))
       .catch(() => undefined);
   }
 

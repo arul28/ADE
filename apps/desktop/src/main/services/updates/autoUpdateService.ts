@@ -258,9 +258,10 @@ function cloneRecentlyInstalledUpdate(
  * Whether the installed notice should still be shown for a record.
  *
  * A record whose notice the user dismissed is kept in state for the one thing
- * it still owes: the continue rows it has not managed to arm yet. Every reader
- * needs that same answer — the notice the launch reconciles, the row it
- * consumes, the dismissal behind both — so it is answered in one place.
+ * it still owes: the continue rows it has not managed to arm yet. Two readers
+ * need that same answer — the notice the launch reconciles, and the row it
+ * consumes — so it is answered in one place, beside the field the dismissal
+ * writes.
  */
 export function shouldShowInstalledNotice(
   update: RecentlyInstalledUpdate | null | undefined,
@@ -2029,13 +2030,15 @@ export function createAutoUpdateService({
       const stateBeforeInstall = readGlobalState(globalStatePath);
       // This install supersedes the record of the last one, and with it any
       // continue row that record still owed a chat no project would claim. A
-      // chat that is gone is the usual reason, and the install being armed
-      // right now queues its own resume — but a resume the user asked for must
-      // never go quiet, so the drop is named.
-      const supersededResumes = stateBeforeInstall.recentlyInstalledUpdate?.resumedChats ?? [];
-      if (supersededResumes.length > 0) {
+      // chat that is gone is the usual reason, and one still mid-turn is queued
+      // again by this install — but a resume the user asked for must never go
+      // quiet, so a chat this install does NOT carry forward is named.
+      const carriedForwardResumes = new Set(resumedChats.map((chat) => chat.sessionId));
+      const droppedResumes = (stateBeforeInstall.recentlyInstalledUpdate?.resumedChats ?? [])
+        .filter((chat) => !carriedForwardResumes.has(chat.sessionId));
+      if (droppedResumes.length > 0) {
         logger.warn("autoUpdate.install_superseded_unarmed_resumes", {
-          chats: supersededResumes.length,
+          chats: droppedResumes.length,
         });
       }
       writeGlobalState(globalStatePath, {
