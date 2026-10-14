@@ -289,7 +289,13 @@ describe("useMacDesktopLiveView reconnects by itself", () => {
 
     const spent = api.startStream.mock.calls.length;
     await pass(RECOVER_SLOW_MS + 50);
-    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(spent));
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBe(spent + 1));
+    // One tick per RECOVER_SLOW_MS, not a spin: nothing in between...
+    await pass(RECOVER_SLOW_MS - 200);
+    expect(api.startStream.mock.calls.length).toBe(spent + 1);
+    // ...and the next one lands on schedule.
+    await pass(250);
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBe(spent + 2));
     // And it still says the picture is not coming through while it keeps
     // trying, rather than blinking back to a promise it has stopped keeping.
     expect(view.result.current.gaveUp).toBe(true);
@@ -315,9 +321,14 @@ describe("useMacDesktopLiveView reconnects by itself", () => {
     expect(spent).toBeGreaterThan(1);
     expect(view.result.current.status).toBe("error");
 
-    // Nothing asks again without a person... until the slow heartbeat does.
+    // Nothing asks again without a person... until the slow heartbeat does,
+    // once per RECOVER_SLOW_MS rather than on a spin.
     await pass(RECOVER_SLOW_MS + 50);
-    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(spent));
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBe(spent + 1));
+    await pass(RECOVER_SLOW_MS - 200);
+    expect(api.startStream.mock.calls.length).toBe(spent + 1);
+    await pass(250);
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBe(spent + 2));
   });
 
   it("a viewer that no longer wants the lane never asks again", async () => {

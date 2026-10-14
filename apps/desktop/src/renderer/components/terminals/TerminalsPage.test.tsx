@@ -51,6 +51,7 @@ import {
   macDesktopCardGrantedAt,
   resetMacDesktopCardGrantsForTests,
 } from "../work/macDesktopCardGrants";
+import { resetAppControlCardGrantsForTests } from "../work/appControlCardGrants";
 import {
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
@@ -1489,6 +1490,19 @@ describe("TerminalsPage chat session activation", () => {
       await screen.findByTestId("work-view-area");
     };
 
+    /*
+     * A float these requests take writes real module state — the card grants
+     * and the chat's companion-UI marker — and the Mac Desktop suite below
+     * reads it. A leftover grant would let its first assertion pass for
+     * nothing, so the same resets it uses run here too.
+     */
+    afterEach(() => {
+      resetMacDesktopCardGrantsForTests();
+      resetAppControlCardGrantsForTests();
+      resetChatCompanionUiStateCacheForTests();
+      window.localStorage.clear();
+    });
+
     /** The pane, as far as a show can tell: the tool mounts when it is written. */
     const paneMountsWhatIsWritten = () => {
       setDocumentVisibleForTests(true);
@@ -1517,6 +1531,22 @@ describe("TerminalsPage chat session activation", () => {
     });
 
     /*
+     * The browser keeps opening the pane, closed or not: `ade browser handoff`
+     * is an agent saying it cannot get past a page and the person has to act
+     * there, and there is no floating player for a page.
+     */
+    it("opens the pane for a browser show even with it closed", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "browser" }),
+      );
+    });
+
+    /*
      * A screen, app or device show with the pane CLOSED is answered by the
      * lane's floating player. Whether the pane is open is the person's own
      * preference, and the surface an agent drives continuously re-opening it
@@ -1525,16 +1555,28 @@ describe("TerminalsPage chat session activation", () => {
     it.each([
       ["apple", "floating-apple"],
       ["mac-desktop", "floating-mac-desktop"],
-      ["app-control", "floating-app-control"],
-    ] as const)("never opens a closed pane for %s, floating %s instead", async (surface, floating) => {
+    ] as const)("floats %s over the chat instead of opening a closed pane", async (surface, floating) => {
       paneMountsWhatIsWritten();
       await renderWithChatInFront();
-      const answer = await answerWorkToolShowRequest(showRequest({ surface }));
-      // Nothing activated in a pane, so nothing could have opened one.
+      // Nothing activated in a pane, so nothing could have opened one...
+      await expect(answerWorkToolShowRequest(showRequest({ surface })))
+        // ...and the answer names the floating surface, not the pane: that is
+        // what the agent reads and reports to the person.
+        .resolves.toEqual({ status: "shown", shownAs: floating });
       expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
-      // And when it does report a picture, it names the floating surface, not
-      // the pane it did not open.
-      if (answer?.status === "shown") expect(answer.shownAs).toBe(floating);
+    });
+
+    /*
+     * App Control has no session in this harness, so its card never reaches the
+     * screen. The answer is the spent `held` — never a pane, and never a
+     * promise that the surface will turn up on its own later.
+     */
+    it("does not open a closed pane for app-control, and reports the card as not up", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "app-control" })))
+        .resolves.toEqual({ status: "held", opened: true });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
     });
 
     it("opens the pane when the float it would use declines", async () => {

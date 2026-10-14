@@ -550,7 +550,7 @@ slow live picture rather than one frozen moment. It stops for good the moment a
 frame of ScreenCaptureKit's own arrives (`hadRealFrame`), and a screenshot that
 comes back empty slows the retakes down (to at most one every 30 s) instead of
 stopping them, so a watching reader is never left with a still the desktop has
-moved on from. The renderer's half is a slow heartbeat (`RECOVER_SLOW_MS` in
+moved on from for long — at worst one up to 30 s old. The renderer's half is a slow heartbeat (`RECOVER_SLOW_MS` in
 `useMacDesktopLiveView.ts`): once the quick re-dials after a frame-less address,
 or the start retries after a host that refused, are spent, it keeps asking every
 thirty seconds while somebody is watching, instead of sitting on a dead address
