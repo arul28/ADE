@@ -8739,22 +8739,26 @@ function buildCliSessionStartPlan(
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider: rawProvider });
-  const permissionMode =
-    readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
+  const requestedPermissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  // Keep an omitted subagent permission unset so the runtime can inherit the
+  // parent's access. Other launches retain the CLI's historical default.
+  const permissionMode = requestedPermissionMode ?? (
+    lineage.kind === "lineage" && lineage.spawnKind === "subagent" ? undefined : "default"
+  );
   const droidPermissionMode = readDroidPermissionMode(args);
-  if (!isTrackedCliPermissionMode(permissionMode)) {
+  if (!isTrackedCliPermissionMode(permissionMode ?? "default")) {
     throw new CliUsageError(PERMISSION_MODE_ENUM_MESSAGE);
   }
   // The profile/mode pairing is checked on the merged bag in
   // `collectLaunchArgs`; checking it here as well would only answer first for a
   // launch the merged check rejects anyway.
-  const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
   const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
 
   const input = collectLaunchArgs(args, {
     laneId,
     provider,
-    permissionMode,
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
     // No `LAUNCH_PROFILE_TITLE[provider]` fallback here: `--arg provider=…`
     // has not merged yet. `applyMergedProviderTitle` fills it in below.
     title: readValue(args, ["--title"]) ?? undefined,
