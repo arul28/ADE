@@ -25,7 +25,7 @@ import { DetailView } from "./MusicDetailView";
 import { LibraryView, RecentView } from "./MusicLibraryView";
 import { QueueView } from "./MusicQueueView";
 import { SearchView } from "./MusicSearchView";
-import { MusicProviderPicker, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
+import { MusicProviderPicker, SpotifyOnboarding, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
 import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import "./music.css";
 
@@ -167,13 +167,21 @@ function MusicPageContent() {
     );
   }
 
+  if (availability === "unavailable" && provider === "spotify" && !spotifyConfigured) {
+    return (
+      <MusicFrame>
+        <div className="ade-music-center"><SpotifyOnboarding /></div>
+      </MusicFrame>
+    );
+  }
+
   if (availability === "unavailable") {
     return (
       <MusicFrame>
         <div className="ade-music-center">
           <section className={`ade-music-gate ade-chat-scene-plane${provider === "spotify" ? " is-setup" : ""}`} data-testid="music-unavailable">
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
-            <h1>{provider === "spotify" && !spotifyConfigured ? "Set up Spotify" : `${providerName} isn't available right now`}</h1>
+            <h1>{`${providerName} isn't available right now`}</h1>
             <p>{message ?? "ADE couldn't reach its music service."}</p>
             {lastError ? <p role="alert">{lastError}</p> : null}
             {provider === "spotify" ? <SpotifySetup /> : null}

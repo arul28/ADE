@@ -141,7 +141,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
    button is the icon with no frame of its own. */
 .ade-home-icon-action { width: 34px; padding: 0; justify-content: center; }
 .ade-home-icon-action > svg { color: var(--color-fg); }
-.ade-home-apple-music {
+.ade-home-app-button {
   display: inline-grid;
   place-items: center;
   flex: none;
@@ -152,13 +152,15 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   border-radius: 8px;
   background: none;
   cursor: pointer;
-  box-shadow: 0 6px 16px -8px rgb(250 35 59 / 55%);
   transition: transform 120ms, filter 120ms;
 }
-.ade-home-apple-music > svg { display: block; border-radius: 8px; }
-.ade-home-apple-music:hover { filter: brightness(1.08); }
-.ade-home-apple-music:active { transform: scale(0.95); }
-.ade-home-apple-music:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-home-app-button[data-app="appleMusic"] { box-shadow: 0 6px 16px -8px rgb(250 35 59 / 55%); }
+.ade-home-app-button[data-app="spotify"] { box-shadow: 0 6px 16px -8px rgb(30 215 96 / 50%); }
+.ade-home-app-button > svg { display: block; border-radius: 8px; }
+.ade-home-app-button:hover { filter: brightness(1.08); }
+.ade-home-app-button:active { transform: scale(0.95); }
+.ade-home-app-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-spotify-app-tile { display: inline-grid; place-items: center; flex: none; border-radius: 8px; background: #121212; }
 .ade-home-action[data-primary] {
   background: var(--color-accent);
   border-color: transparent;

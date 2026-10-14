@@ -2,6 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { MUSIC_SPOTIFY_CALLBACK_PORT } from "../../../shared/types/music";
+
 /**
  * Spotify sign-in for a desktop app: Authorization Code with PKCE, no client
  * secret, the consent page in the user's default browser, and the answer on a
@@ -10,9 +12,10 @@ import type { AddressInfo } from "node:net";
  * - The Client ID is the user's own Spotify app (developer.spotify.com). ADE
  *   cannot ship one: a Development Mode app takes five allow-listed users, and
  *   Extended Quota is for organisations with 250k monthly users.
- * - The redirect is `http://127.0.0.1:<port>/spotify/callback`. Spotify allows
- *   a loopback IP literal registered without a port and matched with any port
- *   (RFC 8252), so the port is whatever the OS gives the listener.
+ * - The redirect is `http://127.0.0.1:43219/spotify/callback`
+ *   (`MUSIC_SPOTIFY_REDIRECT_URI`). Spotify's docs allow a portless loopback
+ *   URI matched with any port, but its dashboard rejects one as "not secure",
+ *   so the port is fixed and the user registers it as is.
  * - The listener binds 127.0.0.1 only, answers one `GET /spotify/callback`
  *   whose `state` matches, and closes. Everything else gets a 404.
  * - Tokens never reach a log. The refresh token is persisted by the caller
@@ -20,6 +23,10 @@ import type { AddressInfo } from "node:net";
  */
 
 export const SPOTIFY_SCOPES = [
+  // Playing inside ADE (the Web Playback SDK needs all three).
+  "streaming",
+  "user-read-email",
+  "user-read-private",
   "user-read-playback-state",
   "user-modify-playback-state",
   "user-read-currently-playing",
@@ -145,6 +152,8 @@ export async function startSpotifySignIn(args: {
   clientId: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** The loopback port; the registered one unless a caller needs another. */
+  port?: number;
 }): Promise<SpotifySignIn> {
   const verifier = base64url(randomBytes(64));
   const challenge = base64url(createHash("sha256").update(verifier).digest());
@@ -224,9 +233,15 @@ export async function startSpotifySignIn(args: {
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
+    const port = args.port ?? MUSIC_SPOTIFY_CALLBACK_PORT;
+    const onError = (error: NodeJS.ErrnoException) => {
+      reject(error.code === "EADDRINUSE"
+        ? new SpotifyAuthError(`Another app is using port ${port}, which Spotify sign-in needs. Close it and try again.`, "network")
+        : error);
+    };
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
       resolve();
     });
   });

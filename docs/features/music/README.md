@@ -22,8 +22,9 @@ moves music to that machine. Provider adapters for coding agents are unrelated.
 1. Open Music from the home page or **Mod+Shift+M** and choose Spotify.
 2. Enter a Spotify application's public **Client ID**, from
    [Spotify's developer dashboard](https://developer.spotify.com/dashboard).
-   Register exactly `http://127.0.0.1/spotify/callback` as a redirect URI,
-   without a port. ADE chooses an available loopback port for each sign-in.
+   Register exactly `http://127.0.0.1:43219/spotify/callback` as a redirect
+   URI. Spotify's docs allow a portless loopback URI, but its dashboard
+   rejects one as "not secure", so ADE's sign-in always listens on port 43219.
    No client secret is used or stored.
 3. Press **Connect Spotify** and finish consent in the default browser. ADE
    uses Authorization Code with PKCE, a random state value and a listener bound

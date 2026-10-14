@@ -137,8 +137,15 @@ export type MusicSpotifyState = {
   device: MusicDevice | null;
 };
 
-/** The redirect URI to register in the Spotify app (no port: ADE picks one per sign-in). */
-export const MUSIC_SPOTIFY_REDIRECT_URI = "http://127.0.0.1/spotify/callback";
+/**
+ * The loopback port ADE's Spotify sign-in listens on. Spotify's dashboard
+ * refuses a portless `http://127.0.0.1/...` redirect as "not secure", so the
+ * port is fixed and part of the URI the user registers.
+ */
+export const MUSIC_SPOTIFY_CALLBACK_PORT = 43219;
+
+/** The redirect URI to register in the Spotify app. */
+export const MUSIC_SPOTIFY_REDIRECT_URI = `http://127.0.0.1:${MUSIC_SPOTIFY_CALLBACK_PORT}/spotify/callback`;
 
 export type MusicConfigureSpotifyResult = { ok: true } | { ok: false; error: string };
 

@@ -1,4 +1,3 @@
-import { SpotifyItemLink } from "./musicParts";
 import React from "react";
 import { CaretUp, Queue } from "@phosphor-icons/react";
 
@@ -40,7 +39,6 @@ export function MusicNowPlayingBar({
           <MusicArt artwork={nowPlaying?.artwork} size={52} eager />
         </button>
         <div className="ade-music-bar-titles">
-          <SpotifyItemLink url={nowPlaying?.externalUrl} />
           <div className="ade-music-bar-title" title={nowPlaying?.title}>
             {nowPlaying?.title ?? (hostStarting ? "Starting the player" : "Not playing")}
           </div>

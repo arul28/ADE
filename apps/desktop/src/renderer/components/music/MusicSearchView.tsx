@@ -2,7 +2,7 @@ import React from "react";
 import { CircleNotch, MagnifyingGlass, Play, WarningCircle, X } from "@phosphor-icons/react";
 
 import type { MusicItem, MusicSearchResult, MusicSearchScope } from "../../../shared/types/music";
-import { MusicArt, MusicEmpty, SongRow, SpotifyItemLink } from "./musicParts";
+import { MusicArt, MusicEmpty, SongRow } from "./musicParts";
 import { isNowPlayingItem, queueActions, queueFromList } from "./musicQueue";
 import { TileSection, useLoad, type RowProps } from "./musicViewParts";
 import { useMusicProvider, useMusicProviderName } from "./musicProvider";
@@ -92,7 +92,7 @@ export function SearchView({
         {!debounced ? (
           authorized ? (
             <div className="ade-music-search-start">
-              <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint={provider === "spotify" ? "Play on your selected Spotify device." : "Results play straight from Apple Music."} />
+              <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint={provider === "spotify" ? "Results play straight from Spotify." : "Results play straight from Apple Music."} />
               <div className="ade-music-ideas-label">Try</div>
               <div className="ade-music-ideas" aria-label="Search ideas">
                 {SEARCH_IDEAS.map((idea) => (
@@ -224,7 +224,6 @@ function SearchResults({
                   {top.kind !== "artist" ? <span className="truncate">{top.subtitle}</span> : null}
                 </span>
               </button>
-              <SpotifyItemLink url={top.externalUrl} />
               {top.kind !== "artist" ? (
                 <button type="button" className="ade-music-top-play" onClick={playTop} aria-label={`Play ${top.title}`} title="Play">
                   <Play size={18} weight="fill" />

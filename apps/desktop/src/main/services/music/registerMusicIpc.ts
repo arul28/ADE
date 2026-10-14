@@ -74,14 +74,15 @@ export function registerMusicIpc(args: {
     }
     onNowPlayingState(state);
   };
+  const hostExecutable = resolveMusicHostExecutable({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  });
   // Both services start before the router; their broadcasts reach it once it exists.
   let router!: MusicRouter;
   const apple = createMusicService({
-    hostExecutable: resolveMusicHostExecutable({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      appPath: app.getAppPath(),
-    }),
+    hostExecutable,
     isPackaged: app.isPackaged,
     userDataDir: musicDir,
     appVersion: app.getVersion(),
@@ -92,6 +93,8 @@ export function registerMusicIpc(args: {
   });
   const settings = createMusicSettings(musicDir, args.logger);
   const spotify = createSpotifyService({
+    // Spotify plays in the same host as Apple Music, with a profile of its own.
+    playerHost: { executable: hostExecutable, userDataDir: path.join(app.getPath("userData"), "music-player-spotify") },
     credentials: args.spotifyCredentials,
     clientId: () => settings.get().spotifyClientId,
     openExternal: openExternalUrl,

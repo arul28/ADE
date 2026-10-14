@@ -126,6 +126,11 @@ export function useMusicLastError(): string | null {
   return useMusicStore((s) => s.lastError);
 }
 
+/** The last error right now, for a step that must stop when the one before it failed. */
+export function readMusicLastError(): string | null {
+  return useMusicStore.getState().lastError;
+}
+
 export type MusicNowPlayingView = {
   /** False on platforms or windows without Music. */
   available: boolean;

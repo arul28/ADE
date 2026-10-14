@@ -192,7 +192,6 @@ export function SongRow({
       </span>
       {showAlbum ? <span className="ade-music-song-album">{item.album ?? ""}</span> : null}
       <span className="ade-music-song-actions">
-        <SpotifyItemLink url={item.externalUrl} />
         {onPlayNext ? (
           <button type="button" className="kit-icon-btn" onClick={onPlayNext} title="Play next" aria-label="Play next">
             <Queue size={14} />
@@ -420,7 +419,7 @@ export function CollectionTile({
           {item.releaseYear && item.kind === "album" ? ` · ${item.releaseYear}` : ""}
         </span>
       </button>
-      <div className="flex items-center justify-between gap-2"><SpotifyItemLink url={item.externalUrl} />{onPlay && item.id.startsWith("spotify:") ? <button type="button" className="kit-icon-btn" onClick={onPlay} aria-label={`Play ${item.title}`}><Play size={14} weight="fill" /></button> : null}</div>
+      {onPlay && item.id.startsWith("spotify:") ? <div className="flex items-center justify-end gap-2"><button type="button" className="kit-icon-btn" onClick={onPlay} aria-label={`Play ${item.title}`}><Play size={14} weight="fill" /></button></div> : null}
     </div>
   );
 }

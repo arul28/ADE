@@ -91,7 +91,7 @@ export function MusicAccountArea() {
             }}
           >
             <ArrowSquareOut size={14} />
-            <span className="min-w-0 flex-1 truncate text-left">Manage subscription</span>
+            <span className="min-w-0 flex-1 truncate text-left">{provider === "spotify" ? "Spotify account" : "Manage subscription"}</span>
           </button>
           <div className={MENU_SEPARATOR_CLASS} />
           <button

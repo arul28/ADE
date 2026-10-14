@@ -147,7 +147,7 @@ export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase
       <div className="ade-music-welcome-body">
         <span className="ade-music-connect-glyph"><MusicNotes size={32} weight="fill" /></span>
         <h1>Your music, inside ADE</h1>
-        <p>{provider === "spotify" ? "Connect Spotify to search, browse your library and control playback on your computer, phone or speakers. Spotify Premium and an active Spotify device are required." : "Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews."}</p>
+        <p>{provider === "spotify" ? "Connect Spotify to play your library, playlists and the whole catalog inside ADE while you work. Needs Spotify Premium." : "Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews."}</p>
         <div className="ade-music-welcome-cta">
           <ConnectButton />
         </div>
