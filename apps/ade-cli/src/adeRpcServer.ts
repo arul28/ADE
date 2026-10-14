@@ -87,7 +87,8 @@ import {
   encodeCodedErrorMessage,
   parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
-import { isExpectedFailure } from "../../desktop/src/shared/sentry/expectedFailure";
+import { isExpectedFailure, isExpectedOutcome } from "../../desktop/src/shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -1931,6 +1932,12 @@ const CALLER_ERROR_CODES = new Set<number>([
 function reportFailedAction(actionName: string, error: unknown): void {
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
+  if (isExpectedOutcome(error)) {
+    forwardLogToSentry("warn", `runtime_action.expected.${actionName}`, {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   const code = parseCodedErrorMessage(error).code ?? null;
   captureError(error, {
     tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
