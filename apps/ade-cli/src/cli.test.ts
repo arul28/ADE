@@ -12186,6 +12186,23 @@ describe("ADE CLI", () => {
           spawnKind: "subagent",
         },
       });
+      const args = (plan.steps[0]?.params as { arguments: Record<string, unknown> }).arguments;
+      expect(args).not.toHaveProperty("permissionMode");
+
+      const explicitMode = expectExecutePlan(buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+        "--type",
+        "subagent",
+        "--permission-mode",
+        "plan",
+      ]));
+      expect(
+        (explicitMode.steps[0]?.params as { arguments: Record<string, unknown> }).arguments.permissionMode,
+      ).toBe("plan");
     });
   });
 

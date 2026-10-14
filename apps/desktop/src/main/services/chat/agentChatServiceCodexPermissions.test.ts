@@ -2,6 +2,7 @@ import {
   AgentChatEventEnvelope,
   createAgentChatService,
   createService,
+  mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
   path,
@@ -13,6 +14,41 @@ import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
   describe("permission ceiling for agents", () => {
+    it.each([
+      ["claude", "subagent", undefined, "full-auto"],
+      ["codex", "subagent", undefined, "full-auto"],
+      ["claude", "subagent", "plan", "plan"],
+      ["codex", "subagent", "default", "default"],
+    ] as const)("resolves %s %s permissions with child choice %s", async (provider, spawnKind, permissionMode, expectedMode) => {
+      const mapping = await vi.importActual<typeof import("./permissionMapping")>("./permissionMapping");
+      const previousClaudeMapping = vi.mocked(mapPermissionToClaude).getMockImplementation()!;
+      const previousCodexMapping = vi.mocked(mapPermissionToCodex).getMockImplementation()!;
+      try {
+        vi.mocked(mapPermissionToClaude).mockImplementation(mapping.mapPermissionToClaude);
+        vi.mocked(mapPermissionToCodex).mockImplementation(mapping.mapPermissionToCodex);
+        const { service } = createService();
+        const parent = await service.createSession({
+          laneId: "lane-1", provider: "claude", model: "sonnet", permissionMode: "full-auto",
+        });
+        const child = await service.createSession({
+          laneId: "lane-1", provider, model: provider === "codex" ? "gpt-5.5" : "sonnet",
+          orchestrationParentSessionId: parent.id, spawnKind, permissionMode,
+          runtimeActor: { kind: "agent", chatSessionId: parent.id },
+        });
+        if (provider === "codex") {
+          expect(child.codexSandbox).toBe(expectedMode === "full-auto" ? "danger-full-access" : "workspace-write");
+          expect(child.codexApprovalPolicy).toBe(expectedMode === "full-auto" ? "never" : "on-request");
+        } else {
+          expect(child.claudePermissionMode).toBe(expectedMode === "full-auto" ? "bypassPermissions" : "default");
+          expect(child.interactionMode).toBe(expectedMode === "plan" ? "plan" : "default");
+        }
+        expect(readPersistedChatState(child.id).permissionMode).toBe(expectedMode);
+      } finally {
+        vi.mocked(mapPermissionToClaude).mockImplementation(previousClaudeMapping);
+        vi.mocked(mapPermissionToCodex).mockImplementation(previousCodexMapping);
+      }
+    });
+
     it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

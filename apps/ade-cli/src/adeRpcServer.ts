@@ -6344,9 +6344,20 @@ async function runTool(args: {
     const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));
     // An agent's CLI child never runs above the agent, or above its parent.
     const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
-    const permissionMode = cliCeiling
-      ? clampGenericPermissionMode(requestedPermissionMode, cliCeiling) as AgentChatPermissionMode
+    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    const parentLevel = orchestrationParentSessionId
+      ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
+      : null;
+    const defaultPermissionMode = spawnKind === "subagent"
+      && parentLevel === "full-auto"
+      && !asOptionalTrimmedString(toolArgs.permissionMode)
+      && !requestedDroidPermissionMode
+      && !requestedMusePermissionMode
+      ? "full-auto"
       : requestedPermissionMode;
+    const permissionMode = cliCeiling
+      ? clampGenericPermissionMode(defaultPermissionMode, cliCeiling) as AgentChatPermissionMode
+      : defaultPermissionMode;
     const droidPermissionMode = cliCeiling && requestedDroidPermissionMode
       && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
@@ -6356,7 +6367,6 @@ async function runTool(args: {
       && permissionLevelRank(permissionLevelForMuse(requestedMusePermissionMode)) > permissionLevelRank(cliCeiling)
       ? permissionFieldsForLevel("muse", cliCeiling).musePermissionMode
       : requestedMusePermissionMode;
-    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     // A parentless CLI launched by a bound agent records who launched it. This
     // is a passive fact: it does not nest the session or wake the launcher.
     // The CTO is not an agent launcher, so it records nothing here.
