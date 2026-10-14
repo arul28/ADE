@@ -572,9 +572,10 @@ configureDesktopUserDataPath();
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
 initMainSentry({
-  // `localRuntime.callAction` carries every brain action; name the action.
+  // The runtime action channels (this machine's brain and a paired machine's)
+  // carry every action; name the action.
   ipcLabel: (channel, args) => {
-    if (channel !== IPC.localRuntimeCallAction) return channel;
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
     const request = readRuntimeActionRequest(args);
     if (!request) return channel;
     return request.action ? `${request.domain}.${request.action}` : request.domain;

@@ -7632,7 +7632,11 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
-    async getReclaimRisk(laneId: string): Promise<LaneReclaimRisk> {
+    async getReclaimRisk(laneIdOrArgs: string | { laneId: string }): Promise<LaneReclaimRisk> {
+      // IPC and storage pass the id; the `lane.getReclaimRisk` action (CLI,
+      // TUI, desktop over the runtime) passes its `{ laneId }` object.
+      const laneId = typeof laneIdOrArgs === "string" ? laneIdOrArgs : laneIdOrArgs?.laneId;
+      if (typeof laneId !== "string" || !laneId) throw new Error("getReclaimRisk requires laneId.");
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const deleteRisk = await laneServiceApi.getDeleteRisk(laneId);

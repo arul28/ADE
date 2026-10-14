@@ -11,6 +11,8 @@
  * guarantee, and it is sized so that takes a dozen different failures.
  */
 
+import { isExpectedOutcomeText } from "./expectedFailure";
+
 export type SentryBudget = {
   perFingerprintPerHour: number;
   totalPerHour: number;
@@ -107,5 +109,6 @@ export function isIgnoredEvent(event: FingerprintSource): boolean {
     event.message ?? "",
     ...(event.exception?.values ?? []).map((value) => `${value.type ?? ""}: ${value.value ?? ""}`),
   ];
-  return texts.some((text) => text && IGNORED_ERROR_PATTERNS.some((pattern) => pattern.test(text)));
+  return texts.some((text) =>
+    text && (IGNORED_ERROR_PATTERNS.some((pattern) => pattern.test(text)) || isExpectedOutcomeText(text)));
 }

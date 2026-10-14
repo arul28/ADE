@@ -150,6 +150,8 @@ enum CrashReporting {
     .notConnectedToInternet,
     .networkConnectionLost,
     .dataNotAllowed,
+    // A phone on a weak network; the relay calls retry on their own.
+    .timedOut,
   ]
 }
 

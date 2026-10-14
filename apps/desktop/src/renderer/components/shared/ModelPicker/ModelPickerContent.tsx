@@ -593,7 +593,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       return;
     }
     const row = listRef.current?.querySelector<HTMLElement>(
-      `#model-picker-row-${encodeURIComponent(model.id)}`,
+      // An attribute selector: an encoded id ("%2F") is not a valid `#id`.
+      `[id="model-picker-row-${encodeURIComponent(model.id)}"]`,
     );
     if (!row) {
       focusRowOnNextRenderRef.current = false;
