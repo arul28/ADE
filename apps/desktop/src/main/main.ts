@@ -274,6 +274,7 @@ import type {
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  RecentlyInstalledUpdate,
   UpdateInstallImpact,
   UpdateInterruptedChat,
 } from "../shared/types";
@@ -424,7 +425,7 @@ import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/built
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
-import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
 import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
@@ -1336,9 +1337,13 @@ let dispatchAppNavigationForProjectRoot:
 const MAX_PENDING_APP_NAVIGATION_REQUESTS = 32;
 
 // How long a launch waits for the post-update transaction to release the pool
-// before going ahead without it. Every install recorded so far took two to
-// four seconds; this is the "something is very wrong on this machine" bound,
-// not a budget the working case reaches.
+// before going ahead without it. Every install recorded so far took two to four
+// seconds for the whole transaction, so this is the "this install is not going
+// the way it should" bound, not a budget the working case reaches — the pool
+// itself grants a service install 90s and its window 120s, but a launch has no
+// window on screen yet and holding one back that long reads as a hang. Past
+// this, a launch with something to open falls back to what it did before the
+// wait; the resume, which needs no window, does not (see below).
 const POST_UPDATE_TRANSACTION_WAIT_MS = 30_000;
 
 const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
@@ -7992,7 +7997,9 @@ app.whenReady().then(async () => {
   /**
    * Runs one chat action across every project runtime this machine knows
    * about: in-process services in test, the runtime action channel in packaged
-   * builds. Best-effort — an unreachable runtime contributes nothing.
+   * builds. Best-effort — an unreachable runtime contributes nothing. Answers
+   * how many projects it asked, which is the only way a caller can tell "no
+   * project answered" from "there was no project to ask".
    */
   const forEachProjectRuntime = async (
     run: (target: {
@@ -8002,16 +8009,17 @@ app.whenReady().then(async () => {
     }) => Promise<void>,
     /** Projects with no tab open that the action must still reach. */
     extraRoots: Iterable<string> = [],
-  ): Promise<void> => {
+  ): Promise<number> => {
     if (shouldUseInProcessProjectRuntime()) {
-      for (const ctx of projectContexts.values()) {
+      const contexts = Array.from(projectContexts.values());
+      for (const ctx of contexts) {
         await run({
           projectName: labelForProjectRoot(ctx.project?.rootPath ?? ""),
           projectRoot: ctx.project?.rootPath ?? "",
           inProcessService: ctx.agentChatService,
         });
       }
-      return;
+      return contexts.length;
     }
     // An extra root comes from the brain and can spell an open project's path
     // differently (drive-letter case, slashes), so the set is keyed, not raw.
@@ -8020,9 +8028,11 @@ app.whenReady().then(async () => {
       const key = pathKey(root);
       if (!roots.has(key)) roots.set(key, root);
     }
-    await Promise.all(Array.from(roots.values()).map(async (root) => {
+    const targets = Array.from(roots.values());
+    await Promise.all(targets.map(async (root) => {
       await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
     }));
+    return targets.length;
   };
 
   /** The chat list a chat-domain action returned, or nothing. */
@@ -8080,9 +8090,7 @@ app.whenReady().then(async () => {
     const armed: UpdateInterruptedChat[] = [];
     // A chat's project may have no tab open; its root is how the arm reaches it.
     const chatRoots = chats.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : []));
-    let projectsAsked = 0;
-    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
-      projectsAsked += 1;
+    const projectsAsked = await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
         const refs = inProcessService
           ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
@@ -8101,9 +8109,11 @@ app.whenReady().then(async () => {
         });
       }
     }, chatRoots);
-    // Nothing to ask is never a good answer: the continue row the user asked
-    // for is missing and every project that could have held it was unreachable.
-    // Left unsaid this is exactly how a resume disappears without a trace.
+    // Nothing to ask is never a good answer: no project was reachable to ask,
+    // and the continue row the user asked for is missing. Left unsaid, this is
+    // exactly how a resume disappears without a trace. A chat that names its
+    // own project is asked there directly, so a refusal shows up as
+    // `update_resume.arm_failed` instead — a log dig looks for both.
     if (projectsAsked === 0) {
       localRuntimeLogger.warn("update_resume.arm_no_project", { chats: sessionIds.length });
     }
@@ -8124,13 +8134,17 @@ app.whenReady().then(async () => {
       const remaining = (installed?.resumedChats ?? []).filter((chat) => !armed.has(chat.sessionId));
       if (!installed || remaining.length === (installed.resumedChats?.length ?? 0)) return;
       const { resumedChats: _armed, ...installedWithoutResume } = installed;
-      // Nothing left to arm: the record stays for the installed notice, and a
-      // notice the user dismissed has nothing else to keep it here for.
-      const nextInstalled = remaining.length > 0
-        ? { ...installed, resumedChats: remaining }
-        : installed.noticeDismissedAt
-          ? undefined
-          : installedWithoutResume;
+      let nextInstalled: RecentlyInstalledUpdate | undefined;
+      if (remaining.length > 0) {
+        nextInstalled = { ...installed, resumedChats: remaining };
+      } else if (shouldShowInstalledNotice(installed)) {
+        // Nothing left to arm: the record stays for the installed notice, the
+        // only thing it has left to say.
+        nextInstalled = installedWithoutResume;
+      } else {
+        // Dismissed, and nothing left to arm: nothing keeps it here.
+        nextInstalled = undefined;
+      }
       writeGlobalState(globalStatePath, {
         ...state,
         recentlyInstalledUpdate: nextInstalled,
@@ -9415,26 +9429,39 @@ app.whenReady().then(async () => {
   // Arming here rather than at quit is what keeps a failed install harmless:
   // no landed install, no resumed chats, no rows.
   const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
-  // Everything below opens a project, and the transaction above refuses every
-  // one of them while its update window is open: opened during it, a project
-  // comes back as "ADE is applying an update" and does not open at all. That
-  // costs the tab it was restoring and leaves the resume with no project to ask
-  // — which is how a checked "resume chats" box disappears without a trace.
-  // Only a launch that actually opens a project waits; the machine the
-  // transaction owns past the wait is one this launch cannot fix anyway.
-  const updateLaunchOpensAProject = shouldOpenStartupProject
-    || updateWorkspaceRestore.localRoots.length > 0
-    || resumedAfterUpdate.length > 0;
-  if (postUpdateTransactionDone && updateLaunchOpensAProject) {
+  // The parts of this launch that reach a project. The wait below and the blocks
+  // it guards read the same names, so the two cannot drift apart.
+  const restoresUpdateWorkspace = updateWorkspaceRestore.localRoots.length > 0;
+  const armsResume = resumedAfterUpdate.length > 0;
+  // The post-update transaction refuses every project while its update window is
+  // open: opened during it, a project comes back as "ADE is applying an update"
+  // and does not open at all. That costs the tab it was restoring and leaves the
+  // resume with no project to ask — which is how a checked "resume chats" box
+  // disappears without a trace. Only a launch that reaches a project waits; the
+  // machine the transaction owns past the wait is one this launch cannot fix.
+  if (postUpdateTransactionDone && (shouldOpenStartupProject || restoresUpdateWorkspace || armsResume)) {
     const transactionFinished = await settledWithin(
       postUpdateTransactionDone.then(() => true),
       POST_UPDATE_TRANSACTION_WAIT_MS,
       false,
     );
     if (!transactionFinished) {
+      // An install slower than the wait. Everything below opens a project and
+      // will be refused by the pool's still-open window, so this launch falls
+      // back to what it did before the wait — the tabs the renderer restores
+      // itself, and a project to open by hand — rather than holding a window
+      // nobody has seen yet for as long as that install takes. The resume is
+      // the exception: it needs no window, so it is armed the moment the
+      // transaction lets the pool go, however late that is.
       updateLogger.warn("autoUpdate.post_update_transaction_wait_timeout", {
         waitMs: POST_UPDATE_TRANSACTION_WAIT_MS,
       });
+      if (armsResume) {
+        void postUpdateTransactionDone
+          .then(() => armResumeForChats(resumedAfterUpdate))
+          .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
+          .catch(() => undefined);
+      }
     }
   }
 
@@ -9454,7 +9481,7 @@ app.whenReady().then(async () => {
     }
   }
 
-  if (updateWorkspaceRestore.localRoots.length > 0) {
+  if (restoresUpdateWorkspace) {
     const warmOrder = [
       ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
       ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
@@ -9467,7 +9494,7 @@ app.whenReady().then(async () => {
       }
     }
   }
-  if (resumedAfterUpdate.length > 0) {
+  if (armsResume) {
     void armResumeForChats(resumedAfterUpdate)
       .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
       .catch(() => undefined);

@@ -254,6 +254,20 @@ function cloneRecentlyInstalledUpdate(
   return update ? { ...update } : null;
 }
 
+/**
+ * Whether the installed notice should still be shown for a record.
+ *
+ * A record whose notice the user dismissed is kept in state for the one thing
+ * it still owes: the continue rows it has not managed to arm yet. Every reader
+ * needs that same answer — the notice the launch reconciles, the row it
+ * consumes, the dismissal behind both — so it is answered in one place.
+ */
+export function shouldShowInstalledNotice(
+  update: RecentlyInstalledUpdate | null | undefined,
+): update is RecentlyInstalledUpdate {
+  return update != null && update.noticeDismissedAt == null;
+}
+
 // Backfill missing links and replace stale links from packages that did not
 // persist their configured update repository yet.
 function withGithubReleaseUrl(
@@ -425,11 +439,9 @@ function reconcilePersistedUpdateState(args: {
 
   // A record the user dismissed is kept in state only for the continue rows it
   // still owes; it must not bring the notice back on the next launch.
-  const noticeableInstall = nextState.recentlyInstalledUpdate?.noticeDismissedAt
-    ? null
-    : nextState.recentlyInstalledUpdate ?? null;
+  const installedUpdate = nextState.recentlyInstalledUpdate ?? null;
   const recentlyInstalled = withGithubReleaseUrl(
-    cloneRecentlyInstalledUpdate(noticeableInstall),
+    cloneRecentlyInstalledUpdate(shouldShowInstalledNotice(installedUpdate) ? installedUpdate : null),
     args.releaseRepository,
   );
   if (
@@ -2014,8 +2026,20 @@ export function createAutoUpdateService({
         });
         return await abortInstall("prepare_failed", installReadySnapshot);
       }
+      const stateBeforeInstall = readGlobalState(globalStatePath);
+      // This install supersedes the record of the last one, and with it any
+      // continue row that record still owed a chat no project would claim. A
+      // chat that is gone is the usual reason, and the install being armed
+      // right now queues its own resume — but a resume the user asked for must
+      // never go quiet, so the drop is named.
+      const supersededResumes = stateBeforeInstall.recentlyInstalledUpdate?.resumedChats ?? [];
+      if (supersededResumes.length > 0) {
+        logger.warn("autoUpdate.install_superseded_unarmed_resumes", {
+          chats: supersededResumes.length,
+        });
+      }
       writeGlobalState(globalStatePath, {
-        ...readGlobalState(globalStatePath),
+        ...stateBeforeInstall,
         pendingInstallUpdate: {
           fromVersion: currentVersion,
           targetVersion: snapshot.version ?? installVersion,
