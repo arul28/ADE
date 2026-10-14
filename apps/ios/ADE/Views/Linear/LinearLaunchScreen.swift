@@ -304,6 +304,7 @@ struct LinearLaunchScreen: View {
           codexConfigSource: wire.codexConfigSource,
           opencodePermissionMode: wire.opencodePermissionMode,
           droidPermissionMode: wire.droidPermissionMode,
+          musePermissionMode: wire.musePermissionMode,
           cursorModeId: wire.cursorModeId,
           pendingDisplayName: cfg.kickoff
         )

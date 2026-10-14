@@ -1348,12 +1348,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --agent                Launch nothing; print contextPath, playbookPath,
                            playbookSource, suggestedPrompt and the detected
                            agent CLIs. Use this from inside an agent session.
-    --provider <name>      claude | codex | cursor-agent | opencode | droid.
+    --provider <name>      claude | codex | cursor-agent | opencode | droid | muse.
     --text                 Human-readable output.
     --json                 Structured JSON output (default).
 
   Notes:
-    Detection order is claude, codex, cursor-agent, opencode, droid. With no
+    Detection order is claude, codex, cursor-agent, opencode, droid, muse. With no
     agent CLI installed, triage prints the --agent output and exits 0 — the
     files are the deliverable, the launch is a convenience.
     When an agent is launched the terminal belongs to it: the file paths are
@@ -1848,7 +1848,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
-    --provider <name>      claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot. CLI mode also accepts shell.
+    --provider <name>      claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -2349,7 +2349,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -2410,7 +2410,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.

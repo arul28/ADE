@@ -2311,6 +2311,7 @@ export type SyncCliLaunchProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"

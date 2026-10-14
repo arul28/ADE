@@ -56,7 +56,8 @@ export default defineConfig([
     clean: true,
     // @opencode/client is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
-    // Electron-as-node cannot resolve.
+    // Electron-as-node cannot resolve. @muse-code/sdk is ESM-only (zero deps)
+    // and inlined for the same reason.
     // string-width: cli.ts reaches it at module scope through
     // tuiClient/displayWidth (table formatters); the packaged CLI resolves
     // externals through NODE_PATH into apps/desktop's production tree, which
@@ -64,7 +65,14 @@ export default defineConfig([
     // this class.
     // @sentry/*: inlined so the brain loads one file instead of a few hundred
     // small ones, which costs most of a second on Windows (Defender scans each).
-    noExternal: ["@factory/droid-sdk", /^@opencode\/client(?:\/.*)?$/, "yaml", "string-width", /^@sentry\//],
+    noExternal: [
+      "@factory/droid-sdk",
+      /^@opencode\/client(?:\/.*)?$/,
+      /^@muse-code\/sdk(?:\/.*)?$/,
+      "yaml",
+      "string-width",
+      /^@sentry\//,
+    ],
     outExtension: () => ({
       js: ".cjs"
     }),

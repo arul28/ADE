@@ -2302,6 +2302,7 @@ describe("ModelPicker", () => {
         "recents",
         "provider:anthropic",
         "provider:openai",
+        "provider:muse",
         "provider:cursor",
         "provider:devin",
         "provider:opencode",

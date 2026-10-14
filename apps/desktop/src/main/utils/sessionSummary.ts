@@ -119,6 +119,11 @@ export function isTerminalChromeLine(raw: string): boolean {
   if (/^Resume this session with:/i.test(line)) return true;
   if (/^(?:claude\s+--resume|codex\s+resume|cursor-agent\s+--resume|droid\s+--resume|opencode\s+--(?:continue|session)|pi\s+--(?:continue|session))\b/i.test(line)) return true;
   if (/^\[?esc\]?\s+close\b/i.test(line)) return true;
+  // Muse Code 1.4.7 TUI chrome: the composer rule, the busy spinner line, the
+  // exit hint, and the startup banner.
+  if (/^To continue this session, run muse resume\b/i.test(line) || /^muse\s+resume\b/i.test(line)) return true;
+  if (/^─+\s*Voice input\b/u.test(line) || /^[◆◈◇]?\s*(?:Working|Thinking) \(\d+s · esc to interrupt\)/u.test(line)) return true;
+  if (/^Muse Code \d+\.\d+/i.test(line)) return true;
   return false;
 }
 

@@ -194,6 +194,8 @@ import {
   pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
+import { createMuseQuotaStore, type MuseQuotaStore } from "./museLiveQuota";
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
@@ -3426,7 +3428,7 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
   return out;
 }
 
-const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
+const USAGE_PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
@@ -3434,6 +3436,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   grok: "Grok",
   opencode: "OpenCode",
   kimi: "Kimi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
 };
 
 /**
@@ -3748,7 +3751,7 @@ function buildProviderWindows(
     };
   }
 
-  const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
+  const name = USAGE_PROVIDER_LABEL[provider] ?? provider;
   const unauthed = errorKind === "auth" || errors.some((entry) => /no .*credentials/i.test(entry));
   // A 401/403 means we reached the API but auth was rejected (expired token,
   // failed refresh) — that's "reconnect", not "couldn't reach".
@@ -3850,6 +3853,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollMuseUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   /**
    * The machine-local per-turn ledger. When present, every published snapshot
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
@@ -4107,6 +4111,7 @@ export function createUsageTrackingService({
   dependencies,
   projectRoot,
   db,
+  museQuota = createMuseQuotaStore(),
 }: {
   logger: Logger;
   pollIntervalMs?: number;
@@ -4114,6 +4119,8 @@ export function createUsageTrackingService({
   dependencies?: UsageTrackingDependencies;
   projectRoot?: string | null;
   db?: AdeDb | null;
+  /** The process's Muse quota store (the chat service records into it). Absent gets a private one. */
+  museQuota?: MuseQuotaStore;
 }) {
   const pollIntervalMs = Math.max(
     MIN_POLL_INTERVAL_MS,
@@ -4235,6 +4242,9 @@ export function createUsageTrackingService({
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
+  // Muse's reading is pushed by its chat runtime (MSP `usage/read` and
+  // `usage/changed`); the poll only publishes the latest one, no I/O.
+  const runMuseUsagePoll = dependencies?.pollMuseUsage ?? (() => museQuota.poll());
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -4243,6 +4253,7 @@ export function createUsageTrackingService({
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
     { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
+    { provider: "muse", poll: (context) => runMuseUsagePoll(context) },
   ];
   /**
    * A caller that injects any ledger scanner is a harness isolating the
@@ -5349,7 +5360,7 @@ export function createUsageTrackingService({
                 updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
                 ...(previousStatus.source ? { source: previousStatus.source } : {}),
                 ...(carriedWindows.length === 0
-                  ? { message: `${PROVIDER_DISPLAY_NAME[provider]} usage window expired` }
+                  ? { message: `${USAGE_PROVIDER_LABEL[provider]} usage window expired` }
                   : {}),
               };
             }

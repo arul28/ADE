@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../desktop/src/shared/providers";
 import type { ProviderFamily } from "../../../desktop/src/shared/modelRegistry";
 import { MODEL_PICKER_PROVIDER_ORDER } from "../../../desktop/src/shared/modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../desktop/src/shared/types/chat";
@@ -6,6 +7,7 @@ import type { AdeCodeProvider } from "./types";
 const TUI_PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
   claude: "Claude",
   codex: "Codex",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   opencode: "OpenCode",
   pi: "Pi",
@@ -31,6 +33,7 @@ const PROVIDER_FAMILY_LABELS: Record<AdeCodeProvider, string> = {
   cursor: "Cursor",
   droid: "Droid",
   pi: "Pi",
+  muse: "Meta",
   qwen: "Qwen",
   kimi: "Moonshot",
   grok: "xAI",
@@ -56,6 +59,8 @@ export const PROVIDER_TOKEN_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: "Meta",
+  meta: "Meta",
   droid: "Droid",
   factory: "Droid",
   cursor: "Cursor",
@@ -138,6 +143,7 @@ const REFRESH_PROVIDERS: Record<AdeCodeProvider, AgentChatModelCatalogRefreshPro
   codex: null,
   cursor: "cursor",
   droid: "droid",
+  muse: "muse",
   opencode: "opencode",
   pi: "pi",
   qwen: "qwen",

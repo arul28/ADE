@@ -19,6 +19,7 @@ import {
   type AgentChatCursorConfigOption,
   type AgentChatCursorModeSnapshot,
   type AgentChatDroidPermissionMode,
+  type AgentChatMusePermissionMode,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
@@ -233,6 +234,7 @@ import {
 } from "./chatAttachmentStaging";
 import {
   DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
 } from "../../lib/nativeLaunchControls";
 
 export type ComposerDraftEditIntent = {
@@ -593,6 +595,7 @@ export type ParallelComposerControlSlot = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
   onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
@@ -607,6 +610,7 @@ export type ParallelComposerControlSlot = {
   onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
+  onMusePermissionModeChange: (mode: AgentChatMusePermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
 };
@@ -1362,6 +1366,19 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
+/** Muse's approval modes plus ADE's plan mode, which runs on `denyUnmatched`. */
+type MusePermissionPickerValue = AgentChatMusePermissionMode | "plan";
+const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, Pick<PermissionModePickerOption<MusePermissionPickerValue>, "triggerLabel" | "tone" | "icon">> = {
+  denyUnmatched: { triggerLabel: "Read-only", tone: "green", icon: "manual" },
+  promptUnmatched: { tone: "green", icon: "edit" },
+  onRequest: { tone: "amber", icon: "auto" },
+  allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
+};
+const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
+  { value: "plan", label: "Plan", detail: "Read-only Muse turns for planning, with ADE's plan guidance.", tone: "purple", icon: "plan" },
+  ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
+];
+
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
   return snapshot.configOptions.find((option) => option.id === snapshot.modeConfigId || option.category === "mode") ?? null;
@@ -2003,6 +2020,7 @@ export function AgentChatComposer({
   codexConfigSource,
   opencodePermissionMode,
   droidPermissionMode,
+  musePermissionMode,
   cursorModeSnapshot,
   iosElementContextItems = [],
   appControlContextItems = [],
@@ -2049,6 +2067,7 @@ export function AgentChatComposer({
   onCodexConfigSourceChange,
   onOpenCodePermissionModeChange,
   onDroidPermissionModeChange,
+  onMusePermissionModeChange,
   onCursorModeChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
@@ -2219,6 +2238,7 @@ export function AgentChatComposer({
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -2296,6 +2316,8 @@ export function AgentChatComposer({
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
+  /** Muse's plan rung is an interaction mode plus `denyUnmatched`, so both travel in one change. */
+  onMusePermissionModeChange?: (mode: AgentChatMusePermissionMode, interactionMode: AgentChatInteractionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
   onComputerUsePolicyChange?: (policy: unknown) => void;
@@ -3057,7 +3079,7 @@ export function AgentChatComposer({
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
-  const userShellChipRange = sessionProvider === "codex"
+  const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
@@ -4880,6 +4902,7 @@ export function AgentChatComposer({
   const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
   const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
   const dpmUse = slot?.droidPermissionMode ?? droidPermissionMode ?? "auto-low";
+  const mpmUse = slot?.musePermissionMode ?? musePermissionMode ?? "onRequest";
   const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
   const fastModeModelId =
     parallelChatMode && parallelConfiguringIndex != null
@@ -5149,6 +5172,28 @@ export function AgentChatComposer({
       );
     }
 
+    if (sp === "muse") {
+      const applyMuseMode = (value: MusePermissionPickerValue) => {
+        const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
+        const mode: AgentChatMusePermissionMode = value === "plan" ? "denyUnmatched" : value;
+        if (parallelControlSlot) {
+          parallelControlSlot.onInteractionModeChange(interaction);
+          parallelControlSlot.onMusePermissionModeChange(mode);
+          return;
+        }
+        onMusePermissionModeChange?.(mode, interaction);
+      };
+      return (
+        <PermissionModePicker
+          ariaLabel="Muse approval mode"
+          selectedValue={im === "plan" ? "plan" : mpmUse}
+          options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
+          disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
+          onSelect={applyMuseMode}
+        />
+      );
+    }
+
     const cursorModeOption = resolveCursorModeOption(cmsUse);
     if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
@@ -5203,9 +5248,12 @@ export function AgentChatComposer({
     onInteractionModeChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
+    onMusePermissionModeChange,
     onOpenCodePermissionModeChange,
     cmsUse,
     dpmUse,
+    mpmUse,
+    im,
     sp,
     opmUse,
     parallelControlSlot,
@@ -6079,11 +6127,12 @@ export function AgentChatComposer({
       case "claude": return claudeSelectionMode;
       case "opencode": return opmUse ?? null;
       case "droid": return dpmUse ?? null;
+      case "muse": return im === "plan" ? "plan" : mpmUse ?? null;
       // Cursor's control is a whole config snapshot rather than one mode name,
       // so there is no single value to freeze here; the chat keeps its own.
       default: return null;
     }
-  }, [claudeSelectionMode, dpmUse, opmUse, sp]);
+  }, [claudeSelectionMode, dpmUse, im, mpmUse, opmUse, sp]);
 
   const scheduleTargets = useMemo((): DraftScheduleTargets => ({
     sessionId: sessionId ?? null,

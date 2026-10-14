@@ -201,6 +201,14 @@ for (const entryPath of bundledRuntimeEntryPaths) {
         "inline the ESM-only OpenCode client in tsup instead.",
     );
   }
+  // @muse-code/sdk is an ESM-only devDependency too: inlined, never shipped.
+  const museSdkRequire = /require\((["'])(@muse-code\/sdk(?:\/[^"']*)?)\1\)/.exec(entryContents);
+  if (museSdkRequire) {
+    throw new Error(
+      `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("${museSdkRequire[2]}"); ` +
+        "inline the ESM-only Muse SDK in tsup instead.",
+    );
+  }
 }
 
 const packagedBuildResources = packagedAdeCliBuildResources();

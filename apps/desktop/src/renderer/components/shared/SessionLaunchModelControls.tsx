@@ -13,6 +13,7 @@ import {
   cursorModeChoices,
   cursorModeLabel,
   DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS,
   OPENCODE_PERMISSION_OPTIONS,
   readUnifiedPermissionFromNativeControls,
   claudeSelectionMode,
@@ -229,6 +230,27 @@ function LaunchNativePermissionControls({
           className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
         >
           {DROID_PERMISSION_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
+  if (provider === "muse") {
+    return (
+      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
+        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Approvals</span>
+        <select
+          value={nativeControls.musePermissionMode}
+          disabled={disabled}
+          onChange={(event) => onNativeControlsChange({
+            ...nativeControls,
+            musePermissionMode: event.target.value as NativeControlState["musePermissionMode"],
+          })}
+          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
+        >
+          {MUSE_PERMISSION_OPTIONS.map((option) => (
             <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
           ))}
         </select>

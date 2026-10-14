@@ -16,11 +16,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
@@ -1332,6 +1337,7 @@ function parseCrossMachineTargetArgs(
   const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
   const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+  const musePermissionMode = parseEnum("musePermissionMode", AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
@@ -1356,6 +1362,7 @@ function parseCrossMachineTargetArgs(
     ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
     ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
     ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(musePermissionMode !== undefined ? { musePermissionMode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
@@ -1677,6 +1684,7 @@ async function summarizeChatSessionForRemote(
     ...(session.piSessionId ? { piSessionId: session.piSessionId } : {}),
     ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -2389,7 +2397,7 @@ function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermission
 function mapPrAiPermissionModeToNativeFields(
   mode: PrAgentPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "interactionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -2418,6 +2426,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "default") return { droidPermissionMode: "read-only" };
     return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
   }
+  if (provider === "muse") {
+    // Plan is Muse's read-only mode plus ADE's plan guidance.
+    if (legacy === "plan") return { musePermissionMode: "denyUnmatched", interactionMode: "plan" };
+    return { musePermissionMode: musePermissionModeFromLegacyPermissionMode(legacy) ?? "onRequest" };
+  }
   if (provider === "cursor") {
     if (legacy === "full-auto") return { cursorModeId: "full-auto" };
     if (legacy === "plan") return { cursorModeId: "plan" };
@@ -2433,7 +2446,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"> | null | undefined,
 ): PrAgentPermissionMode | null {
   if (!summary) return null;
   if (summary.permissionMode) return summary.permissionMode;
@@ -2456,6 +2469,9 @@ function deriveAiPermissionModeFromSummary(
     if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
     if (summary.droidPermissionMode === "read-only") return "plan";
     return null;
+  }
+  if (summary.provider === "muse") {
+    return legacyPermissionModeFromMusePermissionMode(summary.musePermissionMode) ?? null;
   }
   if (summary.provider === "cursor") {
     if (summary.cursorModeId === "full-auto") return "full-auto";
@@ -3112,6 +3128,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   }
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
+  if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
@@ -3559,6 +3576,7 @@ function parseChatModelsArgs(value: Record<string, unknown>): {
 const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProvider>([
   "opencode",
   "pi",
+  "muse",
   "cursor",
   "droid",
   "lmstudio",
@@ -4143,6 +4161,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
     ...(
       payload.provider === "opencode"
       || payload.provider === "pi"
+      || payload.provider === "muse"
       || payload.provider === "qwen"
       || payload.provider === "kimi"
       || payload.provider === "grok"

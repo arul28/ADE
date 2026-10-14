@@ -12,6 +12,7 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "../../../shared/types/settingsScope";
 import { isWebClientMode } from "../../lib/webClientMode";
 
@@ -710,6 +711,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["factory", "droid", "provider", "sign in", "api key", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-droid",
+    scope: "machine",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
+    id: "agents.provider.muse",
+    label: PROVIDER_DISPLAY_NAME.muse,
+    keywords: ["muse", "meta", "muse code", "spark", "provider", "sign in", "api key", "model", "permission"],
+    tab: "agents",
+    anchor: "ai-provider-muse",
     scope: "machine",
     web: "hidden",
     group: "Connections",

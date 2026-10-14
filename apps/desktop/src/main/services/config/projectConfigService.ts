@@ -1472,7 +1472,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (providersRaw) {
       const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
       const providerMode = (
-        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot",
+        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot",
       ) => {
         const mode = asString(providersRaw[key])?.trim();
         // "auto" belongs here: it is a member of `AgentChatPermissionMode` and
@@ -1491,6 +1491,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       providerMode("droid");
       providerMode("opencode");
       providerMode("pi");
+      providerMode("muse");
       providerMode("qwen");
       providerMode("kimi");
       providerMode("grok");

@@ -60,7 +60,7 @@ function providerSignInHint(provider: AdeCodeProvider): string {
 
 function providerModelsCount(status: AiSettingsStatus | null | undefined, provider: AdeCodeProvider): number {
   if (!status) return 0;
-  if (provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || isAcpProvider(provider)) {
+  if (provider === "claude" || provider === "codex" || provider === "muse" || provider === "cursor" || provider === "droid" || isAcpProvider(provider)) {
     return status.models?.[provider]?.length ?? 0;
   }
   if (provider === "pi") return status.piInstallation?.availableModelIds.length ?? 0;
@@ -103,7 +103,7 @@ export function modelPickerProviderAuthStatus(
     }
     return "unavailable";
   }
-  if (provider === "codex" || provider === "droid") {
+  if (provider === "codex" || provider === "muse" || provider === "droid") {
     const connection = status.providerConnections?.[provider];
     if (connection?.authAvailable || connection?.runtimeAvailable || status.availableProviders?.[provider] === true || providerModelsCount(status, provider) > 0) {
       return "ready";
@@ -162,6 +162,7 @@ export function modelPickerProviderAuthStatus(
 const PROVIDER_BY_CATALOG_GROUP: Record<ProviderGroupKey, AdeCodeProvider> = {
   claude: "claude",
   codex: "codex",
+  muse: "muse",
   cursor: "cursor",
   droid: "droid",
   pi: "pi",

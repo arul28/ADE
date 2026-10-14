@@ -38,6 +38,8 @@ import type {
 } from "../../../shared/types/keepAwake";
 import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
+import type { MuseBinaryStatus } from "../../../shared/museBinary";
+import type { MuseSettingsResult } from "../../../shared/museSettings";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
@@ -124,6 +126,7 @@ import {
 } from "../projects/projectIconResolver";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { isAgentChatSubagentControlAction } from "../chat/museSessionSupport";
 import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import {
   claimDraft,
@@ -503,6 +506,9 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -944,6 +950,7 @@ import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, typ
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
+import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
   loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
@@ -5474,6 +5481,40 @@ export function registerIpc({
     return { installed: Boolean(info.path), source: info.source };
   });
 
+  // The unpinned route: this machine's pinned Muse binary. A pinned call goes
+  // to the owning machine's `ai.museBinaryStatus` / `ai.ensureMuseBinary`.
+  ipcMain.handle(IPC.aiMuseBinaryStatus, async (): Promise<MuseBinaryStatus> => {
+    const { getMuseBinaryStatus } = await import("../ai/museExecutable");
+    return getMuseBinaryStatus();
+  });
+
+  ipcMain.handle(IPC.aiEnsureMuseBinary, async (): Promise<MuseBinaryStatus> => {
+    const { startMuseBinaryFetch } = await import("../ai/museExecutable");
+    return startMuseBinaryFetch();
+  });
+
+  // The unpinned route for Settings > Muse Code on this machine; a pinned call
+  // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
+  ipcMain.handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
+    const { runMuseSettingsFor, parseMuseSettingsRunArgs } = await import("../ai/museSettingsService");
+    const ctx = getCtx();
+    return runMuseSettingsFor(
+      {
+        projectRoot: ctx.project.rootPath,
+        logger: ctx.logger,
+        clientVersion: process.env.ADE_CLI_VERSION?.trim() || app.getVersion(),
+      },
+      parseMuseSettingsRunArgs(args),
+    );
+  });
+
+  ipcMain.handle(IPC.aiMuseSettingsClose, async (_event, args: { handleId?: string }): Promise<{ ok: true }> => {
+    const { closeMuseSettingsHost } = await import("../ai/museSettingsService");
+    const handleId = typeof args?.handleId === "string" ? args.handleId.trim() : "";
+    if (handleId) await closeMuseSettingsHost(handleId);
+    return { ok: true };
+  });
+
   // The fetched agent-CLI cache belongs to THIS machine's install, not to the
   // bound project's runtime, so these are deliberately not routed through a
   // runtime action the way the project-scoped `ai` calls are.
@@ -6820,7 +6861,7 @@ export function registerIpc({
     if (!isRecord(arg)) throw new Error("external session import expects an object payload.");
     const record = arg as Record<string, unknown>;
     const { provider, target, mode } = record;
-    if (provider !== "claude" && provider !== "codex" && provider !== "cursor" && provider !== "droid" && provider !== "opencode" && provider !== "pi") {
+    if (!isExternalSessionProvider(provider)) {
       throw new Error("external session import provider is invalid.");
     }
     if (target !== "cli" && target !== "chat") throw new Error("external session import target must be cli or chat.");
@@ -9134,6 +9175,40 @@ export function registerIpc({
     return await ctx.agentChatService.stopTask({
       sessionId: (arg as { sessionId: string }).sessionId,
       taskId: (arg as { taskId: string }).taskId,
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatMessageSubagent, async (_event, arg: unknown): Promise<AgentChatMessageSubagentResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.text !== "string") {
+      throw new Error("A chat session id, subagent task id and message text are required.");
+    }
+    return await ctx.agentChatService.messageSubagent({
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      text: record.text,
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatControlSubagent, async (_event, arg: unknown): Promise<AgentChatControlSubagentResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.action !== "string") {
+      throw new Error("A chat session id, subagent task id and action are required.");
+    }
+    // The allowlist lives with the Muse control mapping (`museSubagentControlRequest`),
+    // so this early reject and the service's own refusal agree.
+    if (!isAgentChatSubagentControlAction(record.action)) {
+      throw new Error(`Unknown subagent control action: ${record.action}.`);
+    }
+    return await ctx.agentChatService.controlSubagent({
+      sessionId: record.sessionId,
+      taskId: record.taskId,
+      action: record.action,
+      ...(typeof record.childId === "string" ? { childId: record.childId } : {}),
+      ...(typeof record.attempt === "number" ? { attempt: record.attempt } : {}),
+      ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
     });
   });
 

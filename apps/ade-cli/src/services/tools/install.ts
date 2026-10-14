@@ -5,14 +5,16 @@ import path from "node:path";
 import { ToolError, asToolError } from "./errors";
 import {
   type FreeSpaceReader,
+  estimateFileToolRequiredBytes,
   estimateToolRequiredBytes,
   readFreeBytes,
 } from "./diskSpace";
-import { type ToolDownloader, downloadToolTarball } from "./download";
+import { type ToolDownloadResult, type ToolDownloader, downloadToolTarball, fileSha256 } from "./download";
 import { type ToolExtractor, extractNpmTarball } from "./extract";
 import { acquireToolLock, type ToolLockOptions } from "./lock";
 import {
   type ToolPin,
+  type ToolTargetPin,
   type ToolsManifest,
   entryPathForPlatform,
   findToolPin,
@@ -166,8 +168,7 @@ function resolvePinned(pin: ToolPin, resolved: ResolvedContext): {
   version: string;
   dir: string;
   entryRelativePath: string;
-  tarball: string;
-  integrity: string;
+  targetPin: ToolTargetPin;
 } {
   const targetPin = findToolTargetPin(resolved.manifest, pin.name, resolved.target);
   return {
@@ -175,8 +176,7 @@ function resolvePinned(pin: ToolPin, resolved: ResolvedContext): {
     version: targetPin.version,
     dir: toolVersionDir(resolved.toolsRoot, targetPin.package, targetPin.version),
     entryRelativePath: entryPathForPlatform(pin.entry, resolved.platform),
-    tarball: targetPin.tarball,
-    integrity: targetPin.integrity,
+    targetPin,
   };
 }
 
@@ -337,86 +337,62 @@ async function ensureOneTool(
   }
 }
 
-async function installPinnedTool(args: {
+type InstallArgs = {
   name: string;
   pinned: ReturnType<typeof resolvePinned>;
   resolved: ResolvedContext;
   options: EnsureToolsOptions;
   report: (phase: ToolProgressPhase, extra?: Partial<ToolProgress>) => void;
-}): Promise<void> {
-  const { name, pinned, resolved, options, report } = args;
-  const download = options.download ?? downloadToolTarball;
-  const extract = options.extract ?? extractNpmTarball;
-  const freeBytes = options.freeBytes ?? readFreeBytes;
+};
 
+function diskSpaceError(args: InstallArgs, required: number, available: number): ToolError {
+  const { name, pinned } = args;
+  return new ToolError(
+    `Not enough free disk space to install ${pinned.packageName}@${pinned.version}: `
+    + `${formatBytes(required)} required, ${formatBytes(available)} available.`,
+    {
+      kind: "disk-space",
+      tool: name,
+      packageName: pinned.packageName,
+      version: pinned.version,
+      requiredBytes: required,
+      availableBytes: available,
+    },
+  );
+}
+
+async function writeSentinel(payloadDir: string, args: InstallArgs, digest: Record<string, string>): Promise<void> {
+  await fsp.writeFile(
+    path.join(payloadDir, TOOL_INSTALL_SENTINEL),
+    `${JSON.stringify(
+      {
+        tool: args.name,
+        package: args.pinned.packageName,
+        version: args.pinned.version,
+        target: args.resolved.target,
+        ...digest,
+        installedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+async function installPinnedTool(args: InstallArgs): Promise<void> {
+  const { name, pinned, resolved } = args;
   const stagingRoot = toolsStagingRoot(resolved.toolsRoot);
   await fsp.mkdir(stagingRoot, { recursive: true });
   const stagingDir = await fsp.mkdtemp(path.join(stagingRoot, `${toolSlug(pinned.packageName, pinned.version)}-`));
-  const archivePath = path.join(stagingDir, "package.tgz");
   const payloadDir = path.join(stagingDir, "payload");
 
   try {
-    report("downloading", { receivedBytes: 0, totalBytes: null });
-    const downloaded = await download(pinned.tarball, archivePath, {
-      onSize: (totalBytes) => {
-        const available = freeBytes(resolved.toolsRoot);
-        const required = estimateToolRequiredBytes(totalBytes);
-        if (available !== null && available < required) {
-          throw new ToolError(
-            `Not enough free disk space to install ${pinned.packageName}@${pinned.version}: `
-            + `${formatBytes(required)} required, ${formatBytes(available)} available.`,
-            {
-              kind: "disk-space",
-              tool: name,
-              packageName: pinned.packageName,
-              version: pinned.version,
-              requiredBytes: required,
-              availableBytes: available,
-            },
-          );
-        }
-      },
-      onProgress: ({ receivedBytes, totalBytes }) => report("downloading", { receivedBytes, totalBytes }),
-    });
-
-    report("verifying");
-    const actualIntegrity = downloaded.integrity;
-    if (actualIntegrity !== pinned.integrity) {
-      throw new ToolError(
-        `Integrity check failed for ${pinned.packageName}@${pinned.version}: `
-        + `expected ${pinned.integrity}, got ${actualIntegrity}.`,
-        { kind: "integrity", tool: name, packageName: pinned.packageName, version: pinned.version },
-      );
+    if (pinned.targetPin.format === "file") {
+      await installFilePin(args, pinned.targetPin, payloadDir);
+    } else {
+      await installNpmTarballPin(args, pinned.targetPin, stagingDir, payloadDir);
     }
-
-    report("extracting");
-    await extract(archivePath, payloadDir);
-    if (!expandEntryPath(payloadDir, pinned.entryRelativePath)) {
-      throw new ToolError(
-        `${pinned.packageName}@${pinned.version} does not contain its expected entry ${pinned.entryRelativePath}.`,
-        { kind: "extract", tool: name, packageName: pinned.packageName, version: pinned.version },
-      );
-    }
-    // The archive is no longer needed and doubles the peak footprint.
-    await fsp.rm(archivePath, { force: true });
-
-    await fsp.writeFile(
-      path.join(payloadDir, TOOL_INSTALL_SENTINEL),
-      `${JSON.stringify(
-        {
-          tool: name,
-          package: pinned.packageName,
-          version: pinned.version,
-          target: resolved.target,
-          integrity: pinned.integrity,
-          installedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
-
     await promotePayload(payloadDir, pinned.dir);
   } catch (error) {
     throw asToolError(error, {
@@ -429,6 +405,127 @@ async function installPinnedTool(args: {
     // Partial downloads and half-extracted trees never survive a failure.
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * The download both pinned formats share. The disk-space preflight runs once
+ * the headers arrive (`requiredBytes` is given the declared Content-Length, or
+ * null), and progress reports under the `downloading` phase, falling back to
+ * the pin's own size when the server sends no Content-Length.
+ */
+async function downloadWithPreflight(
+  args: InstallArgs,
+  request: {
+    url: string;
+    destPath: string;
+    /** The pin's exact size, when it has one. Seeds progress and the progress fallback. */
+    pinnedBytes: number | null;
+    requiredBytes: (declaredBytes: number | null) => number;
+    /** Ask the downloader for sha256 as well (file pins); npm tarballs verify on sha512 alone. */
+    sha256?: boolean;
+    maxBytes?: number;
+    sameHostRedirectsOnly?: boolean;
+  },
+): Promise<ToolDownloadResult> {
+  const { resolved, options, report } = args;
+  const download: ToolDownloader = options.download ?? downloadToolTarball;
+  const freeBytes = options.freeBytes ?? readFreeBytes;
+
+  report("downloading", { receivedBytes: 0, totalBytes: request.pinnedBytes });
+  return await download(request.url, request.destPath, {
+    onSize: (declaredBytes) => {
+      const available = freeBytes(resolved.toolsRoot);
+      const required = request.requiredBytes(declaredBytes);
+      if (available !== null && available < required) throw diskSpaceError(args, required, available);
+    },
+    onProgress: ({ receivedBytes, totalBytes }) =>
+      report("downloading", { receivedBytes, totalBytes: totalBytes ?? request.pinnedBytes }),
+    ...(request.sha256 ? { sha256: true as const } : {}),
+    ...(request.maxBytes !== undefined ? { maxBytes: request.maxBytes } : {}),
+    ...(request.sameHostRedirectsOnly ? { sameHostRedirectsOnly: true } : {}),
+  });
+}
+
+async function installNpmTarballPin(
+  args: InstallArgs,
+  targetPin: Extract<ToolTargetPin, { format: "npm-tarball" }>,
+  stagingDir: string,
+  payloadDir: string,
+): Promise<void> {
+  const { name, pinned, resolved, report } = args;
+  const extract = args.options.extract ?? extractNpmTarball;
+  const archivePath = path.join(stagingDir, "package.tgz");
+
+  const downloaded = await downloadWithPreflight(args, {
+    url: targetPin.tarball,
+    destPath: archivePath,
+    pinnedBytes: null,
+    requiredBytes: (declaredBytes) => estimateToolRequiredBytes(declaredBytes),
+  });
+
+  report("verifying");
+  const actualIntegrity = downloaded.integrity;
+  if (actualIntegrity !== targetPin.integrity) {
+    throw new ToolError(
+      `Integrity check failed for ${pinned.packageName}@${pinned.version}: `
+      + `expected ${targetPin.integrity}, got ${actualIntegrity}.`,
+      { kind: "integrity", tool: name, packageName: pinned.packageName, version: pinned.version },
+    );
+  }
+
+  report("extracting");
+  await extract(archivePath, payloadDir);
+  if (!expandEntryPath(payloadDir, pinned.entryRelativePath)) {
+    throw new ToolError(
+      `${pinned.packageName}@${pinned.version} does not contain its expected entry ${pinned.entryRelativePath}.`,
+      { kind: "extract", tool: name, packageName: pinned.packageName, version: pinned.version },
+    );
+  }
+  // The archive is no longer needed and doubles the peak footprint.
+  await fsp.rm(archivePath, { force: true });
+
+  await writeSentinel(payloadDir, args, { integrity: targetPin.integrity });
+}
+
+/**
+ * A bare-executable pin: the download is written straight to the entry path
+ * inside the payload directory, checked against the vendor's sha256 and byte
+ * size, and marked executable. Nothing is unpacked. The body may not grow past
+ * the pinned size, and a redirect may not leave the pinned host.
+ */
+async function installFilePin(
+  args: InstallArgs,
+  targetPin: Extract<ToolTargetPin, { format: "file" }>,
+  payloadDir: string,
+): Promise<void> {
+  const { name, pinned, resolved } = args;
+  const filePath = path.join(payloadDir, ...pinned.entryRelativePath.split("/"));
+
+  const downloaded = await downloadWithPreflight(args, {
+    url: targetPin.url,
+    destPath: filePath,
+    pinnedBytes: targetPin.size,
+    // The pin carries the exact size, so the preflight never depends on the
+    // server sending Content-Length.
+    requiredBytes: () => estimateFileToolRequiredBytes(targetPin.size),
+    sha256: true,
+    maxBytes: targetPin.size,
+    sameHostRedirectsOnly: true,
+  });
+
+  args.report("verifying");
+  const actualSha256 = downloaded.sha256 ?? await fileSha256(filePath);
+  if (downloaded.bytes !== targetPin.size || actualSha256 !== targetPin.sha256) {
+    throw new ToolError(
+      `Integrity check failed for ${pinned.packageName}@${pinned.version}: expected sha256 ${targetPin.sha256} `
+      + `(${targetPin.size} bytes), got ${actualSha256} (${downloaded.bytes} bytes).`,
+      { kind: "integrity", tool: name, packageName: pinned.packageName, version: pinned.version },
+    );
+  }
+  // Windows has no execute bit; everywhere else the file must be runnable.
+  if (resolved.platform !== "win32") await fsp.chmod(filePath, 0o755);
+
+  await writeSentinel(payloadDir, args, { sha256: targetPin.sha256 });
 }
 
 /**

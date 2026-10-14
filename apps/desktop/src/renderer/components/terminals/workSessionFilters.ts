@@ -9,6 +9,7 @@
  * Pure by design: the sidebar hands over the session plus the two lane lookups
  * it can answer, so the matching rules are unit-testable without a store.
  */
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import type { TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/terminalAttention";
 
@@ -20,6 +21,7 @@ import { sessionFilingBucket, type SessionFilingBucket } from "../../lib/termina
 export type WorkToolFamily =
   | "claude"
   | "codex"
+  | "muse"
   | "cursor"
   | "droid"
   | "opencode"
@@ -29,6 +31,7 @@ export type WorkToolFamily =
 export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "droid",
   "opencode",
@@ -38,6 +41,7 @@ export const WORK_TOOL_FAMILIES: readonly WorkToolFamily[] = [
 const TOOL_FAMILY_LABELS: Record<WorkToolFamily, string> = {
   claude: "Claude",
   codex: "Codex",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   droid: "Droid",
   opencode: "OpenCode",
@@ -55,6 +59,9 @@ export function workToolFamily(toolType: TerminalToolType | null | undefined): W
     case "codex-chat":
     case "codex-orchestrated":
       return "codex";
+    case "muse":
+    case "muse-chat":
+      return "muse";
     case "cursor":
     case "cursor-cli":
       return "cursor";

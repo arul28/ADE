@@ -97,7 +97,7 @@ export function App() {
     if (!config) return null;
     return adaptSdkClient(bridge, {
       defaults: config.defaults,
-      providerFilter: ["claude", "codex", "cursor", "opencode", "droid"],
+      providerFilter: ["claude", "codex", "muse", "cursor", "opencode", "droid"],
       commandHints: {
         claude: { loginCommand: "claude setup-token", installCommand: "npm i -g @anthropic-ai/claude-code" },
         codex: { loginCommand: "codex login", installCommand: "npm i -g @openai/codex" },

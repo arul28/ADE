@@ -148,7 +148,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "Dependabot opened PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Finish the update: run any generate steps the bump needs, run the checks for what changed, fix what breaks, then commit and push to this branch. End with what you checked and anything a human must decide.",
+        "Dependabot opened PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Finish the update: run any generate steps the bump needs, run the checks for what changed, fix what breaks, then commit and push to this branch. A provider SDK bump needs `npm run tools:manifest` in apps/ade-cli. When the bumped package is @muse-code/sdk, run `npm run tools:muse-pin` in apps/ade-cli instead: it pins the Muse binary that pairs with the new SDK version and regenerates the manifest, and it refuses a version with no paired build — report that refusal rather than working around it. End with what you checked and anything a human must decide.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:dependabot-pr-agent",

@@ -69,6 +69,7 @@ const MODEL_ROW_ESTIMATED_HEIGHT = 44;
 const PICKER_FAMILY_BY_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   claude: "anthropic",
   codex: "openai",
+  muse: "muse",
   cursor: "cursor",
   opencode: "opencode",
   pi: "pi",
@@ -107,6 +108,7 @@ function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boole
   const provider = resolveCliProviderForModel(model);
   return provider === "claude"
     || provider === "codex"
+    || provider === "muse"
     || provider === "droid"
     || provider === "qwen"
     || provider === "kimi"

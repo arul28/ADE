@@ -1000,6 +1000,7 @@ struct HubInlineComposer: View {
           codexConfigSource: wire.codexConfigSource,
           opencodePermissionMode: wire.opencodePermissionMode,
           droidPermissionMode: wire.droidPermissionMode,
+          musePermissionMode: wire.musePermissionMode,
           cursorModeId: wire.cursorModeId,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath
@@ -1302,7 +1303,7 @@ private func hubNormalizedChatProvider(_ provider: String) -> String {
 /// screen's `workCliSupportsReasoningSelection`).
 private func hubCliSupportsReasoning(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
 }
 
 /// Derive a short CLI session title from the opener (mirrors the new-chat

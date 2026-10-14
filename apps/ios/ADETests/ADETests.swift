@@ -507,11 +507,11 @@ final class ADETests: XCTestCase {
 
   func testImportProviderLabelsCoverEveryProvider() {
     XCTAssertEqual(
-      ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "factory"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "factory"]
         .map(workExternalSessionProviderName),
-      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
+      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Muse", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
     )
-    XCTAssertEqual(Set(workProviderImportRules.keys).count, 10)
+    XCTAssertEqual(Set(workProviderImportRules.keys).count, 11)
   }
 
   /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
@@ -524,6 +524,7 @@ final class ADETests: XCTestCase {
       "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
       "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "muse": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
@@ -533,7 +534,7 @@ final class ADETests: XCTestCase {
     for (provider, rules) in expected {
       XCTAssertEqual(workProviderImportRules[provider], rules, provider)
     }
-    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"])
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot"])
   }
 
   func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
@@ -581,10 +582,10 @@ final class ADETests: XCTestCase {
   }
 
   func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
-    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 10)
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 11)
     XCTAssertEqual(
       workImportScanProviders(hostKnowsAcpProviders: false),
-      ["claude", "codex", "cursor", "droid", "opencode", "pi"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]
     )
   }
 
@@ -20863,7 +20864,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogUsesRequestedProviderOrder() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
 
-    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "cursor", "opencode", "droid"])
+    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "muse", "cursor", "opencode", "droid"])
   }
 
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {

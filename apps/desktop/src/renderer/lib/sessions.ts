@@ -1,5 +1,7 @@
 /** Shared session/terminal utilities for the renderer. */
 
+import { PROVIDER_DISPLAY_NAME } from "../../shared/providers";
+
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
@@ -31,6 +33,7 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "codex"
     || toolType === "cursor-cli"
     || toolType === "droid"
+    || toolType === "muse"
     || toolType === "opencode"
     || toolType === "qwen"
     || toolType === "kimi"
@@ -96,6 +99,7 @@ export type KnownChatProvider =
   | "cursor"
   | "droid"
   | "pi"
+  | "muse"
   | "opencode"
   | "qwen"
   | "kimi"
@@ -109,6 +113,7 @@ export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolT
   cursor: "cursor",
   droid: "droid-chat",
   pi: "pi-chat",
+  muse: "muse-chat",
   opencode: "opencode-chat",
   qwen: "qwen-chat",
   kimi: "kimi-chat",
@@ -123,6 +128,7 @@ const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
   cursor: "cursor",
   "droid-chat": "droid",
   "pi-chat": "pi",
+  "muse-chat": "muse",
   "opencode-chat": "opencode",
   "qwen-chat": "qwen",
   "kimi-chat": "kimi",
@@ -196,6 +202,8 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "pi-chat") return "Pi chat";
+  if (toolType === "muse-chat") return "Muse chat";
+  if (toolType === "muse") return "Muse CLI session";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "cursor-cli") return "Cursor CLI session";
   if (toolType === "droid") return "Droid CLI session";
@@ -270,6 +278,7 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -284,6 +293,7 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["codex", "Codex"],
   ["opencode", "OpenCode"],
   ["pi", "Pi"],
+  ["muse", PROVIDER_DISPLAY_NAME.muse],
   ["qwen", "Qwen"],
   ["kimi", "Kimi"],
   ["grok", "Grok"],
@@ -314,6 +324,8 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
+  if (toolType === "muse-chat") return "Muse chat";
+  if (toolType === "muse") return "Muse CLI session";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "cursor-cli") return "Cursor CLI session";
   if (toolType === "droid") return "Droid CLI session";

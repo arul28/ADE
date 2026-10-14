@@ -275,6 +275,7 @@ const HARNESS_LABELS: Record<string, string> = {
   cursor: "Cursor",
   droid: "Droid",
   pi: "Pi",
+  muse: "Muse Code",
   qwen: "Qwen Code",
   kimi: "Kimi",
   grok: "Grok",

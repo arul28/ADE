@@ -77,6 +77,7 @@ export type AgentChatProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -178,7 +179,7 @@ export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_re
 export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
 
 /** Providers whose compactions ADE records. */
-export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | AcpChatProvider;
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "muse" | AcpChatProvider;
 
 /**
  * `provider` means the runtime reported the compaction itself. `inferred`
@@ -375,6 +376,38 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/**
+ * Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. The
+ * value is sent verbatim as `approvalMode` on `session/start` and
+ * `session/setApprovalMode`; Muse defines each mode, ADE only selects one.
+ */
+export type AgentChatMusePermissionMode = "denyUnmatched" | "promptUnmatched" | "onRequest" | "allowAll";
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES = [
+  "denyUnmatched",
+  "promptUnmatched",
+  "onRequest",
+  "allowAll",
+] as const satisfies readonly AgentChatMusePermissionMode[];
+export const DEFAULT_MUSE_PERMISSION_MODE: AgentChatMusePermissionMode = "onRequest";
+
+/** Shared copy for every Muse permission picker (chat, handoff, and CLI launch). */
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS: Record<
+  AgentChatMusePermissionMode,
+  { label: string; detail: string }
+> = {
+  denyUnmatched: { label: "Read-only", detail: "Muse refuses any tool call its rules do not already allow." },
+  promptUnmatched: { label: "Ask", detail: "Muse asks before any tool call its rules do not already allow." },
+  onRequest: { label: "Auto", detail: "Muse's default: sandboxed work runs, and Muse asks when it needs more." },
+  allowAll: { label: "Full access", detail: "Muse runs every tool call without asking." },
+};
+
+/** Muse's CLI only knows three approval words; the two cautious wire modes share `untrusted`. */
+export function museCliApprovalFlag(mode: AgentChatMusePermissionMode): "untrusted" | "on-request" | "never" {
+  if (mode === "allowAll") return "never";
+  if (mode === "onRequest") return "on-request";
+  return "untrusted";
+}
+
 /** Public Droid-native permission values accepted by chat creation surfaces. */
 export const AGENT_CHAT_DROID_PERMISSION_MODE_VALUES = [
   "read-only",
@@ -996,7 +1029,8 @@ export type CodexThreadGoalStatus =
 export type CodexThreadGoal = {
   objective?: string | null;
   tokenBudget?: number | null;
-  status?: CodexThreadGoalStatus;
+  /** Muse sends status strings ADE does not name yet; the card shows those as active. */
+  status?: CodexThreadGoalStatus | (string & {});
   tokensUsed?: number | null;
   timeUsedSeconds?: number | null;
   createdAt?: string | null;
@@ -2290,6 +2324,7 @@ export type AgentChatEvent =
       codexConfigSource?: AgentChatCodexConfigSource;
       opencodePermissionMode?: AgentChatOpenCodePermissionMode;
       droidPermissionMode?: AgentChatDroidPermissionMode;
+      musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -2739,7 +2774,7 @@ export type AgentChatAcpPermissionMode = "plan" | "default" | "auto-edit" | "aut
  * is `session/request_permission` in every dialect, so a card cannot tell them
  * apart and does not need to.
  */
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "acp" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "acp" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {
@@ -2905,7 +2940,10 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Native Pi JSONL session pointer used for SDK resume and CLI handoff. */
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -3092,7 +3130,10 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   /** True when the host explicitly cleared Cursor's mode with `null`. */
@@ -3664,6 +3705,7 @@ export type AgentChatModelCatalog = {
 export type AgentChatModelCatalogRefreshProvider =
   | "opencode"
   | "pi"
+  | "muse"
   | "cursor"
   | "droid"
   | "lmstudio"
@@ -3945,7 +3987,10 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;
@@ -4100,6 +4145,7 @@ export type AgentChatCliLaunchProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -4178,7 +4224,7 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * from one of them is brief-only. Adding one here would promise a copied thread
  * that no dialect can produce.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor", "muse"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
@@ -4196,7 +4242,8 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
 }
 
 /**
- * Droid can fork locally, but its session index is machine-local, so the
+ * Droid and Muse fork locally (Muse with MSP `session/fork`), but their
+ * session stores are machine-local (Muse's under `<museHome>/sessions`), so the
  * relocated-file resume path is not portable across ADE machines yet. Cursor's
  * fork is an ADE-side transcript replay with no transportable provider artifact
  * at all, so there is nothing to package for another machine. Derived from the
@@ -4204,7 +4251,7 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
  * silently leave the other behind.
  */
 export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid" && !providerForkReplaysTranscript(provider));
+  .filter((provider) => provider !== "droid" && provider !== "muse" && !providerForkReplaysTranscript(provider));
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -4247,6 +4294,7 @@ export type AgentChatHandoffArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4282,6 +4330,7 @@ export type AgentChatCrossMachineTargetConfig = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4817,6 +4866,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
+  // Muse: `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+  // stages it, and interrupt is `turn/interrupt` then a fresh turn.
+  muse: ["inline", "queue", "interrupt"],
   cursor: ["inline", "queue", "interrupt"],
   opencode: ["inline", "queue"],
   qwen: ["queue"],
@@ -4858,11 +4910,12 @@ export function activeTurnDispatchModes(
 /**
  * True when ADE itself holds `provider`'s staged queue and can change its
  * order. Codex keeps follow-ups in its app-server queue keyed by message id,
- * and OpenCode in its own inbox; neither has a move operation. iOS mirrors
+ * OpenCode in its own inbox, and Muse in its host queue (`turn/unqueue`);
+ * none has a move operation. iOS mirrors
  * this by hand beside `ACTIVE_TURN_DISPATCH_MODES`.
  */
 export function queuedSteersCanReorder(provider: AgentChatProvider | null | undefined): boolean {
-  return provider !== "codex" && provider !== "opencode";
+  return provider !== "codex" && provider !== "opencode" && provider !== "muse";
 }
 
 /** Pre-selected mode for a fresh session on `provider`. */
@@ -4920,7 +4973,7 @@ export function activeTurnInlineAttachmentBlock(
  * needs it. iOS mirrors it by hand alongside the table.
  */
 export function activeTurnInterruptContinues(provider: AgentChatProvider | null | undefined): boolean {
-  return provider === "cursor";
+  return provider === "cursor" || provider === "muse";
 }
 
 /**
@@ -5264,6 +5317,7 @@ export type AgentChatLaunchDefaults = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -5341,6 +5395,57 @@ export type AgentChatStopTaskResult = {
   sessionId: string;
   taskId: string;
   stopped: boolean;
+  reason?: string;
+};
+
+/**
+ * Send a note to one subagent (`taskId` as the subagent row names it). A
+ * running subagent folds it in; one that already finished takes it as a
+ * follow-up task. Runtimes without per-subagent messaging refuse it.
+ */
+export type AgentChatMessageSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  text: string;
+};
+
+export type AgentChatMessageSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  delivered: boolean;
+  /** `message` for a running subagent, `followup` for one that had finished. */
+  mode?: "message" | "followup";
+  reason?: string;
+};
+
+/**
+ * Per-subagent and per-workflow controls beyond Stop (`chat.stopTask`):
+ * interrupt the current step, resume, reopen or close a subagent; pause or
+ * resume a workflow run; skip or retry one workflow child (`childId` +
+ * `attempt`, as the workflow item reports them).
+ */
+export type AgentChatSubagentControlAction =
+  | "interrupt"
+  | "resume"
+  | "reopen"
+  | "close"
+  | "pause"
+  | "skip_child"
+  | "retry_child";
+
+export type AgentChatControlSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  action: AgentChatSubagentControlAction;
+  childId?: string;
+  attempt?: number;
+  reason?: string;
+};
+
+export type AgentChatControlSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  applied: boolean;
   reason?: string;
 };
 
@@ -5593,6 +5698,7 @@ export type AgentChatUpdateSessionArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;

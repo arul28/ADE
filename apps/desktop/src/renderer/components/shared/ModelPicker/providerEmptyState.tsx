@@ -1,3 +1,5 @@
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
@@ -39,6 +41,15 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     secondary: {
       label: "Codex CLI install",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
+    },
+  },
+  muse: {
+    title: "Sign in to Muse Code",
+    body: "Sign in with your Meta account (`" + MUSE_LOGIN_COMMAND + "`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Muse Code docs",
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.muse.docsUrl },
     },
   },
   cursor: {
@@ -156,6 +167,7 @@ export type ProviderEmptyStateProps =
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Claude",
   openai: "OpenAI Codex",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",

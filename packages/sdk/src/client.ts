@@ -183,8 +183,8 @@ export interface AdeChatClient {
  *
  * Before shipping, read the MCP caveat on
  * {@link ThreadOpenOptions.loadUserMcpServers}: withholding the user's own MCP
- * config is enforced only on Claude and best-effort on Codex, Cursor, Droid and
- * OpenCode. Check `thread.mcpCapability.strictRequested === true` AND
+ * config is enforced only on Claude and best-effort on Codex, Cursor, Droid,
+ * Muse and OpenCode. Check `thread.mcpCapability.strictRequested === true` AND
  * `.level === "enforced"` before telling your users that only their tools are
  * loaded — on a delivery-only thread the level says nothing about isolation.
  */

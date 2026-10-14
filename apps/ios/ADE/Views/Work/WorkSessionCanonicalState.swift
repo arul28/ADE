@@ -141,7 +141,7 @@ func isWorkAgentToolType(_ toolType: String?) -> Bool {
 
 /// Mirrors desktop `isTrackedAgentCliToolType`.
 private let workTrackedAgentCliToolTypes: Set<String> = [
-  "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "qwen", "kimi", "grok",
+  "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok",
   "copilot", "devin", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
 ]
 

@@ -81,6 +81,7 @@ const launchSnapshot = {
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: "onRequest",
     cursorModeId: "agent",
     cursorConfigValues: {},
   } satisfies NativeControlState,

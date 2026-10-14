@@ -8,7 +8,8 @@ import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { formatBytesShort, usePolling } from "./widgetHooks";
+import { usePolling } from "../../../hooks/usePolling";
+import { formatBytesShort } from "./widgetHooks";
 import "../homeWidgets.css";
 
 /**

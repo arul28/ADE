@@ -39,6 +39,7 @@ describe("buildModelPickerLayout", () => {
       .toEqual([
         "claude",
         "codex",
+        "muse",
         "cursor",
         "devin",
         "opencode",

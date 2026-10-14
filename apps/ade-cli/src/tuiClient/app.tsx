@@ -334,6 +334,7 @@ import {
   CODEX_PRESETS,
   CLAUDE_PERMISSION_OPTIONS,
   DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS,
   OPENCODE_PERMISSION_OPTIONS,
   applyProviderPermissionMode,
   buildSetupRows,
@@ -345,6 +346,8 @@ import {
   cursorSourceForInterfaceMode,
   defaultSetupSelectionIndex,
   droidPermissionToLegacy,
+  musePermissionOption,
+  musePermissionPatch,
   fallbackModelStatePatch,
   initialModelState,
   modeAccentColor,
@@ -1238,6 +1241,7 @@ export function chatSessionToOptimisticSummary(
     ...(session.codexConfigSource ? { codexConfigSource: session.codexConfigSource } : {}),
     ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -8691,6 +8695,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
+          musePermissionMode: configSession.musePermissionMode ?? prev.musePermissionMode,
           ...resolveLaunchIdentity(configSession),
           // `null` is an intentional clear for the legacy permission-only
           // paths. Only an omitted field should fall back to the snapshot or
@@ -8859,13 +8864,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
-      interactionMode: normalized.provider === "claude" ? normalized.interactionMode : undefined,
+      interactionMode: normalized.provider === "claude" || normalized.provider === "muse" ? normalized.interactionMode : undefined,
       claudePermissionMode: normalized.provider === "claude" ? normalized.claudePermissionMode : undefined,
       codexApprovalPolicy: normalized.provider === "codex" ? normalized.codexApprovalPolicy : undefined,
       codexSandbox: normalized.provider === "codex" ? normalized.codexSandbox : undefined,
       codexConfigSource: normalized.provider === "codex" ? normalized.codexConfigSource : undefined,
       opencodePermissionMode: runtimeProviderForUiProvider(normalized.provider) === "opencode" ? normalized.opencodePermissionMode : undefined,
       droidPermissionMode: normalized.provider === "droid" ? normalized.droidPermissionMode : undefined,
+      musePermissionMode: normalized.provider === "muse" ? normalized.musePermissionMode : undefined,
       cursorModeId: normalized.provider === "cursor" ? normalized.cursorModeId : undefined,
       cursorConfigValues: normalized.provider === "cursor" ? normalized.cursorConfigValues : undefined,
     });
@@ -9533,6 +9539,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(meta.codexConfigSource !== undefined ? { codexConfigSource: meta.codexConfigSource } : {}),
             ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
             ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
+            ...(meta.musePermissionMode !== undefined ? { musePermissionMode: meta.musePermissionMode } : {}),
             ...("cursorModeId" in meta || meta.cursorModeSnapshot !== undefined
               ? {
                   // An explicit cursorModeId (present in the event) is
@@ -10015,6 +10022,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       codexConfigSource: normalized.codexConfigSource,
       opencodePermissionMode: normalized.opencodePermissionMode,
       droidPermissionMode: normalized.droidPermissionMode,
+      musePermissionMode: normalized.musePermissionMode,
       cursorModeId: normalized.cursorModeId,
       cursorConfigValues: normalized.cursorConfigValues,
     });
@@ -14282,6 +14290,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: normalized.codexConfigSource,
           opencodePermissionMode: normalized.opencodePermissionMode,
           droidPermissionMode: normalized.droidPermissionMode,
+          musePermissionMode: normalized.musePermissionMode,
           cursorModeId: normalized.cursorModeId,
           cursorConfigValues: normalized.cursorConfigValues,
         });
@@ -14643,6 +14652,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const index = Math.max(0, DROID_PERMISSION_OPTIONS.findIndex((entry) => entry === modelState.droidPermissionMode));
       const next = DROID_PERMISSION_OPTIONS[(index + delta + DROID_PERMISSION_OPTIONS.length) % DROID_PERMISSION_OPTIONS.length] ?? "auto-low";
       applyModelState((prev) => ({ ...prev, droidPermissionMode: next, permissionMode: droidPermissionToLegacy(next) }));
+      return;
+    }
+    if (modelState.provider === "muse") {
+      const index = Math.max(0, MUSE_PERMISSION_OPTIONS.findIndex((entry) => entry === musePermissionOption(modelState)));
+      const next = MUSE_PERMISSION_OPTIONS[(index + delta + MUSE_PERMISSION_OPTIONS.length) % MUSE_PERMISSION_OPTIONS.length] ?? "onRequest";
+      applyModelState((prev) => ({ ...prev, ...musePermissionPatch(next) }));
       return;
     }
     const modeIds = cursorModeIdsForState(modelState);

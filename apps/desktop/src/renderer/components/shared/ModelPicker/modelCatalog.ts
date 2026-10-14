@@ -345,6 +345,7 @@ export function filterFallbackModelsToRuntimeCatalog(
 const PICKER_FAMILY_BY_CATALOG_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   claude: "anthropic",
   codex: "openai",
+  muse: "muse",
   droid: "factory",
   cursor: "cursor",
   opencode: "opencode",
@@ -371,6 +372,7 @@ const PICKER_FALLBACK_FAMILIES: readonly ProviderFamily[] = [
   "moonshot",
   "xai",
   "github-copilot",
+  "muse",
 ];
 
 function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string): ProviderFamily {

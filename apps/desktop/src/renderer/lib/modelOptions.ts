@@ -157,9 +157,11 @@ export function deriveConfiguredModelIds(
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
       if (!auth.authenticated || auth.cli === "cursor") continue;
-      const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
+      const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", muse: "muse" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);
+      // Muse's live `model/list` rows ride `availableModelIds` as `muse/<id>`.
+      if (auth.cli === "muse") addAvailableModelIdsByPrefix(ids, status.availableModelIds, "muse/");
       const acpPrefix = auth.cli ? ACP_MODEL_PREFIX_BY_CLI[auth.cli] : undefined;
       if (acpPrefix) addAvailableModelIdsByPrefix(ids, status.availableModelIds, acpPrefix);
       continue;

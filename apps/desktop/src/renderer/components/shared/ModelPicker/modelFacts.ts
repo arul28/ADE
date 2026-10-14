@@ -29,6 +29,7 @@ export const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",
+  muse: "Meta",
   qwen: "Qwen",
   moonshot: "Kimi",
   "github-copilot": "GitHub Copilot",

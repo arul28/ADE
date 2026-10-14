@@ -19,6 +19,7 @@ import type {
   AgentChatUsageLimitResume,
   AgentChatUsageLimitResumeState,
 } from "./types/chat";
+import { PROVIDER_DISPLAY_NAME } from "./providers";
 
 const VALID_USAGE_LIMIT_RESUME_STATES: ReadonlySet<string> = new Set<AgentChatUsageLimitResumeState>([
   "armed",
@@ -95,6 +96,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",

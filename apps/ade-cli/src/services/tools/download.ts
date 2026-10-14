@@ -3,6 +3,8 @@ import fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import https from "node:https";
 import path from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { ToolError } from "./errors";
 
 /** Idle-socket timeout. Matches the ADE brain updater's download budget. */
@@ -14,7 +16,16 @@ export type ToolDownloadResult = {
   bytes: number;
   /** Streaming digest of what was written, as an SRI string. */
   integrity: string;
+  /**
+   * Streaming sha256 of what was written, lowercase hex. Present only when the
+   * caller asked for it (`sha256: true`), so a custom downloader may omit it and
+   * the installer then hashes the file itself.
+   */
+  sha256?: string;
 };
+
+/** The built-in downloader's result when the caller asked for `sha256`. */
+export type ToolDownloadResultWithSha256 = ToolDownloadResult & { sha256: string };
 
 export type ToolDownloadProgress = {
   receivedBytes: number;
@@ -30,6 +41,22 @@ export type ToolDownloadOptions = {
    * manifest cannot carry a byte size that npm does not publish in the lockfile.
    */
   onSize?: (totalBytes: number | null) => void | Promise<void>;
+  /**
+   * Refuse to write past this many bytes. The download aborts with a `network`
+   * ToolError on the first chunk that would exceed it, before that chunk is
+   * written. File pins pass their pinned size here.
+   */
+  maxBytes?: number;
+  /**
+   * Also compute the sha256 of the written bytes. Off by default: npm tarballs
+   * are verified by their sha512 SRI alone, so hashing twice would be waste.
+   */
+  sha256?: boolean;
+  /**
+   * Refuse any redirect that leaves the host of the first URL. File pins name
+   * one vendor host, and a redirect off it is not something ADE will follow.
+   */
+  sameHostRedirectsOnly?: boolean;
 };
 
 export type ToolDownloader = (
@@ -45,21 +72,44 @@ export type ToolDownloader = (
  * so an interrupted download can never be mistaken for a whole tarball. The
  * `.part` file is removed on every failure path.
  */
-export const downloadToolTarball: ToolDownloader = async (url, destPath, options = {}) => {
+export function downloadToolTarball(
+  url: string,
+  destPath: string,
+  options: ToolDownloadOptions & { sha256: true },
+): Promise<ToolDownloadResultWithSha256>;
+export function downloadToolTarball(
+  url: string,
+  destPath: string,
+  options?: ToolDownloadOptions,
+): Promise<ToolDownloadResult>;
+export async function downloadToolTarball(
+  url: string,
+  destPath: string,
+  options: ToolDownloadOptions = {},
+): Promise<ToolDownloadResult> {
   await fsp.mkdir(path.dirname(destPath), { recursive: true });
   const partPath = `${destPath}.${process.pid}.part`;
+  const originHost = options.sameHostRedirectsOnly ? hostOf(url) : null;
   try {
-    const result = await streamToFile(url, partPath, options, 0);
+    const result = await streamToFile(url, partPath, options, 0, originHost);
     await fsp.rename(partPath, destPath);
     return result;
   } catch (error) {
     await fsp.rm(partPath, { force: true }).catch(() => undefined);
     throw error;
   }
-};
+}
 
 function networkError(message: string, cause?: unknown): ToolError {
   return new ToolError(message, { kind: "network", cause });
+}
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
 }
 
 async function streamToFile(
@@ -67,6 +117,7 @@ async function streamToFile(
   partPath: string,
   options: ToolDownloadOptions,
   redirects: number,
+  originHost: string | null,
 ): Promise<ToolDownloadResult> {
   if (redirects > MAX_REDIRECTS) {
     throw networkError(`Too many redirects while downloading ${url}`);
@@ -95,7 +146,10 @@ async function streamToFile(
     if (!redirected.startsWith("https://")) {
       throw networkError(`Refusing insecure redirect from ${url} to ${redirected}`);
     }
-    return await streamToFile(redirected, partPath, options, redirects + 1);
+    if (originHost !== null && hostOf(redirected) !== originHost) {
+      throw networkError(`Refusing redirect from ${url} to ${redirected}: this download must stay on ${originHost}.`);
+    }
+    return await streamToFile(redirected, partPath, options, redirects + 1, originHost);
   }
   if (status !== 200) {
     response.resume();
@@ -112,57 +166,74 @@ async function streamToFile(
   }
 
   const hash = createHash("sha512");
+  const sha256 = options.sha256 ? createHash("sha256") : null;
   let receivedBytes = 0;
   const sink = fs.createWriteStream(partPath);
-
-  await new Promise<void>((resolve, reject) => {
-    const fail = (error: unknown) => {
-      response.destroy();
-      sink.destroy();
-      reject(error instanceof ToolError ? error : networkError(`Download failed for ${url}`, error));
-    };
-    // Idle-socket enforcement for the body, not just the handshake: a stalled
-    // CDN that holds the connection open must not hang an install forever.
-    response.setTimeout(TOOL_DOWNLOAD_IDLE_TIMEOUT_MS, () => {
-      fail(networkError(`Timed out receiving ${url}`));
-    });
-    response.on("data", (chunk: Buffer) => {
-      hash.update(chunk);
-      receivedBytes += chunk.length;
-      options.onProgress?.({ receivedBytes, totalBytes });
-    });
-    response.on("error", fail);
-    sink.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOSPC") {
-        response.destroy();
-        sink.destroy();
-        reject(new ToolError(`Ran out of disk space while downloading ${url}.`, {
-          kind: "disk-space",
-          cause: error,
-        }));
+  // Counts and hashes each chunk before it reaches the file. A chunk that would
+  // take the body past `maxBytes` fails the stream here, so nothing past the
+  // pinned size is ever written; `pipeline` then tears down the response and sink.
+  const guard = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      if (options.maxBytes !== undefined && receivedBytes + chunk.length > options.maxBytes) {
+        callback(networkError(
+          `Download of ${url} is larger than the ${options.maxBytes} bytes pinned for it.`,
+        ));
         return;
       }
-      fail(error);
-    });
-    sink.on("finish", resolve);
-    response.pipe(sink);
+      receivedBytes += chunk.length;
+      hash.update(chunk);
+      sha256?.update(chunk);
+      options.onProgress?.({ receivedBytes, totalBytes });
+      callback(null, chunk);
+    },
   });
+  // Idle-socket enforcement for the body, not just the handshake: a stalled
+  // CDN that holds the connection open must not hang an install forever.
+  response.setTimeout(TOOL_DOWNLOAD_IDLE_TIMEOUT_MS, () => {
+    response.destroy(networkError(`Timed out receiving ${url}`));
+  });
+
+  try {
+    await pipeline(response, guard, sink);
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOSPC") {
+      throw new ToolError(`Ran out of disk space while downloading ${url}.`, {
+        kind: "disk-space",
+        cause: error,
+      });
+    }
+    throw networkError(`Download failed for ${url}`, error);
+  }
 
   if (totalBytes !== null && receivedBytes !== totalBytes) {
     throw networkError(`Truncated download for ${url}: expected ${totalBytes} bytes, got ${receivedBytes}.`);
   }
 
-  return { bytes: receivedBytes, integrity: `sha512-${hash.digest("base64")}` };
-};
+  return {
+    bytes: receivedBytes,
+    integrity: `sha512-${hash.digest("base64")}`,
+    ...(sha256 ? { sha256: sha256.digest("hex") } : {}),
+  };
+}
 
 /** Streaming sha512 of an existing file, as an SRI string. */
 export async function fileIntegrity(filePath: string): Promise<string> {
-  const hash = createHash("sha512");
+  return `sha512-${await fileDigest(filePath, "sha512", "base64")}`;
+}
+
+/** Streaming sha256 of an existing file, as lowercase hex. */
+export async function fileSha256(filePath: string): Promise<string> {
+  return await fileDigest(filePath, "sha256", "hex");
+}
+
+async function fileDigest(filePath: string, algorithm: "sha256" | "sha512", encoding: "hex" | "base64"): Promise<string> {
+  const hash = createHash(algorithm);
   await new Promise<void>((resolve, reject) => {
     const stream = fs.createReadStream(filePath);
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", resolve);
   });
-  return `sha512-${hash.digest("base64")}`;
+  return hash.digest(encoding);
 }

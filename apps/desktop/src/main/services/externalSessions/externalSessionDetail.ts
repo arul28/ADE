@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types/externalSessionDetail";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { discoverExternalSessionRecord, jsonlSourceFor, loadExternalSessionEvents } from "./events";
+import { museMessagesFromLogLines } from "./discoverMuse";
 import {
   asRecord,
   asString,
@@ -53,6 +54,7 @@ function assertProvider(value: string): ExternalSessionProvider {
     case "droid":
     case "opencode":
     case "pi":
+    case "muse":
     case "qwen":
     case "kimi":
     case "grok":
@@ -99,6 +101,7 @@ function messagesFromRecords(
   provider: ExternalSessionProvider,
   records: unknown[],
 ): ExternalSessionDetailMessage[] {
+  if (provider === "muse") return museDetailMessages(records);
   const source = provider === "codex" ? canonicalCodexRecords(records) : records;
   const messages: ExternalSessionDetailMessage[] = [];
   for (const record of source) {
@@ -125,6 +128,14 @@ function recoverModel(
     if (model?.trim()) return model.trim();
   }
   return null;
+}
+
+/** Muse frames wrap records, so the generic record reader finds no messages there. */
+function museDetailMessages(records: unknown[]): ExternalSessionDetailMessage[] {
+  return museMessagesFromLogLines(records)
+    .map((message) => ({ ...message, text: clipPreservingNewlines(message.text, DETAIL_MESSAGE_MAX_CHARS) }))
+    .filter((message) => message.text.length > 0)
+    .slice(-DETAIL_MAX_MESSAGES);
 }
 
 function emptyDetail(args: ExternalSessionDetailArgs): ExternalSessionDetail {

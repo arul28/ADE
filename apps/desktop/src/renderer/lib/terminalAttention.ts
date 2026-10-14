@@ -57,6 +57,7 @@ const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "claude-orchestrated",
   "codex-orchestrated",
   "opencode-orchestrated",

@@ -482,6 +482,7 @@ import type {
   ActiveTurnSendMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatCancelDispatchedSteerResult,
   AgentChatDisposeArgs,
@@ -517,6 +518,10 @@ import type {
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestartSessionArgs,
   AgentChatRestartSessionResult,
   AgentChatStopTaskResult,
@@ -659,6 +664,7 @@ import {
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   CHAT_STOP_REASON_BRAIN_RESTARTED,
   CHAT_STOP_REASON_CHAT_HANDED_OFF,
   CHAT_STOP_REASON_FOREIGN_BRAIN,
@@ -838,6 +844,9 @@ import {
   createDynamicAcpModelDescriptor,
   listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
+  museModelDescriptorFromCatalogRow,
+  replaceDynamicMuseModelDescriptors,
+  type MuseModelCatalogRow,
   mergeDynamicAcpModelDescriptors,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -1307,6 +1316,67 @@ import {
   mapDroidSdkRunResultToDoneEvent,
   type DroidSdkEventMapperState,
 } from "./droidSdkEventMapper";
+import {
+  describeMuseError,
+  isMuseErrorKind,
+  isMuseKnownNotification,
+  museNotificationFromWire,
+  museViewCursorOf,
+  startMuseHost,
+  startPinnedMuseHost,
+  resolvePinnedMuseLaunch,
+  type MuseHost,
+  type MuseHostExit,
+  type MuseNotification,
+} from "./museSdkHost";
+import {
+  createMuseEventMapperState,
+  mapItemCompleted,
+  mapMuseItemsToTranscript,
+  mapMuseNotification,
+  museTurnAggregateUsage,
+  museUsageToDoneUsage,
+  resetMuseTurnState,
+  type MuseEventMapperState,
+} from "./museSdkEventMapper";
+import {
+  buildMuseApprovalCard,
+  buildMuseQuestionCard,
+  buildMuseTurnInput,
+  isMuseApprovedDecision,
+  MUSE_LOCAL_COMMANDS,
+  MUSE_MEDIA_UPLOAD_MAX_BYTES,
+  museAnswersFor,
+  museChoiceForAnswer,
+  museDoneEvent,
+  museMediaUploadChunks,
+  museSubagentControlRequest,
+  museTerminalStatus,
+  normalizeMuseReasoningEffort,
+  parseMuseControlCommand,
+  toMuseSessionMcpServers,
+  type MuseSubagentItemRef,
+  type MuseVideoMediaType,
+} from "./museSessionSupport";
+import { resolveMuseExecutable } from "../ai/museExecutable";
+import { createMuseQuotaStore, type MuseQuotaStore } from "../usage/museLiveQuota";
+import type {
+  ApprovalRequestParams,
+  ApprovalUpdatedParams,
+  Item,
+  ItemReadOutputResult,
+  RecapCompletedParams,
+  SessionReadResult,
+  TurnRetractedParams,
+  UserInputRequestParams,
+  TokenUsage,
+  ViewGapParams,
+  ViewPageResult,
+} from "@muse-code/sdk/dist/src/msp.js";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../../shared/modelPermissions";
 import {
   createCompactionEmitterState,
   mapLegacyCompactionEvent,
@@ -1944,6 +2014,7 @@ type PersistedChatState = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -2016,6 +2087,8 @@ type PersistedChatState = {
   credentialId?: string;
   /** Pi-native JSONL session pointer for SDK resume and CLI handoff. */
   piSessionId?: string;
+  /** Muse Code MSP session id; `session/resume` reattaches it. */
+  museSessionId?: string;
   piSessionFile?: string;
   piProfileId?: string;
   piProviderId?: string;
@@ -3317,7 +3390,99 @@ type PiRuntime = {
  */
 type AcpRuntime = AcpRuntimeState<QueuedSteer>;
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime;
+/**
+ * One Muse Code chat on one `muse serve` host (MSP over stdio).
+ *
+ * The host is per chat, like Codex's app-server. Muse owns the conversation
+ * (its session log under `<museHome>/sessions`); ADE keeps the MSP session id
+ * on the chat record (`museSessionId`) and resumes it after a restart.
+ * Approvals and questions are raised through `localPendingInputs`, like Pi and
+ * ACP, so a card survives the runtime long enough to be answered.
+ */
+type MuseRuntime = {
+  kind: "muse";
+  host: MuseHost;
+  /** Binary + serve flags; a change forces a new host. */
+  hostKey: string;
+  museSessionId: string;
+  unsubscribe: () => void;
+  /** MSP turn id of the running foreground turn. */
+  activeTurnId: string | null;
+  busy: boolean;
+  interrupted: boolean;
+  hostDied: boolean;
+  pendingSteers: QueuedSteer[];
+  /** Settles the awaited foreground turn: MSP `turn/completed` (or host death). */
+  turnWaiters: Map<string, (outcome: MuseTurnOutcome) => void>;
+  /** Approval cards ADE raised, by MSP approval id → ADE card id. */
+  openApprovalCards: Map<string, string>;
+  /** The full `approval/requested` params per open approval; an update carries only the changed stage. */
+  approvalRequests: Map<string, ApprovalRequestParams>;
+  /** Question cards ADE raised, by MSP user-input id → ADE card id. */
+  openQuestionCards: Map<string, string>;
+  /** Approval and question ids Muse already settled, so a replayed request never reopens its card. */
+  settledApprovalIds: Set<string>;
+  settledQuestionIds: Set<string>;
+  mapperState: MuseEventMapperState;
+  /** What ADE last applied, so a change is sent once. */
+  appliedModelId: string | null;
+  appliedApprovalMode: AgentChatMusePermissionMode | null;
+  /** Latest MSP view cursor, for gap fills. */
+  viewCursor: string | null;
+  /** Live goal and slash catalog, refreshed from the host. */
+  goal: Record<string, unknown> | null;
+  skills: Array<{ name: string; description: string; argumentHint?: string }>;
+  /** Running items that outlive their turn: background tool tasks and background subagents. */
+  runningBackgroundItems: Map<string, "background_task" | null>;
+  /** First turn of this runtime still owes the host instructions/guidance. */
+  instructionsDelivered: boolean;
+  /**
+   * Turns Muse started on its own (goal follow-ups, a queued `ifBusy` turn):
+   * ADE did not send them, so nothing awaits them. The view stream opens and
+   * closes them in the transcript so the chat reads as working meanwhile.
+   */
+  hostStartedTurnIds: Set<string>;
+  /**
+   * Subagent and workflow items by item id (the transcript's task id), with
+   * the ids their MSP controls take: `subagent/*` keys on `subagentId`,
+   * `workflow/*` on `workflowRunId`, and a child transcript is read from
+   * `childSessionId`.
+   */
+  subagentItems: Map<string, MuseSubagentItemRef>;
+  /** What ADE sent for each of its own turns, so a retracted turn can be offered again. */
+  sentTurnInputs: Map<string, MuseSentTurnInput>;
+  /** The in-flight `/recap` (its `recap/request` command id), cancelled by Stop. */
+  pendingRecapCommandId: string | null;
+};
+
+type MuseSentTurnInput = {
+  text: string;
+  displayText?: string;
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null;
+};
+
+type MuseTurnOutcome = {
+  terminal: "completed" | "failed" | "cancelled" | "hostDied" | (string & {});
+  errorMessage?: string;
+  errorKind?: string;
+  reason?: string;
+  usage?: TokenUsage | null;
+  durationMs?: number;
+};
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime | MuseRuntime;
+
+/**
+ * Providers whose turn runs in a host ADE drives: a stopped turn may still be
+ * settling there after the chat reads idle, so a replacing send waits for it.
+ */
+const HOSTED_TURN_PROVIDERS: ReadonlySet<string> = new Set(["cursor", "droid", "muse"]);
+
+function isHostedTurnRuntime(runtime: ChatRuntime): runtime is CursorRuntime | DroidRuntime | MuseRuntime {
+  return HOSTED_TURN_PROVIDERS.has(runtime.kind);
+}
 
 function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: string): void {
   waiter.resolve(denyCursorHook(reason));
@@ -3824,6 +3989,12 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
     // from `SUBAGENT_CAPABILITIES` so `resolveSubagentCapability` already
     // degrades it to the no-op descriptor. Zero here is a verified fact about
     // Pi, not an unexamined default.
+    case "muse":
+      // Muse backgrounds tool tasks (`task/background`) and subagents; both
+      // keep running after the foreground turn settles.
+      return runtime.runningBackgroundItems.size
+        ? summarizeBackgroundWork([...runtime.runningBackgroundItems.values()])
+        : NO_BACKGROUND_WORK;
     case "droid":
     case "pi":
     // ACP: a session is bounded by its prompt. No dialect exposes a background
@@ -3966,6 +4137,13 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         runtime.busy
         || runtime.activeTurnId
         || runtime.pendingSteers.length > 0
+      );
+    case "muse":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.pendingSteers.length > 0
+        || runtime.runningBackgroundItems.size > 0
       );
     default:
       return false;
@@ -5000,6 +5178,13 @@ const defaultClaudeModel = (): string => {
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
 const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
+const DEFAULT_MUSE_MODEL = getDefaultModelDescriptor("muse")?.providerModelId ?? "muse-spark-1.3";
+/**
+ * Muse cuts a tool's transcript-visible output at its surface budget and keeps
+ * the full bytes behind `outputRef`. ADE re-reads a cut output up to this size
+ * once the item settles (see `loadMuseFullOutput`).
+ */
+const MUSE_FULL_OUTPUT_MAX_BYTES = 256 * 1024;
 const DEFAULT_REASONING_EFFORT = "medium";
 
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
@@ -5388,6 +5573,17 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
       );
     }
     return null;
+  }
+
+  if (session.provider === "muse") {
+    if (session.modelId) {
+      const byStoredId = getModelById(session.modelId) ?? resolveModelAlias(session.modelId);
+      if (byStoredId) return byStoredId;
+    }
+    if (session.model) {
+      return getModelById(`muse/${session.model}`) ?? resolveModelDescriptorForProvider(session.model, "muse") ?? null;
+    }
+    return getDefaultModelDescriptor("muse") ?? null;
   }
 
   return getModelById(session.model) ?? resolveModelAlias(session.model) ?? null;
@@ -6131,6 +6327,7 @@ const CHAT_SESSION_TOOL_TYPES = [
   "cursor",
   "droid-chat",
   "pi-chat",
+  "muse-chat",
   "qwen-chat",
   "kimi-chat",
   "grok-chat",
@@ -6161,6 +6358,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
   if (toolType === "droid-chat") return "droid";
+  if (toolType === "muse-chat") return "muse";
   if (toolType === "qwen" || toolType === "qwen-chat") return "qwen";
   if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
@@ -6175,6 +6373,7 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
   if (provider === "droid") return "droid-chat";
+  if (provider === "muse") return "muse-chat";
   if (provider === "qwen") return "qwen-chat";
   if (provider === "kimi") return "kimi-chat";
   if (provider === "grok") return "grok-chat";
@@ -6905,6 +7104,7 @@ function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "claude") return "Claude Chat";
   if (provider === "cursor") return "Cursor Chat";
   if (provider === "droid") return "Droid Chat";
+  if (provider === "muse") return "Muse Chat";
   return "AI Chat";
 }
 
@@ -7406,6 +7606,7 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
   if (provider === "droid") return `chat:droid:${sessionId}`;
+  if (provider === "muse") return `chat:muse:${sessionId}`;
   if (provider === "qwen") return `chat:qwen:${sessionId}`;
   if (provider === "kimi") return `chat:kimi:${sessionId}`;
   if (provider === "grok") return `chat:grok:${sessionId}`;
@@ -7739,6 +7940,7 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "claude") return defaultClaudeModel();
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
   if (provider === "droid") return DEFAULT_DROID_MODEL;
+  if (provider === "muse") return DEFAULT_MUSE_MODEL;
   return DEFAULT_OPENCODE_MODEL_ID;
 }
 
@@ -8133,6 +8335,15 @@ function buildExecutionModeDirective(
       "[ADE launch directive]",
       "Use Droid's available delegation tools for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
+      "If the task is tightly coupled, stay focused instead of forcing delegation.",
+    ].join("\n");
+  }
+
+  if (provider === "muse" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
+    return [
+      "[ADE launch directive]",
+      "Use Muse's subagents and workflows for independent subtasks when they will materially improve latency or coverage.",
+      "Give each worker a narrow objective, let them run in parallel, then reconcile their results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
     ].join("\n");
   }
@@ -8697,6 +8908,12 @@ function normalizePersistedOpenCodePermissionMode(value: unknown): AgentChatOpen
   return normalizePersistedEnum(value, VALID_OPENCODE_PERMISSION_MODES);
 }
 
+function normalizePersistedMusePermissionMode(value: unknown): AgentChatMusePermissionMode | undefined {
+  return typeof value === "string" && (AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(value)
+    ? value as AgentChatMusePermissionMode
+    : undefined;
+}
+
 function normalizePersistedDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
   return normalizePersistedEnum(value, VALID_DROID_PERMISSION_MODES);
 }
@@ -8802,7 +9019,7 @@ function legacyOpenCodePermissionModeToDroidPermissionMode(
 
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
+  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -8835,6 +9052,11 @@ function syncLegacyPermissionMode(session: Pick<
       && session.codexSandbox === "read-only"
     ) return "plan";
     return undefined;
+  }
+
+  if (session.provider === "muse") {
+    if (session.interactionMode === "plan") return "plan";
+    return legacyPermissionModeFromMusePermissionMode(session.musePermissionMode) ?? undefined;
   }
 
   if (session.provider === "droid") {
@@ -8916,7 +9138,7 @@ function reassertIdentityPermissionMode(session: AgentChatSession): void {
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -8939,6 +9161,13 @@ function applyLegacyPermissionModeToNativeControls(
   if (session.provider === "droid") {
     session.interactionMode = mode === "plan" ? "plan" : "default";
     session.droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode);
+    return;
+  }
+
+  if (session.provider === "muse") {
+    session.interactionMode = mode === "plan" ? "plan" : "default";
+    const museMode = musePermissionModeFromLegacyPermissionMode(mode);
+    if (museMode) session.musePermissionMode = museMode;
     return;
   }
 
@@ -9004,7 +9233,7 @@ function applyCursorModeIdFromLegacyPermissionMode(
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
 ): void {
   if (session.provider === "claude") {
@@ -9021,6 +9250,12 @@ function hydrateNativePermissionControls(
     session.droidPermissionMode = session.droidPermissionMode
       ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
+  } else if (session.provider === "muse") {
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+      ? "plan"
+      : "default";
+    session.musePermissionMode = session.musePermissionMode
+      ?? musePermissionModeFromLegacyPermissionMode(session.permissionMode);
   } else if (session.provider === "pi") {
     // Pi keeps whatever interaction mode the session already carries.
   } else if (session.provider === "cursor") {
@@ -9751,7 +9986,7 @@ function normalizeDroidReportedModelId(
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -9778,6 +10013,14 @@ function normalizeSessionNativePermissionControls(
     const chosenDroidMode = resolveSessionDroidPermissionModeOrNull(session);
     if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
     else delete session.droidPermissionMode;
+  } else if (session.provider === "muse") {
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+      ? "plan"
+      : "default";
+    const museMode = normalizePersistedMusePermissionMode(session.musePermissionMode)
+      ?? musePermissionModeFromLegacyPermissionMode(session.permissionMode);
+    if (museMode) session.musePermissionMode = museMode;
+    else delete session.musePermissionMode;
   } else if (session.provider === "pi") {
     delete session.interactionMode;
   } else if (session.provider === "cursor") {
@@ -9892,6 +10135,7 @@ function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
     || provider === "droid"
     || provider === "opencode"
     || provider === "pi"
+    || provider === "muse"
     ? "full_tooling"
     : "fallback";
 }
@@ -9956,6 +10200,7 @@ function personalChatUserPromptFallback(
     case "cursor":
     case "droid":
     case "pi":
+    case "muse":
       return null;
     default:
       return isAssistantPersonalSession(session)
@@ -10073,6 +10318,11 @@ export function createAgentChatService(args: {
    * (tests, embedders) keeps them in memory only, never in someone's real home.
    */
   machineAdeHome?: string | null;
+  /**
+   * The process's Muse quota store, shared with the usage tracker so the header
+   * meter reads what this service's hosts report. Absent (tests) gets a private one.
+   */
+  museQuota?: MuseQuotaStore;
   /**
    * One account-vault secret by key, or null when this machine does not hold
    * it. The MCP registry's env and header values are read through it at
@@ -10385,6 +10635,7 @@ export function createAgentChatService(args: {
   acpSessionPool?: Parameters<typeof openAcpSession>[0]["pool"];
 }) {
   const runtimeBudget = args.runtimeBudget ?? createChatRuntimeBudget();
+  const museQuota = args.museQuota ?? createMuseQuotaStore();
   const {
     projectRoot,
     runtimeSocketPath: injectedRuntimeSocketPath,
@@ -14773,6 +15024,7 @@ export function createAgentChatService(args: {
       cursorSdkAgentId: runtime?.kind === "cursor" ? runtime.sdkAgentId ?? undefined : undefined,
       cursorCloudAgentId: managed.session.cursorCloudAgentId ?? undefined,
       acpSessionId: runtime?.kind === "acp" ? runtime.session.sessionId : undefined,
+      museSessionId: runtime?.kind === "muse" ? runtime.museSessionId : managed.session.museSessionId ?? undefined,
     // The live runtime handle rides along as the thread's identity of last
     // resort: a fresh Claude thread renames itself once when the SDK reports
     // the id back, and the pointer disappears entirely while the runtime is
@@ -15642,6 +15894,21 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * ADE's chat name → Muse's session name (`session/rename`), so `muse
+   * resume <name>` in a terminal finds the same chat. Only with a live Muse
+   * session; Muse's `session/nameChanged` echo is a no-op once the titles match.
+   */
+  const syncMuseSessionTitle = (managed: ManagedChatSession, title: string): void => {
+    const runtime = managed.runtime;
+    if (managed.session.provider !== "muse" || runtime?.kind !== "muse" || !runtime.host.alive) return;
+    const name = title.trim();
+    if (!name) return;
+    void runtime.host.command("session/rename", { sessionId: runtime.museSessionId, name }).catch((error) => {
+      logger.warn("agent_chat.muse_rename_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    });
+  };
+
   const claudeTitleSyncTails = new Map<string, Promise<void>>();
   const syncClaudeSessionTitle = async (
     managed: ManagedChatSession,
@@ -15695,6 +15962,7 @@ export function createAgentChatService(args: {
     const appliedTitle = persistSessionTitleMetadata(managed, title, false);
     if (appliedTitle && options.syncToRuntime !== false) {
       syncCodexSessionTitle(managed, appliedTitle);
+      syncMuseSessionTitle(managed, appliedTitle);
     }
     return appliedTitle;
   };
@@ -15716,6 +15984,7 @@ export function createAgentChatService(args: {
     if (!appliedTitle) return null;
     const titleRevision = managed.sessionMetadataTitleRevision;
     syncCodexSessionTitle(managed, appliedTitle);
+    syncMuseSessionTitle(managed, appliedTitle);
     await syncClaudeSessionTitle(managed, appliedTitle, { expectedTitleRevision: titleRevision });
     return appliedTitle;
   };
@@ -17635,6 +17904,14 @@ export function createAgentChatService(args: {
       ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
       ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
       ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+      ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
+      // Muse pointer: the live runtime's session id, else the session record's
+      // (a fork seed or an import), and nothing once the runtime is invalidated.
+      ...(managed.runtime?.kind === "muse"
+        ? { museSessionId: managed.runtime.museSessionId }
+        : !managed.runtimeInvalidated && (managed.session.museSessionId || prevPersisted?.museSessionId)
+          ? { museSessionId: managed.session.museSessionId ?? prevPersisted?.museSessionId }
+          : {}),
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
@@ -18012,6 +18289,7 @@ export function createAgentChatService(args: {
       if (
         provider !== "codex" && provider !== "claude" && provider !== "opencode"
         && provider !== "cursor" && provider !== "droid" && provider !== "pi"
+        && provider !== "muse"
         && !isAcpChatProvider(provider)
       ) {
         // A provider this build does not know is not a state ADE can hydrate.
@@ -18061,6 +18339,11 @@ export function createAgentChatService(args: {
           ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
           : undefined);
+      const musePermissionMode = normalizePersistedMusePermissionMode(record.musePermissionMode)
+        ?? (provider === "muse" ? musePermissionModeFromLegacyPermissionMode(permissionMode) : undefined);
+      const museSessionId = provider === "muse" && typeof record.museSessionId === "string" && record.museSessionId.trim().length
+        ? record.museSessionId.trim()
+        : undefined;
       const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
         ? record.cursorModeSnapshot as AgentChatCursorModeSnapshot
         : undefined;
@@ -18332,6 +18615,8 @@ export function createAgentChatService(args: {
         ...(codexConfigSource ? { codexConfigSource } : {}),
         ...(opencodePermissionMode ? { opencodePermissionMode } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...(musePermissionMode ? { musePermissionMode } : {}),
+        ...(museSessionId ? { museSessionId } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
         ...(cursorModeId !== undefined ? { cursorModeId } : {}),
         ...(cursorConfigValues ? { cursorConfigValues } : {}),
@@ -18672,6 +18957,7 @@ export function createAgentChatService(args: {
       case "claude": return { sdkSessionId: candidate.pointer };
       case "droid": return { droidSdkSessionId: candidate.pointer };
       case "pi": return { piSessionId: candidate.pointer };
+      case "muse": return { museSessionId: candidate.pointer };
       case "cursor": return { cursorSdkAgentId: candidate.pointer };
       case "opencode": return { providerSessionId: candidate.pointer };
       case "qwen":
@@ -18786,7 +19072,7 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string; museSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
@@ -18795,6 +19081,7 @@ export function createAgentChatService(args: {
     if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
     if (patch.piSessionId) managed.seededPiSessionId = patch.piSessionId;
     if (patch.acpSessionId) managed.seededAcpSessionId = patch.acpSessionId;
+    if (patch.museSessionId) managed.session.museSessionId = patch.museSessionId;
     const sessionId = managed.session.id;
     const current = readPersistedState(sessionId);
     if (!current) return;
@@ -19220,24 +19507,24 @@ export function createAgentChatService(args: {
     });
   };
 
-  const cursorDroidTurnStillActive = (managed: ManagedChatSession): boolean => {
+  const hostedTurnStillActive = (managed: ManagedChatSession): boolean => {
     const runtime = managed.runtime;
-    const runtimeBusy = (runtime?.kind === "cursor" || runtime?.kind === "droid")
-      && (runtime.busy || runtime.activeTurnId !== null);
-    const providerBusy = (managed.session.provider === "cursor" || managed.session.provider === "droid")
+    const runtimeBusy = Boolean(runtime && isHostedTurnRuntime(runtime)
+      && (runtime.busy || runtime.activeTurnId !== null));
+    const providerBusy = HOSTED_TURN_PROVIDERS.has(managed.session.provider)
       && managed.session.status === "active";
     return Boolean(runtimeBusy || providerBusy);
   };
 
-  const waitForCursorDroidTurnToSettleAfterInterrupt = async (
+  const waitForHostedTurnToSettleAfterInterrupt = async (
     managed: ManagedChatSession,
     sessionId: string,
   ): Promise<void> => {
-    if (managed.session.provider !== "cursor" && managed.session.provider !== "droid") return;
+    if (!HOSTED_TURN_PROVIDERS.has(managed.session.provider)) return;
     const timeoutMs = 30_000;
     const pollMs = 50;
     const startedAt = Date.now();
-    while (cursorDroidTurnStillActive(managed)) {
+    while (hostedTurnStillActive(managed)) {
       if (Date.now() - startedAt >= timeoutMs) {
         logger.warn("agent_chat.interrupt_replace_settle_timeout", {
           sessionId,
@@ -19804,6 +20091,7 @@ export function createAgentChatService(args: {
         ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
         ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+        ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       });
       createdId = created.id;
       usageLimitHandoffSessionIds.add(created.id);
@@ -24528,6 +24816,9 @@ export function createAgentChatService(args: {
         // Every ACP dialect can rejoin a session by id, so an idle or
         // shutdown teardown must keep the pointer it would resume from.
         || managed.runtime.kind === "acp"
+        // Muse keeps every session in its own log under <museHome>/sessions,
+        // and `session/resume` reattaches it on any later host.
+        || managed.runtime.kind === "muse"
         // OpenCode keeps its sessions in its own database, and `session.get`
         // re-opens one by id on any later server. Left off this list, every
         // idle teardown set `runtimeInvalidated`, the next persist dropped
@@ -24729,6 +25020,25 @@ export function createAgentChatService(args: {
         logger.warn("agent_chat.acp_close_failed", {
           sessionId: managed.session.id,
           provider: rt.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "muse") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      cancelQueuedSteers(managed, rt, "interrupted");
+      cancelPendingInputsFrom(managed, "muse", "ade");
+      // Persist before closing: the Muse session id is this chat's only handle
+      // on the conversation, and a preserved teardown must not lose it.
+      if (preserveProviderResumeState) persistChatState(managed);
+      for (const settle of rt.turnWaiters.values()) settle({ terminal: "cancelled", reason: "teardown" });
+      rt.turnWaiters.clear();
+      rt.unsubscribe();
+      void rt.host.close().catch((error) => {
+        logger.warn("agent_chat.muse_close_failed", {
+          sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -24938,6 +25248,8 @@ export function createAgentChatService(args: {
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : provider === "droid"
             ? DEFAULT_DROID_DESCRIPTOR?.id
+          : provider === "muse"
+            ? getDefaultModelDescriptor("muse")?.id
           : undefined);
     const model = provider === "opencode" || provider === "pi" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
@@ -31962,6 +32274,1409 @@ export function createAgentChatService(args: {
     }
   };
 
+  // ── Muse Code (MSP) ───────────────────────────────────────────────────────
+  //
+  // One `muse serve` host per chat, like Codex's app-server. ADE drives the raw
+  // MSP connection (see museSdkHost.ts for why not the SDK facade), keeps the
+  // Muse session id on the chat record, and resumes it on a new host.
+
+  /**
+   * Load the lane's own rules and skills, as a user running `muse` in the
+   * worktree would after trusting it. A personal chat has no project.
+   */
+  const museTrustArgsFor = (managed: ManagedChatSession): string[] => (
+    isPersonalSession(managed.session) ? [] : ["--trust-workspace"]
+  );
+
+  /**
+   * Read Muse's live model list (MSP `model/list`) into the registry. Uses a
+   * running chat's host when there is one, else a short-lived host in the
+   * project root. Never downloads the binary: an explicit refresh before the
+   * pinned build is fetched keeps the curated rows.
+   */
+  const refreshMuseModelCatalog = async (): Promise<void> => {
+    const live = [...managedSessions.values()]
+      .map((managed) => managed.runtime)
+      .find((runtime): runtime is MuseRuntime => runtime?.kind === "muse" && runtime.host.alive);
+    const read = async (host: MuseHost) => {
+      const result = await host.request<{ models?: MuseModelCatalogRow[] }>("model/list", {});
+      const descriptors = (result.models ?? [])
+        .map((row) => museModelDescriptorFromCatalogRow(row))
+        .filter((descriptor): descriptor is NonNullable<typeof descriptor> => descriptor != null);
+      if (descriptors.length) replaceDynamicMuseModelDescriptors(descriptors);
+    };
+    if (live) {
+      await read(live.host);
+      return;
+    }
+    // Only a build already on disk: a catalog refresh never starts a download.
+    if (!resolveMuseExecutable().path) return;
+    const host = await startPinnedMuseHost({
+      baseEnv: process.env,
+      binary: "installed",
+      noSessionLog: true,
+      cwd: projectRoot,
+      clientVersion: appVersion,
+      logger,
+    });
+    try {
+      await read(host);
+    } finally {
+      await host.close();
+    }
+  };
+
+  const museModelIdFor = (session: AgentChatSession): string => {
+    const descriptor = resolveSessionModelDescriptor(session);
+    return descriptor?.providerModelId?.trim() || session.model?.trim() || DEFAULT_MUSE_MODEL;
+  };
+
+  const resolveSessionMusePermissionMode = (session: AgentChatSession): AgentChatMusePermissionMode => {
+    if (session.interactionMode === "plan") return "denyUnmatched";
+    return normalizePersistedMusePermissionMode(session.musePermissionMode)
+      ?? musePermissionModeFromLegacyPermissionMode(session.permissionMode)
+      ?? "onRequest";
+  };
+
+  const museMcpServersFor = async (managed: ManagedChatSession) => {
+    const leases = await ensureHttpMcpLeases(managed);
+    const caller = callerMcpServersForLaunch(managed);
+    // ADE's own servers last, so a caller reusing an ADE server name cannot
+    // displace the lease (the same rule the Droid path follows).
+    return toMuseSessionMcpServers({
+      ...(caller ?? {}),
+      ...Object.fromEntries(leases.map((lease) => [
+        lease.serverName,
+        {
+          type: "http" as const,
+          url: lease.url,
+          ...(lease.config.headers && typeof lease.config.headers === "object"
+            ? { headers: lease.config.headers as Record<string, string> }
+            : {}),
+        },
+      ])),
+    });
+  };
+
+  const museNoticeForHostExit = (exit: MuseHostExit): string => {
+    if (exit.kind === "auth") {
+      return "Muse is not signed in. Sign in under Settings → Providers → Muse (or set META_API_KEY), then send again.";
+    }
+    const tail = exit.stderrTail.slice(-6).join("\n");
+    return tail ? `Muse stopped unexpectedly.\n${tail}` : "Muse stopped unexpectedly.";
+  };
+
+  /** Keep the chat's model in step with what Muse says the session uses. */
+  const syncMuseSessionModel = (managed: ManagedChatSession, providerModelId: string | null | undefined): void => {
+    const trimmed = providerModelId?.trim();
+    if (!trimmed) return;
+    const descriptor = getModelById(`muse/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "muse");
+    managed.session.model = trimmed;
+    if (descriptor) managed.session.modelId = descriptor.id;
+  };
+
+  /** An answer to a Muse card: its decision, the picked answers, or free text. */
+  type MuseCardResponse = {
+    decision?: AgentChatApprovalDecision;
+    answers?: Record<string, string | string[]>;
+    responseText?: string | null;
+  };
+
+  /**
+   * Raise one Muse card: its entry in the runtime's open-card map (keyed by
+   * Muse's id), the card's resolver, and the pending input the chat shows. The
+   * resolver answers once, and only while this runtime still owns the chat.
+   */
+  const presentMuseCard = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    openCards: Map<string, string>,
+    key: string,
+    cardId: string,
+    card: PendingInputRequest,
+    onResponse: (response: MuseCardResponse) => void,
+    presentation: { kind?: "command" | "file_change" | "tool_call"; description: string; detail: Record<string, unknown> },
+  ): void => {
+    openCards.set(key, cardId);
+    let answered = false;
+    managed.localPendingInputs.set(cardId, {
+      request: card,
+      resolve: (response) => {
+        if (answered) return;
+        answered = true;
+        openCards.delete(key);
+        if (managed.runtime !== runtime || !runtime.host.alive) return;
+        onResponse(response);
+      },
+    });
+    emitPendingInputRequest(managed, card, presentation);
+  };
+
+  /**
+   * Close a Muse card the host settled (decided, answered or timed out
+   * elsewhere). Its resolver is dropped first, so a late click cannot send a
+   * second answer; the receipt records the decision the card reached.
+   */
+  const settleMuseCard = (
+    managed: ManagedChatSession,
+    openCards: Map<string, string>,
+    key: string,
+    decision: AgentChatApprovalDecision,
+  ): void => {
+    const cardId = openCards.get(key);
+    if (!cardId) return;
+    openCards.delete(key);
+    const pending = managed.localPendingInputs.get(cardId);
+    if (!pending) return;
+    managed.localPendingInputs.delete(cardId);
+    emitPendingInputResolved(managed, {
+      itemId: cardId,
+      decision,
+      turnId: pending.request.turnId ?? null,
+      questions: pending.request.questions,
+    });
+  };
+
+  const settleMuseApprovalCard = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    approvalId: string,
+    decision: string | null,
+  ): void => {
+    // Decided somewhere else (another client, Muse's judge, a timeout): the
+    // card closes with what actually happened.
+    const accepted = isMuseApprovedDecision(decision);
+    runtime.settledApprovalIds.add(approvalId);
+    settleMuseCard(
+      managed,
+      runtime.openApprovalCards,
+      approvalId,
+      accepted ? "accept" : decision === "abort" || decision === "timedOut" ? "cancel" : "decline",
+    );
+  };
+
+  const presentMuseApproval = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    request: ApprovalRequestParams,
+  ): void => {
+    if (runtime.settledApprovalIds.has(request.approvalId) || runtime.openApprovalCards.has(request.approvalId)) return;
+    runtime.approvalRequests.set(request.approvalId, request);
+    const cardId = `muse-approval:${request.approvalId}`;
+    const card = buildMuseApprovalCard(request, cardId);
+    presentMuseCard(managed, runtime, runtime.openApprovalCards, request.approvalId, cardId, card, (response) => {
+      const interrupt = () => {
+        void runtime.host.command("turn/interrupt", { sessionId: runtime.museSessionId, turnId: request.turnId })
+          .catch(() => undefined);
+      };
+      // Dismissed without a decision, or no offered choice fits: stop the turn
+      // rather than leave Muse parked on an approval nobody can answer.
+      if (response.decision === "cancel") return interrupt();
+      const choice = museChoiceForAnswer(request.availableChoices, response);
+      if (!choice) return interrupt();
+      const feedback = choice.acceptsFeedback && typeof response.responseText === "string"
+        && response.responseText.trim() && response.responseText.trim() !== choice.choiceId
+        ? response.responseText.trim()
+        : null;
+      void runtime.host.command("approval/decide", {
+        sessionId: runtime.museSessionId,
+        approvalId: request.approvalId,
+        requirementId: request.currentRequirementId,
+        choiceId: choice.choiceId,
+        ...(feedback ? { feedback } : {}),
+      }).catch((error) => {
+        // A stale stage or an approval decided elsewhere: Muse's own answer
+        // stands, and the view stream says which.
+        logger.warn("agent_chat.muse_approval_decide_failed", {
+          sessionId: managed.session.id,
+          error: describeMuseError(error),
+        });
+      });
+    }, {
+      kind: request.subject?.kind === "shell" ? "command" : request.subject?.kind === "fileAccess" ? "file_change" : "tool_call",
+      description: card.description ?? card.title ?? "Tool call",
+      detail: { muse: true, approvalId: request.approvalId, toolName: request.toolName },
+    });
+  };
+
+  const presentMuseQuestion = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    request: UserInputRequestParams,
+  ): void => {
+    if (runtime.settledQuestionIds.has(request.userInputId) || runtime.openQuestionCards.has(request.userInputId)) return;
+    const cardId = `muse-question:${request.userInputId}`;
+    const card = buildMuseQuestionCard(request, cardId);
+    presentMuseCard(managed, runtime, runtime.openQuestionCards, request.userInputId, cardId, card, (response) => {
+      const accepted = response.decision === "accept" || response.decision === "accept_for_session";
+      const send = accepted
+        ? runtime.host.command("userInput/answer", {
+            sessionId: runtime.museSessionId,
+            userInputId: request.userInputId,
+            answers: museAnswersFor(request, response.answers, response.responseText),
+          })
+        : runtime.host.command("userInput/cancel", {
+            sessionId: runtime.museSessionId,
+            userInputId: request.userInputId,
+          });
+      void send.catch((error) => {
+        logger.warn("agent_chat.muse_user_input_answer_failed", {
+          sessionId: managed.session.id,
+          error: describeMuseError(error),
+        });
+      });
+    }, {
+      kind: "tool_call",
+      description: card.description ?? card.title ?? "Question",
+      detail: { muse: true, userInputId: request.userInputId },
+    });
+  };
+
+  const settleMuseQuestionCard = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    userInputId: string,
+    outcome: string | null,
+  ): void => {
+    // Answered elsewhere (another client, or the model's own clarify) reads
+    // as answered; every other `UserInputOutcome` closed it unanswered.
+    runtime.settledQuestionIds.add(userInputId);
+    settleMuseCard(
+      managed,
+      runtime.openQuestionCards,
+      userInputId,
+      outcome === "answered" || outcome === "clarified" ? "accept" : "cancel",
+    );
+  };
+
+  const trackMuseBackgroundItem = (runtime: MuseRuntime, item: Item | undefined): void => {
+    if (!item || typeof item.itemId !== "string") return;
+    const running = item.status === "inProgress";
+    const background = item.background === true;
+    if (running && background) {
+      runtime.runningBackgroundItems.set(item.itemId, item.kind === "toolCall" ? "background_task" : null);
+    } else {
+      runtime.runningBackgroundItems.delete(item.itemId);
+    }
+  };
+
+  /** One view notification for this chat's Muse session. */
+  /**
+   * A turn's `done` usage. The per-completion sum is exact, so it wins; the
+   * turn's aggregate from `turn/completed` covers a turn that reported none.
+   */
+  const museDoneUsage = (runtime: MuseRuntime, aggregate: TokenUsage | null) => museUsageToDoneUsage(
+    runtime.mapperState.turnUsage ?? (aggregate ? museTurnAggregateUsage(aggregate) : null),
+    runtime.mapperState.contextWindow,
+  );
+
+  /**
+   * A turn Muse ended. A turn Muse started on its own closes its transcript
+   * row here (the chat reads working until then); one ADE sent settles its
+   * waiter. `unqueued` is a queued turn Muse reclaimed: it reads as cancelled.
+   */
+  const endMuseTurn = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    turnId: string,
+    ended: {
+      terminal: string;
+      error: Record<string, unknown> | null;
+      reason?: string;
+      usage: TokenUsage | null;
+      durationMs?: number;
+    },
+  ): void => {
+    if (runtime.hostStartedTurnIds.delete(turnId)) {
+      const status = museTerminalStatus(ended.terminal);
+      if (status === "failed" && ended.error && typeof ended.error.message === "string") {
+        emitChatEvent(managed, { type: "error", message: ended.error.message, turnId });
+      }
+      const usage = museDoneUsage(runtime, ended.usage);
+      emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
+      emitChatEvent(managed, museDoneEvent({
+        turnId,
+        terminal: ended.terminal,
+        model: managed.session.model,
+        modelId: managed.session.modelId,
+        usage,
+      }));
+      if (!runtime.busy && !runtime.hostStartedTurnIds.size) markSessionIdleWithFreshCache(managed);
+      persistChatState(managed);
+      return;
+    }
+    const settle = runtime.turnWaiters.get(turnId);
+    if (!settle) return;
+    runtime.turnWaiters.delete(turnId);
+    const error = ended.error;
+    settle({
+      terminal: ended.terminal,
+      ...(error && typeof error.message === "string" ? { errorMessage: error.message } : {}),
+      ...(error && typeof error.kind === "string" ? { errorKind: error.kind } : {}),
+      ...(ended.reason !== undefined ? { reason: ended.reason } : {}),
+      usage: ended.usage,
+      ...(ended.durationMs !== undefined ? { durationMs: ended.durationMs } : {}),
+    });
+  };
+
+  /** One view notification for this chat's Muse session. */
+  const handleMuseNotification = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    notification: MuseNotification,
+    /** A page served for a `view/gap`: older than the live head, so it never moves the cursor. */
+    options?: { replay?: boolean },
+  ): void => {
+    if (managed.runtime !== runtime) return;
+    if (!options?.replay) {
+      const cursor = museViewCursorOf(notification);
+      if (cursor !== null) runtime.viewCursor = cursor;
+    }
+    // Methods ADE does not model carry no events, so there is nothing to route.
+    if (!isMuseKnownNotification(notification)) return;
+    switch (notification.method) {
+      case "turn/started": {
+        const turnId = notification.params.turnId;
+        if (!turnId || runtime.turnWaiters.has(turnId) || turnId === runtime.activeTurnId) return;
+        runtime.hostStartedTurnIds.add(turnId);
+        resetMuseTurnState(runtime.mapperState);
+        setSessionActive(managed);
+        emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+        return;
+      }
+      case "turn/completed": {
+        const error = asRecord(notification.params.error);
+        endMuseTurn(managed, runtime, notification.params.turnId, {
+          terminal: String(notification.params.terminal ?? "completed"),
+          error,
+          reason: typeof notification.params.reason === "string" ? notification.params.reason : undefined,
+          usage: notification.params.usage ?? null,
+          durationMs: typeof notification.params.durationMs === "number" ? notification.params.durationMs : undefined,
+        });
+        return;
+      }
+      case "turn/unqueued":
+        endMuseTurn(managed, runtime, notification.params.turnId, {
+          terminal: "cancelled",
+          error: null,
+          usage: null,
+        });
+        return;
+      case "approval/requested":
+        presentMuseApproval(managed, runtime, notification.params);
+        return;
+      case "approval/updated": {
+        // A multi-stage approval moved to its next stage. `ApprovalUpdatedParams`
+        // carries only what changed (choices, requirement, subject), so the
+        // card is rebuilt from the original request with those merged in.
+        const update = notification.params;
+        const original = runtime.approvalRequests.get(update.approvalId);
+        const cardId = runtime.openApprovalCards.get(update.approvalId);
+        if (cardId) {
+          runtime.openApprovalCards.delete(update.approvalId);
+          managed.localPendingInputs.delete(cardId);
+        }
+        if (original && update.availableChoices?.length && update.currentRequirementId) {
+          presentMuseApproval(managed, runtime, {
+            ...original,
+            availableChoices: update.availableChoices,
+            currentRequirementId: update.currentRequirementId,
+            subject: update.subject ?? original.subject,
+          });
+        }
+        return;
+      }
+      case "approval/resolved":
+        runtime.approvalRequests.delete(notification.params.approvalId);
+        settleMuseApprovalCard(
+          managed,
+          runtime,
+          notification.params.approvalId,
+          typeof notification.params.decision === "string" ? notification.params.decision : null,
+        );
+        return;
+      case "userInput/requested":
+        presentMuseQuestion(managed, runtime, notification.params);
+        return;
+      case "userInput/settled":
+        settleMuseQuestionCard(
+          managed,
+          runtime,
+          notification.params.userInputId,
+          typeof notification.params.outcome === "string" ? notification.params.outcome : null,
+        );
+        return;
+      case "session/nameChanged": {
+        // ADE's own rename coming back (`syncMuseSessionTitle`) changes nothing.
+        const name = notification.params.name;
+        if (typeof name === "string" && name.trim() === sessionService.get(managed.session.id)?.title?.trim()) return;
+        adoptRuntimeSessionTitle(managed, name, "muse_session_name_changed");
+        persistChatState(managed);
+        return;
+      }
+      case "session/modelChanged": {
+        const modelId = typeof notification.params.modelId === "string" ? notification.params.modelId : null;
+        runtime.appliedModelId = modelId ?? runtime.appliedModelId;
+        syncMuseSessionModel(managed, modelId);
+        persistChatState(managed);
+        return;
+      }
+      case "session/reasoningEffortChanged":
+        if (typeof notification.params.reasoningEffort === "string") {
+          managed.session.reasoningEffort = notification.params.reasoningEffort;
+          persistChatState(managed);
+        }
+        return;
+      case "session/approvalModeChanged": {
+        const mode = normalizePersistedMusePermissionMode(notification.params.mode);
+        if (mode) {
+          runtime.appliedApprovalMode = mode;
+          if (managed.session.interactionMode !== "plan") managed.session.musePermissionMode = mode;
+          persistChatState(managed);
+        }
+        return;
+      }
+      case "session/goalChanged": {
+        const goal = asRecord(notification.params.goal);
+        runtime.goal = goal;
+        if (goal) {
+          emitChatEvent(managed, {
+            type: "codex_goal_updated",
+            goal: {
+              objective: typeof goal.objective === "string" ? goal.objective : null,
+              // Muse sends any status string (the SDK types it `string`); the
+              // card names the ones ADE knows and shows the rest as active.
+              status: typeof goal.status === "string" ? goal.status : "active",
+            },
+            updateKind: "sync",
+            ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+          });
+        } else {
+          emitChatEvent(managed, { type: "codex_goal_cleared", ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}) });
+        }
+        return;
+      }
+      case "session/closed":
+        // Muse unloaded the session (host shutdown, another client deleted
+        // it). The host-exit handler owns the death case.
+        return;
+      case "view/gap": {
+        // Deliveries between `after` and `next` were dropped. Page that range
+        // (MSP `ViewPageResult.nextCursor`, at most 1000 events a page) until
+        // it reaches `next`, so nothing is silently lost.
+        const gap: ViewGapParams = notification.params;
+        void (async () => {
+          let cursor: string | null = gap.after;
+          for (let pages = 0; cursor && cursor !== gap.next && pages < 50; pages += 1) {
+            const page: ViewPageResult = await runtime.host.request<ViewPageResult>("view/page", {
+              sessionId: runtime.museSessionId,
+              limit: 1000,
+              cursor,
+            });
+            for (const event of page.events ?? []) {
+              const replayed = museNotificationFromWire(event);
+              handleMuseNotification(managed, runtime, replayed, { replay: true });
+              if (museViewCursorOf(replayed) === gap.next) return;
+            }
+            cursor = page.nextCursor;
+          }
+        })().catch((error) => {
+          logger.warn("agent_chat.muse_gap_fill_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+        });
+        return;
+      }
+      case "turn/retracted":
+        restoreMuseRetractedTurn(managed, runtime, notification.params);
+        return;
+      case "turn/foregroundCompleted": {
+        // The reply is done; Muse's own blocking checks (goal, verify
+        // reminders) hold the turn open until they settle.
+        const turnId = typeof notification.params.turnId === "string" ? notification.params.turnId : runtime.activeTurnId;
+        const agents = Array.isArray(notification.params.blockingAgents)
+          ? notification.params.blockingAgents.filter((agent): agent is string => typeof agent === "string" && agent.trim().length > 0)
+          : [];
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "working",
+          detail: agents.length ? `Finishing Muse's checks: ${agents.join(", ")}` : "Finishing Muse's checks",
+          ...(turnId ? { turnId } : {}),
+        });
+        return;
+      }
+      case "session/statusChanged":
+        // Turn events drive the busy state; this only clears a chat left
+        // "working" when Muse reports the session idle and nothing ADE knows
+        // of is still running (a `turn/completed` lost to a gap).
+        if (
+          notification.params.status === "idle"
+          && !runtime.busy
+          && runtime.activeTurnId === null
+          && runtime.hostStartedTurnIds.size === 0
+          && managed.session.status === "active"
+        ) {
+          markSessionIdleWithFreshCache(managed);
+          persistChatState(managed);
+        }
+        return;
+      case "session/modelRouteUnserved": {
+        const modelId = typeof notification.params.modelId === "string" ? notification.params.modelId : "this model";
+        const installed = typeof notification.params.installedProviderId === "string" ? notification.params.installedProviderId : "another provider";
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          severity: "warning",
+          message: `Muse's sign-in now uses ${installed}, which cannot run ${modelId}. Pick another model to keep going.`,
+          ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+        });
+        return;
+      }
+      case "session/viewHealthChanged": {
+        if (notification.params.health !== "unavailable") return;
+        const reason = typeof notification.params.noneReason === "string" ? notification.params.noneReason : null;
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "provider_health",
+          severity: "warning",
+          message: "Muse stopped streaming this chat's live activity. Close and reopen the chat to see new activity.",
+          ...(reason ? { detail: `Muse view health: ${reason}` } : {}),
+          ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+        });
+        return;
+      }
+      case "skill/changed":
+      case "plugin/changed":
+        // A skill or plugin landed or was switched off: re-read the slash menu.
+        void refreshMuseSlashCatalog(managed, runtime);
+        return;
+      case "recap/completed":
+        settleMuseRecap(managed, runtime, notification.params);
+        return;
+      default:
+        break;
+    }
+    if (notification.method === "item/started" || notification.method === "item/updated" || notification.method === "item/completed") {
+      const item: Item | undefined = notification.params.item;
+      trackMuseBackgroundItem(runtime, item);
+      if (item) trackMuseSubagentItem(runtime, item);
+    }
+    const events = mapMuseNotification(notification, {
+      activeTurnId: runtime.activeTurnId,
+      cwd: managed.laneWorktreePath,
+      modelLabel: managed.session.model,
+    }, runtime.mapperState);
+    for (const event of events) emitChatEvent(managed, event);
+    if (notification.method === "item/completed" && notification.params.item) {
+      void loadMuseFullOutput(managed, runtime, notification.params.item);
+    }
+  };
+
+  /** Subagent and workflow items, keyed by item id, with the ids their controls need. */
+  const trackMuseSubagentItem = (runtime: MuseRuntime, item: Item): void => {
+    const kind: "subagent" | "workflow" | null = item.kind === "subagent" ? "subagent" : item.kind === "workflow" ? "workflow" : null;
+    if (typeof item.itemId !== "string" || kind === null) return;
+    const previous = runtime.subagentItems.get(item.itemId);
+    const str = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null);
+    const children = Array.isArray(item.children)
+      ? item.children.flatMap((raw) => {
+          const child = asRecord(raw);
+          if (!child || typeof child.childId !== "string" || typeof child.attempt !== "number") return [];
+          return [{
+            childId: child.childId,
+            attempt: child.attempt,
+            status: typeof child.status === "string" ? child.status : "",
+            label: str(child.label),
+          }];
+        })
+      : previous?.children ?? [];
+    runtime.subagentItems.set(item.itemId, {
+      kind,
+      subagentId: str(item.subagentId) ?? previous?.subagentId ?? null,
+      childSessionId: str(item.childSessionId) ?? previous?.childSessionId ?? null,
+      workflowRunId: str(item.workflowRunId) ?? previous?.workflowRunId ?? null,
+      running: item.status === "inProgress",
+      paused: item.paused === true,
+      children,
+    });
+  };
+
+  /**
+   * Muse cuts a tool's transcript-visible output at its surface budget and
+   * keeps the full bytes behind `outputRef`. ADE has no "load full output"
+   * control, so a cut output up to 256 KiB is fetched once the item settles
+   * and the row is re-emitted (same item id) with the whole text.
+   */
+  const loadMuseFullOutput = async (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    item: Item,
+  ): Promise<void> => {
+    if (item.kind !== "toolCall" && item.kind !== "userShell") return;
+    if (item.truncated !== true || typeof item.itemId !== "string") return;
+    const ref = item.outputRef;
+    if (!ref || ref.availability !== "available" || typeof ref.id !== "string") return;
+    if (typeof ref.byteLen !== "number" || ref.byteLen <= 0 || ref.byteLen > MUSE_FULL_OUTPUT_MAX_BYTES) return;
+    try {
+      const page = await runtime.host.request<ItemReadOutputResult>("item/readOutput", {
+        sessionId: runtime.museSessionId,
+        itemId: item.itemId,
+        outputRef: ref.id,
+        lengthBytes: ref.byteLen,
+      });
+      if (managed.runtime !== runtime || page.encoding !== "utf8" || typeof page.content !== "string") return;
+      const full: Item = { ...item, visibleOutput: page.content, truncated: false };
+      const events = mapItemCompleted(full, {
+        activeTurnId: runtime.activeTurnId,
+        cwd: managed.laneWorktreePath,
+        modelLabel: managed.session.model,
+      }, runtime.mapperState).filter((event) => event.type === "command" || event.type === "tool_result");
+      for (const event of events) emitChatEvent(managed, event);
+    } catch (error) {
+      logger.debug?.("agent_chat.muse_read_output_failed", {
+        sessionId: managed.session.id,
+        error: describeMuseError(error),
+      });
+    }
+  };
+
+  /**
+   * Stop paired with a retract: when Muse took the message back before any
+   * reply landed (`turn/retracted`, outcome accepted), the message comes back
+   * as unprocessed, with Run next / Dismiss, the way a Codex steer the turn
+   * never read does. A declined retract left the message in the session.
+   */
+  const restoreMuseRetractedTurn = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    params: TurnRetractedParams,
+  ): void => {
+    if (params.outcome === "declined") return;
+    const turnId = typeof params.turnId === "string" ? params.turnId : null;
+    const sent = turnId ? runtime.sentTurnInputs.get(turnId) : undefined;
+    if (!turnId || !sent) return;
+    runtime.sentTurnInputs.delete(turnId);
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: sent.text,
+      ...(sent.displayText ? { displayText: sent.displayText } : {}),
+      attachments: sent.attachments,
+      ...(sent.contextAttachments.length ? { contextAttachments: sent.contextAttachments } : {}),
+      ...(sent.metadata ? { metadata: sent.metadata } : {}),
+      turnId,
+      steerId: turnId,
+      deliveryState: "unprocessed",
+    });
+    persistChatState(managed);
+  };
+
+  /** `recap/completed` (delivered to the requesting connection only): the recap, in the transcript. */
+  const settleMuseRecap = (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    params: RecapCompletedParams,
+  ): void => {
+    if (typeof params.commandId === "string" && params.commandId === runtime.pendingRecapCommandId) {
+      runtime.pendingRecapCommandId = null;
+    }
+    // Model output: plain text only, control characters dropped, bounded.
+    const clean = (value: unknown, max: number): string => (typeof value === "string"
+      ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, max)
+      : "");
+    const outcome = typeof params.outcome === "string" ? params.outcome : "completed";
+    if (outcome === "completed") {
+      const text = clean(params.text, 8000);
+      if (!text) return;
+      const title = clean(params.title, 120);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        message: title ? `Recap: ${title}\n${text}` : `Recap\n${text}`,
+      });
+      return;
+    }
+    if (outcome === "cancelled") return;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: outcome === "timedOut" ? "Muse's recap timed out." : "Muse could not write a recap.",
+      ...(typeof params.reason === "string" ? { detail: params.reason } : {}),
+    });
+  };
+
+  /** The account's Muse subscription window, for the header usage meter. Best effort. */
+  const readMuseSubscriptionUsage = async (managed: ManagedChatSession, runtime: MuseRuntime): Promise<void> => {
+    try {
+      const result = await runtime.host.request<{ usage?: unknown }>("usage/read", {});
+      if (result.usage) museQuota.record(result.usage);
+    } catch (error) {
+      logger.debug?.("agent_chat.muse_usage_read_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    }
+  };
+
+  /**
+   * After `session/resume`: Muse's still-running background tasks (so Stop
+   * and the background-work summary see them) and its open approvals and
+   * questions (so their cards come back after an ADE restart). Muse also
+   * re-issues the open requests itself; both paths dedupe on the approval /
+   * user-input id.
+   */
+  const restoreMuseResumedWork = async (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    args: { pendingRequests: number },
+  ): Promise<void> => {
+    try {
+      const listed = await runtime.host.request<{ tasks?: Array<{ taskId?: unknown }> }>("task/list", {
+        sessionId: runtime.museSessionId,
+      });
+      if (managed.runtime !== runtime) return;
+      for (const task of listed.tasks ?? []) {
+        if (typeof task.taskId === "string" && task.taskId) runtime.runningBackgroundItems.set(task.taskId, "background_task");
+      }
+    } catch (error) {
+      logger.debug?.("agent_chat.muse_task_list_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    }
+    if (!args.pendingRequests) return;
+    try {
+      const pending = await runtime.host.request<{
+        approvals?: ApprovalRequestParams[];
+        userInputs?: UserInputRequestParams[];
+      }>("approval/listPending", { sessionId: runtime.museSessionId });
+      if (managed.runtime !== runtime) return;
+      for (const approval of pending.approvals ?? []) presentMuseApproval(managed, runtime, approval);
+      for (const question of pending.userInputs ?? []) presentMuseQuestion(managed, runtime, question);
+    } catch (error) {
+      logger.warn("agent_chat.muse_list_pending_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    }
+  };
+
+  /**
+   * One start at a time per chat. Two callers (a send and a model refresh,
+   * say) racing through the binary check would each start a host and resume
+   * the same Muse session; the second would overwrite the first, which then
+   * keeps running with nobody holding it.
+   */
+  const museRuntimeStarts = new WeakMap<ManagedChatSession, Promise<MuseRuntime>>();
+  const ensureMuseRuntime = (managed: ManagedChatSession): Promise<MuseRuntime> => {
+    const inFlight = museRuntimeStarts.get(managed);
+    if (inFlight) return inFlight;
+    const start = ensureMuseRuntimeOnce(managed).finally(() => {
+      if (museRuntimeStarts.get(managed) === start) museRuntimeStarts.delete(managed);
+    });
+    museRuntimeStarts.set(managed, start);
+    return start;
+  };
+
+  const ensureMuseRuntimeOnce = async (managed: ManagedChatSession): Promise<MuseRuntime> => {
+    // The launch is resolved before any host starts: the binary path is part
+    // of the reuse key, so a running host is kept only when it matches.
+    const launch = await resolvePinnedMuseLaunch({
+      baseEnv: buildAgentRuntimeEnv(managed),
+      credentialId: managed.session.credentialId,
+      extraServeArgs: museTrustArgsFor(managed),
+    });
+    const hostKey = JSON.stringify([launch.musePath, managed.laneWorktreePath, launch.serveArgs, managed.session.credentialId ?? null]);
+
+    if (managed.runtime?.kind === "muse") {
+      const existing = managed.runtime;
+      if (existing.hostKey === hostKey && existing.host.alive && !existing.hostDied) {
+        await applyMuseSessionSettings(managed, existing);
+        return existing;
+      }
+      teardownRuntime(managed, "restart");
+    } else if (managed.runtime) {
+      teardownRuntime(managed, "handle_close");
+    }
+
+    runtimeBudget.enforce(managed.session.id);
+    const host = await startMuseHost({
+      musePath: launch.musePath,
+      cwd: managed.laneWorktreePath,
+      env: launch.env,
+      serveArgs: launch.serveArgs,
+      clientVersion: appVersion,
+      logger,
+    });
+    try {
+      const mcpServers = await museMcpServersFor(managed);
+      const config = host.grantedCapabilities.has("sessionMcp") && Object.keys(mcpServers).length
+        ? { mcpServers }
+        : undefined;
+      const desiredModel = museModelIdFor(managed.session);
+      const desiredApproval = resolveSessionMusePermissionMode(managed.session);
+      const persisted = readPersistedState(managed.session.id);
+      const resumeId = managed.session.museSessionId?.trim() || persisted?.museSessionId?.trim() || null;
+      let museSessionId: string | null = null;
+      let viewCursor: string | null = null;
+      let sessionModelId: string | null = null;
+      let resumedPendingRequests = 0;
+      let resumedSession = false;
+      if (resumeId) {
+        try {
+          const resumed = await host.command<{
+            session: { sessionId: string; modelId?: string | null };
+            viewCursor: string;
+            pendingRequests?: unknown[];
+          }>(
+            "session/resume",
+            { sessionId: resumeId, excludeItems: true, ...(config ? { config } : {}) },
+          );
+          museSessionId = resumed.session.sessionId;
+          viewCursor = resumed.viewCursor;
+          sessionModelId = resumed.session.modelId ?? null;
+          resumedPendingRequests = Array.isArray(resumed.pendingRequests) ? resumed.pendingRequests.length : 0;
+          resumedSession = true;
+        } catch (error) {
+          logger.warn("agent_chat.muse_resume_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+          // Only a session Muse no longer has is replaced. Anything else (in
+          // use by another client, a transient failure) fails this attempt
+          // and keeps the chat's pointer, so the conversation is not orphaned.
+          if (!isMuseErrorKind(error, "sessionNotFound")) throw error;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "Muse could not reopen this chat's session, so it started a new one. Earlier turns are summarized for it.",
+            detail: describeMuseError(error),
+          });
+          restageSectionsForNewProviderThread(managed);
+          refreshReconstructionContext(managed);
+        }
+      }
+      if (!museSessionId) {
+        const started = await host.command<{ session: { sessionId: string; modelId?: string | null }; viewCursor: string }>(
+          "session/start",
+          {
+            workspaceRoot: managed.laneWorktreePath,
+            modelId: desiredModel,
+            approvalMode: desiredApproval,
+            ...(config ? { config } : {}),
+          },
+        );
+        museSessionId = started.session.sessionId;
+        viewCursor = started.viewCursor;
+        sessionModelId = started.session.modelId ?? desiredModel;
+      }
+      if (managed.closed) throw new Error("Muse session closed during setup.");
+
+      // Subscribe before the runtime exists. The handlers read `runtime` only
+      // when a notification arrives, and nothing can arrive before this
+      // synchronous block ends, so no event is lost in between.
+      const unsubscribeSession = host.subscribe(museSessionId, (notification) => {
+        handleMuseNotification(managed, runtime, notification);
+      });
+      // The subscription window has no session id: it is the signed-in
+      // account's, so it feeds the header usage meter, not this chat.
+      const unsubscribeHost = host.onHostNotification((notification) => {
+        if (notification.method === "usage/changed") museQuota.record(notification.params);
+      });
+      const unsubscribeExit = host.onExit((exit) => {
+        if (managed.runtime !== runtime) return;
+        runtime.hostDied = true;
+        for (const settle of runtime.turnWaiters.values()) {
+          settle({ terminal: "hostDied", errorMessage: museNoticeForHostExit(exit) });
+        }
+        runtime.turnWaiters.clear();
+        // Turns Muse started on its own have no waiter; close them here or the
+        // chat reads as working forever.
+        for (const turnId of runtime.hostStartedTurnIds) {
+          emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+          emitChatEvent(managed, museDoneEvent({
+            turnId,
+            terminal: "failed",
+            model: managed.session.model,
+            modelId: managed.session.modelId,
+          }));
+        }
+        const hadHostTurns = runtime.hostStartedTurnIds.size > 0;
+        runtime.hostStartedTurnIds.clear();
+        if (hadHostTurns && !runtime.busy) {
+          markSessionIdleWithFreshCache(managed);
+          persistChatState(managed);
+        }
+        cancelPendingInputsFrom(managed, "muse");
+        if (!runtime.busy && exit.kind !== "clean") {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: exit.kind === "auth" ? "auth" : "provider_health",
+            severity: "warning",
+            message: museNoticeForHostExit(exit),
+          });
+        }
+      });
+      const runtime: MuseRuntime = {
+        kind: "muse",
+        host,
+        hostKey,
+        museSessionId,
+        unsubscribe: () => {
+          unsubscribeSession();
+          unsubscribeHost();
+          unsubscribeExit();
+        },
+        activeTurnId: null,
+        busy: false,
+        interrupted: false,
+        hostDied: false,
+        pendingSteers: [],
+        turnWaiters: new Map(),
+        openApprovalCards: new Map(),
+        approvalRequests: new Map(),
+        openQuestionCards: new Map(),
+        settledApprovalIds: new Set(),
+        settledQuestionIds: new Set(),
+        mapperState: createMuseEventMapperState(),
+        appliedModelId: sessionModelId,
+        appliedApprovalMode: resumedSession ? null : desiredApproval,
+        viewCursor,
+        goal: null,
+        skills: [],
+        runningBackgroundItems: new Map(),
+        instructionsDelivered: false,
+        hostStartedTurnIds: new Set(),
+        subagentItems: new Map(),
+        sentTurnInputs: new Map(),
+        pendingRecapCommandId: null,
+      };
+      managed.runtime = runtime;
+      managed.session.museSessionId = museSessionId;
+      syncMuseSessionModel(managed, sessionModelId);
+      await applyMuseSessionSettings(managed, runtime);
+      void refreshMuseSlashCatalog(managed, runtime);
+      void readMuseSubscriptionUsage(managed, runtime);
+      if (resumedSession) {
+        void restoreMuseResumedWork(managed, runtime, { pendingRequests: resumedPendingRequests });
+      }
+      persistChatState(managed);
+      return runtime;
+    } catch (error) {
+      if (managed.runtime?.kind !== "muse" || managed.runtime.host !== host) {
+        await host.close().catch(() => undefined);
+        closeHttpMcpServers(managed);
+      }
+      throw error;
+    }
+  };
+
+  /** Push the chat's model and approval mode to Muse when they differ from what it has. */
+  const applyMuseSessionSettings = async (managed: ManagedChatSession, runtime: MuseRuntime): Promise<void> => {
+    const desiredModel = museModelIdFor(managed.session);
+    if (desiredModel && desiredModel !== runtime.appliedModelId) {
+      try {
+        // MSP `SessionSetModelParams.model` is a `ModelSelection`, not a bare id.
+        await runtime.host.command("session/setModel", { sessionId: runtime.museSessionId, model: { modelId: desiredModel } });
+        runtime.appliedModelId = desiredModel;
+      } catch (error) {
+        // Not marked applied: the next turn tries again rather than running
+        // on a model the chat only believes it switched to.
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "warning",
+          message: `Muse did not switch to ${desiredModel}.`,
+          detail: describeMuseError(error),
+        });
+      }
+    }
+    const desiredApproval = resolveSessionMusePermissionMode(managed.session);
+    if (desiredApproval !== runtime.appliedApprovalMode) {
+      try {
+        await runtime.host.command("session/setApprovalMode", { sessionId: runtime.museSessionId, mode: desiredApproval });
+        runtime.appliedApprovalMode = desiredApproval;
+      } catch (error) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "warning",
+          message: "Muse kept its previous permission mode.",
+          detail: describeMuseError(error),
+        });
+      }
+    }
+  };
+
+  /** Muse's skills, for the composer's slash menu. Best effort; a host without skills lists nothing. */
+  const refreshMuseSlashCatalog = async (managed: ManagedChatSession, runtime: MuseRuntime): Promise<void> => {
+    try {
+      const result = await runtime.host.request<{ skills?: Array<Record<string, unknown>> }>("skill/list", {
+        sessionId: runtime.museSessionId,
+      });
+      runtime.skills = (result.skills ?? [])
+        .map((skill) => ({
+          name: String(skill.selector ?? "").replace(/^\//, ""),
+          description: String(skill.description ?? skill.displayName ?? ""),
+          ...(typeof skill.argumentHint === "string" ? { argumentHint: skill.argumentHint } : {}),
+        }))
+        .filter((skill) => skill.name.length > 0);
+    } catch (error) {
+      logger.debug?.("agent_chat.muse_skill_list_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    }
+  };
+
+  const runMuseTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      laneDirectiveKey?: string | null;
+      onDispatched?: () => void;
+      onBackendDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const setupTurnId = randomUUID();
+    const doneModel = () => ({
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    let runtime: MuseRuntime;
+    try {
+      runtime = await ensureMuseRuntime(managed);
+      const validation = validateSessionReadyForTurn(managed);
+      if (!validation.ready) throw new Error(validation.reason);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const message = describeMuseError(error);
+      reportProviderRuntimeFailure("muse", message);
+      emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
+      emitChatEvent(managed, { type: "done", turnId: setupTurnId, status: "failed", ...doneModel() });
+      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      persistChatState(managed);
+      return;
+    }
+
+    // MSP derives the turn id from the command id, so ADE mints it and uses
+    // the same id for its own turn: every item Muse streams already carries it.
+    const turnId = runtime.host.mintCommandId();
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    resetMuseTurnState(runtime.mapperState);
+    setSessionActive(managed);
+
+    const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    // The turn id doubles as the message's steer id, so a retracted turn
+    // (`turn/retracted`) can turn this same bubble into an unprocessed one.
+    emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      turnId,
+      steerId: turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    runtime.sentTurnInputs.set(turnId, {
+      text: userText,
+      ...(displayText !== userText ? { displayText } : {}),
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      ...(args.metadata ? { metadata: args.metadata } : {}),
+    });
+    // Only the latest few turns can still be retracted; keep the map small.
+    while (runtime.sentTurnInputs.size > 8) {
+      const oldest = runtime.sentTurnInputs.keys().next().value;
+      if (oldest === undefined) break;
+      runtime.sentTurnInputs.delete(oldest);
+    }
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+
+    const outcomePromise = new Promise<MuseTurnOutcome>((resolve) => {
+      runtime.turnWaiters.set(turnId, resolve);
+    });
+    try {
+      let prompt = args.promptText;
+      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (pendingContext) prompt = `${pendingContext}\n\n${prompt}`;
+      if (!runtime.instructionsDelivered) {
+        // MSP has no system-prompt field: ADE's framing (or a personal chat's
+        // own prompt plus host instructions) rides the session's first turn.
+        const framing = isPersonalSession(managed.session)
+          ? resolvePersonalPromptFor(
+              managed.session,
+              managed.laneWorktreePath,
+              buildSessionActivityGuidance(managed.session, true),
+            )
+          : null;
+        if (framing?.trim()) prompt = `${framing}\n\n## User Request\n${prompt}`;
+      }
+      // MSP has no instruction channel, so ADE's lane guidance rides the first
+      // turn this runtime sends; Muse keeps it in the session from then on.
+      if (!isPersonalSession(managed.session) && !runtime.instructionsDelivered) {
+        const guidance = buildAdeGuidanceForLane(
+          managed.laneWorktreePath,
+          managed.session,
+          spawnSelfReportOpts(managed.session),
+        );
+        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
+      }
+      // A `/shortcut args` that names one of Muse's skills is sent as a skill
+      // part, which Muse resolves and expands; anything else is prompt text.
+      const skillMatch = userText.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
+      const skill = skillMatch ? runtime.skills.find((entry) => entry.name === skillMatch[1]) : undefined;
+      const input = skill
+        ? [{ type: "skill" as const, selector: skill.name, ...(skillMatch?.[2]?.trim() ? { arguments: skillMatch[2].trim() } : {}) }]
+        : await buildMuseTurnInput({
+            promptText: prompt,
+            attachments: resolvedAttachments,
+            readAttachmentBytes: readResolvedAttachmentBytes,
+            uploadVideo: (attachment, mediaType) => uploadMuseVideo(managed, runtime, attachment, mediaType),
+          });
+      const effort = normalizeMuseReasoningEffort(managed.session.reasoningEffort);
+      await runtime.host.command("turn/start", {
+        sessionId: runtime.museSessionId,
+        input,
+        displayText: userText,
+        ifBusy: "queue",
+        ...(effort ? { reasoningEffort: effort } : {}),
+      }, { commandId: turnId });
+      runtime.instructionsDelivered = true;
+      // A Stop that landed while `turn/start` was in flight reached Muse before
+      // the turn existed (MSP: an interrupt is admitted, not guaranteed).
+      // Send it again now that Muse has the turn.
+      if (runtime.interrupted && runtime.host.alive) {
+        void runtime.host.command("turn/interrupt", { sessionId: runtime.museSessionId, turnId }).catch(() => undefined);
+      }
+      args.onBackendDispatched?.();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      persistChatState(managed);
+
+      const outcome = await outcomePromise;
+      markSessionIdleWithFreshCache(managed);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      const done = museDoneEvent({
+        turnId,
+        terminal: outcome.terminal,
+        interrupted: runtime.interrupted,
+        model: managed.session.model,
+        modelId: managed.session.modelId,
+        servedModel: runtime.mapperState.servedModelId,
+        usage: museDoneUsage(runtime, outcome.usage ?? null),
+      });
+      if (done.status === "completed") {
+        reportProviderRuntimeReady("muse");
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        emitChatEvent(managed, done);
+      } else if (done.status === "interrupted") {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, done);
+      } else {
+        const message = outcome.errorMessage ?? outcome.reason ?? "Muse ended the turn with an error.";
+        reportProviderRuntimeFailure("muse", message);
+        // A plain error, not `presentChatFailure`: that card is for a failure
+        // a process owns (its stderr tail leads it). A turn Muse ended is not one.
+        emitChatEvent(managed, {
+          type: "error",
+          message,
+          turnId,
+          ...(outcome.errorKind ? { detail: `Muse error kind: ${outcome.errorKind}` } : {}),
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, done);
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      }
+      persistChatState(managed);
+    } catch (error) {
+      runtime.turnWaiters.delete(turnId);
+      markSessionIdleWithFreshCache(managed);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      if (runtime.interrupted) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "interrupted", ...doneModel() });
+      } else {
+        const message = describeMuseError(error);
+        reportProviderRuntimeFailure("muse", message);
+        emitChatEvent(managed, { type: "error", message, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel() });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      }
+      persistChatState(managed);
+    } finally {
+      if (managed.runtime === runtime) {
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.interrupted = false;
+      }
+      // An approval or question that outlives its turn blocks Muse behind a
+      // card the user can no longer reach.
+      cancelPendingInputsFrom(managed, "muse");
+      if (managed.runtime === runtime && runtime.hostDied) {
+        teardownRuntime(managed, "restart");
+      }
+    }
+
+    if (!managed.closed && managed.runtime === runtime && runtime.pendingSteers.length) {
+      await deliverNextQueuedSteer(managed, runtime).catch((error) => {
+        logger.warn("agent_chat.muse_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
+
+  /** Stop the running Muse turn. `turn/completed` (cancelled) settles it. */
+  const interruptMuseTurn = async (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    options: { retract?: boolean } = {},
+  ): Promise<void> => {
+    runtime.interrupted = true;
+    cancelPendingInputsFrom(managed, "muse");
+    if (!runtime.host.alive) return;
+    await runtime.host.command("turn/interrupt", {
+      sessionId: runtime.museSessionId,
+      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+      // A user's stop before Muse replied takes the message back
+      // (`turn/retracted`), and ADE offers it again rather than leaving an
+      // unanswered bubble. Closing a chat never retracts.
+      ...(options.retract ? { retract: true } : {}),
+    }).catch((error) => {
+      logger.warn("agent_chat.muse_interrupt_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+    });
+  };
+
+  /**
+   * Store one video for a `video` turn part (`media/upload`, chunked). Null
+   * (the video then goes as a path hint) when it is too large or the upload
+   * fails; the failure is logged, never fatal to the turn.
+   */
+  const uploadMuseVideo = async (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    attachment: ResolvedAgentChatFileRef,
+    mediaType: MuseVideoMediaType,
+  ): Promise<string | null> => {
+    try {
+      const size = fs.statSync(attachment._resolvedPath).size;
+      if (size <= 0 || size > MUSE_MEDIA_UPLOAD_MAX_BYTES) return null;
+      const bytes = await readResolvedAttachmentBytes(attachment);
+      const uploadId = runtime.host.mintCommandId();
+      for (const chunk of museMediaUploadChunks({ bytes, uploadId, sessionId: runtime.museSessionId, mediaType })) {
+        await runtime.host.command("media/upload", chunk);
+      }
+      return uploadId;
+    } catch (error) {
+      logger.warn("agent_chat.muse_media_upload_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+      return null;
+    }
+  };
+
+  /** Fold a message into the running Muse turn (`turn/steer`). */
+  const steerMuseTurn = async (
+    managed: ManagedChatSession,
+    runtime: MuseRuntime,
+    args: { promptText: string; resolvedAttachments: ResolvedAgentChatFileRef[] },
+  ): Promise<void> => {
+    if (!runtime.activeTurnId) throw new Error("No Muse turn is running.");
+    const input = await buildMuseTurnInput({
+      promptText: args.promptText,
+      attachments: args.resolvedAttachments,
+      readAttachmentBytes: readResolvedAttachmentBytes,
+      uploadVideo: (attachment, mediaType) => uploadMuseVideo(managed, runtime, attachment, mediaType),
+    });
+    const effort = normalizeMuseReasoningEffort(managed.session.reasoningEffort);
+    await runtime.host.command("turn/steer", {
+      sessionId: runtime.museSessionId,
+      expectedTurnId: runtime.activeTurnId,
+      input,
+      ...(effort ? { reasoningEffort: effort } : {}),
+    });
+  };
+
+  /**
+   * Muse's own commands that are not model turns: `/compact`, `/goal …`,
+   * `/recap`, `/tasks stop`, and `!cmd` (a user shell command Muse runs and
+   * records in the transcript). Returns false for anything else, which is then
+   * sent as a normal turn — including a skill's `/shortcut`, which Muse
+   * expands itself.
+   */
+  const runMuseControlCommand = async (
+    managed: ManagedChatSession,
+    text: string,
+    callbacks: { onDispatched?: () => void; onBackendDispatched?: () => void },
+  ): Promise<boolean> => {
+    const command = parseMuseControlCommand(text);
+    if (!command) return false;
+    const runtime = await ensureMuseRuntime(managed);
+    const sessionId = runtime.museSessionId;
+    const notice = (message: string, severity: "info" | "warning" = "info") => emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: severity === "info" ? "info" : "warning",
+      severity,
+      message,
+    });
+    callbacks.onDispatched?.();
+    try {
+      if (command.kind === "compact") {
+        if (runtime.busy) throw new Error("Wait for the current turn to finish before compacting.");
+        const result = await runtime.host.command<{ status?: string; reason?: string }>("session/compact", { sessionId });
+        if (result.reason) notice(`Muse did not compact: ${result.reason}`, "warning");
+      } else if (command.kind === "goal") {
+        const arg = command.arg;
+        const verb = arg.toLowerCase();
+        if (!arg) {
+          const current = runtime.goal;
+          notice(current && typeof current.objective === "string"
+            ? `Goal: ${current.objective} (${String(current.status ?? "active")}, ${String(current.percentComplete ?? 0)}%)`
+            : "No goal is set. Use /goal <objective> to set one.");
+        } else if (verb === "clear") {
+          await runtime.host.command("goal/clear", { sessionId });
+        } else if (verb === "pause") {
+          await runtime.host.command("goal/pause", { sessionId });
+        } else if (verb === "resume") {
+          await runtime.host.command("goal/resume", { sessionId });
+        } else {
+          await runtime.host.command(runtime.goal ? "goal/edit" : "goal/set", { sessionId, objective: arg });
+        }
+      } else if (command.kind === "recap") {
+        // The command id is the recap's correlation key: `recap/completed`
+        // settles it, and Stop cancels it while it runs.
+        const commandId = runtime.host.mintCommandId();
+        runtime.pendingRecapCommandId = commandId;
+        try {
+          await runtime.host.command("recap/request", { sessionId }, { commandId });
+        } catch (error) {
+          runtime.pendingRecapCommandId = null;
+          throw error;
+        }
+        notice("Muse is writing a recap of this session.");
+      } else if (command.kind === "stopTasks") {
+        await runtime.host.command("task/stopAll", { sessionId });
+        notice("Stopped Muse's background tasks.");
+      } else if (command.kind === "shell") {
+        if (!runtime.host.grantedCapabilities.has("userShell")) {
+          throw new Error("This Muse host does not run user shell commands.");
+        }
+        await runtime.host.command("session/userShell", { sessionId, commandText: command.commandText });
+      }
+      callbacks.onBackendDispatched?.();
+    } catch (error) {
+      notice(describeMuseError(error), "warning");
+      callbacks.onBackendDispatched?.();
+    }
+    persistChatState(managed);
+    return true;
+  };
+
   const runPiTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -32910,6 +34625,9 @@ export function createAgentChatService(args: {
     }
     if (runtimeKind === "acp" || isAcpChatProvider(managed.session.provider)) {
       return runAcpTurn(managed, args);
+    }
+    if (runtimeKind === "muse" || managed.session.provider === "muse") {
+      return runMuseTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
@@ -34538,6 +36256,194 @@ export function createAgentChatService(args: {
     return { sessionId, taskId, stopped: false, reason: result.reason };
   };
 
+  /** A Muse subagent or workflow row by the task id the transcript shows (the item id) or its subagent id. */
+  const resolveMuseSubagentRef = (runtime: MuseRuntime, id: string): [string, MuseSubagentItemRef] | null => {
+    const direct = runtime.subagentItems.get(id);
+    if (direct) return [id, direct];
+    for (const [itemId, entry] of runtime.subagentItems) {
+      if (entry.subagentId === id) return [itemId, entry];
+    }
+    return null;
+  };
+
+  const liveMuseRuntimeFor = (sessionId: string): { managed: ManagedChatSession; runtime: MuseRuntime } => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider !== "muse") {
+      throw unsupportedError(`Subagent messages and controls are available for Muse chats. This chat runs on '${managed.session.provider}'.`);
+    }
+    const runtime = managed.runtime;
+    if (runtime?.kind !== "muse" || !runtime.host.alive) {
+      throw new Error("This Muse chat is not running. Send a message to start it, then try again.");
+    }
+    return { managed, runtime };
+  };
+
+  /** `subagent/sendMessage` to a running subagent, `subagent/followupTask` to one that finished. */
+  const messageSubagent = async (
+    args: AgentChatMessageSubagentArgs,
+  ): Promise<AgentChatMessageSubagentResult> => {
+    const taskId = args.taskId.trim();
+    const text = args.text.trim();
+    if (!taskId) throw new Error("A subagent task id is required.");
+    if (!text) throw new Error("The message is empty.");
+    const { runtime } = liveMuseRuntimeFor(args.sessionId);
+    const found = resolveMuseSubagentRef(runtime, taskId);
+    const ref = found?.[1];
+    if (!ref || ref.kind !== "subagent" || !ref.subagentId) {
+      return { sessionId: args.sessionId, taskId, delivered: false, reason: "That row is not a Muse subagent this chat can message." };
+    }
+    const mode = ref.running ? "message" as const : "followup" as const;
+    try {
+      await runtime.host.command(mode === "message" ? "subagent/sendMessage" : "subagent/followupTask", {
+        sessionId: runtime.museSessionId,
+        subagentId: ref.subagentId,
+        body: text,
+      });
+    } catch (error) {
+      return { sessionId: args.sessionId, taskId, delivered: false, mode, reason: describeMuseError(error) };
+    }
+    return { sessionId: args.sessionId, taskId, delivered: true, mode };
+  };
+
+  /** Subagent interrupt/resume/reopen/close and workflow pause/resume/child skip-retry. */
+  const controlSubagent = async (
+    args: AgentChatControlSubagentArgs,
+  ): Promise<AgentChatControlSubagentResult> => {
+    const taskId = args.taskId.trim();
+    if (!taskId) throw new Error("A subagent task id is required.");
+    const { runtime } = liveMuseRuntimeFor(args.sessionId);
+    const ref = resolveMuseSubagentRef(runtime, taskId)?.[1];
+    const refuse = (reason: string): AgentChatControlSubagentResult => ({ sessionId: args.sessionId, taskId, applied: false, reason });
+    if (!ref) return refuse("That row is not a Muse subagent or workflow in this chat.");
+    const request = museSubagentControlRequest(ref, args, runtime.museSessionId);
+    if ("refuse" in request) return refuse(request.refuse);
+    try {
+      await runtime.host.command(request.method, request.params);
+    } catch (error) {
+      return refuse(describeMuseError(error));
+    }
+    return { sessionId: args.sessionId, taskId, applied: true };
+  };
+
+  /**
+   * Run `fn` against a Muse host: the chat's live one, else a short-lived
+   * read-only host in the chat's worktree (`session/read`, `view/page` and
+   * `item/readOutput` work on sessions no host has loaded).
+   */
+  const withMuseReadHost = async <T>(managed: ManagedChatSession, fn: (host: MuseHost) => Promise<T>): Promise<T> => {
+    const live = managed.runtime?.kind === "muse" && managed.runtime.host.alive ? managed.runtime.host : null;
+    if (live) return await fn(live);
+    // A read never downloads the binary: an installed build, or the error below.
+    const host = await startPinnedMuseHost({
+      baseEnv: buildAgentRuntimeEnv(managed),
+      credentialId: managed.session.credentialId,
+      binary: "installed",
+      noSessionLog: true,
+      extraServeArgs: museTrustArgsFor(managed),
+      cwd: managed.laneWorktreePath,
+      clientVersion: appVersion,
+      logger,
+    });
+    try {
+      return await fn(host);
+    } finally {
+      await host.close();
+    }
+  };
+
+  /**
+   * A Muse subagent's own transcript: its child session (`childSessionId` on
+   * the subagent item), read without attaching. Falls back to the
+   * `subagent_started` event's recorded child session when the runtime has
+   * restarted since, and to `subagent/readResult` when the child session holds
+   * nothing readable.
+   */
+  const readMuseSubagentTranscript = async (
+    managed: ManagedChatSession,
+    args: { agentId: string; taskId: string | null; signal?: AbortSignal },
+  ): Promise<AgentChatSubagentTranscriptMessage[]> => {
+    const runtime = managed.runtime?.kind === "muse" ? managed.runtime : null;
+    const found = runtime
+      ? resolveMuseSubagentRef(runtime, args.taskId ?? args.agentId) ?? resolveMuseSubagentRef(runtime, args.agentId)
+      : null;
+    let childSessionId = found?.[1].childSessionId ?? null;
+    if (!childSessionId) {
+      const ids = new Set([args.agentId, args.taskId].filter((id): id is string => Boolean(id)));
+      for (const envelope of eventHistoryBySession.get(managed.session.id) ?? []) {
+        const event = envelope.event;
+        if (event.type !== "subagent_started" || !event.providerSessionId) continue;
+        if (ids.has(event.taskId) || (event.agentId && ids.has(event.agentId))) childSessionId = event.providerSessionId;
+      }
+    }
+    const readChildItems = async (child: string): Promise<Item[]> => {
+      try {
+        return await withMuseReadHost(managed, async (host) => {
+          const read = await host.request<SessionReadResult>("session/read", {
+            sessionId: child,
+            excludeItems: false,
+          });
+          const inline = read.history?.items;
+          if (Array.isArray(inline)) return inline;
+          // Not served inline (snapshot or budget): page the child's view.
+          const byId = new Map<string, Item>();
+          let cursor: string | null = null;
+          for (let page = 0; page < 20 && !args.signal?.aborted; page += 1) {
+            const result: ViewPageResult = await host.request<ViewPageResult>(
+              "view/page",
+              { sessionId: child, limit: 1000, ...(cursor ? { cursor } : {}) },
+            );
+            for (const event of result.events ?? []) {
+              const notification = museNotificationFromWire(event);
+              if (!isMuseKnownNotification(notification) || notification.method !== "item/completed") continue;
+              const item = notification.params.item;
+              if (typeof item?.itemId === "string") byId.set(item.itemId, item);
+            }
+            cursor = result.nextCursor ?? null;
+            if (!cursor) break;
+          }
+          return [...byId.values()];
+        });
+      } catch (error) {
+        // A child Muse cannot serve (not indexed, already pruned): the
+        // subagent's result below is what is left to show.
+        logger.debug?.("agent_chat.muse_subagent_session_read_failed", {
+          sessionId: managed.session.id,
+          childSessionId: child,
+          error: describeMuseError(error),
+        });
+        return [];
+      }
+    };
+    const items = childSessionId ? await readChildItems(childSessionId) : [];
+    const transcript = mapMuseItemsToTranscript(childSessionId ?? managed.session.id, items, managed.laneWorktreePath);
+    const subagentId = found?.[1].subagentId ?? null;
+    if (transcript.length || !runtime?.host.alive || !subagentId) return transcript;
+    try {
+      const read = await runtime.host.command<{ result?: { summary?: unknown; text?: unknown } }>("subagent/readResult", {
+        sessionId: runtime.museSessionId,
+        subagentId,
+      });
+      const text = typeof read.result?.text === "string" && read.result.text.trim()
+        ? read.result.text
+        : typeof read.result?.summary === "string" ? read.result.summary : "";
+      if (!text.trim()) return transcript;
+      return [{
+        type: "assistant",
+        uuid: `${subagentId}:result`,
+        sessionId: managed.session.id,
+        parentToolUseId: null,
+        message: { type: "text", text, itemId: `${subagentId}:result` },
+        text,
+      }];
+    } catch (error) {
+      logger.debug?.("agent_chat.muse_subagent_read_result_failed", {
+        sessionId: managed.session.id,
+        error: describeMuseError(error),
+      });
+      return transcript;
+    }
+  };
+
   const stopTask = async (
     { sessionId, taskId }: AgentChatStopTaskArgs,
   ): Promise<AgentChatStopTaskResult> => {
@@ -34549,12 +36455,37 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "opencode") {
       return stopOpenCodeTask(managed, managed.runtime, sessionId, id);
     }
+    if (managed.runtime?.kind === "muse") {
+      // The transcript's task id is the MSP item id. A subagent stops with
+      // `subagent/stop` (keyed by its subagent id), a workflow run with
+      // `workflow/cancel` (by its run id), and a background tool task with
+      // `task/stop` (the tool call's item id is its task id).
+      const runtime = managed.runtime;
+      const ref = resolveMuseSubagentRef(runtime, id)?.[1];
+      try {
+        if (ref?.kind === "workflow" && ref.workflowRunId) {
+          await runtime.host.command("workflow/cancel", { sessionId: runtime.museSessionId, workflowRunId: ref.workflowRunId });
+        } else if (ref?.kind === "subagent" && ref.subagentId) {
+          await runtime.host.command("subagent/stop", {
+            sessionId: runtime.museSessionId,
+            subagentId: ref.subagentId,
+            reason: "Stopped from ADE",
+          });
+        } else {
+          await runtime.host.command("task/stop", { sessionId: runtime.museSessionId, taskId: id });
+        }
+      } catch (error) {
+        return { sessionId, taskId: id, stopped: false, reason: describeMuseError(error) };
+      }
+      runtime.runningBackgroundItems.delete(id);
+      return { sessionId, taskId: id, stopped: true };
+    }
     if (managed.runtime?.kind !== "claude") {
       return {
         sessionId,
         taskId: id,
         stopped: false,
-        reason: "Per-task stop is only available for Claude and OpenCode chats.",
+        reason: "Per-task stop is only available for Claude, OpenCode and Muse chats.",
       };
     }
     const runtime = managed.runtime;
@@ -40526,7 +42457,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime | MuseRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
@@ -42422,6 +44353,8 @@ export function createAgentChatService(args: {
     piSessionId: requestedPiSessionId,
     piSessionFile: requestedPiSessionFile,
     droidPermissionMode: requestedDroidPermissionModeArg,
+    musePermissionMode: requestedMusePermissionModeArg,
+    museSessionId: requestedMuseSessionId,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
     mcpServers: requestedMcpServers,
@@ -42520,6 +44453,8 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : provider === "droid"
               ? DEFAULT_DROID_MODEL
+              : provider === "muse"
+                ? DEFAULT_MUSE_MODEL
               : provider === "pi"
                 ? getDynamicPiModelDescriptors()[0]?.id ?? "pi/default"
                 : "");
@@ -42716,7 +44651,7 @@ export function createAgentChatService(args: {
         ?? resolvedDescriptor?.defaultReasoningEffort
         ?? DEFAULT_REASONING_EFFORT
       : requestedEffort;
-    const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid" || effectiveProvider === "pi"
+    const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid" || effectiveProvider === "pi" || effectiveProvider === "muse"
       ? validateRuntimeReasoningEffortForDescriptor(rawEffort, resolvedDescriptor)
       : validateReasoningEffortForDescriptor(
           effectiveProvider === "claude" ? "claude" : "codex",
@@ -42822,6 +44757,9 @@ export function createAgentChatService(args: {
       : requestedCodexSandbox ?? (policyDrivesPermissions ? "workspace-write" : undefined);
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
+    const requestedMusePermissionMode = permissionsPinned
+      ? undefined
+      : normalizePersistedMusePermissionMode(requestedMusePermissionModeArg);
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
@@ -42898,6 +44836,15 @@ export function createAgentChatService(args: {
       if (effectiveProvider === "pi") {
         return {
           permissionMode: effectivePermissionMode ?? chatConfig.piPermissionMode,
+        };
+      }
+      if (effectiveProvider === "muse") {
+        const museMode = requestedMusePermissionMode
+          ?? musePermissionModeFromLegacyPermissionMode(effectivePermissionMode)
+          ?? "onRequest";
+        return {
+          interactionMode: effectivePermissionMode === "plan" ? "plan" as const : "default" as const,
+          musePermissionMode: museMode,
         };
       }
       // An ACP chat's own mode outranks the generic one it would otherwise be
@@ -42998,6 +44945,10 @@ export function createAgentChatService(args: {
           : {}),
         ...(effectiveProvider === "pi" && requestedPiSessionFile
           ? { piSessionFile: requestedPiSessionFile }
+          : {}),
+        // An imported Muse CLI session: the first turn resumes it over MSP.
+        ...(effectiveProvider === "muse" && requestedMuseSessionId?.trim()
+          ? { museSessionId: requestedMuseSessionId.trim() }
           : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(effectiveProvider === "devin" && normalizeDevinCloudConfig(requestedDevinCloud)
@@ -43485,6 +45436,25 @@ export function createAgentChatService(args: {
       }
       sourceDroidForkSessionId = newSessionId;
     }
+    let sourceMuseForkSessionId: string | null = null;
+    if (nativeFork && sourceProvider === "muse") {
+      let museRuntime: MuseRuntime;
+      try {
+        museRuntime = await ensureMuseRuntime(managed);
+      } catch {
+        throw new Error("Unable to start the Muse session to fork this chat. Use a brief handoff instead.");
+      }
+      if (museRuntime.busy) {
+        throw new Error("Wait for the current Muse turn to finish before forking this chat.");
+      }
+      const forked = await museRuntime.host.command<{ session?: { sessionId?: string } }>("session/fork", {
+        sessionId: museRuntime.museSessionId,
+        excludeItems: true,
+      });
+      const newSessionId = forked.session?.sessionId?.trim() ?? "";
+      if (!newSessionId) throw new Error("Muse fork did not return a new session id.");
+      sourceMuseForkSessionId = newSessionId;
+    }
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
@@ -43594,6 +45564,10 @@ export function createAgentChatService(args: {
       if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
         seedForkedProviderPointer(createdManaged, { droidSdkSessionId: sourceDroidForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
+      }
+      if (createdManaged.session.provider === "muse" && sourceMuseForkSessionId) {
+        seedForkedProviderPointer(createdManaged, { museSessionId: sourceMuseForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:muse:${created.id}`);
       }
       if (createdManaged.session.provider === "cursor") {
         // No provider-side pointer to seed: a Cursor thread cannot be resumed
@@ -44091,6 +46065,9 @@ export function createAgentChatService(args: {
     if (provider === "droid") {
       throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
     }
+    if (provider === "muse") {
+      throw new Error("Muse keeps its sessions on this machine, so a full-history fork cannot move to another machine yet. Use a brief handoff instead.");
+    }
     if (provider === "claude") {
       const sdkSessionId = ensureClaudeSessionRuntime(managed).sdkSessionId?.trim() ?? "";
       if (!sdkSessionId) {
@@ -44233,6 +46210,9 @@ export function createAgentChatService(args: {
       if (!providerSupportsCrossMachineHandoffFork(managed.session.provider)) {
         if (managed.session.provider === "droid") {
           throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
+        }
+        if (managed.session.provider === "muse") {
+          throw new Error("Muse keeps its sessions on this machine, so a full-history fork cannot move to another machine yet. Use a brief handoff instead.");
         }
         // Cursor forks locally, so "can't fork history" would contradict the
         // Fork tab the user just used.
@@ -45866,6 +47846,7 @@ export function createAgentChatService(args: {
     "droid",
     "opencode",
     "pi",
+    "muse",
     "copilot",
   ]);
 
@@ -46519,6 +48500,8 @@ export function createAgentChatService(args: {
         seedForkedProviderPointer(managed, { providerSessionId: externalSessionId });
       } else if (provider === "pi") {
         seedForkedProviderPointer(managed, { piSessionId: externalSessionId });
+      } else if (provider === "muse") {
+        seedForkedProviderPointer(managed, { museSessionId: externalSessionId });
       } else if (provider === "copilot") {
         seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
       }
@@ -46712,6 +48695,10 @@ export function createAgentChatService(args: {
     if (runtime?.kind === "claude") runtime.slashCommands.forEach((command) => add(command.name));
     else if (runtime?.kind === "codex") runtime.slashCommands.forEach((command) => add(command.name));
     else if (runtime?.kind === "acp") runtime.slashCommands.forEach((command) => add(command.name));
+    else if (runtime?.kind === "muse") {
+      for (const command of MUSE_LOCAL_COMMANDS) add(command.name);
+      runtime.skills.forEach((skill) => add(skill.name));
+    }
     else if (runtime?.kind === "opencode") runtime.commandNames?.forEach((name) => names.add(name));
     return names;
   };
@@ -46846,7 +48833,7 @@ export function createAgentChatService(args: {
     }
 
     if (
-      (managed.session.provider === "cursor" || managed.session.provider === "droid")
+      HOSTED_TURN_PROVIDERS.has(managed.session.provider)
       && managed.session.status === "active"
       && !allowActiveSession
       // Settlement left a one-shot expiry for the next Cursor send. The
@@ -46870,9 +48857,12 @@ export function createAgentChatService(args: {
     // developerInstructions/collaborationMode settings. Providers without a
     // trusted instruction channel still need the guidance in the user prompt,
     // including on resumed sessions where `shouldInjectLaneDirective` is false.
+    // Muse keeps the whole conversation in its own session, so the Muse runner
+    // delivers the guidance once per session (`runMuseTurn`), not per turn.
     const providerHasPersistentGuidance = managed.session.provider === "claude"
       || managed.session.provider === "codex"
-      || managed.session.provider === "opencode";
+      || managed.session.provider === "opencode"
+      || managed.session.provider === "muse";
     const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
     // Droid's SDK takes no system prompt, so ADE prepends the whole harness
     // prompt to every `sendPrompt`. That harness already carries the shared
@@ -47097,7 +49087,7 @@ export function createAgentChatService(args: {
       managed.runtime.busy = false;
       managed.runtime.activeTurnId = null;
     }
-    if (managed.runtime?.kind === "droid" && !isBusyError) {
+    if ((managed.runtime?.kind === "droid" || managed.runtime?.kind === "muse") && !isBusyError) {
       managed.runtime.busy = false;
       managed.runtime.activeTurnId = null;
     }
@@ -52319,6 +54309,30 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.session.provider === "muse") {
+      if (reasoningEffort !== undefined) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+      if (await runMuseControlCommand(managed, submittedText, { onDispatched, onBackendDispatched })) {
+        markEpochDirectivesDelivered();
+        return;
+      }
+      await runMuseTurn(managed, {
+        promptText,
+        userText: submittedText,
+        displayText: visibleText,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata,
+        laneDirectiveKey,
+        onDispatched,
+        onBackendDispatched,
+      });
+      markEpochDirectivesDelivered();
+      return;
+    }
+
     if (isAcpChatProvider(managed.session.provider)) {
       if (reasoningEffort !== undefined) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
@@ -53519,6 +55533,121 @@ export function createAgentChatService(args: {
       return { steerId, queued: false };
     }
 
+    if (managed.session.provider === "muse") {
+      if (managed.runtime?.kind === "muse" && (managed.runtime.busy || managed.session.status === "active")) {
+        const rt = managed.runtime;
+        if (dispatchMode === "interrupt") {
+          await interruptAndContinueTurn(managed, {
+            sessionId,
+            text: trimmed,
+            ...(displayText != null && displayText !== trimmed ? { displayText } : {}),
+            attachments,
+            contextAttachments,
+            metadata,
+            reasoningEffort,
+            executionMode,
+            interactionMode,
+            mentionsAlreadyExpanded: true,
+            pastedPromptAlreadyMaterialized: true,
+          });
+          return { steerId, queued: false };
+        }
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: displayText ?? trimmed,
+          attachments,
+          contextAttachments,
+          metadata,
+          allowPendingInput: options?.allowPendingInput,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) return { steerId, queued: false };
+        if (dispatchMode === "inline" && rt.activeTurnId) {
+          // Folded into the running turn by Muse at its next model call.
+          const steerRow = {
+            steerId,
+            text: preparedSteer.visibleText,
+            attachments: preparedSteer.attachments,
+            contextAttachments: preparedSteer.contextAttachments,
+            ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          };
+          emitSteerUserRow(managed, steerRow, "accepted", rt.activeTurnId);
+          persistChatState(managed);
+          try {
+            await steerMuseTurn(managed, rt, {
+              promptText: preparedSteer.submittedText,
+              resolvedAttachments: preparedSteer.resolvedAttachments,
+            });
+          } catch (error) {
+            failAcceptedSteerRow(managed, steerRow, rt.activeTurnId ?? undefined);
+            throw error;
+          }
+          preparedSteer.onDispatched?.();
+          options?.onAcceptedDispatch?.();
+          emitSteerUserRow(managed, steerRow, "inline", rt.activeTurnId ?? undefined);
+          persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
+          persistChatState(managed);
+          return { steerId, queued: false };
+        }
+        if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
+          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+            turnId: rt.activeTurnId ?? undefined,
+          });
+          return { steerId, queued: false, reason: "queue_full" };
+        }
+        rt.pendingSteers.push({
+          steerId,
+          uuid: randomUUID(),
+          text: preparedSteer.submittedText,
+          ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
+          attachments: preparedSteer.attachments,
+          contextAttachments: preparedSteer.contextAttachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          ...(reasoningEffort != null ? { reasoningEffort } : {}),
+          ...(executionMode ? { executionMode } : {}),
+          ...(interactionMode ? { interactionMode } : {}),
+        });
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          steerId,
+          turnId: rt.activeTurnId ?? undefined,
+          deliveryState: "queued",
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId,
+          message: "Message queued — will be sent when the current turn completes.",
+          turnId: rt.activeTurnId ?? undefined,
+        });
+        persistChatState(managed);
+        return { steerId, queued: true };
+      }
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: displayText ?? trimmed,
+        attachments,
+        contextAttachments,
+        metadata,
+        allowPendingInput: options?.allowPendingInput,
+      });
+      if (!preparedSteer) return { steerId, queued: false };
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
+    }
+
     if (managed.session.provider === "droid") {
       if (managed.runtime?.kind === "droid" && managed.runtime.busy) {
         const rt = managed.runtime;
@@ -53919,6 +56048,7 @@ export function createAgentChatService(args: {
         || managed.session.provider === "cursor"
         || managed.session.provider === "droid"
         || managed.session.provider === "pi"
+        || managed.session.provider === "muse"
       )
       && !canRouteActiveSendToSteer(managed);
     let markersCleared = false;
@@ -54005,7 +56135,7 @@ export function createAgentChatService(args: {
       if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
       throw error;
     }
-    await waitForCursorDroidTurnToSettleAfterInterrupt(managed, args.sessionId);
+    await waitForHostedTurnToSettleAfterInterrupt(managed, args.sessionId);
     // Settled, so the turn's tail has already run `cancelQueuedSteers` and
     // consumed the flag; this is the no-op that closes the case where it did
     // not (nothing queued, or a runtime that never reached its tail).
@@ -55259,6 +57389,46 @@ export function createAgentChatService(args: {
       return result;
     }
 
+    if (managed.runtime?.kind === "muse") {
+      const rt = managed.runtime;
+      // `turn/completed` (cancelled) settles the turn; the turn body reads
+      // `interrupted` for its verdict.
+      if (rt.busy || rt.activeTurnId) await interruptMuseTurn(managed, rt, { retract: true });
+      else cancelPendingInputsFrom(managed, "muse");
+      // A `/recap` still being written stops with the turn.
+      if (rt.pendingRecapCommandId && rt.host.alive) {
+        rt.pendingRecapCommandId = null;
+        await rt.host.command("recap/cancel", { sessionId: rt.museSessionId }).catch((error) => {
+          logger.warn("agent_chat.muse_recap_cancel_failed", {
+            sessionId: managed.session.id,
+            error: describeMuseError(error),
+          });
+        });
+      }
+      if (stopModeStopsBackground(mode) && rt.host.alive && rt.runningBackgroundItems.size) {
+        await rt.host.command("task/stopAll", { sessionId: rt.museSessionId }).catch((error) => {
+          logger.warn("agent_chat.muse_stop_background_failed", {
+            sessionId: managed.session.id,
+            error: describeMuseError(error),
+          });
+        });
+      }
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
+      persistChatState(managed);
+      return result;
+    }
+
+    if (managed.session.provider === "muse") {
+      // Stopped while the host was still starting: nothing to cancel yet.
+      if (stopModeClearsQueue(mode)) {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
+      cancelPendingInputsFrom(managed, "muse");
+      setSessionIdle(managed);
+      persistChatState(managed);
+      return result;
+    }
+
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
       rt.interrupted = true;
@@ -55725,6 +57895,14 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:droid:${sessionId}`);
+    } else if (managed.session.provider === "muse") {
+      // The Muse session id is what turns `session/start` into `session/resume`.
+      managed.session.museSessionId = managed.session.museSessionId ?? persisted?.museSessionId ?? null;
+      managed.session.musePermissionMode = persisted?.musePermissionMode ?? managed.session.musePermissionMode;
+      await ensureMuseRuntime(managed);
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
+      sessionService.setResumeCommand(sessionId, `chat:muse:${sessionId}`);
     } else if (managed.session.provider === "opencode" || (managed.session.modelId && !isCliWrappedModelId(managed.session.modelId))) {
       const result = await startOpenCodeSessionRuntime(managed);
       if (result === "handled" && managed.runtime?.kind === "opencode") {
@@ -56526,7 +58704,8 @@ export function createAgentChatService(args: {
       }
       case "pi":
       case "acp":
-        // Both surface their cards through `localPendingInputs`, which the
+      case "muse":
+        // All surface their cards through `localPendingInputs`, which the
         // check at the top of this function already answered.
         return null;
     }
@@ -56689,6 +58868,8 @@ export function createAgentChatService(args: {
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : provider === "droid"
             ? DEFAULT_DROID_DESCRIPTOR?.id
+          : provider === "muse"
+            ? getDefaultModelDescriptor("muse")?.id
           : undefined);
     const model = provider === "opencode" || provider === "pi" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const claudeBackgroundJobShort = provider === "claude"
@@ -58542,6 +60723,12 @@ export function createAgentChatService(args: {
         runtime.permissionWaiters.clear();
         runtime.busy = false;
         runtime.activeTurnId = null;
+      } else if (runtime?.kind === "muse") {
+        // Cards settled through `localPendingInputs` above.
+        runtime.openApprovalCards.clear();
+        runtime.openQuestionCards.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
       } else if (runtime?.kind === "acp") {
         // The cards already settled through `localPendingInputs` above, which
         // answered the agent. Only the busy bookkeeping is left.
@@ -59263,6 +61450,7 @@ export function createAgentChatService(args: {
     "pi",
     "cursor",
     "droid",
+    "muse",
     "lmstudio",
     "ollama",
     // ACP providers refresh on the same TTL. Without an entry here
@@ -59555,6 +61743,28 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (provider === "muse") {
+      try {
+        if (args.activateRuntime) await refreshMuseModelCatalog();
+        const models = listModelDescriptorsForProvider("muse");
+        const preferred = getDefaultModelDescriptor("muse")?.id ?? models[0]?.id;
+        return models.map((descriptor) => ({
+          id: descriptor.id,
+          displayName: descriptor.displayName,
+          description: `${descriptor.displayName} (Muse Code)`,
+          isDefault: descriptor.id === preferred,
+          reasoningEfforts: descriptor.reasoningTiers?.map((tier) => ({ effort: tier, description: `${tier} reasoning` })) ?? [],
+          modelId: descriptor.id,
+          family: "muse",
+          supportsReasoning: descriptor.capabilities.reasoning,
+          supportsTools: descriptor.capabilities.tools,
+          color: descriptor.color,
+        }));
+      } catch {
+        return [];
+      }
+    }
+
     if (isAcpChatProvider(provider)) {
       // Provider rows are gated on a real connection verdict. A passive
       // catalog read uses the cached disk heuristic; an active provider
@@ -59717,6 +61927,7 @@ export function createAgentChatService(args: {
     "codex",
     "cursor",
     "pi",
+    "muse",
     "copilot",
     "grok",
     "droid",
@@ -59810,6 +62021,7 @@ export function createAgentChatService(args: {
       "copilot",
       "grok",
       "droid",
+      "muse",
       "kimi",
       "qwen",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
@@ -59823,6 +62035,7 @@ export function createAgentChatService(args: {
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
                 || (provider === "droid" && shouldRefreshProvider("droid"))
+                || (provider === "muse" && shouldRefreshProvider("muse"))
                 || (provider === "pi" && shouldRefreshPi)
                 || (isAcpChatProvider(provider) && shouldRefreshProvider(provider)),
               ...(provider === "cursor" && catalogArgs?.cursorSource
@@ -60249,6 +62462,9 @@ export function createAgentChatService(args: {
     } else if (managed.runtime?.kind === "opencode") {
       managed.runtime.interrupted = true;
       cancelOpenCodeInboxRows(managed, managed.runtime, "disposed");
+    } else if (managed.runtime?.kind === "muse") {
+      cancelQueuedSteers(managed, managed.runtime, "disposed");
+      if (managed.runtime.busy) await interruptMuseTurn(managed, managed.runtime);
     }
 
     await finishSession(managed, terminalStatus, {
@@ -60900,6 +63116,7 @@ export function createAgentChatService(args: {
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    musePermissionMode: requestedMusePermissionModeArg,
     cursorModeId,
     cursorConfigValues: requestedCursorConfigValuesArg,
     acpPermissionMode: requestedAcpPermissionMode,
@@ -60933,6 +63150,7 @@ export function createAgentChatService(args: {
       codexConfigSource,
       opencodePermissionMode,
       droidPermissionMode,
+      musePermissionMode: requestedMusePermissionModeArg,
       cursorModeId,
       acpPermissionMode: requestedAcpPermissionMode,
     }).filter(([, value]) => value !== undefined));
@@ -61013,6 +63231,7 @@ export function createAgentChatService(args: {
       || codexConfigSource !== undefined
       || opencodePermissionMode !== undefined
       || droidPermissionMode !== undefined
+      || requestedMusePermissionModeArg !== undefined
       || cursorModeId !== undefined
       || cursorConfigValues !== undefined
       || requestedAcpPermissionMode !== undefined;
@@ -61168,8 +63387,13 @@ export function createAgentChatService(args: {
         && Boolean(previousCodexRuntime)
         && Boolean(managed.session.threadId)
         && codexServerSupportsThreadSettings(previousCodexRuntime?.serverVersion ?? null);
+      // Muse switches model inside the same session (`session/setModel`), so
+      // the host and the conversation stay; the next turn applies it.
+      const liveMuseSettings = previousProvider === "muse"
+        && nextProvider === "muse"
+        && managed.runtime?.kind === "muse";
 
-      if (managed.runtime && modelChanged && !liveCodexSettings) {
+      if (managed.runtime && modelChanged && !liveCodexSettings && !liveMuseSettings) {
         if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
           managed.runtime.pendingModelSwitchReset = true;
         } else {
@@ -61333,6 +63557,9 @@ export function createAgentChatService(args: {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
+      if (liveMuseSettings && managed.runtime?.kind === "muse" && !managed.runtime.busy) {
+        await applyMuseSessionSettings(managed, managed.runtime);
+      }
       // `null` clears the level ADE set, so Pi falls back to its own default
       // for the model instead of keeping the effort the user just removed.
       const piThinking = piThinkingLevel(managed.session.reasoningEffort);
@@ -61400,6 +63627,18 @@ export function createAgentChatService(args: {
             thinkingLevel: piThinking,
             error: error instanceof Error ? error.message : String(error),
           });
+        });
+      }
+      // Muse takes the effort per turn; recording it on the session too keeps
+      // `muse resume` in a terminal on the same tier.
+      const museEffort = normalizeMuseReasoningEffort(next);
+      if (prev !== next && museEffort && managed.runtime?.kind === "muse" && managed.runtime.host.alive) {
+        const runtime = managed.runtime;
+        await runtime.host.command("session/setReasoningEffort", {
+          sessionId: runtime.museSessionId,
+          reasoningEffort: museEffort,
+        }).catch((error) => {
+          logger.warn("agent_chat.muse_set_effort_failed", { sessionId, error: describeMuseError(error) });
         });
       }
       if ((prev !== next || managed.acpReasoningEffortInvalidated) && managed.runtime?.kind === "acp") {
@@ -61545,6 +63784,11 @@ export function createAgentChatService(args: {
       managed.session.droidPermissionMode = droidPermissionMode;
     }
 
+    const requestedMusePermissionMode = normalizePersistedMusePermissionMode(requestedMusePermissionModeArg);
+    if (requestedMusePermissionMode && !permissionsPinned) {
+      managed.session.musePermissionMode = requestedMusePermissionMode;
+    }
+
     if (cursorModeId !== undefined && !permissionsPinned) {
       managed.session.cursorModeId = typeof cursorModeId === "string"
         ? (cursorModeId.trim() || null)
@@ -61624,6 +63868,11 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "droid" && !managed.runtime.busy) {
         await ensureDroidSessionState(managed, managed.runtime);
       }
+      // Muse switches approval mode mid-session, mid-turn included: the new
+      // mode governs the next approval it would raise.
+      if (managed.runtime?.kind === "muse" && managed.runtime.host.alive) {
+        await applyMuseSessionSettings(managed, managed.runtime);
+      }
       if (
         managed.runtime?.kind === "cursor"
         && (
@@ -61679,6 +63928,7 @@ export function createAgentChatService(args: {
         ...(managed.session.codexConfigSource !== undefined ? { codexConfigSource: managed.session.codexConfigSource } : {}),
         ...(managed.session.opencodePermissionMode !== undefined ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode !== undefined ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+        ...(managed.session.musePermissionMode !== undefined ? { musePermissionMode: managed.session.musePermissionMode } : {}),
         ...(cursorModeId !== undefined || permissionMode !== undefined || managed.session.cursorModeId != null
           ? { cursorModeId: managed.session.cursorModeId ?? null }
           : {}),
@@ -61719,6 +63969,8 @@ export function createAgentChatService(args: {
       // while the chat still carries the placeholder, so a cleared host title
       // would otherwise come back.
       const titleRevision = managed.sessionMetadataTitleRevision;
+      // Muse keeps a name only once one is given; a cleared title leaves it.
+      if (hasExplicitTitle) syncMuseSessionTitle(managed, effectiveTitle);
       await syncClaudeSessionTitle(managed, effectiveTitle, { expectedTitleRevision: titleRevision });
     }
     if (nextAttachmentRoots !== undefined) {
@@ -61783,7 +64035,7 @@ export function createAgentChatService(args: {
   const LAUNCH_DEFAULT_UPDATE_FIELDS: ReadonlyArray<keyof AgentChatUpdateSessionArgs> = [
     "modelId", "reasoningEffort", "fastMode", "codexFastMode", "interactionMode", "permissionMode",
     "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource",
-    "opencodePermissionMode", "droidPermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
+    "opencodePermissionMode", "droidPermissionMode", "musePermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
   ] as const;
 
   /** The public update: a person changing a chat's settings also moves the machine defaults. */
@@ -62025,6 +64277,26 @@ export function createAgentChatService(args: {
             }))
           : [];
       return mergeSlashCommands([filesystemBackedCommands(), localCommands, runtimeCommands]);
+    }
+
+    if (provider === "muse") {
+      // Muse's own verbs, then its skills as the host lists them (bare or
+      // plugin-qualified shortcuts; Muse expands them itself).
+      const museCommands: AgentChatSlashCommand[] = MUSE_LOCAL_COMMANDS.map((command) => ({
+        name: `/${command.name}`,
+        description: command.description,
+        source: "local" as const,
+        ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+      }));
+      const skillCommands: AgentChatSlashCommand[] = (managed?.runtime?.kind === "muse" ? managed.runtime.skills : [])
+        .map((skill) => ({
+          name: `/${skill.name}`,
+          description: skill.description,
+          ...(skill.argumentHint ? { argumentHint: skill.argumentHint } : {}),
+          source: "sdk" as const,
+          kind: "skill" as const,
+        }));
+      return mergeSlashCommands([localCommands, museCommands, skillCommands]);
     }
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and
@@ -62807,6 +65079,18 @@ export function createAgentChatService(args: {
     const normalizedOffset = typeof offset === "number" && Number.isFinite(offset) && offset > 0
       ? Math.trunc(offset)
       : undefined;
+
+    if (provider === "muse" && managed) {
+      const transcript = await readMuseSubagentTranscript(managed, {
+        agentId: normalizedAgentId,
+        taskId: normalizedTaskId,
+        ...(signal ? { signal } : {}),
+      });
+      return sliceTranscriptMessages(transcript, {
+        ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+        ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+      });
+    }
 
     if (provider === "opencode" && managed) {
       // A child is its own OpenCode session, so its stored messages are the
@@ -64966,6 +67250,8 @@ export function createAgentChatService(args: {
     interrupt,
     interruptWithQueueMode: interrupt,
     stopTask,
+    messageSubagent,
+    controlSubagent,
     restartSession,
     waitFor: chatWaitRegistry.waitFor,
     armWait: chatWaitRegistry.arm,

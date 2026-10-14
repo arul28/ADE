@@ -2919,7 +2919,7 @@ save through the same contract, then `workCliInitialInput` serializes the temp
 paths into the desktop-compatible `Attached files and images:` manifest inside
 `work.startCliSession.initialInput`.
 
-Work can also import provider-native CLI sessions from all 10 import providers
+Work can also import provider-native CLI sessions from all 11 import providers
 (Claude, Codex, Cursor, Droid, OpenCode, Pi, Qwen, Kimi, Grok, Copilot).
 `WorkImportSessionScreen` first shows a compact searchable list with provider
 chips, a lane filter menu (per-lane counts plus "Other folders"), and a

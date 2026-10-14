@@ -95,6 +95,8 @@ export function coarseProviderFamily(value: unknown): string {
       return "opencode";
     case "pi":
       return "pi";
+    case "muse":
+      return "muse";
     case "gemini":
     case "google":
       return "gemini";

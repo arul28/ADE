@@ -430,13 +430,17 @@ function launchdSpawnLogPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
  * load` quietly refuses (exit 0, nothing registered), so a report that shows
  * the job "not present" needs this line to say why.
  */
-function launchdDisabledEntry(serviceName: string, run: DiagnosticCommandRunner): DiagnosticLogTail {
+function launchdDisabledPlan(): DiagnosticCommandPlan {
   const domain = `gui/${currentUid()}`;
-  const display = `launchctl print-disabled ${domain}`;
-  const answer = run("launchctl", ["print-disabled", domain]);
-  if (!answer || answer.status !== 0) return { label: "launchd disabled list", path: display, error: "(could not be read)" };
+  return { display: `launchctl print-disabled ${domain}`, command: "launchctl", args: ["print-disabled", domain] };
+}
+
+function launchdDisabledEntry(serviceName: string, run: DiagnosticCommandRunner): DiagnosticLogTail {
+  const plan = launchdDisabledPlan();
+  const answer = run(plan.command, plan.args);
+  if (!answer || answer.status !== 0) return { label: "launchd disabled list", path: plan.display, error: "(could not be read)" };
   const line = answer.stdout.split("\n").find((entry) => entry.includes(`"${serviceName}"`));
-  return { label: "launchd disabled list", path: display, text: line?.trim() || "(not listed)" };
+  return { label: "launchd disabled list", path: plan.display, text: line?.trim() || "(not listed)" };
 }
 
 const LAUNCHD_ON_DEMAND_ONLY_PATTERN = /on-demand-only mode/i;
@@ -491,6 +495,7 @@ function planMachineDiagnosticCommands(args: {
   if (args.platform === "darwin") {
     return [
       launchdPrintPlan(args.env),
+      launchdDisabledPlan(),
       backgroundItemPlan(args.env, args.homeDir),
       launchdSpawnLogPlan(args.env),
     ];

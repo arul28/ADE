@@ -26,6 +26,7 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
   | "claude"
@@ -73,7 +74,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: "claude" | "codex" | "cursor" | "droid" | AcpCliName;
+      cli: "claude" | "codex" | "cursor" | "droid" | "muse" | AcpCliName;
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -1379,6 +1380,23 @@ export async function detectAllAuth(
         });
       }
     }
+  }
+
+  // Muse is not a PATH CLI: ADE runs only its pinned build from the tools
+  // cache, so it is reported from there, signed in when META_API_KEY, a key
+  // saved in ADE, or Muse's auth.json is present. Never from a `muse` on PATH.
+  const musePath = resolveMuseExecutable().path;
+  if (musePath) {
+    // Lazy, like every other key-store read in this file.
+    const { inspectMuseCredentials } = await import("./museAuth");
+    const museCredentials = inspectMuseCredentials();
+    results.push({
+      type: "cli-subscription",
+      cli: "muse",
+      path: musePath,
+      authenticated: museCredentials.source != null,
+      verified: false,
+    });
   }
 
   // 2. API keys from config + secure local store.

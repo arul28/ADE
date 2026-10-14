@@ -4018,7 +4018,9 @@ describe("ADE CLI", () => {
         "shell",
         "--print-config",
       ]),
-    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or devin/);
+    // Assert the rejection, not the exact provider roster: the roster grows
+    // (muse, pi, qwen, …) and pinning its copy makes every addition edit here.
+    ).toThrow(/provider must be one of/);
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {

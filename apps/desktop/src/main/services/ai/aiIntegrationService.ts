@@ -166,6 +166,7 @@ export type AiIntegrationStatus = {
     droid: boolean;
     // Optional, mirroring `AiSettingsStatus`: a host on an older build has no
     // arm for these and its payload must still deserialise.
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
@@ -177,6 +178,7 @@ export type AiIntegrationStatus = {
     codex: AgentModelDescriptor[];
     cursor: AgentModelDescriptor[];
     droid: AgentModelDescriptor[];
+    muse?: AgentModelDescriptor[];
     qwen?: AgentModelDescriptor[];
     kimi?: AgentModelDescriptor[];
     grok?: AgentModelDescriptor[];
@@ -185,7 +187,7 @@ export type AiIntegrationStatus = {
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -1045,6 +1047,9 @@ function buildStatusModelLists(
     codex: availability.codex ? agentModelsFromAvailable(available, "openai") : [],
     cursor: availability.cursor ? agentModelsFromAvailable(available, "cursor") : [],
     droid: availability.droid ? agentModelsFromAvailable(available, "factory") : [],
+    // Usable Muse models once Muse is ready (binary + sign-in). Signed out,
+    // the settings page shows the registry's curated list with a sign-in note.
+    muse: availability.muse ? agentModelsFromAvailable(available, "muse") : [],
     // The ACP providers list their models whenever the CLI is present, not only
     // once signed in: the curated list is what the settings page is for, and an
     // empty page would say "this provider has no models" when what is true is
@@ -1108,7 +1113,8 @@ export function createAiIntegrationService(args: {
         || args.providerConnections.codex.authAvailable
         || args.providerConnections.cursor.authAvailable
         || args.providerConnections.droid.authAvailable
-        || Boolean(args.providerConnections.pi?.authAvailable))
+        || Boolean(args.providerConnections.pi?.authAvailable)
+        || Boolean(args.providerConnections.muse?.authAvailable))
     ) {
       return "subscription";
     }
@@ -2232,6 +2238,7 @@ export function createAiIntegrationService(args: {
             codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
             cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
             droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
+            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
             qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
             kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
@@ -2247,6 +2254,7 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
             if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
             if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
+            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
             if (descriptor.family === ACP_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;

@@ -680,7 +680,7 @@ struct WorkModelPickerSheet: View {
   private func refreshCatalog(for groupKey: String) async {
     let refreshProvider: String?
     switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "lmstudio", "ollama",
+    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
          "qwen", "kimi", "grok", "copilot":
       refreshProvider = groupKey
     default:

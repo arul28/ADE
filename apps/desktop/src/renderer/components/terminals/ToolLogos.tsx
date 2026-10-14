@@ -2,9 +2,10 @@ import React from "react";
 import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { DevinLogo, DroidLogo, PiLogo } from "../shared/ProviderLogos";
+import { DevinLogo, DroidLogo, MuseLogo, PiLogo } from "../shared/ProviderLogos";
 import droidMarkSrc from "../../assets/provider-logos/droid-mark.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
+import museGlyphSrc from "@lobehub/icons-static-svg/icons/meta.svg";
 
 type LogoProps = { size?: number; className?: string; appearance?: "default" | "provider-mark" };
 
@@ -107,6 +108,12 @@ const PiToolLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) =
     : <PiLogo size={size} className={className} />
 );
 
+export const MuseToolLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <MaskedProviderMark src={museGlyphSrc} color="#4A9BFF" size={size} />
+    : <MuseLogo size={size} className={className} />
+);
+
 export const DevinToolLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   <DevinLogo size={size} className={className} />
 );
@@ -119,6 +126,7 @@ const USAGE_PROVIDER_LOGOS = {
   grok: GrokLogo,
   opencode: OpenCodeLogo,
   kimi: KimiLogo,
+  muse: MuseToolLogo,
 } as const;
 
 export function usageProviderLogo(
@@ -143,6 +151,8 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "opencode-orchestrated": OpenCodeLogo,
   pi: PiToolLogo,
   "pi-chat": PiToolLogo,
+  muse: MuseToolLogo,
+  "muse-chat": MuseToolLogo,
   qwen: QwenLogo,
   "qwen-chat": QwenLogo,
   kimi: KimiLogo,

@@ -135,6 +135,15 @@ export const INSTRUCTIONS_SUPPORT = {
       + "append, instead of it for replace. It is repeated every turn rather than pinned as a "
       + "system prompt, so it competes with the turn's own text.",
   },
+  muse: {
+    level: "best-effort",
+    mechanism: "merged into the guidance ADE prefixes onto the session's first turn",
+    detail:
+      "MSP session/start carries no instruction field, so ADE prefixes the host text onto the "
+      + "first turn of each Muse session (and again after the session is rebuilt) — after its own "
+      + "guidance for append, instead of it for replace. It is part of the conversation, not a "
+      + "pinned system prompt, so Muse's compaction can summarize it away in a long session.",
+  },
 } as const satisfies Record<ShippedProvider, InstructionsSupport>;
 
 export const SETTING_SOURCES_SUPPORT = {
@@ -176,6 +185,15 @@ export const SETTING_SOURCES_SUPPORT = {
     levelFor: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
     mechanism: "none — the Pi SDK exposes no configuration-layer switch",
     detail: null,
+  },
+  muse: {
+    levelFor: { none: "ignored", project: "best-effort", user: "ignored", all: "best-effort" },
+    mechanism: "Muse always reads ~/.config/muse; ADE starts muse serve with --trust-workspace",
+    detail:
+      "Muse loads the user's ~/.config/muse settings on every run and a workspace's rules and "
+      + "skills only when the workspace is trusted. ADE trusts the lane worktree for the host it "
+      + "starts, so 'project' and 'all' describe what already happens; MSP has no per-session "
+      + "switch, so 'none' and 'user' cannot be honored.",
   },
 } as const satisfies Record<ShippedProvider, SettingSourcesSupport>;
 
@@ -268,6 +286,11 @@ export const PERMISSION_POLICY_SUPPORT = {
   pi: {
     level: "unsupported",
     mechanism: "none — the Pi SDK takes a tool policy ADE derives from the session mode",
+    residual: null,
+  },
+  muse: {
+    level: "unsupported",
+    mechanism: "none — MSP selects one of Muse's preconfigured approval modes; it takes no rule set",
     residual: null,
   },
 } as const satisfies Record<ShippedProvider, PermissionPolicySupport>;

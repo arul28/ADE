@@ -35,6 +35,7 @@ export type SettingsProviderId =
   | "cursor"
   | "droid"
   | "pi"
+  | "muse"
   | "opencode"
   | "qwen"
   | "kimi"
@@ -237,6 +238,11 @@ export type ProviderDescriptor = {
   status: (ctx: ProvidersViewContext) => ProviderStatusView;
   /** Models ADE can offer for this provider right now. */
   models: (ctx: ProvidersViewContext) => ProviderModelRow[];
+  /**
+   * One line under the model list when the rows are not usable yet (e.g. the
+   * curated list shown before sign-in). Null when there is nothing to add.
+   */
+  modelsNote?: (ctx: ProvidersViewContext) => string | null;
   /** Version string when the provider reports one. No update-available surface. */
   version?: (ctx: ProvidersViewContext) => string | null;
   /** Left-rail identity rows (binary path, config files, credential source). */

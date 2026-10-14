@@ -139,6 +139,7 @@ function providerForTile(session: AgentChatSessionSummary | null, fallback?: Ade
     || provider === "opencode"
     || provider === "cursor"
     || provider === "droid"
+    || provider === "muse"
   ) {
     return provider as AdeCodeProvider;
   }

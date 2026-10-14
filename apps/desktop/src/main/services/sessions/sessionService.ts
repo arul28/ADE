@@ -188,6 +188,7 @@ function isResumeProvider(value: unknown): value is TerminalResumeProvider {
     || value === "droid"
     || value === "opencode"
     || value === "pi"
+    || value === "muse"
     || value === "qwen"
     || value === "kimi"
     || value === "grok"
@@ -722,6 +723,7 @@ export function createSessionService({
       "droid",
       "opencode",
       "pi",
+      "muse",
       "claude-orchestrated",
       "codex-orchestrated",
       "opencode-orchestrated",
@@ -729,6 +731,7 @@ export function createSessionService({
       "claude-chat",
       "opencode-chat",
       "pi-chat",
+      "muse-chat",
       "cursor",
       "droid-chat",
       "qwen",
@@ -764,6 +767,7 @@ export function createSessionService({
     if (normalized.startsWith("chat:grok:")) return "grok-chat";
     if (normalized.startsWith("chat:copilot:")) return "copilot-chat";
     if (normalized.startsWith("chat:devin:")) return "devin-chat";
+    if (normalized.startsWith("chat:muse:")) return "muse-chat";
     if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
     return toolType;
   };

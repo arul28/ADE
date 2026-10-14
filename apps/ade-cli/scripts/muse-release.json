@@ -1,0 +1,38 @@
+{
+  "sdkVersion": "1.4.7",
+  "version": "1.4.7-R6101.1",
+  "manifestUrl": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=manifest.json",
+  "mspSchemaFingerprint": "sha256:6de32db08bbbe0deb478d2bfcaba001e9fb490986bc80db3aceb4d996abf7df9",
+  "targets": {
+    "darwin-arm64": {
+      "artifact": "aarch64_macos",
+      "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos",
+      "sha256": "87ff5a31b63e30b6ac04d3e8298285517e753c126fb6f3aee80accf28c4562f1",
+      "size": 358892272
+    },
+    "darwin-x64": {
+      "artifact": "x86_macos",
+      "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-macos",
+      "sha256": "6d766da6601a0aae8bd22294c0854970286e1b9ade3009f0d0289b7875a10c58",
+      "size": 380381680
+    },
+    "linux-arm64": {
+      "artifact": "aarch64_linux",
+      "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-linux",
+      "sha256": "48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85",
+      "size": 325916776
+    },
+    "linux-x64": {
+      "artifact": "x86_linux",
+      "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-linux",
+      "sha256": "36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518",
+      "size": 363518168
+    },
+    "win32-x64": {
+      "artifact": "x86_windows",
+      "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-windows.exe",
+      "sha256": "2d1ac7af0a9ea77643cb8690eee70f52f0f8476c46b194f143c831f481aea59d",
+      "size": 467174136
+    }
+  }
+}

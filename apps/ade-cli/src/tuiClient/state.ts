@@ -27,6 +27,8 @@ export type AdeCodeProviderSettingsMemory = {
   codexConfigSource: string;
   opencodePermissionMode: string;
   droidPermissionMode: string;
+  /** Absent in memory written before Muse shipped; read as Muse's default. */
+  musePermissionMode?: string;
   cursorModeId: string | null;
 };
 
@@ -202,6 +204,7 @@ export function providerSettingsFromModelMemory(
     codexConfigSource: memory.codexConfigSource,
     opencodePermissionMode: memory.opencodePermissionMode,
     droidPermissionMode: memory.droidPermissionMode,
+    musePermissionMode: memory.musePermissionMode,
     cursorModeId: memory.cursorModeId,
   };
 }
@@ -388,6 +391,7 @@ function normalizeProviderSettings(value: unknown): AdeCodeProviderSettingsMemor
     codexConfigSource: optionalString(parsed.codexConfigSource, "flags"),
     opencodePermissionMode: optionalString(parsed.opencodePermissionMode, "edit"),
     droidPermissionMode: optionalString(parsed.droidPermissionMode, "auto-low"),
+    musePermissionMode: optionalString(parsed.musePermissionMode, "onRequest"),
     cursorModeId: nullableString(parsed.cursorModeId),
   };
 }

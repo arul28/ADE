@@ -1,3 +1,5 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+
 import type {
   AutoRebaseLaneStatus,
   GitCommitSummary,
@@ -31,6 +33,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   copilot: "Copilot",
   gemini: "Gemini",
   pi: "Pi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
   qwen: "Qwen",
   kimi: "Kimi",
   grok: "Grok",
@@ -61,6 +64,7 @@ function providerFromText(text: string): string | null {
   if (/gemini/.test(s)) return "gemini";
   if (/opencode/.test(s)) return "opencode";
   if (/\bdroid\b|factory\.ai|factory-droid/.test(s)) return "droid";
+  if (/\bmuse\b/.test(s)) return "muse";
   return null;
 }
 

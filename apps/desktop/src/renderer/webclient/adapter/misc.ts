@@ -32,6 +32,7 @@ import {
   type SyncRoleSnapshot,
 } from "../../../shared/types";
 import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
+import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
@@ -87,6 +88,17 @@ import type {
   CursorSdkLoginResult,
   AdeUsagePriceOverrides,
 } from "../../../shared/types";
+
+/** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
+const MUSE_BINARY_STATUS_UNAVAILABLE: MuseBinaryStatus = {
+  state: "missing",
+  path: null,
+  pinnedVersion: null,
+  receivedBytes: null,
+  totalBytes: null,
+  errorKind: null,
+  error: null,
+};
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const { client, commands, events, localState, state } = infra;
@@ -591,6 +603,27 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     isOpenCodeInstalled: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.isOpenCodeInstalled", pin, infra);
       return { installed: false, source: "missing" };
+    },
+    // Like the tools cache below: the pinned Muse binary belongs to a desktop
+    // install, and the provider settings page that downloads it is hidden on
+    // web. Report "not downloaded" and never start a 350 MB fetch from here.
+    museBinaryStatus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.museBinaryStatus", pin, infra);
+      return MUSE_BINARY_STATUS_UNAVAILABLE;
+    },
+    ensureMuseBinary: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.ensureMuseBinary", pin, infra);
+      return MUSE_BINARY_STATUS_UNAVAILABLE;
+    },
+    // The Muse provider page (and its Settings host) is desktop-only, like the
+    // binary download above.
+    museSettings: async (_args: unknown, pin?: RuntimePinArg): Promise<never> => {
+      assertWebRuntimePinRoutable("ai.museSettings", pin, infra);
+      throw new Error("Muse Code settings are available in the ADE desktop app.");
+    },
+    museSettingsClose: async (_args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.museSettingsClose", pin, infra);
+      return { ok: true as const };
     },
     // The pinned-tools cache is a property of the machine running the desktop
     // app, so a web client has no cache of its own to report and no business

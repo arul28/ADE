@@ -1,3 +1,5 @@
+import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
@@ -291,6 +293,10 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestartSessionArgs,
   AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
@@ -1543,6 +1549,14 @@ declare global {
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        museBinaryStatus: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        ensureMuseBinary: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
+        museSettings: <R extends MuseSettingsRequest>(
+          args: MuseSettingsRunArgs<R>,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MuseSettingsResult<R["kind"]>>;
+        museSettingsClose: (args: { handleId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: true }>;
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
@@ -2385,6 +2399,16 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Note or follow-up task to one subagent (Muse: `subagent/sendMessage` / `followupTask`). */
+        messageSubagent: (
+          args: AgentChatMessageSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatMessageSubagentResult>;
+        /** Interrupt/resume/reopen/close a subagent, pause/resume a workflow, skip/retry a workflow child. */
+        controlSubagent: (
+          args: AgentChatControlSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatControlSubagentResult>;
         /** Stop the provider process, keep the conversation; the next message starts fresh. */
         restartSession: (
           args: AgentChatRestartSessionArgs,
