@@ -138,8 +138,6 @@ function modelRequiresConfiguration(model: ModelDescriptor): boolean {
  */
 export type ModelPickerSelection = {
   fastMode: boolean;
-  /** Present when Fast was turned on as Ultrafast from the row chip. */
-  fastTier?: FastTier;
   serviceTier?: CursorCloudServiceTier | null;
   /** Set when the selection came from a saved harness preset. */
   presetId?: string;
@@ -212,6 +210,8 @@ export type ModelPickerContentProps = {
   fastMode?: boolean;
   /** The selected model's Fast tier, when Fast is on. */
   fastTier?: FastTier | null;
+  /** The surface can carry Fast's tier; only then do rows offer Ultrafast. */
+  ultrafastEnabled?: boolean;
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** Why Fast cannot run with the selected model's other picks; shown on its chip. */
   fastModeUnavailableReason?: string | null;
@@ -246,6 +246,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   fastMode = false,
   onFastModeChange,
   fastTier = null,
+  ultrafastEnabled = false,
   fastModeUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
@@ -796,7 +797,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       const model = expandedModels.find((m) => m.id === modelId);
       if (!model || !modelSupportsFastMode(model)) return;
       if (modelId === value) {
-        onFastModeChange?.(next, next ? tier : undefined);
+        // Fast-only callers keep the one-argument call they always got.
+        if (next && tier === "ultrafast") onFastModeChange?.(true, "ultrafast");
+        else onFastModeChange?.(next);
         return;
       }
       if (!isAvailableForUse(model)) {
@@ -1164,6 +1167,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onCopyId={handleCopyId}
                         fastModeOn={!serviceTierMode && fastMode && isActive}
                         fastTier={isActive ? fastTier : null}
+                        ultrafastEnabled={ultrafastEnabled}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {

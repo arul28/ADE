@@ -107,9 +107,10 @@ export type ModelPickerProps = {
    */
   fastMode?: boolean;
   /**
-   * The faster tier Fast is on. A model whose catalog offers Ultrafast cycles
-   * its chip Off → Fast → Ultrafast; the tier arrives as `onFastModeChange`'s
-   * second argument, which callers that only know Fast can ignore.
+   * The faster tier Fast is on. Passing it (null included) opts the surface in
+   * to Ultrafast: a model whose catalog offers it cycles its chip Off → Fast →
+   * Ultrafast, and the tier arrives as `onFastModeChange`'s second argument.
+   * Omit it on a surface that cannot carry the tier, so the chip stays Fast.
    */
   fastTier?: FastTier | null;
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
@@ -179,7 +180,7 @@ export const ModelPicker = memo(function ModelPicker({
   runtimePin,
   constrainToAvailableModelIds = false,
   fastMode,
-  fastTier = null,
+  fastTier,
   onFastModeChange,
   fastModeActive,
   onFastModeToggle,
@@ -498,7 +499,7 @@ export const ModelPicker = memo(function ModelPicker({
             disabled={disabled}
             open={open}
             fastMode={fastModeOn && !legacyFastChip}
-            fastTier={fastTier}
+            fastTier={fastTier ?? null}
             {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
             {...(serviceTierMode ? { serviceTier, serviceTierSupported } : {})}
             className={triggerClassName}
@@ -540,7 +541,8 @@ export const ModelPicker = memo(function ModelPicker({
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
-                fastTier={fastTier}
+                fastTier={fastTier ?? null}
+                ultrafastEnabled={fastTier !== undefined}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}

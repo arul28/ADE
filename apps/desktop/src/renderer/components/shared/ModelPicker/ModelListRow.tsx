@@ -16,6 +16,7 @@ import {
   subProviderLabel,
 } from "./modelFacts";
 import { cn } from "../../ui/cn";
+import { Z_LAYERS } from "../../ui/zLayers";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 
 export type ModelListRowProps = {
@@ -45,6 +46,8 @@ export type ModelListRowProps = {
   onFastModeChange?: (modelId: string, next: boolean, tier?: FastTier) => void;
   /** The faster tier this row's Fast is on, when it is on. Absent is plain Fast. */
   fastTier?: FastTier | null;
+  /** The surface carries Fast's tier, so a model that offers Ultrafast cycles to it. */
+  ultrafastEnabled?: boolean;
   /**
    * Why Fast cannot run with this row's other picks (an OpenCode effort with
    * no Fast route). The chip dims, shows the reason, and cannot turn Fast on.
@@ -74,6 +77,7 @@ export const ModelListRow = memo(function ModelListRow({
   fastModeOn = false,
   onFastModeChange,
   fastTier = null,
+  ultrafastEnabled = false,
   fastUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
@@ -89,7 +93,7 @@ export const ModelListRow = memo(function ModelListRow({
     && Boolean(onServiceTierChange)
     && (modelSupportsServiceTier(model, "fast") || modelSupportsServiceTier(model, "standard"));
   // A model whose catalog offers Ultrafast cycles Off → Fast → Ultrafast → Off.
-  const offersUltrafast = showFastChip && modelSupportsUltrafast(model);
+  const offersUltrafast = ultrafastEnabled && showFastChip && modelSupportsUltrafast(model);
   const ultrafastOn = offersUltrafast && fastModeOn && fastTier === "ultrafast";
   const activeTier = serviceTierMode ? serviceTier : (fastModeOn ? "fast" : null);
   const reducedMotion = usePrefersReducedMotion();
@@ -404,8 +408,9 @@ export const ModelListRow = memo(function ModelListRow({
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
+          style={{ zIndex: Z_LAYERS.contextMenu }}
           className={cn(
-            "z-[110] min-w-[10rem] overflow-hidden rounded-md border border-fg/[0.08] bg-(color:--work-popover-bg) p-1",
+            "min-w-[10rem] overflow-hidden rounded-md border border-fg/[0.08] bg-(color:--work-popover-bg) p-1",
             "shadow-[0_8px_24px_rgba(0,0,0,0.45)]",
           )}
         >

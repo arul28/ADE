@@ -4178,6 +4178,8 @@ export type AgentChatCliLaunchProvider =
  * launch. Provider/model/permission build the startup command server-side.
  */
 export type AgentChatLaunchCliArgs = {
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast" | null;
   laneId: string;
   provider: AgentChatCliLaunchProvider;
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
@@ -4304,6 +4306,8 @@ export type AgentChatHandoffArgs = {
    */
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -4342,6 +4346,8 @@ export type AgentChatCrossMachineTargetConfig = {
   targetModelId: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;

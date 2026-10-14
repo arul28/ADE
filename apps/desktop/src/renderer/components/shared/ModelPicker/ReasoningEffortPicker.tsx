@@ -160,14 +160,17 @@ function setIndicatorPosition(track: HTMLDivElement, fraction: number, total: nu
   track.style.setProperty("--reasoning-slider-thumb-position", segmentOffset(fraction, total));
 }
 
-/** Short words for a crowded track; the accessible name keeps the full one. */
-function segmentLabel(tier: string, total: number, useCodex56Labels: boolean): string {
-  if (total <= 4) return tierLabel(tier, useCodex56Labels);
+/**
+ * Short words for a crowded track (more than four levels); the accessible
+ * name and the header keep the full one. Shared with the model chip's list.
+ */
+export function reasoningEffortTrackLabel(tier: string, total: number, fullLabel: string): string {
+  if (total <= 4) return fullLabel;
   if (tier === "minimal") return "Min";
   if (tier === "medium") return "Med";
   if (tier === "xhigh") return "XHigh";
   if (tier === "ultracode") return "Ultra";
-  return tierLabel(tier, useCodex56Labels);
+  return fullLabel;
 }
 
 function reasoningToneKeyForTier(tier: string | null | undefined, index: number, total: number): ReasoningToneKey {
@@ -546,7 +549,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                     )}
                     style={isActive ? { color: toneText(activeTone.color) } : undefined}
                   >
-                    <span className="block truncate">{segmentLabel(tier, tiers.length, useCodex56Labels)}</span>
+                    <span className="block truncate">{reasoningEffortTrackLabel(tier, tiers.length, tierLabel(tier, useCodex56Labels))}</span>
                   </button>
                 );
               })}

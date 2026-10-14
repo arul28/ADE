@@ -6044,7 +6044,7 @@ export function AgentChatComposer({
       }
     }
     closeCommandMenu();
-  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, recordModelRecent, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;

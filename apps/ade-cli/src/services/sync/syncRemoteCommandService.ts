@@ -1331,6 +1331,7 @@ function parseCrossMachineTargetArgs(
   const continuationPrompt = parseNullableString("continuationPrompt");
   const reasoningEffort = parseNullableString("reasoningEffort");
   const fastMode = parseBoolean("fastMode");
+  const fastTier = value.fastTier === "ultrafast" ? "ultrafast" as const : value.fastTier === null ? null : undefined;
   const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
   const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
   const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
@@ -1356,6 +1357,7 @@ function parseCrossMachineTargetArgs(
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(fastTier !== undefined ? { fastTier } : {}),
     ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
     ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
     ...(codexSandbox !== undefined ? { codexSandbox } : {}),
@@ -1809,6 +1811,7 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
     ...(asTrimmedString(value.instanceId) ? { instanceId: asTrimmedString(value.instanceId) } : {}),
     ...(asTrimmedString(value.presetId) ? { presetId: asTrimmedString(value.presetId) } : {}),
@@ -2062,6 +2065,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
@@ -4876,6 +4880,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
           model: resolvedModel,
           reasoningEffort: parsed.reasoningEffort ?? null,
           fastMode: parsed.fastMode ?? null,
+          ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
           ...(resolvedInstance ? { instanceId: resolvedInstance.id } : {}),
           ...(parsed.presetId ? { presetId: parsed.presetId } : {}),
           ...(parsed.credentialId ? { credentialId: parsed.credentialId } : {}),
@@ -4898,6 +4903,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
         fastMode: parsed.fastMode ?? undefined,
+        ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),

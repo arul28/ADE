@@ -144,6 +144,7 @@ import {
   getModelById,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
+  modelSupportsUltrafast,
   parseLocalProviderFromModelId,
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
@@ -1648,6 +1649,8 @@ type LastLaunchConfig = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast is set to Codex Ultrafast; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
@@ -1661,6 +1664,8 @@ type ComposerDraftStorageSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast is set to Codex Ultrafast; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
@@ -2780,6 +2785,7 @@ type LaunchConfigSessionSource = Pick<
   | "modelId"
   | "reasoningEffort"
   | "fastMode"
+  | "fastTier"
   | "cursorCloudServiceTier"
   | "executionMode"
   | "permissionMode"
@@ -2891,6 +2897,7 @@ function buildLastLaunchConfig(
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
     fastMode,
+    ...(fastMode && source.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2941,6 +2948,7 @@ function normalizeStoredLaunchConfig(
       ? value.reasoningEffort.trim()
       : null,
     fastMode,
+    ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -3196,6 +3204,7 @@ function normalizeStoredComposerDraft(
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode,
+    ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -4526,6 +4535,11 @@ export function AgentChatPane({
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
   const [handoffFastMode, setHandoffFastMode] = useState(false);
+  const [handoffFastTier, setHandoffFastTier] = useState<FastTier | null>(null);
+  const handleHandoffFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
+    setHandoffFastMode(enabled);
+    setHandoffFastTier(enabled && tier === "ultrafast" ? "ultrafast" : null);
+  }, []);
   const [handoffClaudePermissionMode, setHandoffClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(
     initialNativeControls.claudePermissionMode,
   );
@@ -6625,7 +6639,9 @@ export function AgentChatPane({
       { reasoningEffort: config.reasoningEffort, fastMode: config.fastMode },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
-    setFastModeState(reconciledControls.fastMode);
+    // The stored tier is kept as chosen: the catalog that says whether this
+    // model offers Ultrafast may not have loaded yet, and send time checks it.
+    setFastModeState(reconciledControls.fastMode, config.fastTier ?? null);
     setCursorCloudServiceTier(config.cursorCloudServiceTier ?? null);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
@@ -7195,7 +7211,12 @@ export function AgentChatPane({
     // fast-capable Claude model shows a live control that never reaches the
     // capsule, and the destination silently inherits the source's tier.
     ...(remoteHandoffTargetDescriptor && modelSupportsFastMode(remoteHandoffTargetDescriptor)
-      ? { fastMode: handoffFastMode }
+      ? {
+        fastMode: handoffFastMode,
+        fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(remoteHandoffTargetDescriptor)
+          ? "ultrafast" as const
+          : null,
+      }
       : {}),
     claudePermissionMode: handoffClaudePermissionMode,
     codexApprovalPolicy: handoffCodexApprovalPolicy,
@@ -7216,6 +7237,7 @@ export function AgentChatPane({
     handoffCursorModeId,
     handoffDroidPermissionMode,
     handoffFastMode,
+    handoffFastTier,
     handoffMusePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
@@ -8775,6 +8797,7 @@ export function AgentChatPane({
     if (handoffFormActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
       setHandoffFastMode(fastMode);
+      setHandoffFastTier(fastMode ? fastTierRef.current : null);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
@@ -10432,6 +10455,7 @@ export function AgentChatPane({
           modelId: saved.modelId,
           reasoningEffort: saved.reasoningEffort,
           fastMode: saved.fastMode,
+          fastTier: saved.fastTier ?? null,
           cursorCloudServiceTier: saved.cursorCloudServiceTier,
           executionMode: saved.executionMode,
           controls: saved.controls,
@@ -10474,6 +10498,7 @@ export function AgentChatPane({
     modelId,
     reasoningEffort,
     fastMode,
+    ...(fastMode && fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier,
     executionMode,
     controls: {
@@ -10501,6 +10526,7 @@ export function AgentChatPane({
     draftLaunchTargetId,
     executionMode,
     fastMode,
+    fastTier,
     iosElementContextItems,
     mentionLabels,
     modelId,
@@ -10870,6 +10896,7 @@ export function AgentChatPane({
         modelId: snapshot.modelId,
         reasoningEffort: snapshot.reasoningEffort,
         fastMode: snapshot.fastMode,
+        fastTier: snapshot.fastTier ?? null,
         cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
         executionMode: snapshot.executionMode,
         controls: snapshot.nativeControls,
@@ -11656,6 +11683,9 @@ export function AgentChatPane({
         reasoningEffort: prepared.reasoningEffort,
         ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
           ? { fastMode: launchFastMode }
+          : {}),
+        ...(provider === "codex" && launchFastMode === true && prepared.fastTier === "ultrafast"
+          ? { fastTier: "ultrafast" as const }
           : {}),
         initialPrompt: cliPrompt,
         // A row a stored key makes reachable launches on that key.
@@ -12701,6 +12731,14 @@ export function AgentChatPane({
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
           ? { fastMode: handoffFastMode }
           : {}),
+        // Named either way, so a handoff never inherits a tier the modal hid.
+        ...(handoffTargetProvider === "codex"
+          ? {
+            fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(handoffTargetDescriptor)
+              ? "ultrafast" as const
+              : null,
+          }
+          : {}),
         claudePermissionMode: handoffClaudePermissionMode,
         codexApprovalPolicy: handoffCodexApprovalPolicy,
         codexSandbox: handoffCodexSandbox,
@@ -12765,6 +12803,7 @@ export function AgentChatPane({
     handoffCodexConfigSource,
     handoffTargetDescriptor,
     handoffFastMode,
+    handoffFastTier,
     handoffForkPoint,
     handoffCodexSandbox,
     handoffCursorConfigValues,
@@ -15310,7 +15349,7 @@ export function AgentChatPane({
               )}
               aria-pressed={handoffFastMode}
               aria-label="Fast mode for handoff"
-              onClick={() => setHandoffFastMode((current) => !current)}
+              onClick={() => handleHandoffFastModeChange(!handoffFastMode)}
             >
               <Lightning size={12} weight="fill" />
               Fast
@@ -16420,11 +16459,18 @@ export function AgentChatPane({
                   fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
                 });
                 setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
-                setFastModeState(reconciledControls.fastMode);
+                // Ultrafast carries over only to a model that offers it too.
+                setFastModeState(
+                  reconciledControls.fastMode,
+                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+                );
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else if (options) {
                 if (presetEffort !== undefined) setReasoningEffort(presetEffort);
-                setFastModeState(options.fastMode, options.fastTier ?? null);
+                setFastModeState(
+                  options.fastMode,
+                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+                );
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else {
                 setCursorCloudServiceTier(nextCursorCloudTier);
@@ -17724,7 +17770,8 @@ export function AgentChatPane({
           reasoningEffort={handoffReasoningEffort}
           onReasoningEffortChange={setHandoffReasoningEffort}
           fastMode={handoffFastMode}
-          onFastModeChange={setHandoffFastMode}
+          fastTier={handoffFastTier}
+          onFastModeChange={handleHandoffFastModeChange}
           nativeControls={handoffNativeControlState}
           onNativeControlsChange={applyHandoffNativeControls}
           onOpenSignIn={openProviderSignIn}

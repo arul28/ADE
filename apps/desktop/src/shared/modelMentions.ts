@@ -318,9 +318,10 @@ export function rankComposerModelSuggestions<T extends ComposerModelSuggestion>(
 export type ComposerModelRankOptions = {
   /**
    * Model ids the user picked recently, most recent first (the model picker's
-   * synced recents). A recent model that matches the query sorts above every
-   * other match, newest first, so the route you always pick is the top row
-   * instead of one behind "+ N more". The query still decides what matches.
+   * synced recents). Among models that match the query equally well, recent
+   * ones lead, newest first, so the route you always pick is the top row
+   * instead of one behind "+ N more". A better match still wins: "@de" puts
+   * DeepSeek above a recent Claude model that only contains "de".
    */
   recentModelIds?: readonly string[];
 };
@@ -354,10 +355,12 @@ export function rankComposerModelMatches<T extends ComposerModelSuggestion>(
   options.recentModelIds?.forEach((id, index) => {
     if (!recentRank.has(id)) recentRank.set(id, index);
   });
-  // Stable: recents keep recency order among themselves, the rest keep rank order.
+  // Stable: within one match score, recents lead in recency order and the
+  // rest keep their rank order.
   const ordered = recentRank.size
     ? [...scored].sort((a, b) =>
-      (recentRank.get(a.item.id) ?? recentRank.size) - (recentRank.get(b.item.id) ?? recentRank.size))
+      (a.score - b.score)
+      || ((recentRank.get(a.item.id) ?? recentRank.size) - (recentRank.get(b.item.id) ?? recentRank.size)))
     : scored;
   return {
     entries: ordered.map((entry) => ({ model: entry.item.model, score: entry.score })),

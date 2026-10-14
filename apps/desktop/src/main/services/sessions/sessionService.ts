@@ -303,6 +303,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(fastMode !== null ? { fastMode } : {}),
+      ...(fastMode === true && launchRecord.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),
       ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),

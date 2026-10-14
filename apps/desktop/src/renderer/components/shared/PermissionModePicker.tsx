@@ -309,11 +309,11 @@ function PermissionModeMenu<Value extends string>({
   const shownTone = PERMISSION_MODE_TONE_STYLES[shown?.tone ?? "slate"];
   const selectedTone = PERMISSION_MODE_TONE_STYLES[selected?.tone ?? "slate"];
 
+  // Focus the current mode once, as the menu opens; a later pick closes it.
+  const openedOnIndexRef = useRef(selectedIndex);
   useEffect(() => {
-    const frame = requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus({ preventScroll: true }));
+    const frame = requestAnimationFrame(() => optionRefs.current[openedOnIndexRef.current]?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
-    // Focus the current mode once, as the menu opens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const moveFocus = (index: number) => {

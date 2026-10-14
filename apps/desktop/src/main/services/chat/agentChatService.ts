@@ -5702,9 +5702,15 @@ function rememberCodexCatalogServiceTiers(keys: Array<string | null | undefined>
  * catalog that offered it, so callers keep a stored choice until one says no.
  */
 function codexModelOffersUltrafast(session: AgentChatSession): boolean | null {
-  const descriptor = resolveSessionModelDescriptor(session);
+  return codexDescriptorOffersUltrafast(resolveSessionModelDescriptor(session), [session.modelId, session.model]);
+}
+
+function codexDescriptorOffersUltrafast(
+  descriptor: ModelDescriptor | null | undefined,
+  extraKeys: Array<string | null | undefined> = [],
+): boolean | null {
   if (modelSupportsUltrafast(descriptor)) return true;
-  for (const key of [descriptor?.providerModelId, descriptor?.id, session.modelId, session.model]) {
+  for (const key of [descriptor?.providerModelId, descriptor?.id, ...extraKeys]) {
     const tiers = key ? codexCatalogServiceTiersByModel.get(key.trim()) : undefined;
     if (tiers) return tiers.some((tier) => tier.trim().toLowerCase() === "ultrafast");
   }
@@ -45004,7 +45010,12 @@ export function createAgentChatService(args: {
           : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
-          ...(initialFastMode && normalizeFastTier(requestedFastTier) ? { fastTier: "ultrafast" as const } : {}),
+          // Ultrafast is a Codex tier; never stored for another provider, or
+          // for a model whose catalog says it lacks the tier.
+          ...(initialFastMode && normalizeFastTier(requestedFastTier) && effectiveProvider === "codex"
+            && codexDescriptorOffersUltrafast(resolvedDescriptor) !== false
+            ? { fastTier: "ultrafast" as const }
+            : {}),
           ...(initialCursorCloudServiceTier !== undefined
             ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
             : {}),
@@ -45572,7 +45583,11 @@ export function createAgentChatService(args: {
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
       fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
-      ...(args.fastMode === undefined && args.codexFastMode === undefined && managed.session.fastTier === "ultrafast"
+      // The tier the handoff names; a handoff that names neither Fast nor the
+      // tier keeps the source chat's.
+      ...((args.fastTier !== undefined
+        ? args.fastTier === "ultrafast"
+        : args.fastMode === undefined && args.codexFastMode === undefined && managed.session.fastTier === "ultrafast")
         ? { fastTier: "ultrafast" as const }
         : {}),
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
@@ -46376,6 +46391,10 @@ export function createAgentChatService(args: {
     const targetFastMode = args.fastMode !== undefined
       ? args.fastMode
       : managed.session.fastMode;
+    const targetFastTier = targetFastMode === true
+      && (args.fastTier !== undefined ? args.fastTier === "ultrafast" : args.fastMode === undefined && managed.session.fastTier === "ultrafast")
+      ? "ultrafast" as const
+      : null;
     const targetClaudePermissionMode = args.claudePermissionMode || managed.session.claudePermissionMode;
     const targetCodexApprovalPolicy = args.codexApprovalPolicy || managed.session.codexApprovalPolicy;
     const targetCodexSandbox = args.codexSandbox || managed.session.codexSandbox;
@@ -46409,6 +46428,7 @@ export function createAgentChatService(args: {
         targetModelId: targetDescriptor.id,
         ...(targetReasoningEffort !== undefined ? { reasoningEffort: targetReasoningEffort } : {}),
         ...(targetFastMode !== undefined ? { fastMode: targetFastMode } : {}),
+        ...(targetFastTier ? { fastTier: targetFastTier } : {}),
         ...(targetClaudePermissionMode ? { claudePermissionMode: targetClaudePermissionMode } : {}),
         ...(targetCodexApprovalPolicy ? { codexApprovalPolicy: targetCodexApprovalPolicy } : {}),
         ...(targetCodexSandbox ? { codexSandbox: targetCodexSandbox } : {}),
@@ -47288,6 +47308,10 @@ export function createAgentChatService(args: {
         sessionProfile: "workflow",
         reasoningEffort: pickHandoffReasoningEffort(targetDescriptor, capsule.target.reasoningEffort),
         fastMode: capsule.target.fastMode,
+        ...(capsule.target.fastMode === true && capsule.target.fastTier === "ultrafast"
+          && targetProvider === "codex" && codexDescriptorOffersUltrafast(targetDescriptor) !== false
+          ? { fastTier: "ultrafast" as const }
+          : {}),
         claudePermissionMode: capsule.target.claudePermissionMode,
         codexApprovalPolicy: capsule.target.codexApprovalPolicy,
         codexSandbox: capsule.target.codexSandbox,
@@ -63764,10 +63788,13 @@ export function createAgentChatService(args: {
         delete managed.session.fastTier;
       }
     }
-    // The tier rides with Fast. An update that names Fast without a tier means
-    // plain Fast; one that names only the tier changes just the tier.
-    if (requestedFastTier !== undefined || (fastMode !== undefined && normalizeFastMode(fastMode))) {
-      if (managed.session.fastMode === true && normalizeFastTier(requestedFastTier)) {
+    // Only an update that names the tier changes it. Clients that know Fast
+    // alone (the TUI, the phone, older desktops) resend `fastMode: true` with
+    // every model or effort change; reading that as "plain Fast" would drop an
+    // Ultrafast choice the user made elsewhere. Fast off already cleared it.
+    if (requestedFastTier !== undefined) {
+      if (managed.session.fastMode === true && normalizeFastTier(requestedFastTier)
+        && managed.session.provider === "codex" && codexModelOffersUltrafast(managed.session) !== false) {
         managed.session.fastTier = "ultrafast";
       } else {
         delete managed.session.fastTier;
@@ -63780,10 +63807,13 @@ export function createAgentChatService(args: {
     // not "unsupported": a Cursor model the catalog in memory cannot answer for
     // keeps it (the switch never waits on a fetch), and the send-time resolver
     // still applies it only where Cursor has a tier.
-    // Ultrafast is offered per model; carried to a model without it, it would
-    // resurface on the next model that has it, which the user never chose.
+    // Ultrafast is offered per model. A switch keeps it only when this update
+    // asks for it (the picker read the new model's catalog) or the new model is
+    // known to offer it; otherwise it would be sent to a model without the
+    // tier, or resurface later on one the user never chose it for.
     if (modelSwitched && managed.session.fastTier === "ultrafast"
-      && (managed.session.provider !== "codex" || codexModelOffersUltrafast(managed.session) === false)) {
+      && !normalizeFastTier(requestedFastTier)
+      && (managed.session.provider !== "codex" || codexModelOffersUltrafast(managed.session) !== true)) {
       delete managed.session.fastTier;
     }
     if (modelSwitched && managed.session.fastMode === true) {

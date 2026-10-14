@@ -14,21 +14,16 @@ import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { PermissionModeGlyph, permissionModeToneRgb } from "../shared/PermissionModePicker";
-import { EffortMeter, reasoningEffortToneRgb } from "../shared/ModelPicker/ReasoningEffortPicker";
+import {
+  EffortMeter,
+  reasoningEffortToneRgb,
+  reasoningEffortTrackLabel,
+} from "../shared/ModelPicker/ReasoningEffortPicker";
 import { toneText } from "../lanes/laneDesignTokens";
 import { permissionToneTextClass } from "../../lib/modelPermissionOptions";
 import type { ModelChipOption, ModelChipSegment } from "./composerModelChip";
 
 const PERMISSION_ROW_HEIGHT = 26;
-
-/** Short words on a crowded track; the header still names the full level. */
-function trackLabel(option: ModelChipOption, count: number): string {
-  if (count <= 4) return option.label;
-  if (option.value === "minimal") return "Min";
-  if (option.value === "medium") return "Med";
-  if (option.value === "xhigh") return "XHigh";
-  return option.label;
-}
 
 export function ModelChipSegmentMenu({
   anchor,
@@ -147,7 +142,7 @@ export function ModelChipSegmentMenu({
                 style={lit ? { color: toneText(`rgb(${rgb})`) } : undefined}
                 onClick={() => onPick(optionIndex)}
               >
-                <span className="truncate">{trackLabel(option, options.length)}</span>
+                <span className="truncate">{reasoningEffortTrackLabel(option.value, options.length, option.label)}</span>
               </div>
             );
           })}

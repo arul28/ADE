@@ -2332,6 +2332,8 @@ export type SyncStartCliSessionArgs = {
   modelId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast";
   /** @deprecated Use fastMode. Accepted for older callers. */
   codexFastMode?: boolean | null;
   /**
