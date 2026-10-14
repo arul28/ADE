@@ -2795,6 +2795,13 @@ type ClaudeRuntime = {
    */
   resultCostBaseline: number | null;
   warmQuery: WarmQuery | null;
+  /**
+   * The id a warm-up opened a new thread under. Claude Code writes a thread's
+   * transcript with its first message, so until a turn takes the warm query
+   * there is nothing on disk to resume. `persistChatState` leaves it out, so a
+   * runtime started after this one (a model switch, a restart) starts fresh.
+   */
+  unwrittenWarmSessionId?: string | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
   /** Resolves the current warmup race so waiters can stop blocking immediately. */
@@ -4966,6 +4973,12 @@ type ManagedChatSession = {
   seededPiSessionId?: string;
   seededPiSessionFile?: string;
   seededAcpSessionId?: string;
+  /**
+   * The launch routes a model switch left (see `updateSession`). A persist
+   * with no live runtime restores `presetId` / `credentialId` from disk, which
+   * would put a route the user just left back on the chat.
+   */
+  leftLaunchRoute?: { preset: boolean; credential: boolean };
   /**
    * Degradation notes already emitted for this chat. Mirrors the persisted set
    * so a note stays once-per-session across a runtime restart, and so W6 does
@@ -17830,7 +17843,13 @@ export function createAgentChatService(args: {
       : managed.runtimeInvalidated
         ? siblingBrainOwnerOnDisk(managed.session.id)
         : prevPersisted?.runtimeOwner ?? null;
-    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+    // A thread no message has been sent on is not on disk yet, so it is not
+    // saved (nor mirrored to the pointer table below): a runtime started after
+    // this one would resume it and fail with "No conversation found".
+    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude"
+      && managed.runtime.sdkSessionId !== managed.runtime.unwrittenWarmSessionId
+      ? managed.runtime.sdkSessionId
+      : null;
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
       : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
@@ -18010,10 +18029,10 @@ export function createAgentChatService(args: {
       ...((managed.session.instanceId ?? prevPersisted?.instanceId)
         ? { instanceId: managed.session.instanceId ?? prevPersisted?.instanceId }
         : {}),
-      ...((managed.session.presetId ?? prevPersisted?.presetId)
+      ...((managed.session.presetId ?? (managed.leftLaunchRoute?.preset ? undefined : prevPersisted?.presetId))
         ? { presetId: managed.session.presetId ?? prevPersisted?.presetId }
         : {}),
-      ...((managed.session.credentialId ?? prevPersisted?.credentialId)
+      ...((managed.session.credentialId ?? (managed.leftLaunchRoute?.credential ? undefined : prevPersisted?.credentialId))
         ? { credentialId: managed.session.credentialId ?? prevPersisted?.credentialId }
         : {}),
       ...(managed.runtime?.kind === "pi" && !managed.runtimeInvalidated
@@ -18035,7 +18054,7 @@ export function createAgentChatService(args: {
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
-          ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
+          ? { sdkSessionId: liveClaudeSdkSessionId ?? undefined }
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.forkFromSdkSessionId
         ? { forkFromSdkSessionId: managed.runtime.forkFromSdkSessionId }
@@ -23200,7 +23219,15 @@ export function createAgentChatService(args: {
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
-      const fireAt = nextChatScheduledCronFireAt(cron, Date.now()) ?? undefined;
+      // The provider stamps the job's real next run, its scheduler's per-job
+      // offset included, so ten jobs sharing a cron do not all fire together.
+      // A local cron parse cannot know that offset and reads minutes early, so
+      // prefer the provider's number and fall back to the parse for a CLI that
+      // does not send `nextFireAt`.
+      const providerNextFireAt = typeof output.nextFireAt === "number" && Number.isFinite(output.nextFireAt)
+        ? output.nextFireAt
+        : null;
+      const fireAt = providerNextFireAt ?? nextChatScheduledCronFireAt(cron, Date.now()) ?? undefined;
       if (recurring) rememberActiveProviderCron(runtime, id, { ...args, ...output, prompt });
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
@@ -41491,8 +41518,9 @@ export function createAgentChatService(args: {
       // ADE renders MCP Apps. With this the CLI declares the
       // `io.modelcontextprotocol/ui` extension to each MCP server, so a server
       // that asks before it registers a tool with a page is told so. Read in
-      // the CLI (2.1.293), not documented: recheck on a bump. Without it apps
-      // still work for servers that do not ask.
+      // the CLI (2.1.293, re-checked 2.1.300 — SDK 0.3.300), not documented:
+      // recheck on a bump. Without it apps still work for servers that do not
+      // ask.
       CLAUDE_CODE_MCP_APPS_HOST: "1",
     };
     // The account's own prompt cache choice. A preset or stored credential
@@ -42410,6 +42438,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
+    runtime.unwrittenWarmSessionId = null;
     claudePluginUi.attach(managed.session.id, sessionQuery);
     observeClaudeInitializationResult(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
@@ -42753,6 +42782,10 @@ export function createAgentChatService(args: {
         } else {
           assignedSessionId = randomUUID();
           runtime.sdkSessionId = assignedSessionId;
+          // Before any persist: the caller persists as soon as this returns.
+          // A fork writes under the id it was given and re-forks from its
+          // source if this one is lost, so only a brand-new thread is marked.
+          runtime.unwrittenWarmSessionId = assignedSessionId;
           options.sessionId = assignedSessionId;
         }
         logger.info("agent_chat.claude_prewarm_start", {
@@ -63362,11 +63395,29 @@ export function createAgentChatService(args: {
       // purpose — it still drives the runtime teardown and title re-adoption
       // below, which any model switch needs.
       const providerChanged = previousProvider !== nextProvider;
+      // A preset names the model it launches, and every launch reads the
+      // preset's model over the row's. Picking a model is leaving the preset:
+      // kept, the row would name the new model while the chat ran on the old
+      // one. A stored key only bills the launch, so it stays for a model of
+      // the same provider and goes with a switch to another.
+      const leavesPreset = Boolean(managed.session.presetId?.trim());
+      const leavesCredential = providerChanged && Boolean(managed.session.credentialId?.trim());
       const modelChanged =
         providerChanged
+        || leavesPreset
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
       modelSwitched = modelChanged;
+      if (leavesPreset || leavesCredential) {
+        if (leavesPreset) delete managed.session.presetId;
+        if (leavesCredential) delete managed.session.credentialId;
+        managed.leftLaunchRoute = {
+          preset: leavesPreset || Boolean(managed.leftLaunchRoute?.preset),
+          credential: leavesCredential || Boolean(managed.leftLaunchRoute?.credential),
+        };
+        sessionLaunchPlanCache.delete(managed.session.id);
+        launchPlanNoticeBySession.delete(managed.session.id);
+      }
       if (providerChanged) {
         // An account belongs to one provider. The new provider starts on its
         // own default rather than resolving the old provider's account id.

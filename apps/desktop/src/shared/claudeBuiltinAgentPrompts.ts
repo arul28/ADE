@@ -12,12 +12,12 @@
  * SOURCE: originally extracted from the Claude Code binary shipped with
  * `@anthropic-ai/claude-agent-sdk@0.3.258` — CLI version 2.1.258, build
  * 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1 —
- * and re-checked against CLI 2.1.280 (SDK 0.3.280), CLI 2.1.284 (SDK 0.3.284)
- * and CLI 2.1.287 (SDK 0.3.287) when the pin moved: Explore
- * and Plan are still the same templates (tool-name holes where Glob, Grep,
- * Read, and Bash are filled) and general-purpose's shared lines are unchanged,
- * so this copy still tracks the pinned binary. The prompts below are therefore
- * the 2.1.287 copies; only the 2.1.258 extraction has recorded build metadata,
+ * and re-checked against CLI 2.1.280 (SDK 0.3.280), CLI 2.1.284 (SDK 0.3.284),
+ * CLI 2.1.287 (SDK 0.3.287) and CLI 2.1.300 (SDK 0.3.300) when the pin moved.
+ * At 2.1.300 every hole-free line of all three prompts is still present in the
+ * binary verbatim — the widest gap this check has spanned — so this copy still
+ * tracks the pinned binary. The prompts below are therefore unchanged since the
+ * 2.1.287 re-check; only the 2.1.258 extraction has recorded build metadata,
  * because the CLI does not expose it.
  *
  * FIDELITY: the built-ins build their prompts from a template whose holes are
