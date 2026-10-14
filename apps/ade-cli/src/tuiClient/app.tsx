@@ -4023,6 +4023,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Cross-surface model picker favorites/recents — authoritative copy lives in ade-cli.
 	  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
 	  const [modelPickerRecents, setModelPickerRecents] = useState<string[]>([]);
+  // Read by the @ suggestion effect without re-running it on every recents change.
+  const modelPickerRecentsRef = useRef<string[]>([]);
+  modelPickerRecentsRef.current = modelPickerRecents;
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
 	  const [modelCatalogRefreshingProvider, setModelCatalogRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
 
@@ -8272,7 +8275,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .filter(matchesMentionQuery);
     // Models show only when the query names one (same rule as desktop), so a
     // plain @ search is not flooded with the whole catalog.
-    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query);
+    // Recently picked models lead, as on desktop.
+    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query, undefined, {
+      recentModelIds: modelPickerRecentsRef.current,
+    });
     const modelSuggestions: MentionSuggestion[] = rankedModels.rows.map((model) => ({
       kind: "model" as const,
       label: model.title,
@@ -14335,6 +14341,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A model chip is pure text: the token carries the model, the thinking
       // level, and the permission mode. The follow-up steps rewrite it.
       const model = suggestion.model;
+      setModelPickerRecents((prev) => [model.modelId, ...prev.filter((entry) => entry !== model.modelId)].slice(0, 10));
+      const recentsConn = connectionRef.current;
+      if (recentsConn) {
+        void pushModelPickerRecent(recentsConn, model.modelId)
+          .then((recents) => setModelPickerRecents(recents))
+          .catch(() => undefined);
+      }
       const mention: ModelMention = {
         modelId: model.modelId,
         effort: model.defaultEffort,

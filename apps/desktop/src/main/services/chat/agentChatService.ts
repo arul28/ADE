@@ -854,6 +854,8 @@ import {
   pickDefaultDroidDescriptorFromCliList,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
+  modelSupportsUltrafast,
+  normalizeFastTier,
   resolveModelAlias,
   resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
@@ -1985,6 +1987,8 @@ type PersistedChatState = {
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" when Fast asks for Codex's Ultrafast tier; absent is plain Fast. */
+  fastTier?: "ultrafast";
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Retained until Cursor accepts a cloud create/follow-up, including across restarts. */
   cursorCloudPendingRequest?: PersistedCursorCloudPendingRequest | null;
@@ -5505,7 +5509,7 @@ function isClaudeUltracodeEffort(effort: string | null | undefined): boolean {
   return effort === "ultracode";
 }
 
-type CodexServiceTier = "fast";
+type CodexServiceTier = "fast" | "ultrafast";
 
 function normalizeFastMode(value: unknown): boolean {
   return value === true;
@@ -5677,9 +5681,44 @@ function sessionEffectiveFastMode(
   return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
+/**
+ * Speed tiers the Codex catalog last offered per model, keyed by the app-server
+ * model id and ADE's descriptor id. The registry ships `fast` only; Ultrafast
+ * is granted per account, so only a live `model/list` can say a model has it.
+ */
+const codexCatalogServiceTiersByModel = new Map<string, readonly string[]>();
+
+function rememberCodexCatalogServiceTiers(keys: Array<string | null | undefined>, tiers: readonly string[] | undefined): void {
+  for (const key of keys) {
+    const trimmed = key?.trim();
+    if (trimmed) codexCatalogServiceTiersByModel.set(trimmed, tiers ?? []);
+  }
+}
+
+/**
+ * Whether this chat's Codex model offers Ultrafast: true or false once a
+ * catalog has answered for it, null before (a fresh brain has listed nothing).
+ * Unknown is not "unsupported": the user could only pick the tier from a
+ * catalog that offered it, so callers keep a stored choice until one says no.
+ */
+function codexModelOffersUltrafast(session: AgentChatSession): boolean | null {
+  const descriptor = resolveSessionModelDescriptor(session);
+  if (modelSupportsUltrafast(descriptor)) return true;
+  for (const key of [descriptor?.providerModelId, descriptor?.id, session.modelId, session.model]) {
+    const tiers = key ? codexCatalogServiceTiersByModel.get(key.trim()) : undefined;
+    if (tiers) return tiers.some((tier) => tier.trim().toLowerCase() === "ultrafast");
+  }
+  return null;
+}
+
 function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier } {
   if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
-    return { serviceTier: "fast" };
+    // A stored Ultrafast on a model whose catalog lacks it runs as plain Fast.
+    return {
+      serviceTier: session.fastTier === "ultrafast" && codexModelOffersUltrafast(session) !== false
+        ? "ultrafast"
+        : "fast",
+    };
   }
   // Verified against a live app-server on thread/start: omitting the key inherits
   // the user's config.toml (service_tier = "priority" -> "priority"; unset -> no
@@ -17878,6 +17917,7 @@ export function createAgentChatService(args: {
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
+      ...(managed.session.fastMode === true && managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       ...(managed.session.cursorCloudServiceTier !== undefined
         ? { cursorCloudServiceTier: managed.session.cursorCloudServiceTier }
         : prevPersisted?.cursorCloudServiceTier !== undefined
@@ -18359,6 +18399,7 @@ export function createAgentChatService(args: {
         normalizeCursorConfigValueRecord(record.cursorConfigValues),
       );
       const fastMode = foldedCursorFast.fastMode === true;
+      const fastTier = fastMode ? normalizeFastTier(record.fastTier) : null;
       const cursorConfigValues = foldedCursorFast.configValues ?? undefined;
       const callerMcpServers = normalizeCallerMcpServers(record.mcpServers);
       const strictMcpConfig = typeof record.strictMcpConfig === "boolean"
@@ -18599,6 +18640,7 @@ export function createAgentChatService(args: {
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
+        ...(fastTier ? { fastTier } : {}),
         ...(cursorCloudServiceTier !== undefined ? { cursorCloudServiceTier } : {}),
         ...(cursorCloudPendingRequest !== undefined ? { cursorCloudPendingRequest } : {}),
         ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
@@ -20083,6 +20125,7 @@ export function createAgentChatService(args: {
         instanceId: alternate.instanceId,
         ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
         ...(typeof managed.session.fastMode === "boolean" ? { fastMode: managed.session.fastMode } : {}),
+        ...(managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
         ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
@@ -25305,6 +25348,7 @@ export function createAgentChatService(args: {
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
+        ...(persisted?.fastMode === true && persisted.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         ...(persisted?.cursorCloudServiceTier !== undefined
           ? { cursorCloudServiceTier: persisted.cursorCloudServiceTier }
           : {}),
@@ -26245,6 +26289,7 @@ export function createAgentChatService(args: {
       if (!fastArgs || fastArgs === "toggle") {
         const enabled = !current;
         managed.session.fastMode = enabled;
+        if (!enabled) delete managed.session.fastTier;
         if (runtime.threadResumed) {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
@@ -26260,6 +26305,7 @@ export function createAgentChatService(args: {
         const enabled = fastArgs === "on";
         const changed = current !== enabled;
         managed.session.fastMode = enabled;
+        if (!enabled) delete managed.session.fastTier;
         if (changed && runtime.threadResumed) {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
@@ -43351,6 +43397,7 @@ export function createAgentChatService(args: {
         const extras: AgentChatModelInfo[] = [];
         for (const entry of appServerModels) {
           const descriptor = resolveModelDescriptorForProvider(entry.id, "codex");
+          rememberCodexCatalogServiceTiers([entry.id, descriptor?.id, descriptor?.providerModelId], entry.serviceTiers);
           if (descriptor) {
             byRegistryId.set(descriptor.id, entry);
           } else {
@@ -44333,6 +44380,7 @@ export function createAgentChatService(args: {
     sessionProfile,
     reasoningEffort,
     fastMode: requestedFastModeArg,
+    fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
     devinCloud: requestedDevinCloud,
     codexFastMode: requestedLegacyFastModeArg,
@@ -44956,6 +45004,7 @@ export function createAgentChatService(args: {
           : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
+          ...(initialFastMode && normalizeFastTier(requestedFastTier) ? { fastTier: "ultrafast" as const } : {}),
           ...(initialCursorCloudServiceTier !== undefined
             ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
             : {}),
@@ -45523,6 +45572,9 @@ export function createAgentChatService(args: {
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
       fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
+      ...(args.fastMode === undefined && args.codexFastMode === undefined && managed.session.fastTier === "ultrafast"
+        ? { fastTier: "ultrafast" as const }
+        : {}),
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -54618,12 +54670,14 @@ export function createAgentChatService(args: {
     } else if (!fastArgs || fastArgs === "toggle") {
       const enabled = !current;
       managed.session.fastMode = enabled;
+      if (!enabled) delete managed.session.fastTier;
       message = `Fast mode is ${enabled ? "on" : "off"}.`;
     } else if (fastArgs === "status") {
       message = `Fast mode is ${current ? "on" : "off"}.`;
     } else if (fastArgs === "on" || fastArgs === "off") {
       const enabled = fastArgs === "on";
       managed.session.fastMode = enabled;
+      if (!enabled) delete managed.session.fastTier;
       message = `Fast mode is ${enabled ? "on" : "off"}.`;
     } else {
       message = "Usage: /fast [on|off|status].";
@@ -59034,6 +59088,9 @@ export function createAgentChatService(args: {
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
       fastMode: (liveSession?.fastMode ?? persisted?.fastMode) === true,
+      ...((liveSession ? liveSession.fastMode === true && liveSession.fastTier === "ultrafast" : persisted?.fastMode === true && persisted.fastTier === "ultrafast")
+        ? { fastTier: "ultrafast" as const }
+        : {}),
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
       ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
@@ -63107,6 +63164,7 @@ export function createAgentChatService(args: {
     modelId,
     reasoningEffort,
     fastMode: requestedFastModeArg,
+    fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode,
@@ -63703,6 +63761,16 @@ export function createAgentChatService(args: {
         managed.session.fastMode = true;
       } else {
         delete managed.session.fastMode;
+        delete managed.session.fastTier;
+      }
+    }
+    // The tier rides with Fast. An update that names Fast without a tier means
+    // plain Fast; one that names only the tier changes just the tier.
+    if (requestedFastTier !== undefined || (fastMode !== undefined && normalizeFastMode(fastMode))) {
+      if (managed.session.fastMode === true && normalizeFastTier(requestedFastTier)) {
+        managed.session.fastTier = "ultrafast";
+      } else {
+        delete managed.session.fastTier;
       }
     }
     // Fast is a tier of one model, not a chat-wide preference. A switch keeps
@@ -63712,10 +63780,17 @@ export function createAgentChatService(args: {
     // not "unsupported": a Cursor model the catalog in memory cannot answer for
     // keeps it (the switch never waits on a fetch), and the send-time resolver
     // still applies it only where Cursor has a tier.
+    // Ultrafast is offered per model; carried to a model without it, it would
+    // resurface on the next model that has it, which the user never chose.
+    if (modelSwitched && managed.session.fastTier === "ultrafast"
+      && (managed.session.provider !== "codex" || codexModelOffersUltrafast(managed.session) === false)) {
+      delete managed.session.fastTier;
+    }
     if (modelSwitched && managed.session.fastMode === true) {
       const supportsFast = sessionModelSupportsFastMode(managed);
       if (supportsFast === false) {
         delete managed.session.fastMode;
+        delete managed.session.fastTier;
         logger.info("agent_chat.fast_mode_cleared_on_model_switch", {
           sessionId,
           provider: managed.session.provider,

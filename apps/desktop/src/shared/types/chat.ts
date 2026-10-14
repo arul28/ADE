@@ -2885,6 +2885,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   /** Cursor Cloud service tier; absent/null means let Cursor choose. */
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
@@ -3104,6 +3110,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
@@ -3954,6 +3966,12 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
@@ -5687,6 +5705,12 @@ export type AgentChatUpdateSessionArgs = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;

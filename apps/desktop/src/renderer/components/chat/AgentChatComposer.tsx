@@ -65,6 +65,7 @@ import {
   modelSupportsFastMode,
   resolveOpenCodeFastEffortSelection,
   type ProviderFamily,
+  type FastTier,
 } from "../../../shared/modelRegistry";
 import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
@@ -138,6 +139,7 @@ import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFe
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
@@ -1987,6 +1989,7 @@ export function AgentChatComposer({
   reasoningEffort,
   effectiveReasoningEffort,
   fastMode = false,
+  fastTier = null,
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
@@ -2183,6 +2186,8 @@ export function AgentChatComposer({
    */
   effectiveReasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Fast's tier for the selected model ("ultrafast" on Codex models that offer it). */
+  fastTier?: FastTier | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
@@ -2262,7 +2267,7 @@ export function AgentChatComposer({
    */
   onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
-  onFastModeChange?: (enabled: boolean) => void;
+  onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
   onDraftChange: (value: string, editIntent?: ComposerDraftEditIntent) => void;
   /** Persisted display labels keyed by their canonical mention token. */
@@ -2738,6 +2743,8 @@ export function AgentChatComposer({
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
   describeChipModelRef.current = describeChipModel;
+  // The model picker's synced recents (desktop, TUI, iOS); the `@` menu leads with them.
+  const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
     const ids = mentionModelIds ?? availableModelIds ?? [];
@@ -5970,6 +5977,8 @@ export function AgentChatComposer({
         restoreTextareaCaret(next.caret);
       }
     } else if (item.type === "model" && commandMenuTrigger) {
+      // Shared with the model picker's Recents, so the next `@` leads with it.
+      recordModelRecent(item.model.modelId);
       const mention = initialModelMention(item.model);
       const token = formatModelMentionToken(mention);
       if (useRichComposer) {
@@ -7264,6 +7273,7 @@ export function AgentChatComposer({
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
+                  fastTier={fastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {
@@ -7720,6 +7730,7 @@ export function AgentChatComposer({
               onMentionSearch={onSearchMentions}
               onPrSearch={onSearchPullRequests}
               modelOptions={modelMentionOptions}
+              recentModelIds={modelRecents}
               anchor={commandMenuAnchor}
               onSelect={handleCommandMenuSelect}
               onClose={closeCommandMenu}

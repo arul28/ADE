@@ -13,6 +13,7 @@ import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
   modelSupportsFastMode,
+  type FastTier,
   modelSupportsServiceTier,
   resolveCliProviderForModel,
   type AuthType,
@@ -29,6 +30,7 @@ import { POPOVER_SURFACE_CLASS } from "../../ui/paneMenuTokens";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { isPiRoutedModel, providerLabel, subProviderKey, subProviderLabel } from "./modelFacts";
+import { ModelRowLogo, ProviderLogo } from "../ProviderLogos";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
 import { ModelPickerEmptyState, ProviderRefreshError } from "./ModelPickerEmptyState";
 import { useModelFavorites } from "./useModelFavorites";
@@ -59,7 +61,8 @@ const SMART_BALANCE_FAMILIES: Partial<Record<ProviderFamily, { provider: "claude
   openai: { provider: "codex", label: "Codex CLI" },
 };
 
-const MODEL_ROW_ESTIMATED_HEIGHT = 44;
+/** A row (48px, fixed in ModelListRow) plus its 2px gap. Exact, so rows are never measured. */
+const MODEL_ROW_HEIGHT = 50;
 
 // Order matters for rail layout — top-tier providers first, then routers,
 // then local runtimes. Listed here (not derived from PROVIDER_LABELS) because
@@ -135,6 +138,8 @@ function modelRequiresConfiguration(model: ModelDescriptor): boolean {
  */
 export type ModelPickerSelection = {
   fastMode: boolean;
+  /** Present when Fast was turned on as Ultrafast from the row chip. */
+  fastTier?: FastTier;
   serviceTier?: CursorCloudServiceTier | null;
   /** Set when the selection came from a saved harness preset. */
   presetId?: string;
@@ -205,7 +210,9 @@ export type ModelPickerContentProps = {
    * affordance.
    */
   fastMode?: boolean;
-  onFastModeChange?: (next: boolean) => void;
+  /** The selected model's Fast tier, when Fast is on. */
+  fastTier?: FastTier | null;
+  onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** Why Fast cannot run with the selected model's other picks; shown on its chip. */
   fastModeUnavailableReason?: string | null;
   serviceTierMode?: boolean;
@@ -238,6 +245,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   registryFilter,
   fastMode = false,
   onFastModeChange,
+  fastTier = null,
   fastModeUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
@@ -377,8 +385,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }
   const [selection, setSelection] = useState<RailSelection>(initialSelectionRef.current);
 
-  useLayoutEffect(() => {
-    searchRef.current?.focus({ preventScroll: true });
+  // Focus after the first paint, not in a layout effect: focusing forces a
+  // style and layout pass, and on mount the popover has not been placed yet,
+  // so it ran a second, wasted pass before the panel could appear.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   const handleSelectRail = useCallback((next: RailSelection) => {
@@ -565,21 +577,25 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const modelListVirtualizer = useVirtualizer({
     count: visibleModels.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => MODEL_ROW_ESTIMATED_HEIGHT,
+    estimateSize: () => MODEL_ROW_HEIGHT,
     getItemKey: getVirtualModelKey,
-    overscan: 8,
+    // The list shows about seven rows. Every rendered row is restyled each
+    // time the popover is positioned as it opens, so keep the margin small.
+    overscan: 4,
   });
   const virtualRows = modelListVirtualizer.getVirtualItems();
   const renderedVirtualRows = virtualRows.length > 0 || visibleModels.length === 0
     ? virtualRows
-    : visibleModels.slice(0, 36).map((_, index) => ({
+    // Before the scroller has a height: one screen of rows, not a long list
+    // that is thrown away a frame later.
+    : visibleModels.slice(0, 10).map((_, index) => ({
         key: getVirtualModelKey(index),
         index,
-        start: index * MODEL_ROW_ESTIMATED_HEIGHT,
+        start: index * MODEL_ROW_HEIGHT,
       }));
   const virtualListHeight = Math.max(
     modelListVirtualizer.getTotalSize(),
-    visibleModels.length * MODEL_ROW_ESTIMATED_HEIGHT,
+    visibleModels.length * MODEL_ROW_HEIGHT,
   );
   useEffect(() => {
     modelListVirtualizer.scrollToIndex(0, { align: "start" });
@@ -776,11 +792,11 @@ export const ModelPickerContent = memo(function ModelPickerContent({
    * toggle that leaves both the selection and the open popover alone.
    */
   const handleFastChipChange = useCallback(
-    (modelId: string, next: boolean) => {
+    (modelId: string, next: boolean, tier?: FastTier) => {
       const model = expandedModels.find((m) => m.id === modelId);
       if (!model || !modelSupportsFastMode(model)) return;
       if (modelId === value) {
-        onFastModeChange?.(next);
+        onFastModeChange?.(next, next ? tier : undefined);
         return;
       }
       if (!isAvailableForUse(model)) {
@@ -831,6 +847,24 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   );
 
   const isEmpty = visibleModels.length === 0;
+
+  // Inside a provider's rail its own name is the panel title, so a row whose
+  // family is that provider drops it. A row from another maker routed through
+  // the rail (an OpenAI model in Pi) keeps its maker. Search, Favorites and
+  // Recents mix providers and keep it everywhere.
+  const providerScopedList = !searchActive && selection.startsWith("provider:");
+
+  // The raised list panel names what it shows, so the rail's icon-only tabs
+  // never leave you guessing which provider you are looking at.
+  const panelLabel = searchActive && !harnessesActive
+    ? `${visibleModels.length} ${visibleModels.length === 1 ? "result" : "results"}`
+    : selection === "harnesses"
+      ? "Custom"
+      : selection === "favorites"
+        ? "Favorites"
+        : selection === "recents"
+          ? "Recents"
+          : providerLabel(selection.slice("provider:".length));
 
   // Show the setup banner only when the active provider rail is unauthed AND
   // the caller has wired a sign-in handler. Auth status of `undefined` (no
@@ -904,7 +938,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       )}
       onKeyDown={handleListKeyDown}
     >
-      <div className="flex h-[380px] min-h-0">
+      {/* The rail and the search bar share one recessed L; the list sits on a
+          raised panel cut into it, so the eye lands on the models first. */}
+      <div className="flex h-[400px] min-h-0 bg-black/[0.2]">
         <ModelPickerRail
           entries={railEntries}
           selected={selection}
@@ -912,8 +948,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
           providerAuthStatus={effectiveAuth}
         />
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-1.5 border-b border-fg/[0.06] px-2.5 py-2">
-            <MagnifyingGlass size={13} className="shrink-0 text-muted-fg/55" />
+          <div className="flex h-11 shrink-0 items-center gap-2 pl-2 pr-2.5">
+            <MagnifyingGlass size={14} className="shrink-0 text-muted-fg/60" />
             <input
               ref={searchRef}
               type="text"
@@ -922,14 +958,17 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               placeholder={harnessesActive ? "Search custom..." : "Search models..."}
               aria-label={harnessesActive ? "Search custom setups" : "Search models"}
               className={cn(
-                "min-w-0 flex-1 bg-transparent text-[12px] font-medium leading-tight",
+                "min-w-0 flex-1 bg-transparent text-[13px] leading-tight tracking-tight",
                 // The field is auto-focused on open, which is right — you opened
                 // it to search. The focus *ring* is the part that reads as an
                 // error box around the whole row, so suppress the shadow-based
                 // ring too; `outline-none` alone does not cover it.
                 "text-fg placeholder:text-muted-fg/45 outline-none focus:outline-none focus-visible:outline-none",
                 "shadow-none focus:shadow-none focus-visible:shadow-none focus:ring-0 focus-visible:ring-0",
-                "border-b border-transparent focus-visible:border-fg/20",
+                // The global `input:focus` rule paints an accent border and ring
+                // and out-specifies utilities; this field sits in a bar that is
+                // already the focus affordance.
+                "border-0 focus:border-transparent! focus:shadow-none! transition-none!",
               )}
             />
             {/* The harnesses tab lists saved presets, not the model catalog, so
@@ -949,7 +988,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               }
               onClick={toggleAuthOnly}
               className={cn(
-                "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
+                "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[10px] font-medium leading-none transition-colors",
                 !authOnly
                   ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
                   : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/70 hover:border-fg/[0.12] hover:text-fg/85",
@@ -974,11 +1013,19 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             )}
           </div>
 
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-xl bg-(color:--work-popover-bg) shadow-[inset_1px_1px_0_rgba(255,255,255,0.05)]">
+          <div
+            className="flex shrink-0 items-center px-3.5 pb-1 pt-2.5 font-mono text-[10.5px] leading-none text-muted-fg/60"
+            data-model-picker-panel-label="true"
+          >
+            <span className="truncate">{panelLabel}</span>
+          </div>
+
 	          {providerTabs.length > 1 ? (
 	            <div
               role="group"
               aria-label={activeProviderFamily === "pi" ? "Pi providers" : "Provider sources"}
-	              className="flex gap-1 overflow-x-auto border-b border-fg/[0.05] bg-(color:--work-popover-bg) px-2.5 py-1 backdrop-blur"
+	              className="flex shrink-0 gap-1 overflow-x-auto px-3 pb-1.5 pt-1 [scrollbar-width:none]"
 	            >
 	              {providerTabs.map((tab) => {
 	                const active = tab.key === activeProviderTabKey;
@@ -990,7 +1037,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                     aria-pressed={active}
                     tabIndex={active ? 0 : -1}
                     className={cn(
-                      "h-6 shrink-0 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
+                      "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border pl-2 pr-2.5 text-[10px] font-medium leading-none transition-colors",
                       active
                         ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
                         : "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/65 hover:border-fg/[0.12] hover:text-fg/85",
@@ -998,6 +1045,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                     onClick={() => setActiveProviderTabKey(tab.key)}
                     onKeyDown={handleProviderTabKeyDown}
                   >
+                    <ProviderTabLogo tabKey={tab.key} model={tab.models[0]} />
                     {tab.label}
                   </button>
                 );
@@ -1009,7 +1057,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               model and still honours an explicit pick. This only says which
               account a new chat would start on. */}
           {smartBalanceNote ? (
-            <div className="border-b border-fg/[0.05] px-2.5 py-1 text-[10px] leading-tight text-muted-fg/60">
+            <div className="shrink-0 px-3.5 pb-1 text-[10px] leading-tight text-muted-fg/60">
               {smartBalanceNote}
             </div>
           ) : null}
@@ -1020,7 +1068,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             role="listbox"
 	            aria-label={harnessesActive ? "Custom" : "Models"}
 	            aria-busy={activeProviderRefreshing || undefined}
-	            className="relative flex-1 overflow-y-auto px-1.5 py-1"
+	            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-1.5 [scrollbar-width:thin]"
 	          >
 
 	            {harnessesActive ? (
@@ -1038,7 +1086,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 	            {activeOutOfView && activeModel ? (
               <div
                 className={cn(
-                  "sticky top-0 z-[5] mx-0.5 mb-1 rounded-md border border-violet-400/15 bg-violet-500/[0.08] px-2 py-1",
+                  "sticky top-0 z-[5] mx-0.5 mb-1 rounded-lg border border-fg/[0.08] bg-(color:--work-popover-bg) px-2.5 py-1 shadow-[0_4px_12px_rgba(0,0,0,0.25)]",
                   "text-[10px] font-medium text-fg/85 backdrop-blur",
                 )}
               >
@@ -1093,12 +1141,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                   return (
                     <div
                       key={virtualRow.key}
-                      ref={modelListVirtualizer.measureElement}
                         data-index={virtualRow.index}
                         data-focused={isFocused ? "true" : undefined}
                       className={cn(
                         "absolute left-0 top-0 w-full",
-                        isFocused && "outline-none ring-1 ring-violet-400/30 rounded-md",
+                        "pb-0.5",
+                        isFocused && "outline-none [&>[role=option]:not([data-active])]:bg-fg/[0.04]",
                       )}
                       style={{
                         transform: `translateY(${virtualRow.start}px)`,
@@ -1115,13 +1163,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onFocus={() => setFocusedIndex(virtualRow.index)}
                         onCopyId={handleCopyId}
                         fastModeOn={!serviceTierMode && fastMode && isActive}
+                        fastTier={isActive ? fastTier : null}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {
                           serviceTierMode: true,
                           serviceTier: isActive ? serviceTier : null,
                           onServiceTierChange: handleServiceTierChange,
-                        } : {})}                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
+                        } : {})}
+                        omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
+                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />
                     </div>
                   );
@@ -1131,9 +1182,40 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               </>
             )}
           </div>
+          </div>
         </div>
       </div>
     </div>
+  );
+});
+
+/**
+ * The maker's mark on a sub-provider tab ("Anthropic (via Cursor)" gets the
+ * Claude mark, "Cursor Composer" the Cursor one). Taken from the tab's first
+ * model, which shares the tab's maker by construction; a catch-all group mixes
+ * makers, so it gets no mark rather than a misleading one.
+ */
+const ProviderTabLogo = memo(function ProviderTabLogo({
+  tabKey,
+  model,
+}: {
+  tabKey: string;
+  model: ModelDescriptor | undefined;
+}) {
+  if (!model || /(^|[:/])other$/i.test(tabKey)) return null;
+  if (isPiRoutedModel(model) && model.piProviderId) {
+    return <ProviderLogo family={model.piProviderId} size={12} className="shrink-0" />;
+  }
+  return (
+    <ModelRowLogo
+      modelFamily={model.family}
+      cliCommand={model.cliCommand}
+      modelId={model.id}
+      providerModelId={model.providerModelId}
+      {...(model.openCodeProviderId ? { openCodeProviderId: model.openCodeProviderId } : {})}
+      size={12}
+      className="shrink-0"
+    />
   );
 });
 

@@ -309,15 +309,27 @@ export function rankComposerModelSuggestions<T extends ComposerModelSuggestion>(
   models: T[],
   rawQuery: string,
   limit = MAX_MODEL_RESULTS,
+  options: ComposerModelRankOptions = {},
 ): { rows: T[]; bestScore: number | null } {
-  const { entries, bestScore } = rankComposerModelMatches(models, rawQuery);
+  const { entries, bestScore } = rankComposerModelMatches(models, rawQuery, options);
   return { rows: entries.slice(0, Math.max(0, limit)).map((entry) => entry.model), bestScore };
 }
+
+export type ComposerModelRankOptions = {
+  /**
+   * Model ids the user picked recently, most recent first (the model picker's
+   * synced recents). A recent model that matches the query sorts above every
+   * other match, newest first, so the route you always pick is the top row
+   * instead of one behind "+ N more". The query still decides what matches.
+   */
+  recentModelIds?: readonly string[];
+};
 
 /** Ranked model matches with their scores, for the sectioned `@` menu. */
 export function rankComposerModelMatches<T extends ComposerModelSuggestion>(
   models: T[],
   rawQuery: string,
+  options: ComposerModelRankOptions = {},
 ): { entries: Array<{ model: T; score: number }>; bestScore: number | null } {
   const query = rawQuery.trim();
   const keyword = /^models?(?:[:\s]+|$)/i.exec(query);
@@ -338,8 +350,17 @@ export function rankComposerModelMatches<T extends ComposerModelSuggestion>(
     scored.push({ item: { id: model.modelId, model }, score: match.score, titlePrefixLength: match.titlePrefixLength });
   }
   scored.sort(compareChatMentionRanks);
+  const recentRank = new Map<string, number>();
+  options.recentModelIds?.forEach((id, index) => {
+    if (!recentRank.has(id)) recentRank.set(id, index);
+  });
+  // Stable: recents keep recency order among themselves, the rest keep rank order.
+  const ordered = recentRank.size
+    ? [...scored].sort((a, b) =>
+      (recentRank.get(a.item.id) ?? recentRank.size) - (recentRank.get(b.item.id) ?? recentRank.size))
+    : scored;
   return {
-    entries: scored.map((entry) => ({ model: entry.item.model, score: entry.score })),
+    entries: ordered.map((entry) => ({ model: entry.item.model, score: entry.score })),
     bestScore: scored[0]?.score ?? null,
   };
 }

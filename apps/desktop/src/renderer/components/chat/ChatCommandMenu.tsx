@@ -101,6 +101,8 @@ type ChatCommandMenuProps = {
    * with the whole catalog. A query that starts with "model" lists them all.
    */
   modelOptions?: ComposerModelSuggestion[];
+  /** Model ids picked recently, newest first; matching ones lead the Models section. */
+  recentModelIds?: readonly string[];
   /** Anchor position in viewport coordinates. */
   anchor: { top: number; left: number; bottom?: number } | null;
   /** Called when user selects an item. */
@@ -416,7 +418,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu(
-    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, modelOptions, anchor, onSelect, onClose, onNoMatches },
+    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, modelOptions, recentModelIds, anchor, onSelect, onClose, onNoMatches },
     ref,
   ) {
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -525,7 +527,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
       // `@`
       const sections: RawSection[] = [];
-      const models = rankComposerModelMatches(modelOptions ?? [], atQuery);
+      const models = rankComposerModelMatches(modelOptions ?? [], atQuery, { recentModelIds });
       sections.push({
         key: "models",
         label: "Models",
@@ -569,7 +571,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       });
 
       return { sections, bestFirst: true, fixedOrder: AT_SECTION_ORDER };
-    }, [trigger, rankedCommands, mentionResults, prResults, atQuery, fileResults, modelOptions]);
+    }, [trigger, rankedCommands, mentionResults, prResults, atQuery, fileResults, modelOptions, recentModelIds]);
 
     const bestKey = useMemo(() => lowestScore(rawSections.sections), [rawSections]);
 
