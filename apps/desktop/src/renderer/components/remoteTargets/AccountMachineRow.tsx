@@ -16,6 +16,7 @@ import {
   accountMachineConnectionState,
   accountMachineDisplayName,
   accountMachineInstallLabel,
+  accountMachineRowName,
 } from "../../../shared/accountDirectory";
 import type { MachinePresence } from "../../../shared/types/power";
 import {
@@ -245,7 +246,7 @@ export function AccountMachineRow({
               ) : (
                 <>
                   <span style={nameStyle} title={machine.adeHome ?? undefined}>
-                    {displayName}
+                    {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
                   </span>
                   {/* The install is named only when it is not the regular
                       app, which is the case where two rows share a name. */}
@@ -258,7 +259,9 @@ export function AccountMachineRow({
                   attribute is how a test pins that, since a CSS variable does
                   not survive to a style assertion. */}
               <span
-                aria-hidden
+                {...(presence === "connected"
+                  ? { role: "img", "aria-label": "Connected" }
+                  : { "aria-hidden": true })}
                 data-machine-presence={presence}
                 style={{
                   width: 7,

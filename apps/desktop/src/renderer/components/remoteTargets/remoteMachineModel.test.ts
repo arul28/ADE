@@ -14,7 +14,6 @@ import {
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
-  formatVersionSkewNote,
   isVersionSkewWarning,
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
@@ -394,35 +393,7 @@ describe("formatLastSeen", () => {
   });
 });
 
-describe("formatVersionSkewNote", () => {
-  it("names both machines and points the update at the older one", () => {
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.59",
-        remoteVersion: "1.2.57",
-        remoteName: "Arul's Mac Studio",
-      }),
-    ).toBe(
-      "This machine is on ADE 1.2.59. Arul's Mac Studio is on 1.2.57. They can still connect — update Arul's Mac Studio when you can.",
-    );
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.57",
-        remoteVersion: "1.2.59",
-        remoteName: "Arul's Mac Studio",
-      }),
-    ).toBe(
-      "This machine is on ADE 1.2.57. Arul's Mac Studio is on 1.2.59. They can still connect — update this machine when you can.",
-    );
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.59",
-        remoteVersion: "1.2.59",
-        remoteName: "Studio",
-      }),
-    ).toBeNull();
-  });
-
+describe("isVersionSkewWarning", () => {
   it("recognizes both the old jargon and the new version-skew copy", () => {
     expect(
       isVersionSkewWarning(

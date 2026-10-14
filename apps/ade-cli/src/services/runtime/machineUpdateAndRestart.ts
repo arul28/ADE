@@ -125,15 +125,14 @@ export type MachineUpdateControlsArgs = {
 const sameVersion = (left: string, right: string): boolean =>
   compareUpdateVersions(left, right) === 0;
 
-/** True when `version` is `targetVersion` or newer. */
+/**
+ * True when `version` is `targetVersion` or newer. An unknown own version never
+ * covers anything, so a brain that cannot say what it runs still updates.
+ */
 export function machineVersionCovers(version: string | null | undefined, targetVersion: string): boolean {
   const current = version?.trim();
   if (!current) return false;
-  try {
-    return compareUpdateVersions(current, targetVersion) >= 0;
-  } catch {
-    return false;
-  }
+  return compareUpdateVersions(current, targetVersion) >= 0;
 }
 
 /** The host half of "Update & restart", wired to this machine's installed runtime. */

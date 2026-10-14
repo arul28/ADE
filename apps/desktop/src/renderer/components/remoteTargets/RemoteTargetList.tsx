@@ -353,7 +353,7 @@ export function RemoteTargetList({
     .filter(([, attempt]) =>
       attempt.pendingVersion != null
       && machineUpdates.nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt))
-    .map(([id]) => id)
+    .map(([id, attempt]) => `${id}\t${attempt.pendingVersion}`)
     .sort()
     .join("\n");
   const sections = useMemo(() => {
@@ -368,9 +368,19 @@ export function RemoteTargetList({
     // A machine restarting for an update drops its connection on purpose.
     // It stays where it was, under Connected, until it is back or the update
     // gives up, instead of jumping to Available with an error.
-    const restartingIds = new Set(restartingKey ? restartingKey.split("\n") : []);
-    const restarting = (row: (typeof assigned.available)[number]): boolean =>
-      row.kind === "saved" && restartingIds.has(row.target.id);
+    const pendingById = new Map(
+      (restartingKey ? restartingKey.split("\n") : []).map((entry) => {
+        const [id, version] = entry.split("\t");
+        return [id, version] as const;
+      }),
+    );
+    // Once the machine reports the new version the update is over, and a
+    // later disconnect is an ordinary one.
+    const restarting = (row: (typeof assigned.available)[number]): boolean => {
+      if (row.kind !== "saved") return false;
+      const pending = pendingById.get(row.target.id);
+      return pending != null && (!row.version || isMachineVersionOutdated(row.version, pending));
+    };
     const moved = [...assigned.available, ...assigned.unavailable].filter(restarting);
     if (moved.length === 0) return assigned;
     return {

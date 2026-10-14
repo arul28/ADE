@@ -7,7 +7,7 @@ import {
   describeMachineUpdateAttempt,
   machineUpdateAttemptFromResult,
   machineUpdateGraceMs,
-  isMachineVersionOutdated,
+  isMachineVersionCurrent,
   outdatedMachines,
   type ConnectedMachine,
   type MachineUpdateAttempt,
@@ -170,8 +170,8 @@ export async function runMachineUpdates(
   const live = targetVersion ? await readLiveVersions() : new Map<string, string | null>();
   return await Promise.all(idle.map(async (machine) => {
     const liveVersion = live.get(machine.id) ?? null;
-    if (targetVersion && liveVersion && !isMachineVersionOutdated(liveVersion, targetVersion)) {
-      const attempt = alreadyCurrentAttempt(liveVersion);
+    if (targetVersion && isMachineVersionCurrent(liveVersion, targetVersion)) {
+      const attempt = alreadyCurrentAttempt(liveVersion ?? targetVersion);
       setState({ attempts: { ...state.attempts, [machine.id]: attempt } });
       return { machine, attempt };
     }

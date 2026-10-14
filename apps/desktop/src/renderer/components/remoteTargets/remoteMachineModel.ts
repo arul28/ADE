@@ -415,24 +415,6 @@ export function formatLastSeen(value: number | null): string {
   return phrase ? `Last connected ${phrase}` : "Last connection unknown";
 }
 
-/** Quiet version-skew note. Yellow warnings are reserved for real breakage. */
-export function formatVersionSkewNote(args: {
-  localVersion: string | null | undefined;
-  remoteVersion: string | null | undefined;
-  remoteName: string;
-}): string | null {
-  const local = args.localVersion?.trim();
-  const remote = args.remoteVersion?.trim();
-  if (!local || !remote || local === remote) return null;
-  let advice = "nothing to do";
-  if (isMachineVersionOutdated(remote, local)) {
-    advice = `update ${args.remoteName} when you can`;
-  } else if (isMachineVersionOutdated(local, remote)) {
-    advice = "update this machine when you can";
-  }
-  return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
-}
-
 export function isVersionSkewWarning(warning: string): boolean {
   return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
     warning,
@@ -623,6 +605,22 @@ export function isMachineVersionOutdated(
   const right = comparableVersionCore(newestVersion);
   if (!left || !right) return false;
   return compareUpdateVersions(left, right) < 0;
+}
+
+/**
+ * True when `version` is parseable and already `targetVersion` or newer.
+ * Not the negation of `isMachineVersionOutdated`: an odd version string is
+ * neither behind nor current, so a guard that skips "current" machines does
+ * not skip it.
+ */
+export function isMachineVersionCurrent(
+  version: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean {
+  const left = comparableVersionCore(version);
+  const right = comparableVersionCore(targetVersion);
+  if (!left || !right) return false;
+  return compareUpdateVersions(left, right) >= 0;
 }
 
 /**

@@ -49,15 +49,17 @@ export function machineFormFactor(args: {
 }
 
 /** Distinct in dark and light themes, and none of them read as an error or a warning. */
-export const MACHINE_COLORS = [
-  "#7c83ff", // indigo
-  "#2bc4b4", // teal
-  "#e8a33d", // amber
-  "#e26fb1", // pink
-  "#3aa8e8", // sky
-  "#8fc93a", // lime
-  "#f08a4b", // orange
-] as const;
+const MACHINE_COLOR_NAMES = {
+  "#7c83ff": "Indigo",
+  "#2bc4b4": "Teal",
+  "#e8a33d": "Amber",
+  "#e26fb1": "Pink",
+  "#3aa8e8": "Sky",
+  "#8fc93a": "Lime",
+  "#f08a4b": "Orange",
+} as const;
+
+export const MACHINE_COLORS = Object.keys(MACHINE_COLOR_NAMES) as Array<keyof typeof MACHINE_COLOR_NAMES>;
 
 function hashKey(key: string): number {
   let hash = 2166136261;
@@ -264,7 +266,7 @@ export function MachineAvatar({
       <button
         type="button"
         style={tile}
-        aria-label={`Change ${name}'s color`}
+        aria-label={`${name}, ${machineKindLabel(platform, formFactor)}. Change color`}
         aria-expanded={picking}
         title="Change color"
         onClick={() => setPicking((open) => !open)}
@@ -294,7 +296,7 @@ export function MachineAvatar({
             <button
               key={swatch}
               type="button"
-              aria-label={`Use ${swatch}`}
+              aria-label={MACHINE_COLOR_NAMES[swatch]}
               aria-pressed={swatch === color}
               onClick={() => {
                 setMachineColor(colorKey, swatch);

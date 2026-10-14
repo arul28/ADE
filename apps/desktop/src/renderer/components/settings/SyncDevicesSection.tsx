@@ -10,7 +10,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
-import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
 import { MachineAvatar, VersionChip, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
@@ -30,6 +29,7 @@ import {
   isLocalReleaseBuildOutputError,
   isProjectRegistrationRequiredError,
 } from "../../../shared/runtimeErrors";
+import { fetchAccountMachines } from "../../lib/account";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -153,7 +153,9 @@ function useLocalMachineTile(accountSignedIn: boolean): { colorKey: string; powe
       const account = window.ade?.account;
       const identity = await account?.getLocalMachineIdentity?.().catch(() => null);
       const machineKey = identity?.machineKey?.trim() || null;
-      const listed = machineKey && accountSignedIn ? await account?.listMachines?.().catch(() => null) : null;
+      // The shared, cached read the machine list uses: opening the panel does
+      // not cost a second directory request.
+      const listed = machineKey && accountSignedIn ? await fetchAccountMachines().catch(() => null) : null;
       const own = listed?.machines?.find((machine) => machine.machineKey === machineKey) ?? null;
       if (!cancelled) setTile({ machineKey, power: own?.power ?? null });
     })();
@@ -225,13 +227,10 @@ export function ThisMacCard({
   const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
-  const versionLine = appInfo
-    ? formatThisComputerVersion({
-        brainVersion: appInfo.brainVersion,
-        packageVersion: appInfo.packageVersion,
-        channel: appInfo.channel,
-      })
-    : null;
+  // The version the brain runs (what actually answers other machines), else
+  // the app package's. The chip shows the number alone; a prerelease already
+  // names its channel ("1.2.28-beta.1").
+  const runningVersion = appInfo?.brainVersion?.trim() || appInfo?.packageVersion?.trim() || null;
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   // Forced: a repair is a user action, so it must not wait out the degraded
@@ -322,7 +321,12 @@ export function ThisMacCard({
   // account line — "Ready to accept connections" and the route breakdown told
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
-  const problem = connectionProblem(status, host);
+  // The status line in the slot already says sync has not started; the
+  // listener's line for the same state would only repeat it. Any other
+  // listener reason (a port in use, the service unreachable) still shows.
+  const problem = hideDirectorySummary && status.routeHealth?.accountDirectory?.state === "sync_not_started"
+    ? null
+    : connectionProblem(status, host);
   const syncNotHosted = !host
     && !isRemoteBound
     && status.routeHealth?.accountDirectory?.state === "sync_not_started";
@@ -364,7 +368,7 @@ export function ThisMacCard({
                   onSave={saveMachineName}
                 />
                 <span style={{ ...helperTextStyle, fontSize: 11, whiteSpace: "nowrap" }}>This computer</span>
-                {versionLine ? <VersionChip version={versionLine.text.replace(/^ADE\s+/, "")} /> : null}
+                {runningVersion ? <VersionChip version={runningVersion} /> : null}
               </div>
               {onOpenYourComputers ? (
                 <button
@@ -452,7 +456,7 @@ export function ThisMacCard({
             {!hideDirectorySummary && reconnectAction?.detail ? (
               <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>{reconnectAction.detail}</div>
             ) : null}
-            {problem && !hideDirectorySummary ? (
+            {problem ? (
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span
                   aria-hidden

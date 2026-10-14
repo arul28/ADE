@@ -320,6 +320,9 @@ export class RemoteConnectionService {
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
+        // Warnings come from the version too ("missing capabilities … update
+        // ADE on that machine"); an updated machine must not keep the old ones.
+        compatibilityWarnings: result.compatibilityWarnings,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
     });
