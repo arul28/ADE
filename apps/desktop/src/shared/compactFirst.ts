@@ -15,6 +15,25 @@ export function compactFirstEligibleAtMs(cache: ClaudePromptCache | null | undef
   return turnEndedAtMs == null || sinceMs == null ? null : sinceMs + compactFirstIdleMs(cache);
 }
 /**
+ * When the chat's last finished turn ended and started. Walks back only to
+ * that turn's start, so it stays cheap while deltas stream; a turn still
+ * running is skipped, and the one before it counts.
+ */
+export function lastFinishedTurnMs(events: readonly AgentChatEventEnvelope[]): { endedAtMs: number | null; startedAtMs: number | null } {
+  let endedAtMs: number | null = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const entry = events[index];
+    if (endedAtMs == null && entry?.event.type === "done") endedAtMs = finiteOrNull(Date.parse(entry.timestamp));
+    else if (endedAtMs != null && entry?.event.type === "status" && entry.event.turnStatus === "started") {
+      return { endedAtMs, startedAtMs: finiteOrNull(Date.parse(entry.timestamp)) };
+    }
+  }
+  return { endedAtMs, startedAtMs: null };
+}
+function finiteOrNull(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+/**
  * A compacted chat never gets smaller than its fixed part (system prompt,
  * tools, the summary's frame): two measured Claude compactions of 67k and 81k
  * both ended near 5.5k, where 2% alone would promise 1.5k.
@@ -71,7 +90,8 @@ export function compactFirstOffer({ provider, events, contextTokens, cache, minT
   }
   if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;
   const idleMs = compactFirstIdleMs(cache);
-  const eligibleAt = compactFirstEligibleAtMs(cache, endedAt, Number.isFinite(startedAt) ? startedAt : null) ?? endedAt + idleMs;
+  const eligibleAt = compactFirstEligibleAtMs(cache, endedAt, Number.isFinite(startedAt) ? startedAt : null);
+  if (eligibleAt == null) return null;
   if (now < eligibleAt) return null;
   return { contextTokens: measured, estimatedPostTokens: lastPost ?? estimateCompactedTokens(measured), eligibleAt, idleMs };
 }

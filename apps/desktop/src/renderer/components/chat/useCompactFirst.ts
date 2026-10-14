@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
-import { compactFirstEligibleAtMs } from "../../../shared/compactFirst";
+import { compactFirstEligibleAtMs, lastFinishedTurnMs } from "../../../shared/compactFirst";
 import { contextCompactMergeKey } from "../../../shared/contextCompaction";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 
@@ -21,25 +21,14 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
   const [now, setNow] = useState(Date.now());
   const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
-  // Walks back only to the last turn start, so streaming deltas stay cheap.
-  const { lastTurnEndedAt, lastTurnStartedAt } = useMemo(() => {
-    let endedAt: number | null = null;
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index];
-      if (endedAt == null && entry?.event.type === "done") endedAt = Date.parse(entry.timestamp);
-      else if (endedAt != null && entry?.event.type === "status" && entry.event.turnStatus === "started") {
-        return { lastTurnEndedAt: endedAt, lastTurnStartedAt: Date.parse(entry.timestamp) };
-      }
-    }
-    return { lastTurnEndedAt: endedAt, lastTurnStartedAt: null };
-  }, [events]);
+  const { endedAtMs: lastTurnEndedAt, startedAtMs: lastTurnStartedAt } = useMemo(() => lastFinishedTurnMs(events), [events]);
   const cacheTtl = cache?.ttl;
   const cacheSince = cache?.since;
   const eligibleAt = useMemo(
     () => compactFirstEligibleAtMs(
       cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null,
-      Number.isFinite(lastTurnEndedAt) ? lastTurnEndedAt : null,
-      Number.isFinite(lastTurnStartedAt) ? lastTurnStartedAt : null,
+      lastTurnEndedAt,
+      lastTurnStartedAt,
     ),
     [cacheTtl, cacheSince, lastTurnEndedAt, lastTurnStartedAt],
   );

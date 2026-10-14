@@ -104,8 +104,8 @@ export type AggregatedBlock =
   | { kind: "activity-bundle"; id: string; turnId: string | null; entries: ActivityBundleEntry[]; live: boolean }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto" | "ade_fallback"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
   | { kind: "conversation-reset"; id: string }
-  /** `position` is the message's place in the queue, 0 = sends next. */
-  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string; position: number }
+  /** `sendsNext`: first in the queue. */
+  | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string; sendsNext: boolean }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
   | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[]; fileEntries: FileChangeEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
@@ -1089,7 +1089,7 @@ export function aggregateChatBlocks(args: {
             turnId,
             steerId: event.steerId,
             text: event.displayText ?? event.text,
-            position,
+            sendsNext: position === 0,
           });
         }
         continue;

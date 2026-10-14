@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { abbreviateTokenCount } from "../../../../desktop/src/shared/contextCompaction";
 import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import { gridMiniMapText } from "./GridMiniMap";
@@ -73,10 +74,6 @@ export function TokenBar({ percent }: { percent: number }) {
       <Text color={theme.color.border} dimColor>{"░".repeat(empty)}</Text>
     </Text>
   );
-}
-
-function formatTokensK(tokens: number): string {
-  return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}k` : String(tokens);
 }
 
 // Pie-circle glyphs filling by quarter (0 / 25 / 50 / 75 / 100%).
@@ -341,10 +338,10 @@ function FooterControlsComponent({
           <>
             <Text color={theme.color.t4}>{"  "}</Text>
             {compactFirst.enabled ? (
-              <Text color={theme.color.accent}>{`⇣ compacts on next send (~${formatTokensK(compactFirst.estimatedPostTokens)})`}</Text>
+              <Text color={theme.color.accent}>{`⇣ compacts on next send (~${abbreviateTokenCount(compactFirst.estimatedPostTokens)})`}</Text>
             ) : (
               <>
-                <Text color={theme.color.warning}>{`⇣ cache expired · ${formatTokensK(compactFirst.contextTokens)}`}</Text>
+                <Text color={theme.color.warning}>{`⇣ cache expired · ${abbreviateTokenCount(compactFirst.contextTokens)}`}</Text>
                 <Text dimColor>{" · /compact-first"}</Text>
               </>
             )}

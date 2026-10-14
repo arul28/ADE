@@ -1423,6 +1423,8 @@ function PendingSteerItem({
     <div
       ref={rowRef}
       role="listitem"
+      // The hint tooltip opens on pointer hover only; assistive tech reads it here.
+      aria-description={statusHint}
       data-testid="pending-steer-item"
       className={cn(
         "group relative flex items-center gap-2 rounded-[10px] bg-fg/[0.035] px-2.5 py-1.5 transition-[background-color,opacity] hover:bg-fg/[0.055] focus-within:bg-fg/[0.055]",
@@ -1479,19 +1481,20 @@ function PendingSteerItem({
         <Clock size={12} weight="bold" className="shrink-0 text-fg/30" aria-hidden />
       )}
       <div className="flex-1 min-w-0">
-        <div className="truncate text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/80">
-          {steer.text}
-        </div>
+        {/* The hint sits on the text: the status tag hides under the actions on hover. */}
+        <SmartTooltip forceEnabled content={{ label: statusLabel, description: statusHint }} wrapperStyle={{ display: "flex", minWidth: 0 }}>
+          <div className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/80">
+            {steer.text}
+          </div>
+        </SmartTooltip>
         {attachmentTray}
       </div>
-      <SmartTooltip forceEnabled content={{ label: statusLabel, description: statusHint }}>
-        <span
-          data-testid="pending-steer-status"
-          className="shrink-0 rounded-full bg-fg/[0.05] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45 [@media(hover:hover)]:group-hover:hidden [@media(hover:hover)]:group-focus-within:hidden"
-        >
-          {statusLabel}
-        </span>
-      </SmartTooltip>
+      <span
+        data-testid="pending-steer-status"
+        className="shrink-0 rounded-full bg-fg/[0.05] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45 [@media(hover:hover)]:group-hover:hidden [@media(hover:hover)]:group-focus-within:hidden"
+      >
+        {statusLabel}
+      </span>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
           control invisible on mobile and ADE Web. Both rules sit inside the
@@ -8035,12 +8038,20 @@ export function AgentChatComposer({
           );
         }
 
+        // The one thing the tags cannot say, kept visible because tooltips
+        // never show on a touch pointer: why a message has to wait.
+        const queueLimitNote = !pendingSteers.length ? null
+          : activeTurnSendCapability.modes.every((mode) => mode === "queue")
+            ? `${activeTurnSendCapability.agentLabel} cannot take a message mid-turn, so ${pendingSteers.length === 1 ? "it sends" : "they send"} when the turn ends.`
+            : onDispatchSteerInline ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null : null;
+        const firstSteerLabel = usageViewModel?.state === "compacting" ? "After compaction" : "Sends next";
         return (
           <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
+        <div className="px-2 pb-1 pt-2">
         <div
-          className="space-y-1 px-2 pb-1 pt-2"
+          className="space-y-1"
           role="list"
           aria-label={pendingSteers.length === 1 ? "Queued message" : `${pendingSteers.length} queued messages`}
         >
@@ -8049,7 +8060,7 @@ export function AgentChatComposer({
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
-              statusLabel={index > 0 ? "Queued" : usageViewModel?.state === "compacting" ? "After compaction" : "Sends next"}
+              statusLabel={index > 0 ? "Queued" : firstSteerLabel}
               statusHint={stagedSteerHint({
                 capability: activeTurnSendCapability,
                 canSendNow: Boolean(onDispatchSteerInline) && !stagedSteerInlineBlock(steer),
@@ -8080,16 +8091,10 @@ export function AgentChatComposer({
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}
-          {(() => {
-            // The one thing the tags cannot say, kept visible because tooltips
-            // never show on a touch pointer: why a message has to wait.
-            const limit = !activeTurnSendCapability.modes.some((mode) => mode !== "queue")
-              ? `${activeTurnSendCapability.agentLabel} cannot take a message mid-turn, so ${pendingSteers.length === 1 ? "it sends" : "they send"} when the turn ends.`
-              : onDispatchSteerInline ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null : null;
-            return limit ? (
-              <p className="px-1 pt-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">{limit}</p>
-            ) : null;
-          })()}
+        </div>
+          {queueLimitNote ? (
+            <p className="px-1 pt-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">{queueLimitNote}</p>
+          ) : null}
         </div>
       ) : null}
 

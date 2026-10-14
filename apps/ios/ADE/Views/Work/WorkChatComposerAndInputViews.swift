@@ -680,8 +680,8 @@ struct WorkComposerChipStrip: View {
 
 /// The strip only ever renders messages the user explicitly queued — an
 /// atomically dispatched send never produces a staged row — so it no longer
-/// hides behind an accordion. A single queued message is one compact card with
-/// its four actions visible; only a pile-up gets a slim count above the rows.
+/// hides behind an accordion. Each queued message is one glass row with a
+/// "Sends next" / "Queued" tag and its actions.
 struct WorkQueuedSteerStrip: View {
   let steers: [WorkPendingSteerModel]
   @Binding var drafts: [String: String]
@@ -719,11 +719,28 @@ struct WorkQueuedSteerStrip: View {
             move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
           ))
       }
+      // The one reason the tags cannot give, as on desktop: why a message waits.
+      if let queueLimitNote {
+        Text(queueLimitNote)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 4)
+      }
     }
     .accessibilityLabel(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
-    .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
+    .accessibilityIdentifier("Work.Chat.StagedStrip")
     .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
     .accessibilityElement(children: .contain)
+  }
+
+  private var queueLimitNote: String? {
+    if capability.modes.allSatisfy({ $0 == .queue }) {
+      return "\(capability.agentLabel) cannot take a message mid-turn, so \(steers.count == 1 ? "it sends" : "they send") when the turn ends."
+    }
+    guard onDispatchInline != nil else { return nil }
+    return steers.lazy.compactMap { steer in
+      capability.inlineAttachmentBlockReason(attachmentTypes: (steer.attachments ?? []).map(\.type))
+    }.first
   }
 
   private func queuedRow(_ steer: WorkPendingSteerModel, statusLabel: String) -> some View {
@@ -824,7 +841,7 @@ private struct WorkQueuedSteerWaitingGlyph: View {
 struct WorkQueuedSteerRow: View {
   let steer: WorkPendingSteerModel
   /// Where the message stands in the queue ("Sends next", "Queued").
-  var statusLabel: String = "Queued"
+  let statusLabel: String
   let capability: WorkActiveSendCapability
   @Binding var draft: String
   let isEditing: Bool

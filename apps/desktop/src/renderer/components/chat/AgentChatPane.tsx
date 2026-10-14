@@ -382,6 +382,7 @@ import {
   pickNewerCrossMachineHandoffRecord,
 } from "../../../shared/crossMachineHandoff";
 import { showToast } from "../app/toast/toastStore";
+import { summarizeInlineText } from "./chatTranscriptRows";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
@@ -4765,6 +4766,23 @@ export function AgentChatPane({
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
+  /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
+  const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
+  /**
+   * User messages in a chat with one of these texts, from five minutes before
+   * `sentAt` (slack for the chat machine's clock) on. A long chat paged out of
+   * memory keeps its live events aside, so both stores count.
+   */
+  const countSentMessages = useCallback((sessionId: string, texts: string[], sentAt: string): number => {
+    const since = Date.parse(sentAt) - 5 * 60_000;
+    return [
+      ...(eventsBySessionRef.current[sessionId] ?? []),
+      ...(detachedLiveEventsBySessionRef.current[sessionId] ?? []),
+    ].filter(({ event, timestamp }) =>
+      event.type === "user_message"
+      && Date.parse(timestamp) >= since
+      && texts.some((text) => text === event.text.trim() || text === event.displayText?.trim())).length;
+  }, []);
   // `selectedSessionId` trails a prop-driven chat switch by one render. Resolve
   // the visible session before deriving either its events or its runtime pin so
   // Retry can never send the incoming session id to the outgoing machine.
@@ -6411,6 +6429,8 @@ export function AgentChatPane({
 
   useEffect(() => () => {
     paneMountedRef.current = false;
+    for (const timer of sendRecoveryTimersRef.current) window.clearTimeout(timer);
+    sendRecoveryTimersRef.current.clear();
   }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
@@ -13668,7 +13688,7 @@ export function AgentChatPane({
 
     // Set once the message is handed to the chat, so a transport timeout can
     // tell "may still arrive" from "never left".
-    let handedOff: { sessionId: string; submittedAt: string; texts: string[] } | null = null;
+    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number } | null = null;
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
@@ -13778,7 +13798,9 @@ export function AgentChatPane({
       }
 
       const submittedAt = new Date().toISOString();
-      handedOff = { sessionId, submittedAt, texts: [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean) };
+      const sentTexts = [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean);
+      // Identical messages already in the chat, so only a new one counts as arrived.
+      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere: countSentMessages(sessionId, sentTexts, submittedAt) };
       touchSession(sessionId, submittedAt);
       patchSessionSummary(
         sessionId,
@@ -13896,28 +13918,43 @@ export function AgentChatPane({
         const waitingMessage = "Sending is taking longer than expected. If the message does not appear, it goes back in the composer.";
         setOptimisticOutgoingMessageSynced(null);
         setError(waitingMessage);
-        // Matched by text, with slack for the chat machine's clock.
-        const since = Date.parse(pending.submittedAt) - 5 * 60_000;
-        const arrived = () => (eventsBySessionRef.current[pending.sessionId] ?? []).some(({ event, timestamp }) =>
-          event.type === "user_message"
-          && Date.parse(timestamp) >= since
-          && pending.texts.some((text) => text === event.text.trim() || text === event.displayText?.trim()));
-        const checkDelays = [15_000, 45_000, 120_000];
-        checkDelays.forEach((delayMs, index) => {
-          window.setTimeout(() => {
+        const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
+        // One check pending at a time: 15s, 45s, then the last at 2 minutes.
+        const checkDelays = [15_000, 30_000, 75_000];
+        const check = (index: number) => {
+          const timer = window.setTimeout(() => {
+            sendRecoveryTimersRef.current.delete(timer);
             if (!paneMountedRef.current) return;
             if (arrived()) {
               setError((current) => (current === waitingMessage ? null : current));
-            } else if (index === checkDelays.length - 1) {
-              setDraft((current) => (current.trim().length ? current : draftSnapshot));
-              setAttachments((current) => (current.length ? current : attachmentsSnapshot));
-              setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
-              setError((current) => (current === waitingMessage ? "Message not sent. It is back in the composer." : current));
-            } else {
-              void refreshSessions({ force: true }).catch(() => {});
+              return;
             }
-          }, delayMs);
-        });
+            if (index < checkDelays.length - 1) {
+              void refreshSessions({ force: true }).catch(() => {});
+              check(index + 1);
+              return;
+            }
+            setError((current) => (current === waitingMessage ? null : current));
+            if (selectedSessionIdRef.current !== pending.sessionId || draftValueRef.current.trim().length) {
+              // Another chat is open, or a new draft took the composer: say so instead.
+              const lostText = pending.texts[0] ?? "";
+              showToast({
+                tone: "warning",
+                title: "A message did not send",
+                message: `“${summarizeInlineText(lostText, 80)}” never reached its chat.`,
+                durationMs: 0,
+                actions: [{ label: "Copy message", onClick: () => { void navigator.clipboard?.writeText(lostText).catch(() => undefined); } }],
+              });
+              return;
+            }
+            setDraft(draftSnapshot);
+            setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+            setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
+            setError("Message not sent. It is back in the composer.");
+          }, checkDelays[index]);
+          sendRecoveryTimersRef.current.add(timer);
+        };
+        check(0);
         await refreshSessions({ force: true }).catch(() => {});
         return null;
       }
@@ -13944,6 +13981,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
+    countSentMessages,
     isPersonalPane, attachments,
     ambientTurnContext,
     buildNativeControlPayload,

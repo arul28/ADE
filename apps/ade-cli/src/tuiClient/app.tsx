@@ -7,7 +7,7 @@ import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
-import { compactFirstEligibleAtMs, compactFirstOffer } from "../../../desktop/src/shared/compactFirst";
+import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -5902,47 +5902,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return questions[pendingQuestionState?.activeQuestionIndex ?? 0]?.isSecret === true;
   }, [pendingApproval, pendingQuestionState]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
-  // Compact first, as on desktop and iOS: once a Claude chat's prompt cache has
-  // expired, `/compact-first` makes the next send compact the chat before it.
-  // The choice covers one send: it is kept with the turn end it was made after.
   const [compactFirstNow, setCompactFirstNow] = useState(() => Date.now());
-  const [compactFirstChoices, setCompactFirstChoices] = useState<Record<string, { value: boolean; turnEndedAt: string | null }>>({});
+  const [compactFirstChoices, setCompactFirstChoices] = useState<Record<string, CompactFirstChoice>>({});
   const compactFirstState = useMemo(() => {
     const session = sessions.find((entry) => entry.sessionId === activeSessionId) ?? null;
-    if (!session || session.provider !== "claude" || !session.compactionIdleMode) return null;
-    let turnEndedAt: string | null = null;
-    let turnStartedAt: string | null = null;
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index]!;
-      if (turnEndedAt == null && entry.event.type === "done") turnEndedAt = entry.timestamp;
-      else if (turnEndedAt != null && entry.event.type === "status" && entry.event.turnStatus === "started") { turnStartedAt = entry.timestamp; break; }
-    }
-    // A queued message is about to send on its own; the offer would only flash.
-    const offer = pendingApproval || pendingSteers.length > 0 ? null : compactFirstOffer({
-      provider: session.provider,
+    return deriveCompactFirstState({
+      session,
       events,
-      cache: session.promptCache,
-      minTokens: session.compactFirstMinTokens,
-      mode: session.compactionIdleMode,
+      blocked: Boolean(pendingApproval) || pendingSteers.length > 0,
+      choice: session ? compactFirstChoices[session.sessionId] : undefined,
       now: compactFirstNow,
     });
-    const choice = compactFirstChoices[session.sessionId];
-    const enabled = choice && choice.turnEndedAt === turnEndedAt ? choice.value : session.compactionIdleMode === "always";
-    return { sessionId: session.sessionId, offer, enabled, turnEndedAt, turnStartedAt, cache: session.promptCache, mode: session.compactionIdleMode };
   }, [activeSessionId, compactFirstChoices, compactFirstNow, events, pendingApproval, pendingSteers.length, sessions]);
   // Re-render when the cache runs out, so the footer offer appears on time.
+  const compactFirstEligibleAt = compactFirstState?.offer ? null : compactFirstState?.eligibleAt ?? null;
   useEffect(() => {
-    if (!compactFirstState?.turnEndedAt || compactFirstState.offer) return;
-    const eligibleAt = compactFirstEligibleAtMs(
-      compactFirstState.cache,
-      Date.parse(compactFirstState.turnEndedAt),
-      compactFirstState.turnStartedAt ? Date.parse(compactFirstState.turnStartedAt) : null,
-    );
-    if (eligibleAt == null) return;
-    const wait = eligibleAt - Date.now();
-    const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.max(1_000, Math.min(wait + 1_000, 2_147_483_647)));
+    if (compactFirstEligibleAt == null) return;
+    const wait = compactFirstEligibleAt - Date.now();
+    // Already past: the next event or session update re-checks the offer.
+    if (wait <= 0) return;
+    const timer = setTimeout(() => setCompactFirstNow(Date.now()), Math.min(wait + 1_000, 2_147_483_647));
     return () => clearTimeout(timer);
-  }, [compactFirstState]);
+  }, [compactFirstEligibleAt]);
+  const compactFirstFooter = useMemo(() => compactFirstState?.offer ? {
+    enabled: compactFirstState.enabled,
+    contextTokens: compactFirstState.offer.contextTokens,
+    estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
+  } : null, [compactFirstState]);
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
@@ -11088,10 +11074,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (compactFirstSendRef.current === sessionId) {
       // Only chat.sendMessage carries Compact first. The brain starts the
       // compaction and queues the message behind it.
-      await sendChatMessage(conn, sessionId, text, attachments, { compactFirst: true });
+      try {
+        await sendChatMessage(conn, sessionId, text, attachments, { compactFirst: true });
+      } catch (error) {
+        setSessionStreaming(sessionId, false);
+        throw error;
+      }
       addNotice("Compacting first. Your message is queued and sends right after.", "info");
       recordPromptHistoryForSession(sessionId, text);
-      await refreshState();
+      // The message is queued: a failed refresh must not read as a failed send.
+      void refreshState().catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
     }
     try {
@@ -13061,7 +13053,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const requested = args.trim().toLowerCase();
       const value = requested === "on" ? true : requested === "off" ? false : !state.enabled;
-      setCompactFirstChoices((current) => ({ ...current, [state.sessionId]: { value, turnEndedAt: state.turnEndedAt } }));
+      setCompactFirstChoices((current) => ({ ...current, [state.sessionId]: { value, turnEndedAtMs: state.turnEndedAtMs } }));
       addNotice(value
         ? "Your next message compacts this chat first."
         : "Your next message sends the full chat.", "info");
@@ -19146,11 +19138,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
           workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
-          compactFirst={compactFirstState?.offer ? {
-            enabled: compactFirstState.enabled,
-            contextTokens: compactFirstState.offer.contextTokens,
-            estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
-          } : null}
+          compactFirst={compactFirstFooter}
         />
           </Box>
           {rightPaneVisible ? (

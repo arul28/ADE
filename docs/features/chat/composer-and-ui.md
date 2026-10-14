@@ -1338,12 +1338,13 @@ chat pane mount, which happens either way.
   behind it like any message sent during a turn, so the send returns at once
   and the thread shows the message as queued, not sent. It is delivered when
   the compaction ends. If the compaction fails or does not shrink the chat, the
-  message is kept and sent with the full chat, with the notice "Compaction did
+  messages queued behind it are kept and sent with the full chat, with the notice "Compaction did
   not finish, so your message was sent with the full chat." Stop during the
   compaction cancels it like any queued message. There is no ADE time limit;
   Stop ends the compaction, as for a typed `/compact`. A send whose call times
   out (`isRuntimeTransportTimeoutError`) does not go back in the composer
-  unless it never appears in the chat within two minutes. The Claude provider setting "After
+  unless it never appears in the chat within two minutes (if another chat is
+  open by then, or a new draft fills the composer, a toast says so instead). The Claude provider setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
   `never` (no chip). Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own

@@ -4838,11 +4838,14 @@ type ManagedChatSession = {
    */
   cancelledInFlightSteerIds?: Set<string>;
   /**
-   * Messages queued behind a Compact first turn. A failed compaction keeps
-   * them queued (it does not cancel them like other failed turns do), and
-   * `sendMessage` delivers them with the full chat once the turn has settled.
+   * Set while a Compact first turn runs (`holding`). The messages queued
+   * behind it were sent by the user to go out after it, so a failure keeps
+   * them instead of cancelling them like other failed turns do: the failed
+   * path that cancels the queue marks it `kept`, and `settleCompactFirstTurn`
+   * sends them with the full chat. A turn that ends through
+   * `finishClaudeIdleTurn` drains its own queue, so the hold just clears.
    */
-  compactFirstHeldSteerIds?: Set<string>;
+  compactFirstHold?: "holding" | "kept";
   continuitySummary: string | null;
   /**
    * One-shot: the next Cursor send may expire a still-active persisted run
@@ -26820,6 +26823,8 @@ export function createAgentChatService(args: {
     state.structuredActivity = createClaudeStructuredActivityState();
     runtime.busy = false;
     runtime.activeTurnId = null;
+    // This path drains the queue itself below; a Compact first hold has nothing to keep.
+    if (managed.compactFirstHold === "holding") managed.compactFirstHold = undefined;
     markSessionIdleWithFreshCache(managed);
     reportProviderRuntimeReady("claude");
     emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
@@ -30636,6 +30641,8 @@ export function createAgentChatService(args: {
           })
         : false;
 
+      // This path drains the queue itself below; a Compact first hold has nothing to keep.
+      if (managed.compactFirstHold === "holding") managed.compactFirstHold = undefined;
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
         if (extraUsageStopRequested) {
@@ -42024,15 +42031,15 @@ export function createAgentChatService(args: {
     const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
     runtime.preserveQueuedSteersOnInterrupt = false;
     if (reason === "interrupted" && preserveQueuedSteers) return;
-    // A failed Compact first turn keeps the message it was compacting for.
-    const held = reason === "failed" ? managed.compactFirstHeldSteerIds : undefined;
-    const cancelled: Array<(typeof runtime.pendingSteers)[number]> = [];
-    for (let index = runtime.pendingSteers.length - 1; index >= 0; index -= 1) {
-      const steer = runtime.pendingSteers[index]!;
-      if (held?.has(steer.steerId)) continue;
-      runtime.pendingSteers.splice(index, 1);
-      cancelled.unshift(steer);
+    // A failed Compact first turn keeps the messages it was compacting for.
+    if (managed.compactFirstHold === "holding") {
+      if (reason === "failed") {
+        managed.compactFirstHold = "kept";
+        return;
+      }
+      managed.compactFirstHold = undefined;
     }
+    const cancelled = runtime.pendingSteers.splice(0);
     if (!cancelled.length) return;
 
     const cancelReasons: Record<typeof reason, string> = {
@@ -54823,21 +54830,21 @@ export function createAgentChatService(args: {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     const managed = ensureManagedSession(args.sessionId);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
+    const reviewed = takeThreadReviewForSend(args);
     // Only an explicit `compactFirst: true` compacts first. The pill sends it,
     // already on in "always" mode; automation and CLI sends never carry it. A
     // chat that became busy meanwhile skips it and steers as usual.
     let compactFirst: { turn: Promise<AgentChatBackgroundTurnResult>; before: number } | null = null;
-    if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text)
-      && !runtimeMidTurn(managed) && managed.session.status !== "active") {
-      // Native resume_return owns its send; never combine it with ADE's pill.
-      if (!collectPendingInputRequests(managed).length) {
+    const idle = () => !runtimeMidTurn(managed) && managed.session.status !== "active";
+    try {
+      if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text) && idle()
+        // Native resume_return owns its send; never combine it with ADE's pill.
+        && !collectPendingInputRequests(managed).length) {
         const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
         const offer = compactFirstOffer({ provider: "claude", events: history, cache: managed.session.promptCache, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
-        if (offer) compactFirst = await startCompactFirstTurn(managed);
+        // Checked again: a turn may have started while the history loaded.
+        if (offer && idle()) compactFirst = await startCompactFirstTurn(managed);
       }
-    }
-    const reviewed = takeThreadReviewForSend(args);
-    try {
       // Behind a running compaction the message joins the queue, like any
       // message sent during a turn, so this call returns at once instead of
       // waiting out the compaction.
@@ -54848,13 +54855,12 @@ export function createAgentChatService(args: {
       // Rerouted into a steer the queue refused: nothing was delivered.
       if (isDroppedSteer(result)) reviewed.restore();
       else if (reviewed.block && result && result.queued) rememberQueuedSteerReview(result.steerId, reviewed.block, reviewed.restore);
-      if (compactFirst) {
-        const heldSteerId = result && result.queued ? result.steerId : null;
-        void settleCompactFirstTurn(managed, compactFirst, heldSteerId);
-      }
+      if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, Boolean(result && result.queued));
       return result;
     } catch (error) {
       reviewed.restore();
+      // The compaction still runs; report how it ends.
+      if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, false);
       throw error;
     }
   }
@@ -54867,6 +54873,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): Promise<{ turn: Promise<AgentChatBackgroundTurnResult>; before: number }> {
     const before = managed.compactionEmitterState.sessionCompactionCount;
+    managed.compactFirstHold = "holding";
     let markDispatched = () => {};
     const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
     // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
@@ -54878,52 +54885,63 @@ export function createAgentChatService(args: {
 
   /**
    * After a Compact first turn: report the outcome, and when the compaction
-   * did not finish, send the held message with the full chat instead of
-   * dropping it.
+   * did not finish, send the queued messages with the full chat instead of
+   * dropping them. Never throws.
    */
   async function settleCompactFirstTurn(
     managed: ManagedChatSession,
     compactFirst: { turn: Promise<AgentChatBackgroundTurnResult>; before: number },
-    heldSteerId: string | null,
+    messageQueued: boolean,
   ): Promise<void> {
-    if (heldSteerId) (managed.compactFirstHeldSteerIds ??= new Set()).add(heldSteerId);
-    const result = await compactFirst.turn.catch(() => null);
-    const compacted = result?.status === "completed"
-      && managed.compactionEmitterState.sessionCompactionCount > compactFirst.before;
-    onCompactionOutcome?.({
-      sessionId: managed.session.id,
-      action: "compact_first",
-      outcome: compacted ? "completed" : "failed",
-      mode: "manual",
-      provider: managed.session.provider,
-    });
-    if (!heldSteerId) return;
-    // Stop cancels the queue on its own; that message is the user's to resend.
-    if (compacted || result?.status === "interrupted") {
-      managed.compactFirstHeldSteerIds?.delete(heldSteerId);
-      return;
+    const sessionId = managed.session.id;
+    try {
+      const result = await compactFirst.turn.catch((error) => {
+        logger.warn("agent_chat.compact_first_turn_failed", { sessionId, error: getErrorMessage(error) });
+        return null;
+      });
+      const compacted = result?.status === "completed"
+        && managed.compactionEmitterState.sessionCompactionCount > compactFirst.before;
+      onCompactionOutcome?.({
+        sessionId,
+        action: "compact_first",
+        outcome: compacted ? "completed" : "failed",
+        mode: "manual",
+        provider: managed.session.provider,
+      });
+      // Every turn end but a thrown failure drains its own queue, and a turn
+      // that rejected already ran its cancel. Only a failure still unwinding
+      // can keep the queue: wait for its cancel to mark it `kept`.
+      if (result?.status === "failed") {
+        const settleBy = Date.now() + 30_000;
+        while (managed.compactFirstHold === "holding" && !managed.closed && Date.now() < settleBy) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      const timedOut = managed.compactFirstHold === "holding";
+      const kept = managed.compactFirstHold === "kept";
+      managed.compactFirstHold = undefined;
+      if (managed.closed) return;
+      const fellBack = messageQueued && !compacted && (result?.status === "completed" || result?.status === "failed");
+      if (!kept) {
+        // The turn's own end sent the queue (unless the wait above ran out).
+        if (fellBack && !timedOut) emitCompactFirstFallbackNotice(managed);
+        return;
+      }
+      const runtime = managed.runtime;
+      if (runtime?.kind !== "claude" || runtime.busy || !runtime.pendingSteers.length) return;
+      const delivered = await deliverNextQueuedSteer(managed, runtime);
+      if (delivered && fellBack) emitCompactFirstFallbackNotice(managed);
+    } catch (error) {
+      logger.warn("agent_chat.compact_first_settle_failed", { sessionId, error: getErrorMessage(error) });
     }
+  }
+
+  function emitCompactFirstFallbackNotice(managed: ManagedChatSession): void {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
       severity: "warning",
       message: "Compaction did not finish, so your message was sent with the full chat.",
-    });
-    // A failed turn is still unwinding here; one that outlasts this wait
-    // drains the queue itself when it ends.
-    const settleBy = Date.now() + 30_000;
-    while ((runtimeMidTurn(managed) || managed.session.status === "active") && Date.now() < settleBy) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    managed.compactFirstHeldSteerIds?.delete(heldSteerId);
-    const runtime = managed.runtime;
-    if (managed.closed || runtime?.kind !== "claude" || runtime.busy || managed.session.status === "active") return;
-    if (!runtime.pendingSteers.some((steer) => steer.steerId === heldSteerId)) return;
-    await deliverNextQueuedSteer(managed, runtime).catch((error) => {
-      logger.warn("agent_chat.compact_first_held_delivery_failed", {
-        sessionId: managed.session.id,
-        error: getErrorMessage(error),
-      });
     });
   }
 

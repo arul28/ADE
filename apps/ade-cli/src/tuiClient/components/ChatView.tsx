@@ -1100,7 +1100,7 @@ function formatCompactDuration(durationMs: number): string {
  * ("sends next" / "queued"). The full text is in `/steer`; the line truncates.
  */
 function queuedSteerRows(block: Extract<AggregatedBlock, { kind: "queued-steer" }>, width: number): RenderedChatRow[] {
-  const status = block.position === 0 ? "sends next" : "queued";
+  const status = block.sendsNext ? "sends next" : "queued";
   const textWidthAvailable = Math.max(8, width - 2 - status.length - 4);
   const text = truncateEnd(block.text.replace(/\s+/g, " ").trim(), textWidthAvailable);
   const runs: InlineRun[] = [
