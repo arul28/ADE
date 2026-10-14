@@ -8155,12 +8155,11 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * Arms one continue row per chat this launch owes a resume, and drops them
-   * from the record.
-   *
-   * The caller waits for the update transaction that would refuse the runtime
-   * first, and there is exactly one caller per launch: a second arm of a row
-   * that has already fired tells the chat to continue twice.
+   * Arms one continue row per chat it is handed, and drops the ones that armed
+   * from the record. Its contract is one call per launch: a chat armed twice
+   * gets its row re-scheduled, and a row that has already fired tells the chat
+   * to continue a second time. The single call site is in the launch, on the
+   * far side of the update transaction that would refuse the runtime.
    */
   const armOwedResumes = async (
     owed: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],

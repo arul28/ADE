@@ -260,8 +260,7 @@ function cloneRecentlyInstalledUpdate(
  * A record whose notice the user dismissed is kept in state for the one thing
  * it still owes: the continue rows it has not managed to arm yet. Two readers
  * need that same answer — the notice the launch reconciles, and the row it
- * consumes — so it is answered in one place, beside the field the dismissal
- * writes.
+ * consumes — so the record's owner answers it, in one place.
  */
 export function shouldShowInstalledNotice(
   update: RecentlyInstalledUpdate | null | undefined,
