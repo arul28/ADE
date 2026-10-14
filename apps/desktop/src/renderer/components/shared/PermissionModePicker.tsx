@@ -386,7 +386,7 @@ function PermissionModeMenu<Value extends string>({
               role="option"
               aria-label={option.label}
               aria-selected={active}
-              tabIndex={active ? 0 : -1}
+              tabIndex={index === selectedIndex ? 0 : -1}
               onClick={() => onSelect(option.value)}
               onMouseEnter={() => setPointedIndex(index)}
               onFocus={() => setPointedIndex(index)}

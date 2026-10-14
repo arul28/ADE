@@ -1813,6 +1813,7 @@ final class ModelPickerStore: ObservableObject {
   }
 
   func refresh(syncService: SyncService) async {
+    let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     async let favTask = try? await syncService.getModelFavorites()
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
@@ -1822,7 +1823,7 @@ final class ModelPickerStore: ObservableObject {
       recents = rec
       // The `@` menu ranks by the same recents; only the host's answer is
       // mirrored, so a stale local list never overwrites a newer `@` pick.
-      WorkModelMentionDirectory.shared.record(recents: rec)
+      WorkModelMentionDirectory.shared.record(recents: rec, ifRevision: directoryRevision)
     }
     isLoading = false
   }

@@ -3130,8 +3130,11 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
-  // Fast's tier: "ultrafast" or null (plain Fast). Anything else is not a tier.
-  if ("fastTier" in value) parsed.fastTier = value.fastTier === "ultrafast" ? "ultrafast" : null;
+  // Fast's tier: "ultrafast", or null for plain Fast. A value this host does
+  // not know (a newer client's tier) leaves the stored tier alone rather than
+  // downgrading it, as the cross-machine target parser does.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
+  else if ("fastTier" in value && value.fastTier === null) parsed.fastTier = null;
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
   if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];

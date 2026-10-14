@@ -2239,7 +2239,7 @@ describe("createSyncRemoteCommandService", () => {
   it.each([
     { sent: "ultrafast", received: "ultrafast" },
     { sent: null, received: null },
-    { sent: "turbo", received: null },
+    { sent: "turbo", received: undefined },
   ])("carries fastTier $sent on chat.updateSession as $received", async ({ sent, received }) => {
     const updateSession = vi.fn().mockResolvedValue({ id: "session-1" });
     const { service } = createService({ agentChatService: { updateSession } });

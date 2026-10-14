@@ -1764,6 +1764,8 @@ type ParallelModelRowState = NativeControlState & {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when this slot's Fast is Codex Ultrafast. */
+  fastTier?: "ultrafast" | null;
   executionMode: AgentChatExecutionMode;
 };
 
@@ -1996,6 +1998,7 @@ function cloneParallelSlotFromComposer(args: {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  fastTier?: FastTier | null;
   executionMode: AgentChatExecutionMode;
 }): ParallelModelRowState {
   return {
@@ -2004,6 +2007,7 @@ function cloneParallelSlotFromComposer(args: {
     modelId: args.modelId,
     reasoningEffort: args.reasoningEffort,
     fastMode: args.fastMode,
+    fastTier: args.fastMode && args.fastTier === "ultrafast" ? "ultrafast" : null,
     executionMode: args.executionMode,
   };
 }
@@ -8346,6 +8350,7 @@ export function AgentChatPane({
     selectedSessionModelId,
     selectedSession?.reasoningEffort,
     selectedSession?.fastMode,
+    selectedSession?.fastTier,
     selectedSession?.executionMode,
     selectedSession?.interactionMode,
     selectedSession?.claudePermissionMode,
@@ -10575,6 +10580,7 @@ export function AgentChatPane({
         // displayed the remembered family effort.
         reasoningEffort: effectiveReasoningEffort,
         fastMode,
+        fastTier,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
@@ -10585,10 +10591,11 @@ export function AgentChatPane({
         // displayed the remembered family effort.
         reasoningEffort: effectiveReasoningEffort,
         fastMode,
+        fastTier,
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, fastTier, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -13356,6 +13363,7 @@ export function AgentChatPane({
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
             fastMode: slot.fastMode,
+            ...(provider === "codex" && slot.fastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
@@ -16708,6 +16716,7 @@ export function AgentChatPane({
                   modelId,
                   reasoningEffort,
                   fastMode,
+                  fastTier,
                   executionMode,
                 }),
               ]);
@@ -16723,16 +16732,19 @@ export function AgentChatPane({
             }}
             onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
+              const nextDesc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
               patchParallelSlot(index, {
                 modelId: nextModelId,
                 ...(options ? { fastMode: options.fastMode } : {}),
+                // Ultrafast carries over only to a model that offers it too.
+                ...(modelSupportsUltrafast(nextDesc) ? {} : { fastTier: null }),
               });
             }}
             onParallelSlotReasoningChange={(index, effort) => {
               patchParallelSlot(index, { reasoningEffort: effort });
             }}
-            onParallelSlotFastModeChange={(index, enabled) => {
-              patchParallelSlot(index, { fastMode: enabled });
+            onParallelSlotFastModeChange={(index, enabled, tier) => {
+              patchParallelSlot(index, { fastMode: enabled, fastTier: enabled && tier === "ultrafast" ? "ultrafast" : null });
             }}
             parallelLaunchBusy={parallelLaunchBusy}
             parallelLaunchStatus={parallelLaunchStatus}

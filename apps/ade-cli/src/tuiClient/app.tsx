@@ -4023,9 +4023,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Cross-surface model picker favorites/recents — authoritative copy lives in ade-cli.
 	  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
 	  const [modelPickerRecents, setModelPickerRecents] = useState<string[]>([]);
-  // Read by the @ suggestion effect without re-running it on every recents change.
-  const modelPickerRecentsRef = useRef<string[]>([]);
-  modelPickerRecentsRef.current = modelPickerRecents;
 	  const [modelCatalog, setModelCatalog] = useState<AgentChatModelCatalog | null>(null);
 	  const [modelCatalogRefreshingProvider, setModelCatalogRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
 
@@ -8277,7 +8274,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // plain @ search is not flooded with the whole catalog.
     // Recently picked models lead, as on desktop.
     const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query, undefined, {
-      recentModelIds: modelPickerRecentsRef.current,
+      recentModelIds: modelPickerRecents,
     });
     const modelSuggestions: MentionSuggestion[] = rankedModels.rows.map((model) => ({
       kind: "model" as const,
@@ -8425,7 +8422,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, selectedMentions]);
+  // Recents change on a pick or when they finish loading; an open @ list re-sorts.
+  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, modelPickerRecents, selectedMentions]);
 
   const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;

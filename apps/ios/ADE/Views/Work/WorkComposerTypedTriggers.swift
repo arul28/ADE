@@ -788,6 +788,15 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
   private var entries: [Entry] = []
   private var byId: [String: Entry] = [:]
   private var recents: [String] = []
+  /// Bumped by every local pick, so a host answer requested before that pick
+  /// cannot replace the newer order when it lands late.
+  private var recentsRevision = 0
+
+  var recentsRevisionSnapshot: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return recentsRevision
+  }
 
   /// The picker's synced recents (desktop, TUI and iOS share them), newest
   /// first. The `@` menu ranks recent models first among equal matches.
@@ -797,10 +806,13 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
     return recents
   }
 
-  func record(recents next: [String]) {
+  /// Records the host's recents unless a local pick happened after
+  /// `revision` was read (pass nil to record unconditionally).
+  func record(recents next: [String], ifRevision revision: Int? = nil) {
     lock.lock()
+    defer { lock.unlock() }
+    if let revision, revision != recentsRevision { return }
     recents = next
-    lock.unlock()
   }
 
   /// A model picked from the `@` menu becomes the newest recent, as on desktop.
@@ -808,6 +820,7 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
     lock.lock()
     recents = [modelId] + recents.filter { $0 != modelId }
     if recents.count > 10 { recents = Array(recents.prefix(10)) }
+    recentsRevision += 1
     lock.unlock()
   }
 
@@ -1867,9 +1880,10 @@ final class WorkComposerSuggestionController: ObservableObject {
     guard !modelCatalogRequested, let syncService else { return }
     modelCatalogRequested = true
     // The `@` menu can open before the picker ever loaded recents.
+    let revision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     Task {
       if let recents = try? await syncService.getModelRecents() {
-        WorkModelMentionDirectory.shared.record(recents: recents)
+        WorkModelMentionDirectory.shared.record(recents: recents, ifRevision: revision)
       }
     }
     if let cached = syncService.cachedChatModelCatalog() {
@@ -1894,10 +1908,11 @@ final class WorkComposerSuggestionController: ObservableObject {
     if let modelId = suggestion.modelId {
       // Shared with the picker's Recents, so the next `@` leads with it.
       WorkModelMentionDirectory.shared.noteRecent(modelId)
+      let revision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
       if let syncService {
         Task {
           if let recents = try? await syncService.pushModelRecent(modelId) {
-            WorkModelMentionDirectory.shared.record(recents: recents)
+            WorkModelMentionDirectory.shared.record(recents: recents, ifRevision: revision)
           }
         }
       }

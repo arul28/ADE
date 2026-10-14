@@ -2386,7 +2386,7 @@ export function AgentChatComposer({
   } | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
-  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean }>;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean; fastTier?: FastTier | null }>;
   parallelConfiguringIndex?: number | null;
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
@@ -2397,7 +2397,7 @@ export function AgentChatComposer({
     options?: { fastMode: boolean },
   ) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
-  onParallelSlotFastModeChange?: (index: number, enabled: boolean) => void;
+  onParallelSlotFastModeChange?: (index: number, enabled: boolean, tier?: FastTier) => void;
   parallelLaunchBusy?: boolean;
   parallelLaunchStatus?: string | null;
   parallelControlSlot?: ParallelComposerControlSlot | null;
@@ -7228,8 +7228,9 @@ export function AgentChatComposer({
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(onParallelSlotFastModeChange
                     ? {
-                        onFastModeChange: (next: boolean) =>
-                          onParallelSlotFastModeChange(parallelConfiguringIndex, next),
+                        fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
+                        onFastModeChange: (next: boolean, tier?: FastTier) =>
+                          onParallelSlotFastModeChange(parallelConfiguringIndex, next, tier),
                       }
                     : {})}
                 />
