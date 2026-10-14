@@ -4696,6 +4696,9 @@ final class SyncService: ObservableObject {
   /// the chat pane so it can offer Retry instead of claiming the chat is empty.
   private var stalledChatSnapshotSessionIds: Set<String> = []
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
+  /// Per-chat record of the focused socket's chat stream, for the
+  /// empty-thread report (see `ChatStreamTrace`).
+  private var focusedChatStreamTraces: [String: ChatStreamTrace] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
   private var supportsChunkedEnvelopes = false
@@ -13053,11 +13056,13 @@ final class SyncService: ObservableObject {
       // Explicit snapshot requests must not advertise a resume point — the
       // caller wants the full history, not a delta replay.
       let payload = chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
-      guard sendEnvelope(
+      let sent = sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
-      ) else {
+      )
+      noteFocusedChatSubscribe(sessionId: trimmedSessionId, payload: payload, sent: sent, requestSnapshot: requestSnapshot)
+      guard sent else {
         if requestSnapshot {
           recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
           stalledChatSnapshotSessionIds.insert(trimmedSessionId)
@@ -13266,6 +13271,8 @@ final class SyncService: ObservableObject {
 
   private func performChatEventUnsubscribe(sessionId: String) {
     guard subscribedChatSessionIds.contains(sessionId) else { return }
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].unsubscribes += 1
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_unsubscribe", data: ["session": sessionId])
     subscribedChatSessionIds.remove(sessionId)
     chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
@@ -21229,20 +21236,36 @@ final class SyncService: ObservableObject {
         // Gate on the raw dictionary first, then decode off the main actor:
         // a subscribe snapshot carries up to 256 KiB of transcript and this
         // lands while the user is watching the thread open.
-        guard let snapshotSessionId = dict["sessionId"] as? String,
-              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+        guard let snapshotSessionId = dict["sessionId"] as? String else { break }
+        let rawSnapshotEventCount = (dict["events"] as? [Any])?.count ?? 0
+        guard subscribedChatSessionIds.contains(snapshotSessionId) else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "notSubscribed", rawEventCount: rawSnapshotEventCount)
+          break
+        }
         // One off-main decode feeds both the thread engine (which keeps each
         // row's raw bytes for its disk log) and the legacy ring.
         let hostSupportsChatLogV2 = supportsChatLogV2
         let snapshotDecodeTask = Task.detached(priority: .userInitiated) {
           chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)
         }
-        guard let threadSnapshot = await snapshotDecodeTask.value else { break }
+        guard let threadSnapshot = await snapshotDecodeTask.value else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "decodeFailed", rawEventCount: rawSnapshotEventCount)
+          break
+        }
         // Re-check the subscription too: the decode is a suspension point, and
         // a project switch during it would otherwise land this snapshot in a
         // session the user has already left.
         guard isCurrentConnectionGeneration(generation),
-              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+              subscribedChatSessionIds.contains(snapshotSessionId) else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "staleOrUnsubscribedDuringDecode", rawEventCount: rawSnapshotEventCount)
+          break
+        }
+        focusedChatStreamTraces[snapshotSessionId, default: ChatStreamTrace()].noteSnapshotApplied(
+          rawEventCount: rawSnapshotEventCount,
+          decodedEventCount: threadSnapshot.events.count,
+          resumed: threadSnapshot.resumed,
+          gap: threadSnapshot.gap
+        )
         if let threadKey = chatThreadKey(for: snapshotSessionId) {
           chatThreadRegistry.routeSnapshot(threadSnapshot, key: threadKey)
         }
@@ -21274,13 +21297,17 @@ final class SyncService: ObservableObject {
         // Gate chat events on the current subscription set so events from a
         // previous project (still streaming on the host) do not leak into the
         // newly-active project's view after a quick switch.
-        guard let sessionId = dict["sessionId"] as? String,
-              subscribedChatSessionIds.contains(sessionId) else { break }
+        guard let sessionId = dict["sessionId"] as? String else { break }
+        guard subscribedChatSessionIds.contains(sessionId) else {
+          focusedChatStreamTraces[sessionId]?.liveEventsDropped += 1
+          break
+        }
         // Resumable stream: drop duplicates/old replays and advance the
         // per-session watermark used as sinceSeq on re-subscribe. Events
         // without seq (older hosts) keep today's behavior unchanged.
         let seq = (dict["seq"] as? NSNumber)?.intValue
         if let seq, let lastSeq = chatEventLastSeqBySession[sessionId], seq <= lastSeq {
+          focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].liveEventsDroppedAsOld += 1
           syncChatLog.debug(
             "chat_event_dropped_old session=\(sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public)"
           )
@@ -21309,6 +21336,7 @@ final class SyncService: ObservableObject {
         if let seq {
           chatEventLastSeqBySession[sessionId] = seq
         }
+        focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteLiveEvent()
         if let threadKey = chatThreadKey(for: sessionId) {
           chatThreadRegistry.routeLive(liveEvent, key: threadKey)
         }
@@ -22902,11 +22930,12 @@ final class SyncService: ObservableObject {
       syncChatLog.notice(
         "chat_subscribe_restore session=\(sessionId, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
       )
-      sendEnvelope(
+      let sent = sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
       )
+      noteFocusedChatSubscribe(sessionId: sessionId, payload: payload, sent: sent, requestSnapshot: false)
       chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     }
   }
@@ -25777,6 +25806,57 @@ extension SyncService {
       }
     }
     if changed { objectWillChange.send() }
+  }
+
+  func noteFocusedChatSubscribe(sessionId: String, payload: [String: Any], sent: Bool, requestSnapshot: Bool) {
+    let resume = payload["sinceSequence"] != nil ? "sequence" : payload["sinceSeq"] != nil ? "seq" : "none"
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteSubscribe(
+      sent: sent,
+      requestSnapshot: requestSnapshot,
+      resume: resume
+    )
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe", data: [
+      "session": sessionId,
+      "sent": String(sent),
+      "requestSnapshot": String(requestSnapshot),
+      "resume": resume,
+    ])
+  }
+
+  func noteFocusedChatSnapshotDropped(sessionId: String, reason: String, rawEventCount: Int) {
+    var trace = focusedChatStreamTraces[sessionId, default: ChatStreamTrace()]
+    trace.snapshotsDropped += 1
+    trace.lastSnapshotDropReason = reason
+    focusedChatStreamTraces[sessionId] = trace
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe ack dropped", data: [
+      "session": sessionId,
+      "reason": reason,
+      "rawEvents": String(rawEventCount),
+    ])
+  }
+
+  /// Everything the phone knows about one chat's stream, on whichever socket
+  /// serves it. Names and counts only; feeds the empty-thread report.
+  func chatStreamDiagnostics(sessionId: String) -> [String: String] {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = routedRemoteMachineChat(trimmed) {
+      guard let connection = machineFleet?.connection(for: remote.machineKey) else {
+        return ["path": "fleet", "connection": "missing"]
+      }
+      return connection.chatStreamDiagnostics(sessionId: trimmed)
+    }
+    var fields = (focusedChatStreamTraces[trimmed] ?? ChatStreamTrace()).fields
+    fields["path"] = "focused"
+    fields["connState"] = connectionState.rawValue
+    fields["canSendLive"] = String(canSendLiveRequests())
+    fields["hostChatStreaming"] = String(supportsChatStreaming)
+    fields["hostChatLogV2"] = String(supportsChatLogV2)
+    fields["subscribed"] = String(subscribedChatSessionIds.contains(trimmed))
+    fields["needsRemoteActivation"] = String(chatSubscriptionsNeedingRemoteActivation.contains(trimmed))
+    fields["snapshotPending"] = String(recentFullChatSnapshotRequestBySession[trimmed] != nil)
+    fields["snapshotStalled"] = String(stalledChatSnapshotSessionIds.contains(trimmed))
+    fields["scope"] = chatCommandScopeBySession[trimmed].map { String(describing: $0).prefix(40).description } ?? "project"
+    return fields
   }
 
   func remoteMachineChat(sessionId: String) -> SyncRemoteMachineChat? {

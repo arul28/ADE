@@ -1143,6 +1143,9 @@ struct WorkSessionDestinationView: View {
       .task(id: pollingKey) {
         await pollIfNeeded()
       }
+      .task(id: sessionId) {
+        await runEmptyThreadProbe()
+      }
       .task(id: threadCommentsRefreshKey) {
         guard isLiveAndReachable, syncService.supportsThreadComments(sessionId: sessionId) else { return }
         // Best effort: the live `session_meta_updated` path keeps it current.
@@ -2323,6 +2326,94 @@ struct WorkSessionDestinationView: View {
       }
       try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 3_000_000_000 : 1_700_000_000)
     }
+  }
+}
+
+// MARK: - Empty-thread probe
+
+/// Why a chat that is working shows nothing, or nil when it is fine. Field
+/// reports showed chats on another machine streaming live activity under
+/// "No chat messages yet" until the user sent a message.
+func workChatEmptyThreadAnomaly(
+  shownTimelineCount: Int,
+  isStreamingTurn: Bool,
+  sessionDeleted: Bool,
+  diagnostics: ChatThreadIngestDiagnostics,
+  isLiveAndReachable: Bool
+) -> String? {
+  guard isLiveAndReachable, !sessionDeleted, shownTimelineCount == 0 else { return nil }
+  guard isStreamingTurn || diagnostics.liveEventCount > 0 else { return nil }
+  if diagnostics.awaitingBoundaryPage { return "held_for_boundary_page" }
+  if diagnostics.snapshotCount == 0 { return "no_snapshot" }
+  if diagnostics.lastSnapshotEventCount == 0 { return "empty_snapshot" }
+  return "snapshot_not_rendered"
+}
+
+extension WorkSessionDestinationView {
+  /// While the chat is open, look every 10 s for the empty-thread state and
+  /// report it to Sentry once per appearance, with the stream trace that says
+  /// where the history went. Reading a frame costs nothing; the report is rare.
+  @MainActor
+  func runEmptyThreadProbe() async {
+    let openedAt = Date()
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: 10_000_000_000)
+      guard !Task.isCancelled, let threadModel else { continue }
+      let shown = threadModel.frame
+      let latest = await threadModel.engine.currentFrame
+      guard !Task.isCancelled, let reference = latest ?? shown else { continue }
+      guard let kind = workChatEmptyThreadAnomaly(
+        shownTimelineCount: shown?.presentation.timelineCount ?? 0,
+        isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
+        sessionDeleted: reference.sessionDeleted,
+        diagnostics: reference.ingestDiagnostics,
+        isLiveAndReachable: isLiveAndReachable
+      ) else { continue }
+      reportEmptyThread(kind: kind, shown: shown, latest: latest, openedAt: openedAt)
+      return
+    }
+  }
+
+  @MainActor
+  private func reportEmptyThread(kind: String, shown: ChatThreadFrame?, latest: ChatThreadFrame?, openedAt: Date) {
+    let ingest = (latest ?? shown)?.ingestDiagnostics ?? ChatThreadIngestDiagnostics()
+    var context = syncService.chatStreamDiagnostics(sessionId: sessionId)
+    context["area"] = "chat.empty_thread.\(kind)"
+    context["kind"] = kind
+    context["sessionId"] = sessionId
+    context["machineKey"] = threadKey?.machineKey ?? "nil"
+    context["threadScope"] = threadKey?.scope.storageKey.prefix(24).description ?? "nil"
+    context["isRemoteMachineChat"] = String(isRemoteMachineChat)
+    context["isCrossProject"] = String(isCrossProject)
+    context["personalChat"] = String(personalChat)
+    context["provider"] = composerChatSummary?.provider ?? "nil"
+    context["secondsOpen"] = String(Int(Date().timeIntervalSince(openedAt)))
+    context["shownRevision"] = shown.map { String($0.revision) } ?? "nil"
+    context["engineRevision"] = latest.map { String($0.revision) } ?? "nil"
+    context["shownTimeline"] = shown.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTimeline"] = latest.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTranscript"] = latest.map { String($0.transcript.count) } ?? "nil"
+    context["loadState"] = (latest ?? shown).map { String(describing: $0.loadState).prefix(40).description } ?? "nil"
+    context["cacheOrigin"] = (latest ?? shown).map { String(describing: $0.cacheOrigin) } ?? "nil"
+    context["engineSnapshots"] = String(ingest.snapshotCount)
+    context["engineLastSnapshotEvents"] = String(ingest.lastSnapshotEventCount)
+    context["engineLastSnapshotResumed"] = String(ingest.lastSnapshotResumed)
+    context["engineLastSnapshotResumeKind"] = ingest.lastSnapshotResumeKind ?? "nil"
+    context["engineLastSnapshotGap"] = String(ingest.lastSnapshotGap)
+    context["engineLastSnapshotTruncated"] = String(ingest.lastSnapshotTruncated)
+    context["engineLastSnapshotChatLogV2"] = String(ingest.lastSnapshotHostSupportsChatLogV2)
+    context["engineLiveEvents"] = String(ingest.liveEventCount)
+    context["engineLiveSinceSnapshot"] = String(ingest.liveEventsSinceSnapshot)
+    context["engineDiskRows"] = String(ingest.hasDiskRows)
+    context["engineAwaitingBoundaryPage"] = String(ingest.awaitingBoundaryPage)
+    CrashReporting.capture(
+      NSError(
+        domain: "ADE.ChatEmptyThread",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Working chat shows no messages (\(kind))"]
+      ),
+      context: context
+    )
   }
 }
 

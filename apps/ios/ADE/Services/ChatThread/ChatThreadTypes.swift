@@ -273,6 +273,24 @@ struct ChatThreadFrame: @unchecked Sendable {
   let usageRevision: Int
   /// Kept for existing consumers (steer reconcile, subagents). Read-only.
   let transcript: [WorkChatEnvelope]
+  /// What the host has delivered to this engine so far. Read by the empty-thread
+  /// probe, which reports a chat that is working but shows nothing.
+  var ingestDiagnostics = ChatThreadIngestDiagnostics()
+}
+
+/// Counts of what reached one engine from the host, for diagnostics only.
+struct ChatThreadIngestDiagnostics: Equatable, Sendable {
+  var snapshotCount = 0
+  var lastSnapshotEventCount = 0
+  var lastSnapshotResumed = false
+  var lastSnapshotResumeKind: String?
+  var lastSnapshotGap = false
+  var lastSnapshotTruncated = false
+  var lastSnapshotHostSupportsChatLogV2 = false
+  var liveEventCount = 0
+  var liveEventsSinceSnapshot = 0
+  var hasDiskRows = false
+  var awaitingBoundaryPage = false
 }
 
 // MARK: - Decoding (off the main actor)
