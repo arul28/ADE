@@ -3114,6 +3114,89 @@ describe("createAutoUpdateService", () => {
   });
 });
 
+describe("the installed notice and the resume it still owes", () => {
+  // A chat the user asked to resume in the install confirmation: the launch
+  // that lands the install may not have managed to arm it yet, and the record
+  // is the only place that knows.
+  const RESUMED_CHAT = {
+    sessionId: "8f1c2d3e-0000-4000-8000-000000000001",
+    title: "AudioShake pipeline",
+    projectName: "Versic",
+    projectRoot: "/Users/someone/Versic",
+  };
+  const installedAt = {
+    version: "1.2.3",
+    installedAt: "2026-04-06T15:20:00.000Z",
+    releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+    githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
+  };
+
+  const startServiceOn = (globalStatePath: string) => createAutoUpdateService({
+    logger: makeLogger(),
+    currentVersion: "1.2.3",
+    globalStatePath,
+    startupDelayMs: 60_000,
+    periodicCheckMs: 60_000,
+    now: () => "2026-04-06T15:21:00.000Z",
+    updater: new FakeAutoUpdater(),
+  });
+
+  const seed = (state: Record<string, unknown>): string => {
+    const globalStatePath = makeStatePath();
+    fs.writeFileSync(globalStatePath, JSON.stringify(state), "utf8");
+    return globalStatePath;
+  };
+
+  it("keeps a resume it has not armed yet when the installed notice is dismissed", () => {
+    const globalStatePath = seed({
+      recentlyInstalledUpdate: { ...installedAt, resumedChats: [RESUMED_CHAT] },
+    });
+    const service = startServiceOn(globalStatePath);
+    expect(service.getSnapshot().recentlyInstalled).not.toBeNull();
+
+    service.dismissInstalledNotice();
+
+    expect(service.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toMatchObject({
+      noticeDismissedAt: "2026-04-06T15:21:00.000Z",
+      resumedChats: [RESUMED_CHAT],
+    });
+
+    service.dispose();
+  });
+
+  it("drops the record once the notice is dismissed with nothing left to arm", () => {
+    const globalStatePath = seed({ recentlyInstalledUpdate: installedAt });
+    const service = startServiceOn(globalStatePath);
+
+    service.dismissInstalledNotice();
+
+    expect(service.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toBeUndefined();
+
+    service.dispose();
+  });
+
+  it("does not bring a dismissed notice back, and still owes its resume, on the next launch", () => {
+    const globalStatePath = seed({
+      recentlyInstalledUpdate: {
+        ...installedAt,
+        resumedChats: [RESUMED_CHAT],
+        noticeDismissedAt: "2026-04-06T15:22:00.000Z",
+      },
+    });
+
+    const nextLaunch = startServiceOn(globalStatePath);
+
+    expect(nextLaunch.getSnapshot().recentlyInstalled).toBeNull();
+    expect(readState(globalStatePath).recentlyInstalledUpdate).toMatchObject({
+      resumedChats: [RESUMED_CHAT],
+    });
+
+    nextLaunch.dispose();
+  });
+});
+
 describe("compareUpdateVersions", () => {
   it("orders semver versions including prereleases", () => {
     expect(compareUpdateVersions("1.2.4", "1.2.3")).toBeGreaterThan(0);

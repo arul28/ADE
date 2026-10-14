@@ -9508,7 +9508,13 @@ app.whenReady().then(async () => {
     // the same instant everything above needed, however long the install took.
     void (postUpdateTransactionDone ?? Promise.resolve())
       .then(() => armOwedResumes(resumedAfterUpdate))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // Every step inside logs its own failure; this guards a throw none of
+        // them expected. A resume is the last thing that should go unsaid.
+        localRuntimeLogger.warn("update_resume.arm_chain_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
