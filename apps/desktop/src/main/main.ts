@@ -4505,7 +4505,7 @@ app.whenReady().then(async () => {
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
       // this same bootstrap, and every call here is read per-turn.
-      macDesktopTurnRecorder: {
+      macDesktopRuntime: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
         supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
       },

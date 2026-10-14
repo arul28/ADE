@@ -124,13 +124,29 @@ final class CaptureEngine {
         var codec: String?
         var startedAt: Date
         /// The last frame ScreenCaptureKit delivered, kept so a reader that
-        /// attaches to a still screen can be handed a keyframe of it.
+        /// attaches to a still screen can be handed a keyframe of it. While
+        /// `hadRealFrame` is false this is a screenshot standing in for one.
         var lastBuffer: CVPixelBuffer?
         var lastPresentationTime: CMTime
-        /// Whether a screenshot is out to seed this stream's first frame. Set
-        /// before the capture leaves, cleared when it lands, so the 1 s
-        /// keep-alive cannot stack a second capture behind a slow one.
+        /// Whether ScreenCaptureKit has delivered a frame of its own. Until it
+        /// has, the picture is a screenshot taken for the reader and must keep
+        /// being retaken: a still re-broadcast every second is a frozen screen
+        /// presented as a live one.
+        var hadRealFrame: Bool
+        /// Whether a screenshot is out. Set before the capture leaves, cleared
+        /// when it lands, so the 1 s keep-alive cannot stack a second capture
+        /// behind a slow one.
         var seedingFrame: Bool
+        /// Screenshots that came back with no picture, one after another. The
+        /// retry slows down as it climbs, to at most one every
+        /// `maxSeedBackoff`, so a lane whose capture is broken and whose
+        /// screenshots are broken too does not run a capture a second for ever.
+        /// It never stops trying: a reader that stays attached is owed a
+        /// picture, not the last one the desktop moved on from. A reader
+        /// attaching starts the count again.
+        var seedFailures: Int
+        /// When the last screenshot left, for the failure backoff.
+        var lastSeedAttemptAt: Date?
         /// When the encoder last produced an access unit, for the keepalive.
         var lastEncodedAt: Date
         var keepAlive: DispatchSourceTimer?
@@ -810,8 +826,14 @@ final class CaptureEngine {
         // through the screenshot path rather than leaving the reader with a
         // config record and no picture.
         server.onClientAttached = { [weak self] in
-            self?.refreshKeyframe(laneId: laneId)
-            self?.seedFirstFrame(laneId: laneId, server: server)
+            guard let self else { return }
+            self.lock.lock()
+            // Someone just started watching: a screenshot that failed while
+            // nobody was looking is worth trying again for them.
+            self.streams[laneId]?.seedFailures = 0
+            self.lock.unlock()
+            self.refreshKeyframe(laneId: laneId)
+            self.refreshFallbackFrame(laneId: laneId, server: server)
         }
 
         let early = EarlyFrameBox()
@@ -824,6 +846,10 @@ final class CaptureEngine {
                     if let current = self.streams[laneId] {
                         if current.server === server {
                             self.streams[laneId]?.lastBuffer = buffer
+                            // ScreenCaptureKit is delivering after all: the
+                            // screenshot standing in for it is done, and is
+                            // never taken again for this stream.
+                            self.streams[laneId]?.hadRealFrame = true
                             if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
                         }
                     } else {
@@ -896,7 +922,10 @@ final class CaptureEngine {
             // A frame that landed during the start is kept, not lost.
             lastBuffer: early.buffer,
             lastPresentationTime: early.presentationTime,
+            hadRealFrame: early.buffer != nil,
             seedingFrame: false,
+            seedFailures: 0,
+            lastSeedAttemptAt: nil,
             lastEncodedAt: Date(),
             keepAlive: nil,
             showsCursor: cursorVisible
@@ -930,7 +959,19 @@ final class CaptureEngine {
         encoder.encode(pixelBuffer: buffer, presentationTime: next, forceKeyframe: true)
     }
 
-    /// A first picture for a lane whose live stream has delivered none.
+    /// The longest the fallback waits between screenshots after failures.
+    ///
+    /// The streak never stops the fallback: a reader that stays attached must
+    /// not be left with a still the desktop has moved on from, which is worse
+    /// than either a live picture or an honest "no picture". A lane whose
+    /// screenshots keep failing settles here instead, at most two attempts a
+    /// minute.
+    private static let maxSeedBackoff: TimeInterval = 30
+    /// Failures at which the fallback is down to that slowed cadence, logged
+    /// once per streak.
+    private static let seedStreakLogFailures = 5
+
+    /// The lane's picture while ScreenCaptureKit has delivered none of its own.
     ///
     /// `SCStream` can report a successful start and then never call
     /// `didOutputSampleBuffer` — macOS 26/27's window server does this here,
@@ -939,24 +980,39 @@ final class CaptureEngine {
     /// `lastBuffer` stays nil for its whole life, so the keyframe owed to a
     /// reader that attaches and the 1 s keep-alive both have nothing to
     /// re-encode and the viewer sits on "Connecting" behind a config record
-    /// and no picture. One still from the working path becomes that first
-    /// frame, and every later attach and tick re-encodes it as keyframes until
-    /// ScreenCaptureKit starts delivering for real.
+    /// and no picture.
+    ///
+    /// The screenshot is retaken on every reader attach and on every keep-alive
+    /// tick, which is what makes the fallback a slow live picture rather than
+    /// one frozen moment: the still goes stale the instant anything on the
+    /// desktop moves, and a reader cannot tell a stale still from a live one.
+    /// It stops for good once ScreenCaptureKit delivers a frame of its own.
     ///
     /// Taken off the main thread on purpose: `captureImage` pumps a nested run
     /// loop and can block for seconds, and the command loop must keep answering
     /// every other lane while this one is being fixed. `seedingFrame` is set
     /// before the work leaves, so a slow capture cannot be stacked behind by
-    /// the next keep-alive tick.
-    private func seedFirstFrame(laneId: String, server: StreamByteServer) {
+    /// the next keep-alive tick, and a screenshot that comes back empty slows
+    /// the next attempt down (`seedFailures`) rather than stopping it.
+    private func refreshFallbackFrame(laneId: String, server: StreamByteServer) {
         guard #available(macOS 12.3, *) else { return }
         lock.lock()
         guard let state = streams[laneId], state.server === server,
-              state.lastBuffer == nil, !state.seedingFrame else {
+              !state.hadRealFrame, !state.seedingFrame else {
             lock.unlock()
             return
         }
+        if let lastAttempt = state.lastSeedAttemptAt, state.seedFailures > 0 {
+            let backoff = min(Self.maxSeedBackoff, pow(2, Double(state.seedFailures)))
+            guard Date().timeIntervalSince(lastAttempt) >= backoff else {
+                lock.unlock()
+                return
+            }
+        }
+        let failures = state.seedFailures
+        let firstSeed = state.lastBuffer == nil
         streams[laneId]?.seedingFrame = true
+        streams[laneId]?.lastSeedAttemptAt = Date()
         let displayId = state.displayId
         lock.unlock()
 
@@ -978,12 +1034,11 @@ final class CaptureEngine {
                 return
             }
             current.seedingFrame = false
-            // Only if the stream still has no frame of its own: one that
-            // arrived while the screenshot was being taken is newer and must
-            // not be replaced by it.
-            let seeded = current.lastBuffer == nil
-                ? image.flatMap { Self.pixelBuffer(from: $0, width: current.width, height: current.height) }
-                : nil
+            // A real frame that arrived while the screenshot was being taken is
+            // newer, and has already ended this fallback.
+            let seeded = current.hadRealFrame
+                ? nil
+                : image.flatMap { Self.pixelBuffer(from: $0, width: current.width, height: current.height) }
             if let seeded {
                 current.lastBuffer = seeded
                 // Host time, the same clock ScreenCaptureKit's sample buffers
@@ -991,12 +1046,28 @@ final class CaptureEngine {
                 // later than this one and `refreshKeyframe` steps forward from
                 // here in the meantime.
                 current.lastPresentationTime = CMClockGetTime(CMClockGetHostTimeClock())
+                current.seedFailures = 0
+            } else if !current.hadRealFrame {
+                current.seedFailures += 1
             }
+            // ScreenCaptureKit delivering a frame while the screenshot was in
+            // flight leaves the streak where it was, and that is not news.
+            let degraded = !current.hadRealFrame && current.seedFailures == Self.seedStreakLogFailures
             self.streams[laneId] = current
             self.lock.unlock()
-            guard seeded != nil else { return }
+            guard seeded != nil else {
+                if degraded {
+                    self.log("stream for lane \(laneId) has no ScreenCaptureKit frame and its screenshots keep failing; retrying every \(Int(Self.maxSeedBackoff))s")
+                }
+                return
+            }
             self.refreshKeyframe(laneId: laneId)
-            self.log("stream for lane \(laneId) had no ScreenCaptureKit frame; seeded one from a screenshot")
+            // Logged when the fallback starts and when it comes back from a
+            // run of failures, not once a second: the retake itself is the
+            // normal case while ScreenCaptureKit is quiet.
+            if firstSeed || failures > 0 {
+                self.log("stream for lane \(laneId) has no ScreenCaptureKit frame; showing a screenshot instead")
+            }
         }
     }
 
@@ -1047,10 +1118,11 @@ final class CaptureEngine {
             self.lock.unlock()
             guard due else { return }
             self.refreshKeyframe(laneId: laneId)
-            // A stream ScreenCaptureKit has never fed has nothing to re-encode,
-            // so the keep-alive also carries the seeding attempt — same
-            // reader-attached guard, same 1 Hz cadence.
-            self.seedFirstFrame(laneId: laneId, server: server)
+            // A stream ScreenCaptureKit has never fed has nothing of its own to
+            // re-encode, so the keep-alive also carries the screenshot that
+            // keeps its picture current — same reader-attached guard, same 1 Hz
+            // cadence.
+            self.refreshFallbackFrame(laneId: laneId, server: server)
         }
         timer.resume()
         lock.lock()

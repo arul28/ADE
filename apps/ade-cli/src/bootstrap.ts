@@ -2321,7 +2321,7 @@ export async function createAdeRuntime(args: {
         // One line of system prompt, behind a synchronous gate: the send path
         // must not await a service to decide to say nothing, so it reads the
         // in-memory display registry, and an idle lane pays nothing.
-        macDesktopTurnRecorder: macDesktopService
+        macDesktopRuntime: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
             supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),

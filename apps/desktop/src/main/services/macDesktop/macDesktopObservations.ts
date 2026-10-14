@@ -178,16 +178,16 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
      *
      * The computer-use scratch root, which the proof broker already lists as an
      * allowed import root, so a scratch capture can still be promoted to proof.
-     * Video does NOT come here — recordings and turn clips go to
-     * `artifactPath`, because the thread plays them back over
-     * `ade-artifact://`, which only serves `.ade/artifacts`.
+     * Video does NOT come here — recordings go to `artifactPath`, because the
+     * thread plays them back over `ade-artifact://`, which only serves
+     * `.ade/artifacts`.
      */
     scratchPath(stem: string, extension: string): string {
       return createComputerUseScratchPath(deps.projectRoot, stem, extension);
     },
 
     /**
-     * Where video lands: recordings and per-turn clips.
+     * Where video lands: recordings.
      *
      * The artifact store rather than the scratch root, because the thread plays
      * these back through `ade-artifact://<path>` and the main process serves

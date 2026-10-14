@@ -10195,7 +10195,7 @@ export function createAgentChatService(args: {
    * (`ade code`, the headless brain, any non-Mac host) leaves it undefined and
    * emits nothing.
    */
-  macDesktopTurnRecorder?: Pick<
+  macDesktopRuntime?: Pick<
     MacDesktopRuntimeService,
     "hasDisplaySync"
   > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync" | "seatHostPlatform">> | null;
@@ -10409,7 +10409,7 @@ export function createAgentChatService(args: {
     getBudgetService,
     getProjectSecretService,
     getIosSimulatorService,
-    macDesktopTurnRecorder,
+    macDesktopRuntime,
     getAppControlService,
     getBuiltInBrowserService,
     getCtoCrossMachine,
@@ -46870,10 +46870,10 @@ export function createAgentChatService(args: {
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
-          && macDesktopTurnRecorder?.seatHostPlatform?.() !== "win32",
-        windowsDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
-          && macDesktopTurnRecorder?.seatHostPlatform?.() === "win32",
+        macDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
+          && macDesktopRuntime?.seatHostPlatform?.() !== "win32",
+        windowsDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
+          && macDesktopRuntime?.seatHostPlatform?.() === "win32",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -46953,7 +46953,7 @@ export function createAgentChatService(args: {
           personalSession
             ? null
             : buildMacDesktopDirective(
-                macDesktopTurnRecorder?.hasDisplaySync(executionContext.laneId ?? null) === true,
+                macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
               ),
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,

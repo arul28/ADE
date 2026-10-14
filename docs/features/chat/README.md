@@ -644,9 +644,10 @@ poll while they are looking.
 An agent can drive a simulator, a browser or a recorder, but only a desktop
 renderer can open the panes that show the result. `ade ui show <surface>` asks
 the desktop to put a surface of the agent's own chat on screen. The surfaces
-are `apple` (the Apple tool in the Work tools pane), `floating-apple` (the
-floating device player), `browser` (the Browser tool) and `proof` (the chat's
-proof drawer). `ade apple show [--floating]` is the same request.
+are `apple`, `mac-desktop` and `app-control` (those tools in the Work tools
+pane), their `floating-*` counterparts (the players over the chat), `browser`
+(the Browser tool) and `proof` (the chat's proof drawer).
+`ade apple show [--floating]` is the same request.
 
 1. The brain (`apps/ade-cli/src/services/workTools/workToolShowRequests.ts`)
    publishes a `work_tool_show_request` event on the runtime event stream.
@@ -656,9 +657,17 @@ proof drawer). `ade apple show [--floating]` is the same request.
    through `useWorkShowRequests.ts`, and only for the session in front. A chat
    pane outside Work registers through `useChatPaneShowRequests.ts` for its
    proof drawer and its Apple drawer.
-3. The pane opens the surface and answers `shown` only when the surface's own
+3. The surface goes on screen and the answer is `shown` only when its own
    element is mounted, its pane has real width, and the window is visible
-   (`renderer/lib/workToolOnScreen.ts`).
+   (`renderer/lib/workToolOnScreen.ts`). Whether the tools pane OPEN is the
+   person's own preference: a screen, app or device show activates the tool in a
+   pane they already have open and floats the player over the chat when they
+   have closed it (`useWorkSidebarTool.showTool`), and the ack names the surface
+   that actually appeared (`WorkToolShowAck.shownAs`). The pane opens itself
+   only when no floating player can take the ask: the browser's handoff, a
+   lane-less chat, a request naming another lane, and any ask whose float
+   declines (a lane with no device to float) — which would otherwise be a
+   `held` that never lands, since the chat's handler is right here.
 4. When no pane has the chat in front, the request is held and the answer is
    `held`. A held request lands when the user opens the chat, and expires
    after 10 minutes.

@@ -134,7 +134,7 @@ export function useWorkSidebarTool(
    * still remembered for the lane, so the pane shows it the next time the
    * person opens the pane themselves.
    */
-  showTool: (tool: WorkSidebarTab | null) => void;
+  showTool: (tool: WorkSidebarTab) => void;
   closeTool: (tool: WorkSidebarTab) => void;
 } {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
@@ -177,59 +177,59 @@ export function useWorkSidebarTool(
   const latestStrip = useRef({ tool, openTools });
   latestStrip.current = { tool, openTools };
 
+  /**
+   * Reveals the pane. Picking a tool has always done this — every entry point
+   * that used to call `setWorkSidebarTab` relied on it, and returning to the
+   * picker is not a reason to close it. Openness is tab-owned; the strip
+   * follows the session machine above.
+   */
+  const revealPane = useCallback(() => {
+    if (projectStateKey) setWorkViewState(projectStateKey, { workSidebarOpen: true });
+  }, [projectStateKey, setWorkViewState]);
+
+  /** Writes the lane's strip, touching nothing else. */
   const write = useCallback(
-    (
-      next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] },
-      /**
-       * False for a surface show request, which may use an open pane but must
-       * not open a closed one. The person's pick always reveals.
-       */
-      options: { reveal?: boolean } = {},
-    ) => {
+    (next: { workSidebarTool: WorkSidebarTab | null; workSidebarOpenTools: WorkSidebarTab[] }) => {
       if (!toolStateKey) return;
       if (laneId) {
         setLaneWorkViewState(toolStateKey, laneId, next);
       } else {
         setWorkViewState(toolStateKey, next);
       }
-      // Picking a tool always reveals the pane — every entry point that used to
-      // call `setWorkSidebarTab` relied on that, and returning to the picker is
-      // not a reason to close it. Openness is tab-owned; the strip follows the
-      // session machine above.
-      if (options.reveal !== false && projectStateKey) {
-        setWorkViewState(projectStateKey, { workSidebarOpen: true });
-      }
     },
-    [laneId, projectStateKey, setLaneWorkViewState, setWorkViewState, toolStateKey],
+    [laneId, setLaneWorkViewState, setWorkViewState, toolStateKey],
   );
+
+  /**
+   * Makes `next` the tab on screen, opening it in the strip if it is not there.
+   * Returns to the picker when `next` is null, which keeps the strip: the tabs
+   * are still open, the pane is just showing the page you pick a new one from.
+   */
+  const activate = useCallback((next: WorkSidebarTab | null) => {
+    const current = latestStrip.current;
+    write({
+      workSidebarTool: next,
+      workSidebarOpenTools: next
+        ? openWorkToolTab(current.openTools, next)
+        : [...current.openTools],
+    });
+  }, [write]);
 
   const setTool = useCallback(
     (next: WorkSidebarTab | null) => {
-      const current = latestStrip.current;
       if (next) captureWorkToolOpened(next);
-      write({
-        workSidebarTool: next,
-        // Going back to the picker keeps the strip: the tabs are still open, the
-        // pane is just showing the page you pick a new one from.
-        workSidebarOpenTools: next
-          ? openWorkToolTab(current.openTools, next)
-          : [...current.openTools],
-      });
+      activate(next);
+      revealPane();
     },
-    [write],
+    [activate, revealPane],
   );
 
+  /** A surface request: the same strip write, and no reveal (see the type). */
   const showTool = useCallback(
-    (next: WorkSidebarTab | null) => {
-      const current = latestStrip.current;
-      write({
-        workSidebarTool: next,
-        workSidebarOpenTools: next
-          ? openWorkToolTab(current.openTools, next)
-          : [...current.openTools],
-      }, { reveal: false });
+    (next: WorkSidebarTab) => {
+      activate(next);
     },
-    [write],
+    [activate],
   );
 
   const closeTool = useCallback(
@@ -241,6 +241,8 @@ export function useWorkSidebarTool(
         if (stopTool) closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
         const current = latestStrip.current;
         const next = closeWorkToolTab(current.openTools, current.tool, target);
+        // No reveal: a tab is closed from the pane's own strip, so the pane is
+        // open by definition, and closing one must never open a closed pane.
         write({
           workSidebarTool: next.activeTool,
           workSidebarOpenTools: next.openTools,

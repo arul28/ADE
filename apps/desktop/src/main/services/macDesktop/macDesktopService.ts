@@ -259,9 +259,9 @@ function asNullableDisplayId(raw: unknown): number | null {
  *
  * `MacDesktopServiceApi` is the cross-process contract every surface is built
  * against; these few extras are in-process only — a subscription for the Work
- * tools mirror, the turn-clip opener the chat runtime calls, and the resolution
- * setting — and they are named here rather than left implicit so a caller can
- * be typed against them.
+ * tools mirror, the lane's process question, and the resolution setting — and
+ * they are named here rather than left implicit so a caller can be typed
+ * against them.
  */
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   /**
@@ -288,8 +288,8 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    *
    * `getDisplay` is async because it is part of the cross-process contract;
    * the two callers that need this answer on a hot path — the one-line prompt
-   * directive and the per-turn clip gate — run inside the chat send path and
-   * must not await a service call to decide to do nothing.
+   * directive and the lane's own display question — run inside the chat send
+   * path and must not await a service call to decide to do nothing.
    */
   hasDisplaySync(laneId: string | null | undefined): boolean;
   /**
@@ -1720,7 +1720,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   return Object.assign(api, {
-    /** The sync half of `getDisplay`, for the prompt gate and the turn clip. */
+    /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */
     hasDisplaySync(laneId: string | null | undefined): boolean {
       const trimmed = laneId?.trim();
       if (!trimmed || !seatSupported) return false;
