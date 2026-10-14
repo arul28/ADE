@@ -291,13 +291,15 @@ wherever the user is. The runtime method `machine.updateAndRestart`
 (`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role, exists
 only on the authenticated runtime RPC endpoint, and is never automatic. The
 caller names the version it believes is newest (`targetVersion`); a host already
-on that version refuses to "update" and just restarts, which is still the useful
-action for a wedge-adjacent machine. The reply is step-attributed —
+on that version or newer refuses to "update" and, for a versioned request,
+installs and restarts nothing (it answers "already current"), because a needless
+restart stops every agent on that machine; a request naming no version is the
+"fix a stuck machine" restart. The reply is step-attributed —
 `check`, `apply`, `restart` — and `restart` comes back `pending` by design: it
 tears down the process answering the call, so the client confirms by
 reconnecting and reading the version. A brain cannot report on its own
 replacement. Embedded/test runtimes have no installed service and refuse rather
-than pretend. The desktop surfaces this as **Update & restart** on a connected
+than pretend. The desktop surfaces this as **Update** on a connected
 machine that is behind, over `ade.remoteRuntime.updateAndRestart`. When the
 host's desktop app is open, the brain hands the request to that app over the
 desktop bridge (`app_update.install`) instead, because an open app owns the
@@ -314,7 +316,7 @@ feed), so `releaseAssetUrl` in `apps/ade-cli/src/lib/releaseAssets.ts` maps a
 bare semver onto its tag through `releaseTagForVersion` before building the
 download URL; an already-tagged value and the `latest` alias pass through
 unchanged. Without that mapping every asset URL built from a bare version points
-at a release that does not exist, and the remote **Update & restart** fails on a
+at a release that does not exist, and the remote update fails on a
 404 rather than on anything the user could act on. The bare version reaches it
 from the desktop's Connections pane, which sends the newest version it knows
 through `machine.updateAndRestart` to the target machine's `ade brain update`.
@@ -2173,7 +2175,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 
 The normative privacy, consent, taxonomy, quota, configuration, and instrumentation rules are in [logging.md](./logging.md). This section is only the architecture summary.
 
-- **Error tracking (Sentry)** — five projects in the `ade-app` organization, one per surface: Electron main and renderer (`main/sentry/initMain.ts`, renderer events travel to main over IPC), the brain (`apps/ade-cli/src/sentry/initBrain.ts`), the hosted web client (`renderer/webclient/sentry.ts`), the four Workers (each `src/sentry.ts`) and iOS (`CrashReporting.swift`). Shared scrubbing, the per-process event budget and the capture helpers live in `apps/desktop/src/shared/sentry/`. Failed `ipcMain.handle` calls, failed brain actions, `logger.error` lines, error toasts and provider health failures become issues. The SDKs are bundled into `main.cjs` and `cli.cjs` (devDependencies, nothing shipped in `node_modules`). See [logging.md](./logging.md#error-tracking-sentry).
+- **Error tracking (Sentry)** — five projects in the `ade-app` organization, one per surface: Electron main and renderer (`main/sentry/initMain.ts`, renderer events travel to main over IPC), the brain (`apps/ade-cli/src/sentry/initBrain.ts`), the hosted web client (`renderer/webclient/sentry.ts`), the four Workers (each `src/sentry.ts`) and iOS (`CrashReporting.swift`). Shared scrubbing, the per-process event budget and the capture helpers live in `apps/desktop/src/shared/sentry/`. Failed `ipcMain.handle` calls, failed brain actions, `logger.error` lines and provider runtime failures become issues; error toasts, provider sign-outs and expected outcomes ("Lane not found", a paired machine asleep) become Sentry Logs. The SDKs are bundled into `main.cjs` and `cli.cjs` (devDependencies, nothing shipped in `node_modules`). See [logging.md](./logging.md#error-tracking-sentry).
 
 - **IPC tracing** — every handler emits `ipc.invoke.begin` / `ipc.invoke.done` / `ipc.invoke.failed` with call ID, channel, window ID, duration, summarized args. Mandatory for new handlers.
 - **Renderer lifecycle** — `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`. Mandatory for new surfaces that introduce novel lifecycle transitions.

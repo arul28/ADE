@@ -448,7 +448,7 @@ describe("ThisMacCard", () => {
   });
 
   it.each([
-    ["darwin", "macOS"],
+    ["darwin", "Mac"],
     ["win32", "Windows"],
     ["linux", "Linux"],
   ])("marks the identity tile with the %s platform logo", async (platform, accessibleName) => {
@@ -457,16 +457,18 @@ describe("ThisMacCard", () => {
     };
     render(<ThisMacCard sync={makeSync()} sessionState="active" />);
 
-    expect(await screen.findByRole("img", { name: accessibleName })).toBeTruthy();
-    // The logo is the platform statement, so the version line never repeats it.
-    expect(await screen.findByText("This machine — ADE 1.2.28")).toBeTruthy();
-    expect(screen.queryByText(new RegExp(`ADE 1\\.2\\.28.*${accessibleName}`))).toBeNull();
+    // The tile is the platform statement; the chip beside it carries the
+    // version number alone, so the platform is never spelled out twice.
+    expect(
+      await screen.findByRole("button", { name: new RegExp(`${accessibleName} desktop`) }),
+    ).toBeTruthy();
+    expect(await screen.findByText("1.2.28")).toBeTruthy();
+    expect(screen.queryByText(new RegExp(`1\\.2\\.28.*${accessibleName}`))).toBeNull();
   });
 
   it("labels this pane as this machine", () => {
     render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-    expect(screen.getByText("This machine")).toBeTruthy();
-    expect(screen.queryByText(THIS_MACHINE_NAME)).toBeNull();
+    expect(screen.getByText("This computer")).toBeTruthy();
   });
 
   it("swaps the version line for the fault while the listener is down", async () => {
@@ -482,7 +484,7 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
     expect(await screen.findByText("Port 8787 is already in use.")).toBeTruthy();
-    expect(screen.getByText("This machine — ADE 1.2.28")).toBeTruthy();
+    expect(screen.getByText("1.2.28")).toBeTruthy();
   });
 
   it("shows this computer's own name even while the window is remote-bound", () => {
@@ -999,7 +1001,7 @@ describe("accountDirectorySummary", () => {
     // the same state as a brain with sync switched off, so the pane told the
     // user sync was off and sent them looking for a switch already on.
     const label = summaryForState("sync_not_started", "Account-directory publishing has not started.").label;
-    expect(label).toBe("Signed in — sync hasn't started on this computer yet");
+    expect(label).toBe("Signed in — other devices can't reach this computer yet");
     expect(label).not.toContain("off");
   });
 

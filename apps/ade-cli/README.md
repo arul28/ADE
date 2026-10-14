@@ -635,6 +635,7 @@ ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flak
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --no-parent --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
 ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
 ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain

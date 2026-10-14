@@ -442,6 +442,12 @@ describe("createAgentChatService", () => {
         expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
       });
 
+      // Approving forces a thread/resume, and the app-server echoes the mode of
+      // the thread's last turn: the planning one.
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
       const turnStartCountBeforeApproval = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
       await service.respondToInput({
         sessionId: session.id,
@@ -453,9 +459,77 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
           .toBeGreaterThan(turnStartCountBeforeApproval);
       });
+      const implementationTurn = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").at(-1);
+      expect((implementationTurn?.params as { collaborationMode?: { mode?: string } } | undefined)?.collaborationMode?.mode)
+        .toBe("default");
       // An approved plan hands the session straight to full access — the user
       // already reviewed exactly what will happen.
-      expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("full-auto");
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        permissionMode: "full-auto",
+        interactionMode: "default",
+      });
+      // The composer re-seeds from this, including in a chat that is not selected.
+      expect(events.some((event) =>
+        event.event.type === "session_meta_updated"
+        && event.event.permissionMode === "full-auto"
+        && event.event.interactionMode === "default"
+      )).toBe(true);
+    });
+
+    it("keeps an approved plan out of plan mode across a restart before the implementation turn", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "config-toml") return null;
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Plan the fix before coding." }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: { id: "codex-plan-restart", type: "plan", text: "<proposed_plan>Patch it.</proposed_plan>" },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      // Answered while the planning turn still runs, so the implementation turn
+      // is only staged — and the process dies before it is sent.
+      await service.respondToInput({ sessionId: session.id, itemId: approvalEvent.event.itemId, decision: "accept" });
+      expect(readPersistedChatState(session.id).permissionMode).toBe("full-auto");
+
+      mockState.codexResponseOverrides.set("thread/resume", {
+        thread: { id: "thread-1" },
+        collaborationMode: { mode: "plan", settings: {} },
+      });
+      const restarted = createService().service;
+      const turnStartsBefore = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
+      await restarted.sendMessage({ sessionId: session.id, text: "Go ahead." }, { awaitDispatch: true });
+
+      const turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      expect(turnStarts.length).toBeGreaterThan(turnStartsBefore);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      expect((turnStarts.at(-1)?.params as { collaborationMode?: { mode?: string } } | undefined)?.collaborationMode?.mode)
+        .toBe("default");
+      expect((await restarted.getSessionSummary(session.id))?.interactionMode).toBe("default");
     });
 
     it("dismisses a completed Codex plan approval without staging a revision turn", async () => {

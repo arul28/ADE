@@ -138,16 +138,23 @@ export function reasoningEffortLabel(effort: string | null, model?: ModelDescrip
 /**
  * The one line of detail under every model name in a picker row.
  *
- * Always present, always one line. The sub-provider used to be its own
- * optional line, which gave rows in the same list two different heights.
+ * One line. Reasoning and image input are shown by the row's capability pill,
+ * not spelled out here. Inside a provider's own rail the provider is already
+ * the panel's title, so `omitProvider` drops it and keeps only what tells the
+ * rows apart (the route, e.g. "Anthropic (via Cursor)", and the context size).
+ * The line can then be empty; the row keeps its height either way.
  */
-export function modelDetailLine(model: ModelDescriptor): string {
+export function modelDetailLine(model: ModelDescriptor, options?: { omitProvider?: boolean }): string {
   const parts: string[] = [];
   const family = providerLabel(model.family);
   const sub = subProviderLabel(model);
-  parts.push(sub && sub.toLowerCase() !== family.toLowerCase() ? `${family} · ${sub}` : family);
+  const distinctSub = sub && sub.toLowerCase() !== family.toLowerCase() ? sub : null;
+  if (options?.omitProvider) {
+    if (distinctSub) parts.push(distinctSub);
+  } else {
+    parts.push(distinctSub ? `${family} · ${distinctSub}` : family);
+  }
   const context = formatContextWindow(model.contextWindow);
   if (context) parts.push(context);
-  if (model.reasoningTiers && model.reasoningTiers.length > 0) parts.push("reasoning");
   return parts.join(" · ");
 }

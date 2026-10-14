@@ -961,6 +961,7 @@ export async function sendChatMessage(
   sessionId: string,
   text: string,
   attachments: AgentChatFileRef[] = [],
+  options: { compactFirst?: boolean } = {},
 ): Promise<void> {
   // Object form: chat message actions re-derive their trusted provenance from
   // the caller's bound identity, and the host rejects the positional form so
@@ -970,6 +971,7 @@ export async function sendChatMessage(
     sessionId,
     text,
     ...(attachments.length ? { attachments } : {}),
+    ...(options.compactFirst ? { compactFirst: true } : {}),
   });
 }
 

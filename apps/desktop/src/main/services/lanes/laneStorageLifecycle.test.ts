@@ -731,7 +731,7 @@ describe("reclaim accepts either spelling of the managed worktrees folder", () =
   itOnCaseInsensitiveFs("does not report worktree_outside_managed_root", async () => {
     const { service } = await caseDivergentFixture();
     installGitStub();
-    const risk = await service.getReclaimRisk("12345678-lane");
+    const risk = await service.getReclaimRisk({ laneId: "12345678-lane" });
     expect(risk.blockedReasons.map((reason) => reason.code)).not.toContain("worktree_outside_managed_root");
   });
 

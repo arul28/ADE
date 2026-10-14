@@ -254,6 +254,20 @@ function cloneRecentlyInstalledUpdate(
   return update ? { ...update } : null;
 }
 
+/**
+ * Whether the installed notice should still be shown for a record.
+ *
+ * A record whose notice the user dismissed is kept in state for the one thing
+ * it still owes: the continue rows it has not managed to arm yet. Two readers
+ * need that same answer — the notice the launch reconciles, and the row it
+ * consumes — so the record's owner answers it, in one place.
+ */
+export function shouldShowInstalledNotice(
+  update: RecentlyInstalledUpdate | null | undefined,
+): update is RecentlyInstalledUpdate {
+  return update != null && update.noticeDismissedAt == null;
+}
+
 // Backfill missing links and replace stale links from packages that did not
 // persist their configured update repository yet.
 function withGithubReleaseUrl(
@@ -423,8 +437,11 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // A record the user dismissed is kept in state only for the continue rows it
+  // still owes; it must not bring the notice back on the next launch.
+  const installedUpdate = nextState.recentlyInstalledUpdate ?? null;
   const recentlyInstalled = withGithubReleaseUrl(
-    cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    cloneRecentlyInstalledUpdate(shouldShowInstalledNotice(installedUpdate) ? installedUpdate : null),
     args.releaseRepository,
   );
   if (
@@ -1910,9 +1927,18 @@ export function createAutoUpdateService({
   function dismissInstalledNotice(): void {
     if (!snapshot.recentlyInstalled) return;
     const currentState = readGlobalState(globalStatePath);
+    const installed = currentState.recentlyInstalledUpdate;
+    // The notice and the resume are two promises. Dismissing the notice is not
+    // a refusal to resume, so a continue row this install still owes a chat
+    // — the launch that lands it may not have managed to arm one — outlives
+    // the notice instead of being deleted with it. The record goes entirely
+    // once there is nothing left to arm for.
+    const unarmed = installed?.resumedChats ?? [];
     writeGlobalState(globalStatePath, {
       ...currentState,
-      recentlyInstalledUpdate: undefined,
+      recentlyInstalledUpdate: installed && unarmed.length > 0
+        ? { ...installed, noticeDismissedAt: now() }
+        : undefined,
     });
     patchSnapshot({
       recentlyInstalled: null,
@@ -2000,8 +2026,22 @@ export function createAutoUpdateService({
         });
         return await abortInstall("prepare_failed", installReadySnapshot);
       }
+      const stateBeforeInstall = readGlobalState(globalStatePath);
+      // This install supersedes the record of the last one, and with it any
+      // continue row that record still owed a chat no project would claim. A
+      // chat that is gone is the usual reason, and one still mid-turn is queued
+      // again by this install — but a resume the user asked for must never go
+      // quiet, so a chat this install does NOT carry forward is named.
+      const carriedForwardResumes = new Set(resumedChats.map((chat) => chat.sessionId));
+      const droppedResumes = (stateBeforeInstall.recentlyInstalledUpdate?.resumedChats ?? [])
+        .filter((chat) => !carriedForwardResumes.has(chat.sessionId));
+      if (droppedResumes.length > 0) {
+        logger.warn("autoUpdate.install_superseded_unarmed_resumes", {
+          chats: droppedResumes.length,
+        });
+      }
       writeGlobalState(globalStatePath, {
-        ...readGlobalState(globalStatePath),
+        ...stateBeforeInstall,
         pendingInstallUpdate: {
           fromVersion: currentVersion,
           targetVersion: snapshot.version ?? installVersion,

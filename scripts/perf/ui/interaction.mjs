@@ -7,6 +7,9 @@
 //   tabs   round-robin over the app's tabs (history navigation)
 //   chats  round-robin over the visible Work chat cards
 //   projects  round-robin over the open project tabs in the top bar
+//   pickers   the composer's model, effort and permission pickers: open each,
+//             and switch the model picker's provider rail (Work, a chat composer
+//             on screen). Each target closes its popover before the next.
 // Round 1 is the cold visit; the summary reports it apart from the warm rounds.
 const [mode = "tabs", roundsArg] = process.argv.slice(2);
 const rounds = Number(roundsArg ?? 4);
@@ -14,8 +17,20 @@ const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222
 const page = list.find((x) => x.type === "page" && x.url.includes(process.env.CDP_TARGET_URL ?? "//localhost:"));
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));
-ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result ?? {}); pend.delete(m.id); } };
+ws.onmessage = (e) => {
+  const m = JSON.parse(String(e.data));
+  if (m.method === "Page.screencastFrame") ws.send(JSON.stringify({ id: id++, method: "Page.screencastFrameAck", params: { sessionId: m.params.sessionId } }));
+  if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result ?? {}); pend.delete(m.id); }
+};
 const send = (method, params = {}) => new Promise((r) => { const i = id++; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// SCREENCAST=1: a window that is covered or minimized reports itself hidden and
+// draws no frames, so every measurement would wait out its cap. A tiny CDP
+// screencast keeps it drawing without raising it over the user's work.
+if (process.env.SCREENCAST === "1") {
+  await send("Page.enable");
+  await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await send("Page.startScreencast", { format: "jpeg", quality: 10, maxWidth: 200, maxHeight: 200, everyNthFrame: 1 });
+}
 const ev = async (expression) => {
   const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
@@ -89,8 +104,21 @@ if (mode === "tabs") {
     name: name.slice(0, 13) || key.slice(-13),
     action: `const t = [...document.querySelectorAll("[data-project-tab-key]")].find((e) => e.getAttribute("data-project-tab-key") === ${JSON.stringify(key)}); if (!t) return false; t.click();`,
   }));
+} else if (mode === "pickers") {
+  // Escape closes every one of these popovers; the model picker is left open
+  // only for the rail switch, which needs it.
+  const close = `document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));`;
+  const click = (selector) => `const t = document.querySelector(${JSON.stringify(selector)}); if (!t) return false; t.click();`;
+  const openModel = click("[data-model-picker-trigger]");
+  targets = [
+    { name: "model open", action: openModel, reset: close },
+    { name: "rail cursor", setup: openModel, action: click('[data-rail-selection="provider:cursor"]'), reset: close },
+    { name: "rail anthrop", setup: openModel, action: click('[data-rail-selection="provider:anthropic"]'), reset: close },
+    { name: "effort open", action: click("[data-reasoning-effort-picker-trigger]"), reset: close },
+    { name: "perm open", action: click(".ade-chat-composer-permission-trigger"), reset: close },
+  ];
 } else {
-  console.error("mode must be tabs, chats or projects");
+  console.error("mode must be tabs, chats, projects or pickers");
   process.exit(2);
 }
 if (targets.length < 2) { console.error(`need two or more targets, found ${targets.length}`); process.exit(1); }
@@ -98,8 +126,10 @@ if (targets.length < 2) { console.error(`need two or more targets, found ${targe
 const rows = [];
 for (let round = 0; round < rounds; round++) {
   for (const target of targets) {
+    if (target.setup) { await ev(`(() => { ${target.setup} return 1 })()`); await sleep(600); }
     const r = await measure(target.action);
     rows.push({ round, name: target.name, ...r });
+    if (target.reset) { await ev(`(() => { ${target.reset} return 1 })()`); }
     await sleep(500);
   }
 }

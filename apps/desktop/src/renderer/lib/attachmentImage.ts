@@ -106,6 +106,10 @@ async function readUncached(
     return await runtimeRead(path, pin ?? undefined);
   } catch (error) {
     if (!ownedHere || !localRead) throw error;
-    return await localRead(path);
+    // When both fail, the runtime's answer ("Path does not exist" for a
+    // cleaned-up screenshot) says why; the local reader's path refusal does not.
+    return await localRead(path).catch(() => {
+      throw error;
+    });
   }
 }

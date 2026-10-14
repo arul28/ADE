@@ -113,6 +113,8 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
+  // Fast's tier: "ultrafast" or plain Fast. Anything else is not a tier.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
   if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
   if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;

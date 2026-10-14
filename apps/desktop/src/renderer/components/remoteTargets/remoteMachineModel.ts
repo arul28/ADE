@@ -415,24 +415,6 @@ export function formatLastSeen(value: number | null): string {
   return phrase ? `Last connected ${phrase}` : "Last connection unknown";
 }
 
-/** Quiet version-skew note. Yellow warnings are reserved for real breakage. */
-export function formatVersionSkewNote(args: {
-  localVersion: string | null | undefined;
-  remoteVersion: string | null | undefined;
-  remoteName: string;
-}): string | null {
-  const local = args.localVersion?.trim();
-  const remote = args.remoteVersion?.trim();
-  if (!local || !remote || local === remote) return null;
-  let advice = "nothing to do";
-  if (isMachineVersionOutdated(remote, local)) {
-    advice = `update ${args.remoteName} when you can`;
-  } else if (isMachineVersionOutdated(local, remote)) {
-    advice = "update this machine when you can";
-  }
-  return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
-}
-
 export function isVersionSkewWarning(warning: string): boolean {
   return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
     warning,
@@ -626,6 +608,22 @@ export function isMachineVersionOutdated(
 }
 
 /**
+ * True when `version` is parseable and already `targetVersion` or newer.
+ * Not the negation of `isMachineVersionOutdated`: an odd version string is
+ * neither behind nor current, so a guard that skips "current" machines does
+ * not skip it.
+ */
+export function isMachineVersionCurrent(
+  version: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean {
+  const left = comparableVersionCore(version);
+  const right = comparableVersionCore(targetVersion);
+  if (!left || !right) return false;
+  return compareUpdateVersions(left, right) >= 0;
+}
+
+/**
  * What "Update & restart" left behind for one machine. The host's reply is not
  * the outcome: an update that is still in flight (`pendingVersion`) is only
  * done when the machine comes back reporting that version.
@@ -719,6 +717,30 @@ export function describeMachineUpdateAttempt(
     message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
     inFlight: false,
   };
+}
+
+/**
+ * The key a machine's color is picked from. The account's machine key when the
+ * machine has one, so every device that can see it lands on the same color;
+ * the saved target's id otherwise.
+ */
+export function machineColorKey(target: Pick<RemoteRuntimeTarget, "id" | "pairedMachine">): string {
+  return target.pairedMachine?.machineKey?.trim() || target.id;
+}
+
+/**
+ * Where an update to one machine is, for the row: being asked about, being
+ * sent, or waiting on the machine to come back on the new version.
+ */
+export function machineUpdatePhase(args: {
+  checking: boolean;
+  sending: boolean;
+  status: MachineUpdateStatus | null;
+}): "checking" | "sending" | "restarting" | null {
+  if (args.sending) return "sending";
+  if (args.status?.inFlight) return "restarting";
+  if (args.checking) return "checking";
+  return null;
 }
 
 /** A connected machine and the ADE version it runs, as an update needs it. */

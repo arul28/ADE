@@ -1,9 +1,11 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Star, Lightning } from "@phosphor-icons/react";
+import { Brain, Check, ImageSquare, Lightning, Star } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
   modelSupportsServiceTier,
+  modelSupportsUltrafast,
+  type FastTier,
   type ModelDescriptor,
 } from "../../../../shared/modelRegistry";
 import type { CursorCloudServiceTier } from "../../../../shared/types/config";
@@ -11,18 +13,11 @@ import { ModelRowLogo } from "../ProviderLogos";
 import {
   isLocalModel,
   modelDetailLine,
-  reasoningEffortLabel,
   subProviderLabel,
 } from "./modelFacts";
 import { cn } from "../../ui/cn";
+import { Z_LAYERS } from "../../ui/zLayers";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
-
-export type InlineReasoningChipState = {
-  visible: boolean;
-  effort: string | null;
-  tiers: readonly string[];
-  onCycle: () => void;
-};
 
 export type ModelListRowProps = {
   model: ModelDescriptor;
@@ -36,7 +31,6 @@ export type ModelListRowProps = {
   onCopyId?: (modelId: string) => void;
   onViewDocs?: (modelId: string) => void;
   onSignIn?: () => void;
-  inlineReasoningChip?: InlineReasoningChipState;
   /**
    * Whether *this row's* chip reads as on. Fast mode is one bit on the surface,
    * but it only applies to the model it was enabled for — the parent derives
@@ -49,7 +43,11 @@ export type ModelListRowProps = {
    * Takes the model id because the handler's behaviour differs for the selected
    * row (plain toggle) and a non-selected one (select + enable).
    */
-  onFastModeChange?: (modelId: string, next: boolean) => void;
+  onFastModeChange?: (modelId: string, next: boolean, tier?: FastTier) => void;
+  /** The faster tier this row's Fast is on, when it is on. Absent is plain Fast. */
+  fastTier?: FastTier | null;
+  /** The surface carries Fast's tier, so a model that offers Ultrafast cycles to it. */
+  ultrafastEnabled?: boolean;
   /**
    * Why Fast cannot run with this row's other picks (an OpenCode effort with
    * no Fast route). The chip dims, shows the reason, and cannot turn Fast on.
@@ -60,6 +58,8 @@ export type ModelListRowProps = {
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
+  /** The list is scoped to this row's provider, so the detail line need not name it. */
+  omitProviderInDetail?: boolean;
 };
 
 export const ModelListRow = memo(function ModelListRow({
@@ -74,24 +74,34 @@ export const ModelListRow = memo(function ModelListRow({
   onCopyId,
   onViewDocs,
   onSignIn,
-  inlineReasoningChip,
   fastModeOn = false,
   onFastModeChange,
+  fastTier = null,
+  ultrafastEnabled = false,
   fastUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
+  omitProviderInDetail = false,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
-  const details = modelDetailLine(model);
+  const details = modelDetailLine(model, { omitProvider: omitProviderInDetail });
   const localBadge = isLocalModel(model);
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode
     && Boolean(onServiceTierChange)
     && (modelSupportsServiceTier(model, "fast") || modelSupportsServiceTier(model, "standard"));
+  // A model whose catalog offers Ultrafast cycles Off → Fast → Ultrafast → Off.
+  const offersUltrafast = ultrafastEnabled && showFastChip && modelSupportsUltrafast(model);
+  const ultrafastOn = offersUltrafast && fastModeOn && fastTier === "ultrafast";
   const activeTier = serviceTierMode ? serviceTier : (fastModeOn ? "fast" : null);
   const reducedMotion = usePrefersReducedMotion();
+  const thinks = Boolean(model.capabilities?.reasoning) || (model.reasoningTiers?.length ?? 0) > 0;
+  const seesImages = Boolean(model.capabilities?.vision);
+  // The surface offers a speed control, so every row reserves its slot: the
+  // capability column then lines up whether or not this model has the chip.
+  const reservesSpeedSlot = serviceTierMode ? Boolean(onServiceTierChange) : Boolean(onFastModeChange);
 
   const handleSelect = useCallback(() => {
     if (!isAvailable) {
@@ -139,37 +149,26 @@ export const ModelListRow = memo(function ModelListRow({
     [onSignIn],
   );
 
-  const reasoningCycleCb = inlineReasoningChip?.onCycle;
-  const handleReasoningChipClick = useCallback(
-    (event: React.MouseEvent) => {
-      event.stopPropagation();
-      event.preventDefault();
-      reasoningCycleCb?.();
-    },
-    [reasoningCycleCb],
-  );
-
-  const handleReasoningChipKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        event.stopPropagation();
-        reasoningCycleCb?.();
-      }
-    },
-    [reasoningCycleCb],
-  );
-
   // The chip never falls through to the row's own click handler; whether the
   // press also commits a model selection is the parent's call (see
   // `ModelPickerContent`), because only it knows which row is selected.
+  const cycleFast = useCallback(() => {
+    if (!fastModeOn) {
+      onFastModeChange?.(model.id, true, "fast");
+    } else if (offersUltrafast && !ultrafastOn) {
+      onFastModeChange?.(model.id, true, "ultrafast");
+    } else {
+      onFastModeChange?.(model.id, false);
+    }
+  }, [fastModeOn, model.id, offersUltrafast, onFastModeChange, ultrafastOn]);
+
   const handleFastChipClick = useCallback(
     (event: React.MouseEvent) => {
       event.stopPropagation();
       event.preventDefault();
-      onFastModeChange?.(model.id, !fastModeOn);
+      cycleFast();
     },
-    [fastModeOn, model.id, onFastModeChange],
+    [cycleFast],
   );
 
   const handleFastChipKeyDown = useCallback(
@@ -177,10 +176,10 @@ export const ModelListRow = memo(function ModelListRow({
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         event.stopPropagation();
-        onFastModeChange?.(model.id, !fastModeOn);
+        cycleFast();
       }
     },
-    [fastModeOn, model.id, onFastModeChange],
+    [cycleFast],
   );
 
   const handleServiceTierClick = useCallback(
@@ -243,56 +242,39 @@ export const ModelListRow = memo(function ModelListRow({
           onClick={handleSelect}
           onKeyDown={handleRowKeyDown}
           className={cn(
-            "group flex w-full cursor-pointer items-start gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors duration-100",
+            // Fixed height: the picker's virtual list sizes rows from
+            // MODEL_ROW_HEIGHT instead of measuring each one as it opens.
+            "group flex h-12 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-150",
             "outline-none focus-visible:bg-fg/[0.05]",
             isActive
-              ? "bg-violet-500/[0.10] text-fg"
-              : "text-fg/85 hover:bg-fg/[0.04]",
+              ? "bg-fg/[0.065] text-fg"
+              : "text-fg/85 hover:bg-fg/[0.04] hover:text-fg",
             !isAvailable && "opacity-55",
           )}
         >
-          <button
-            type="button"
-            tabIndex={isFocused ? 0 : -1}
-            aria-label={isFavorite ? "Unfavorite" : "Favorite"}
-            aria-pressed={isFavorite}
-            onClick={handleToggleFavorite}
-            onKeyDown={handleFavoriteKeyDown}
-            className={cn(
-              "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded transition-all duration-150",
-              "opacity-40 group-hover:opacity-100",
-              isFavorite && "opacity-100",
-              "hover:scale-110",
-            )}
-          >
-            <Star
-              size={12}
-              weight={isFavorite ? "fill" : "regular"}
-              className={cn(
-                "transition-colors duration-150",
-                isFavorite ? "text-amber-400" : "text-muted-fg/70",
-              )}
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+            <ModelRowLogo
+              modelFamily={model.family}
+              cliCommand={model.cliCommand}
+              modelId={model.id}
+              providerModelId={model.providerModelId}
+              {...(model.openCodeProviderId ? { openCodeProviderId: model.openCodeProviderId } : {})}
+              size={15}
+              className="shrink-0"
             />
-          </button>
-
-          <ModelRowLogo
-            modelFamily={model.family}
-            cliCommand={model.cliCommand}
-            modelId={model.id}
-            providerModelId={model.providerModelId}
-            {...(model.openCodeProviderId ? { openCodeProviderId: model.openCodeProviderId } : {})}
-            size={13}
-            className="mt-0.5 shrink-0"
-          />
+          </span>
 
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5 min-w-0">
-              <span className="truncate text-[12px] font-medium leading-snug">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[13px] font-medium leading-snug tracking-tight">
                 {model.displayName}
               </span>
+              {isActive ? (
+                <Check size={12} weight="bold" className="shrink-0 text-fg/90" aria-hidden />
+              ) : null}
               {localBadge ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-0.5 rounded-sm bg-emerald-500/[0.12] px-1 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
                   title="Offline-ready"
                 >
                   <Lightning size={8} weight="fill" />
@@ -300,29 +282,54 @@ export const ModelListRow = memo(function ModelListRow({
                 </span>
               ) : null}
             </span>
-            <span
-              className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55"
-              title={details}
-            >
-              {details}
-            </span>
-            {inlineReasoningChip?.visible ? (
-              <button
-                type="button"
-                tabIndex={isFocused ? 0 : -1}
-                aria-label={`Reasoning effort: ${reasoningEffortLabel(inlineReasoningChip.effort, model)}. Click to cycle.`}
-                onClick={handleReasoningChipClick}
-                onKeyDown={handleReasoningChipKeyDown}
-                className={cn(
-                  "mt-1 inline-flex h-4 min-h-[16px] items-center gap-1 rounded-full border border-violet-400/25 bg-violet-500/[0.08] px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-violet-200/90",
-                  "transition-colors hover:border-violet-400/45 hover:bg-violet-500/[0.14] hover:text-violet-100",
-                )}
-                title="Click to cycle reasoning effort"
+            {details ? (
+              <span
+                className="block truncate text-[11px] font-normal leading-snug text-muted-fg/60"
+                title={details}
               >
-                <span className="h-1 w-1 rounded-full bg-violet-300/80" aria-hidden />
-                <span>{reasoningEffortLabel(inlineReasoningChip.effort, model)}</span>
-              </button>
+                {details}
+              </span>
             ) : null}
+          </span>
+
+          {!isAvailable && onSignIn ? (
+            <button
+              type="button"
+              tabIndex={isFocused ? 0 : -1}
+              onClick={handleSignInClick}
+              onKeyDown={handleSignInKeyDown}
+              className="shrink-0 self-center rounded-full border border-amber-400/30 bg-amber-400/[0.08] px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200/85 hover:bg-amber-400/[0.14]"
+            >
+              Sign in
+            </button>
+          ) : null}
+
+          {/* Two fixed slots, so the columns line up down the list. A missing
+              capability stays as a faint mark rather than a gap. */}
+          <span
+            className={cn(
+              "inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5",
+              thinks || seesImages ? "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]" : "invisible",
+            )}
+            data-model-capabilities="true"
+          >
+            <span
+              title={thinks ? "Reasoning" : "No reasoning"}
+              aria-label={thinks ? "Reasoning" : undefined}
+              aria-hidden={thinks ? undefined : true}
+              className={cn("inline-flex", thinks ? "text-violet-400/90" : "text-fg/15")}
+            >
+              <Brain size={13} aria-hidden />
+            </span>
+            <span aria-hidden className="h-3 w-px bg-fg/[0.1]" />
+            <span
+              title={seesImages ? "Reads images" : "No image input"}
+              aria-label={seesImages ? "Reads images" : undefined}
+              aria-hidden={seesImages ? undefined : true}
+              className={cn("inline-flex", seesImages ? "text-teal-400/90" : "text-fg/15")}
+            >
+              <ImageSquare size={13} aria-hidden />
+            </span>
           </span>
 
           {showFastChip || showServiceTierChip ? (
@@ -336,6 +343,7 @@ export const ModelListRow = memo(function ModelListRow({
                 : `Fast mode for ${model.displayName}`}
               aria-pressed={activeTier != null}
               data-fast-on={activeTier === "fast" ? "true" : undefined}
+              data-fast-tier={ultrafastOn ? "ultrafast" : undefined}
               data-fast-unavailable={fastBlocked ? "true" : undefined}
               title={
                 showServiceTierChip
@@ -344,8 +352,10 @@ export const ModelListRow = memo(function ModelListRow({
                     : "Leave service tier unset — click to choose a tier"
                   : fastBlocked
                   ? fastUnavailableReason ?? undefined
+                  : ultrafastOn
+                  ? "Ultrafast on — click to turn off"
                   : fastModeOn
-                  ? "Fast mode on"
+                  ? offersUltrafast ? "Fast on — click for Ultrafast" : "Fast mode on"
                   : isActive
                     ? "Enable fast mode"
                     : `Use ${model.displayName} in fast mode`
@@ -355,7 +365,8 @@ export const ModelListRow = memo(function ModelListRow({
               onClick={showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
               onKeyDown={showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
               className={cn(
-                "ml-1 inline-flex h-4 shrink-0 items-center gap-1 self-center rounded-full border px-1.5",
+                "inline-flex h-6 shrink-0 items-center justify-center gap-1 self-center rounded-full border",
+                showServiceTierChip ? "w-[78px]" : "w-[58px]",
                 "text-[9px] font-semibold uppercase leading-none tracking-wide",
                 "disabled:cursor-not-allowed",
                 fastBlocked && "opacity-45",
@@ -367,28 +378,39 @@ export const ModelListRow = memo(function ModelListRow({
                   : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55 hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg/80 active:bg-fg/[0.12]",
               )}
             >
-              <Lightning size={8} weight={activeTier === "fast" ? "fill" : "regular"} />
-              <span>{showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : "Fast"}</span>
+              <Lightning size={10} weight={activeTier === "fast" ? "fill" : "regular"} />
+              {ultrafastOn ? <Lightning size={10} weight="fill" className="-ml-1.5" aria-hidden /> : null}
+              <span>{showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : ultrafastOn ? "Ultra" : "Fast"}</span>
             </button>
+          ) : reservesSpeedSlot ? (
+            <span aria-hidden className={cn("shrink-0", serviceTierMode ? "w-[78px]" : "w-[58px]")} />
           ) : null}
 
-          {!isAvailable && onSignIn ? (
-            <button
-              type="button"
-              tabIndex={isFocused ? 0 : -1}
-              onClick={handleSignInClick}
-              onKeyDown={handleSignInKeyDown}
-              className="ml-1 shrink-0 self-center rounded border border-amber-400/30 bg-amber-400/[0.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-200/85 hover:bg-amber-400/[0.14]"
-            >
-              Sign in
-            </button>
-          ) : null}
+          <button
+            type="button"
+            tabIndex={isFocused ? 0 : -1}
+            aria-label={isFavorite ? "Unfavorite" : "Favorite"}
+            aria-pressed={isFavorite}
+            onClick={handleToggleFavorite}
+            onKeyDown={handleFavoriteKeyDown}
+            className={cn(
+              "-mr-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded transition-opacity duration-150",
+              isFavorite ? "opacity-100" : "opacity-0 focus-visible:opacity-100 group-hover:opacity-60 hover:!opacity-100",
+            )}
+          >
+            <Star
+              size={12}
+              weight={isFavorite ? "fill" : "regular"}
+              className={isFavorite ? "text-amber-400" : "text-muted-fg/80"}
+            />
+          </button>
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
+          style={{ zIndex: Z_LAYERS.contextMenu }}
           className={cn(
-            "z-[110] min-w-[10rem] overflow-hidden rounded-md border border-fg/[0.08] bg-(color:--work-popover-bg) p-1",
+            "min-w-[10rem] overflow-hidden rounded-md border border-fg/[0.08] bg-(color:--work-popover-bg) p-1",
             "shadow-[0_8px_24px_rgba(0,0,0,0.45)]",
           )}
         >

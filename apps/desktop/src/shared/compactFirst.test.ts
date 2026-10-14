@@ -30,6 +30,8 @@ describe("compactFirstOffer", () => {
     ["a 5-minute cache, idle four minutes", { events: [done(4)], contextTokens: 150_000, cache: { ttl: "5m" as const } }, false],
     ["a 5-minute cache whose last request started two minutes before the turn ended", { events: [done(3)], contextTokens: 150_000, cache: { ttl: "5m" as const, since: minutesAgo(5) } }, true],
     ["a 1-hour cache, idle 59 minutes", { events: [done(59)], contextTokens: 150_000, cache: { ttl: "1h" as const } }, false],
+    // Right after a turn (a compaction), the summary can still carry an earlier turn's `since`.
+    ["a just-finished turn while the cache still reads from an earlier turn", { events: [started(1), done(0)], contextTokens: 150_000, cache: { ttl: "1h" as const, since: minutesAgo(65) } }, false],
     // A brain started with a lowered limit offers it on a small chat; the normal limit does not.
     ["a small chat under a lowered limit", { events: [done(90)], contextTokens: 12_000, minTokens: 10_000 }, true],
     ["a small chat under the normal limit", { events: [done(90)], contextTokens: 12_000 }, false],

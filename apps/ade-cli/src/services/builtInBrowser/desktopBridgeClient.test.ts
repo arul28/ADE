@@ -251,7 +251,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     client.dispose();
   });
 
-  it("reconnects after a transient failure on the next call", async () => {
+  it("keeps the connection when a call answers with an error", async () => {
     let callCount = 0;
     server = await startBridgeServer(async () => {
       callCount += 1;
@@ -266,6 +266,8 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     const result = await client.getStatus();
     expect(result).toEqual({ ok: true });
     expect(callCount).toBe(2);
+    // An answer (a bad selector, a missing element) did not cost a reconnect.
+    expect(server.connectionCount()).toBe(1);
     client.dispose();
   });
 

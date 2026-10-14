@@ -1230,6 +1230,26 @@ describe("buildTrackedCliStartupCommand", () => {
         permissionMode: "default",
       });
       expect(inheritedLaunch.args.join("\n")).not.toContain("service_tier");
+
+      // Ultrafast is Fast's tier: it asks for that tier while Fast is on and
+      // means nothing while Fast is off.
+      const ultrafastLaunch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(ultrafastLaunch.args).toEqual(expect.arrayContaining(["-c", "service_tier=\"ultrafast\""]));
+      expect(ultrafastLaunch.args).toContain("features.fast_mode=true");
+      expect(ultrafastLaunch.args).not.toContain("service_tier=\"fast\"");
+      const tierWithoutFast = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: false,
+        fastTier: "ultrafast",
+      });
+      expect(tierWithoutFast.args).toContain("service_tier=\"default\"");
+      expect(tierWithoutFast.args.join("\n")).not.toContain("ultrafast");
     });
 
     it("keeps legacy Codex migration-prompt models on the argv prompt path", () => {
@@ -1779,6 +1799,17 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: false },
     })).toContain("-c \"service_tier=\\\"default\\\"\"");
+
+    // A session launched on Ultrafast resumes on it, unless the resume sets
+    // Fast itself, which means plain Fast.
+    const ultrafastSession = {
+      provider: "codex" as const,
+      targetKind: "thread" as const,
+      targetId: "thread-99",
+      launch: { permissionMode: "edit" as const, model: "gpt-5.4", fastMode: true, fastTier: "ultrafast" as const },
+    };
+    expect(buildTrackedCliResumeCommand(ultrafastSession)).toContain("-c \"service_tier=\\\"ultrafast\\\"\"");
+    expect(buildTrackedCliResumeCommand(ultrafastSession, { fastMode: true })).toContain("-c \"service_tier=\\\"fast\\\"\"");
 
   });
 

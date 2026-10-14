@@ -153,6 +153,13 @@ account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`,
 `accountDeviceSettingKey` in `shared/accountSettingsScope.ts`). The brain reads
 that key first and falls back to the old account-wide key.
 
+Machine identity colors are per computer too, and separate from the app theme.
+Each computer's tile in the Machines list, the Account page, and the
+Connections **This computer** card takes a default color from the machine's
+stable key, so every device that can see that machine paints it the same color;
+a swatch picked by hand overrides it on this computer only
+(`ade.machineColors.v1` in localStorage).
+
 Rows an older build already wrote to the account are ignored, not deleted. Move
 a theme between machines with Export and Import.
 

@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { abbreviateTokenCount } from "../../../../desktop/src/shared/contextCompaction";
 import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import { gridMiniMapText } from "./GridMiniMap";
@@ -173,6 +174,7 @@ function FooterControlsComponent({
   multiViewActive,
   multiViewMap,
   workPaneFocused,
+  compactFirst,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -200,6 +202,8 @@ function FooterControlsComponent({
   multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
   /** The sessions pane has keyboard focus: show ITS keys, not the chat's. */
   workPaneFocused?: boolean;
+  /** A Claude chat whose prompt cache expired: whether the next send compacts first, and the sizes. */
+  compactFirst?: { enabled: boolean; contextTokens: number; estimatedPostTokens: number } | null;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -328,6 +332,19 @@ function FooterControlsComponent({
                 <Text color={theme.color.t2}>{tokenSummary}</Text>
               </>
             ) : null}
+          </>
+        ) : null}
+        {compactFirst ? (
+          <>
+            <Text color={theme.color.t4}>{"  "}</Text>
+            {compactFirst.enabled ? (
+              <Text color={theme.color.accent}>{`⇣ compacts on next send (~${abbreviateTokenCount(compactFirst.estimatedPostTokens)})`}</Text>
+            ) : (
+              <>
+                <Text color={theme.color.warning}>{`⇣ cache expired · ${abbreviateTokenCount(compactFirst.contextTokens)}`}</Text>
+                <Text dimColor>{" · /compact-first"}</Text>
+              </>
+            )}
           </>
         ) : null}
         {multiViewMap ? (
