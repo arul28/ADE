@@ -291,6 +291,7 @@ import {
 import {
   lowerPermissionCeiling,
   permissionCeilingClamp,
+  permissionFieldsForLevel,
   permissionLevelLabel,
   sessionPermissionLevel,
   type PermissionLevel,
@@ -2155,6 +2156,8 @@ type PersistedChatState = {
    * truth it stands in for.
    */
   answeredPlanApprovalItemIds?: string[];
+  /** See `ManagedChatSession.codexPendingCollaborationMode`. */
+  codexPendingCollaborationMode?: "default" | "plan";
   requestedCwd?: string | null;
   attachmentRoots?: string[];
   idleSinceAt?: string | null;
@@ -4890,6 +4893,19 @@ type ManagedChatSession = {
   codexTerminalTurnIds: Set<string>;
   /** Live mirror of `PersistedChatState.answeredPlanApprovalItemIds`. */
   answeredPlanApprovalItemIds: Set<string>;
+  /**
+   * A Codex collaboration mode ADE chose (an approved plan, a composer mode
+   * change) that the thread has not yet run a turn under.
+   *
+   * `thread/resume` echoes the mode of the thread's LAST turn. Approving a plan
+   * forces a resume before the implementation turn, so adopting that echo put
+   * the chat straight back into plan mode and the implementation turn ran
+   * read-only. While this is set, a resume keeps ADE's mode; the first
+   * `turn/start` sent under it clears it, after which the thread itself
+   * carries the mode and a resume may adopt what it reports again (another
+   * Codex client may have switched it).
+   */
+  codexPendingCollaborationMode?: "default" | "plan" | null;
   codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
@@ -8779,9 +8795,13 @@ function applyCodexEffectiveThreadState(
   }
 
   // A resumed thread reports the mode it is really in (it may have been
-  // switched from another Codex client), so the plan toggle follows it.
+  // switched from another Codex client), so the plan toggle follows it —
+  // unless ADE has chosen a mode the thread has not run under yet. The report
+  // is the last turn's mode, so after an approved plan it still says "plan".
   const resumedMode = (response.collaborationMode as { mode?: unknown } | null | undefined)?.mode;
-  if (resumedMode === "plan" || resumedMode === "default") {
+  if (managed.codexPendingCollaborationMode) {
+    managed.session.interactionMode = managed.codexPendingCollaborationMode;
+  } else if (resumedMode === "plan" || resumedMode === "default") {
     managed.session.interactionMode = resumedMode;
   }
 
@@ -9446,7 +9466,7 @@ function buildSpawnSelfReportGuidance(
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. ADE automatically wakes your parent after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. A human message does not close that report channel. If a human takes this chat over, ADE converts you to a peer and completions become quiet notes. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -12327,6 +12347,7 @@ export function createAgentChatService(args: {
       if (managed.session.permissionMode !== "plan") {
         applyClaudePlanModeTransition(managed.session, "plan");
         persistChatState(managed);
+        emitSessionModeMeta(managed);
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -12378,9 +12399,10 @@ export function createAgentChatService(args: {
         });
         // Transition out of plan mode so the UI reflects the change,
         // matching the state update performed after manual approval.
-        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+        if (isSessionInPlanMode(managed.session)) {
           exitPlanModeForSession(managed.session);
           persistChatState(managed);
+          emitSessionModeMeta(managed);
           // Surface the transition so the composer's mode chip updates — parity
           // with the manual-approval branch below. Without this, full-auto plan
           // sessions exit plan mode on the backend but the UI stays on "plan".
@@ -12469,9 +12491,10 @@ export function createAgentChatService(args: {
           explicitApproval: true,
         });
         // Switch session out of plan mode so the UI reflects the transition.
-        if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
+        if (isSessionInPlanMode(managed.session)) {
           exitPlanModeForSession(managed.session);
           persistChatState(managed);
+          emitSessionModeMeta(managed);
         }
 
         // Defensive sync: also push the mode to the SDK explicitly. The SDK's
@@ -18154,6 +18177,11 @@ export function createAgentChatService(args: {
       ...(managed.answeredPlanApprovalItemIds.size
         ? { answeredPlanApprovalItemIds: [...managed.answeredPlanApprovalItemIds].slice(-32) }
         : {}),
+      // Live value only, like the set above: the first turn under the mode
+      // clears it, and a carry-forward would make that clear unpersistable.
+      ...(managed.codexPendingCollaborationMode
+        ? { codexPendingCollaborationMode: managed.codexPendingCollaborationMode }
+        : {}),
       // Live-set-only for the same reason: answering or dismissing the last
       // async question has to be able to write an empty list.
       ...(managed.asyncQuestions.size
@@ -18738,6 +18766,9 @@ export function createAgentChatService(args: {
         ...(() => { const promptCache = normalizeClaudePromptCache(record.promptCache); return promptCache ? { promptCache } : {}; })(),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
+        ...(record.codexPendingCollaborationMode === "default" || record.codexPendingCollaborationMode === "plan"
+          ? { codexPendingCollaborationMode: record.codexPendingCollaborationMode }
+          : {}),
         ...(record.codexAutomaticRecoveryAttempted === true
           ? { codexAutomaticRecoveryAttempted: true }
           : {}),
@@ -20855,6 +20886,33 @@ export function createAgentChatService(args: {
         });
       }
     }
+  };
+
+  /**
+   * Tell every client the session's mode fields after the HOST changed them
+   * (a plan approved or entered, not a composer pick).
+   *
+   * The composer seeds its mode chip from these fields, and nothing else
+   * re-seeds a chat that is not selected, a grid tile, or another machine's
+   * window. Without this an approved plan left the chip on Plan, and the next
+   * send carried Plan back to the host.
+   */
+  const emitSessionModeMeta = (managed: ManagedChatSession): void => {
+    const session = managed.session;
+    emitTransientChatEnvelope(session.id, {
+      type: "session_meta_updated",
+      ...(session.permissionMode !== undefined ? { permissionMode: session.permissionMode } : {}),
+      ...(session.interactionMode !== undefined ? { interactionMode: session.interactionMode } : {}),
+      ...(session.claudePermissionMode !== undefined ? { claudePermissionMode: session.claudePermissionMode } : {}),
+      ...(session.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: session.codexApprovalPolicy } : {}),
+      ...(session.codexSandbox !== undefined ? { codexSandbox: session.codexSandbox } : {}),
+      ...(session.codexConfigSource !== undefined ? { codexConfigSource: session.codexConfigSource } : {}),
+      ...(session.opencodePermissionMode !== undefined ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
+      ...(session.droidPermissionMode !== undefined ? { droidPermissionMode: session.droidPermissionMode } : {}),
+      ...(session.musePermissionMode !== undefined ? { musePermissionMode: session.musePermissionMode } : {}),
+      ...(session.cursorModeId != null ? { cursorModeId: session.cursorModeId } : {}),
+      ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
+    });
   };
 
   // Mod UI is live state of one Claude process: pushed whole, never stored.
@@ -25431,6 +25489,7 @@ export function createAgentChatService(args: {
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       answeredPlanApprovalItemIds: new Set<string>(persisted?.answeredPlanApprovalItemIds ?? []),
+      codexPendingCollaborationMode: persisted?.codexPendingCollaborationMode ?? null,
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
         normalizeUnprocessedMessageResolutionReceipts(
@@ -26436,6 +26495,12 @@ export function createAgentChatService(args: {
         ...(collaborationMode ? { collaborationMode } : {}),
       });
       runtime.effectiveCollaborationMode = collaborationMode?.mode ?? null;
+      // The thread has now run under ADE's mode, so it reports that mode itself.
+      // Compared, not just cleared: a picker change made while this request was
+      // in flight is a newer choice the thread has not run under yet.
+      if (collaborationMode && managed.codexPendingCollaborationMode === collaborationMode.mode) {
+        managed.codexPendingCollaborationMode = null;
+      }
       emitTransientChatEnvelope(managed.session.id, {
         type: "session_meta_updated",
         codexEffectiveCollaborationMode: runtime.effectiveCollaborationMode,
@@ -28869,6 +28934,7 @@ export function createAgentChatService(args: {
               if (nowPlan) applyClaudePlanModeTransition(managed.session, "plan");
               else exitPlanModeForSession(managed.session);
               persistChatState(managed);
+              emitSessionModeMeta(managed);
               emitChatEvent(managed, {
                 type: "system_notice",
                 noticeKind: "info",
@@ -35657,9 +35723,13 @@ export function createAgentChatService(args: {
       applyLegacyPermissionModeToNativeControls(managed.session, "full-auto");
       managed.session.interactionMode = "default";
       reassertIdentityPermissionMode(managed.session);
+      // The resume this forces echoes the planning turn's "plan" mode; this is
+      // what keeps the implementation turn out of it.
+      managed.codexPendingCollaborationMode = resolveCodexInstructionCollaborationMode(managed.session);
       runtime.threadResumed = false;
       runtime.canAttachResumedTurnStart = false;
       persistChatState(managed);
+      emitSessionModeMeta(managed);
     }
     runtime.pendingPlanFollowups.push({
       itemId: args.itemId,
@@ -44869,6 +44939,27 @@ export function createAgentChatService(args: {
       const permissionCeiling = permissionsPinned
         ? null
         : resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId, actor: runtimeActor });
+      // An unspecified child mode follows the full-auto parent rather than
+      // falling back to machine-wide ask defaults. Explicit child restrictions
+      // and host policies remain authoritative; the ceiling still applies.
+      const inheritedPermissionFields = requestedSpawnKind === "subagent"
+        && permissionCeiling === "full-auto"
+        && !callerPermissionPolicy
+        && effectivePermissionMode == null
+        && requestedPermMode == null
+        && requestedInteractionMode == null
+        && requestedClaudePermissionMode == null
+        && requestedCodexApprovalPolicy == null
+        && requestedCodexSandbox == null
+        && requestedCodexConfigSource == null
+        && requestedOpenCodePermissionModeArg == null
+        && requestedAcpPermissionModeArg == null
+        && requestedDroidPermissionModeArg == null
+        && requestedMusePermissionModeArg == null
+        && requestedCursorModeId == null
+        && requestedCursorConfigValues == null
+        ? { permissionMode: "full-auto" as const, ...permissionFieldsForLevel(effectiveProvider, "full-auto") }
+        : null;
       const parentPermissionCeiling = permissionCeiling
         ? permissionCeilingClamp({
             provider: effectiveProvider,
@@ -44962,6 +45053,7 @@ export function createAgentChatService(args: {
           ...nativePermissionFields,
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
+          ...(inheritedPermissionFields ?? {}),
           ...(parentPermissionCeiling?.patch ?? {}),
         ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
         ...(typeof requestedStrictMcpConfig === "boolean"
@@ -49880,8 +49972,13 @@ export function createAgentChatService(args: {
           ? response.responseText.trim()
           : null;
         if (approved) {
+          applyLegacyPermissionModeToNativeControls(managed.session, "default");
           managed.session.cursorModeId = "agent";
+          managed.session.interactionMode = "default";
+          reassertIdentityPermissionMode(managed.session);
           void syncLiveCursorSdkPolicy(managed, runtime, "plan_approval");
+          // The sync above recomputed the mode snapshot before its first await.
+          emitSessionModeMeta(managed);
           queueCursorControlFollowup(
             managed,
             runtime,
@@ -63215,6 +63312,9 @@ export function createAgentChatService(args: {
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
+    const prevCodexCollaborationMode = managed.session.provider === "codex"
+      ? resolveCodexInstructionCollaborationMode(managed.session)
+      : null;
     const prevFastMode = managed.session.fastMode === true;
     const prevClaudeTurnPermissionMode = managed.session.provider === "claude"
       ? resolveClaudeTurnPermissionMode(managed)
@@ -63831,6 +63931,12 @@ export function createAgentChatService(args: {
       ) {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
+      }
+      if (managed.session.provider === "codex") {
+        const nextCodexCollaborationMode = resolveCodexInstructionCollaborationMode(managed.session);
+        if (nextCodexCollaborationMode !== prevCodexCollaborationMode) {
+          managed.codexPendingCollaborationMode = nextCodexCollaborationMode;
+        }
       }
       if (managed.runtime?.kind === "codex") {
         autoApprovePendingCodexRuntimeApprovals(managed, managed.runtime);

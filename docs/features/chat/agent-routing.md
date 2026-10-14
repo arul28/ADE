@@ -229,7 +229,12 @@ picker offers them.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle
-matches a thread switched from another Codex client. `/personality` is not
+matches a thread switched from another Codex client. The report is the mode of
+the thread's last turn, so it is ignored while ADE holds a mode the thread has
+not run under yet (`codexPendingCollaborationMode`, persisted): an approved
+plan or a composer mode change sets it, and the first `turn/start` sent with
+that same mode clears it. Without this, approving a plan forced a resume that
+echoed `plan` and the implementation turn ran read-only. `/personality` is not
 offered for Codex: 0.156 retired personality styles.
 
 On 0.156.0 ADE always enables `tools.update_plan` on `thread/start` and
@@ -978,7 +983,10 @@ ADE plan-approval requests. Accepting that request moves the session to
 already reviewed exactly what the plan will do, so `stageCodexPlanApprovalFollowup`
 hands the session straight to full access rather than dropping to `edit`
 and gating every file change behind another approval round that would just
-relitigate the plan.
+relitigate the plan. The approval emits `session_meta_updated` with the new
+mode fields, so every composer showing the chat leaves Plan without waiting for
+a session refetch. Claude plan entry/exit and Cursor plan approval emit the
+same patch.
 
 Default Codex chats map to the "Default permissions" preset
 (`workspace-write` + `on-request`). The older implicit fallback that

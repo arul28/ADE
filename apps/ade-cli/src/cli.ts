@@ -6461,7 +6461,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       }, launchOptions)
     : collectLaunchArgs(args, {
         provider,
-        permissionMode: permissionMode ?? "default",
+        permissionMode,
         title,
         initialInput: prompt,
         model: modelArg,

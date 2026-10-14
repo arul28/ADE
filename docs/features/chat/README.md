@@ -3269,6 +3269,19 @@ Where it is set:
   parented chat with no spawn kind and `execute` is reachable without schema
   parsing. The resolved kind is echoed back in the tool result.
 
+New `subagent` chats and tracked CLI sessions inherit a full-auto parent's
+permissions when the launch does not specify a child permission mode. The
+brain translates that access into the child's provider settings, so a Claude
+parent can start an autonomous Codex child without another approval round.
+Explicit child restrictions (including plan mode), host permission policies,
+and the calling agent's permission ceiling still apply. Peers keep their own
+launch defaults. User-only consent, such as control of the user's real screen,
+still requires the user. Subagent instructions direct unresolved task decisions
+to the parent in the closing summary, which ADE delivers through its existing
+parent-wake channel. Parents resolve routine decisions or escalate through
+their own parent; the top-level parent asks the user when a critical decision
+has no known safe solution.
+
 A session summary also carries `parentIdentityKey` when its parent is an
 *identity* session — `"cto"` today — so a roster can badge a chat's origin
 without resolving the parent summary first. It is host-stamped, because identity
