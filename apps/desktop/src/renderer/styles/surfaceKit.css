@@ -310,4 +310,5 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 }
 .kit-input::placeholder { color: var(--kit-text-3); }
 .kit-input:focus { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
+.kit-input:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent); outline-offset: 1px; }
 .kit-input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--kit-crit) 60%, transparent); }
