@@ -715,6 +715,33 @@ describe("prService.getForLane", () => {
     expect(service.getForLane(lane.id)).toBeNull();
   });
 
+  it("hands no history row to the bridge for a primary lane back on its base branch", () => {
+    // The lane cannot be deleted, so the single-value bridge must not answer
+    // with the newest previous-branch row either — that is what pinned an old
+    // merged PR to `main` on lane links, Linear cards and proof owners.
+    const lane = makeFakeLane({
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "merged",
+        head_branch: "fix/update-recovery",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toBeNull();
+
+    // The same lane checked out on the PR's branch still answers with it.
+    const working = buildGetForLaneService(
+      makeFakeLane({ id: lane.id, laneType: "primary", branchRef: "fix/update-recovery", baseRef: "main" }),
+      [makePrRow({ lane_id: lane.id, state: "merged", head_branch: "fix/update-recovery" })],
+    );
+    expect(working.getForLane(lane.id)?.githubPrNumber).toBe(90);
+  });
+
   it("returns a stale PR row as lane history when the lane moved on", () => {
     const lane = makeFakeLane({
       branchRef: "refs/heads/current-feature",

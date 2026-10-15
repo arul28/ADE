@@ -211,7 +211,7 @@ import { claimingSessionIds, selectStackSiblings } from "../../../shared/prChatS
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, laneIsOnBaseBranch, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import {
   buildLaneBranchHistoryIndex,
   pickLaneBranchHistoryPr,
@@ -2153,15 +2153,29 @@ export function createPrService({
       [laneId, projectId],
     );
 
+  /**
+   * A primary lane on its base branch shows no PR anywhere. The checkout is
+   * the project's own and cannot be deleted, so nothing may pin history to it:
+   * not the current-branch match, and not the single-value history fallback in
+   * `getForLane`. The rule itself lives in `shared/laneBaseResolution.ts` so
+   * the renderer's lane surfaces and the CLI's lane-link envelope answer it
+   * identically; this maps the lane row onto it. The host reads the RECORDED
+   * branch (no live checkout here); the lane list re-syncs the primary lane's
+   * record to its live HEAD, so a lane parked on a drifted HEAD converges.
+   */
+  const laneRowIsOnBaseBranch = (lane: LanePrLookupRow): boolean =>
+    laneIsOnBaseBranch({
+      laneType: lane.lane_type,
+      branchRef: lane.branch_ref,
+      baseRef: lane.base_ref,
+    });
+
   const rowMatchesLaneBranchForDisplay = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
     const prHeadBranch = normalizeBranchName(row.head_branch);
     if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
 
-    if (lane.lane_type === "primary") {
-      const laneBaseBranch = normalizeBranchName(branchNameFromRef(lane.base_ref ?? ""));
-      if (laneBranch && laneBaseBranch && laneBranch === laneBaseBranch) return false;
-    }
+    if (laneRowIsOnBaseBranch(lane)) return false;
 
     return true;
   };
@@ -2285,11 +2299,7 @@ export function createPrService({
     if (args.lane.archived_at) return null;
     const laneBranch = normalizeBranchName(branchNameFromRef(args.lane.branch_ref ?? ""));
     if (!laneBranch) return null;
-
-    if (args.lane.lane_type === "primary") {
-      const laneBaseBranch = normalizeBranchName(branchNameFromRef(args.lane.base_ref ?? ""));
-      if (laneBaseBranch && laneBranch === laneBaseBranch) return null;
-    }
+    if (laneRowIsOnBaseBranch(args.lane)) return null;
 
     const mappedCandidates: LanePrDisplayCandidate[] = args.mappedRows
       .filter((row) => row.lane_id === args.laneId && rowMatchesLaneBranchForDisplay(row, args.lane))
@@ -12303,6 +12313,11 @@ export function createPrService({
       if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
         return null;
       }
+      // ...but a primary lane back on its base branch has no PR to hand out —
+      // not even as history. It cannot be deleted, so returning "the newest
+      // retained row" here is what pinned an old merged PR to `main` on every
+      // consumer of this bridge (lane links, Linear cards, proof owners).
+      if (laneRowIsOnBaseBranch(lane)) return null;
       const previous = getRowForLane(laneId);
       const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
       const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));

@@ -93,6 +93,7 @@ import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
@@ -33128,10 +33129,21 @@ function createLinkEnvelopeResolver(
       // deeplink envelope with the PR a human would name: open before draft
       // before terminal history, newest first. Same comparator as the desktop
       // lane badge, so a link minted here points where the badge points.
-      const pr = pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
+      //
+      // A primary lane parked on its base branch names no PR at all (its row
+      // cannot be deleted, so history would otherwise be stamped onto `main`
+      // forever). The badge answers the same way, so a link and a badge agree —
+      // the rule is imported from `shared/laneBaseResolution.ts`, not restated.
+      const laneBranch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const primaryOnBase = laneIsOnBaseBranch({
+        laneType: asString(lane?.laneType),
+        branchRef: asString(lane?.branchRef),
+        baseRef: asString(lane?.baseRef),
+      });
+      const pr = primaryOnBase ? null : pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
         .filter((candidate) => asString(candidate.laneId) === context.laneId));
 
-      const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const branch = laneBranch;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
       const linearIssue = asString(laneIssue?.identifier);
       // `pickPrimaryPrRecord` accepts `githubPrNumber`, `number`, or `prNumber`,

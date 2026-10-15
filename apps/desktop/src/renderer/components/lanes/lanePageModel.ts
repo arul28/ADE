@@ -1,4 +1,4 @@
-import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, laneIsOnBaseBranch } from "../../../shared/laneBaseResolution";
 import type {
   GitHubPrListItem,
   GitHubPrStackMembership,
@@ -11,6 +11,11 @@ import type {
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { isTerminalPrState } from "../../lib/prState";
 import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteState";
+
+// Re-exported because these names were this module's API first, and the lane
+// surfaces and their tests import them from here. The rule itself lives in
+// `shared/` so the host bridge and the CLI answer it the same way.
+export { laneIsOnBaseBranch };
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -224,15 +229,6 @@ export function normalizeLanePrBranch(ref: string | null | undefined): string {
   return branchNameFromLaneRef(ref).trim();
 }
 
-export function laneIsOnBaseBranch(
-  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
-): boolean {
-  if (lane.laneType !== "primary") return false;
-  const laneBranch = normalizeLanePrBranch(lane.branchRef);
-  const baseBranch = normalizeLanePrBranch(lane.baseRef);
-  return Boolean(laneBranch && baseBranch && laneBranch === baseBranch);
-}
-
 function prStateRank(state: PrSummary["state"]): number {
   if (state === "open" || state === "draft") return 0;
   if (state === "merged") return 1;
@@ -307,6 +303,18 @@ export function selectLanePrs(
   // This is the renderer-facing selector used by lane tags, counters, hover
   // lists, Work cards, and chat badges. Historical rows remain in the source
   // list and PR workspace, but never leak into those visible lane surfaces.
+  //
+  // A primary lane parked on its base branch has no lane PR work at all — chat
+  // link or not. The primary lane is the project's own checkout: it cannot be
+  // deleted or archived, so anything still attached when it returns to `main`
+  // (a merged PR a chat once linked, above all) would otherwise stay pinned to
+  // it forever. The main-process single-PR selector
+  // (`selectLanePrDisplayCandidate`) and the lane-link bridge answer null for
+  // this state too, and the Work/tab badges should not disagree with them. This
+  // gate reads the live checkout (`effectiveLanePrBranchRef`) because these
+  // surfaces show that branch's PRs; a lane parked on a drifted HEAD is still
+  // parked, and the lane record re-syncs to the live HEAD on the next list.
+  if (laneIsOnBaseBranch({ ...lane, branchRef: effectiveLanePrBranchRef(lane) })) return [];
   return prs
     .filter((pr) => {
       if (pr.detached) return false;
@@ -332,7 +340,10 @@ export function selectLanePrs(
 
 /**
  * What a CHAT should show: everything `selectLanePrs` gives the lane, plus any
- * pull request this chat explicitly linked even though another lane owns it.
+ * pull request this chat explicitly linked — whether another lane owns it, or
+ * the lane surface dropped it (a primary lane back on its base branch sheds its
+ * PR tags, but the chat that opened the PR still shows the thread that did the
+ * work).
  *
  * The two rules have to live apart. Lane surfaces (tags, badges, Work cards)
  * must stay strictly lane-owned — relaxing that put one lane's PR on every lane
@@ -347,15 +358,14 @@ export function selectChatPrs(
 ): PrSummary[] {
   const owned = selectLanePrs(lane, prs);
   const seen = new Set(owned.map((pr) => pr.id));
-  const linkedElsewhere = sessionId
+  const linkedToSession = sessionId
     ? prs.filter((pr) => (
       !pr.detached
-      && pr.laneId !== lane.id
       && !seen.has(pr.id)
       && Boolean(pr.chatSessionIds?.includes(sessionId))
     ))
     : [];
-  return [...owned, ...linkedElsewhere].sort(comparePrTags);
+  return [...owned, ...linkedToSession].sort(comparePrTags);
 }
 
 export function selectLanePrTag(

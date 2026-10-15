@@ -5608,6 +5608,52 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(decodeActiveDayKeys(tombstone.first_active_day, tombstone.active_day_bits)).toHaveLength(3);
   });
 
+  it("drops the PR links held by a deleted lane's sessions, including cross-lane edges", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    seedLaneActivity(db, "lane-child");
+    const now = "2026-03-12T12:00:00.000Z";
+    db.run(
+      `insert into pull_requests(
+         id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+         state, base_branch, head_branch, created_at, updated_at
+       ) values ('pr-parent', 'proj-delete', 'lane-parent', 'arul28', 'ADE', 1630,
+                 'https://github.com/arul28/ADE/pull/1630', 'open', 'main', 'ade/parent-work', ?, ?)`,
+      [now, now],
+    );
+    // A stack-coordinator-style link: the session lives in the deleted lane,
+    // the PR belongs to another lane, so the lane's own `pr_id`-keyed detach
+    // cannot see it. A dangling edge would flip into a claim on `pr-parent`.
+    db.run(
+      `insert into pull_request_chat_sessions(id, project_id, pr_id, lane_id, session_id, created_at, updated_at)
+       values ('edge-cross', 'proj-delete', 'pr-parent', 'lane-parent', 'sess-chat', ?, ?)`,
+      [now, now],
+    );
+    db.run(
+      `insert into pull_request_chat_session_dismissals(id, project_id, pr_id, session_id, created_at, updated_at)
+       values ('dismissal-cross', 'proj-delete', 'pr-parent', 'sess-chat', ?, ?)`,
+      [now, now],
+    );
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    expect(db.all("select id from pull_request_chat_sessions where session_id = 'sess-chat'")).toEqual([]);
+    expect(
+      db.all("select id from pull_request_chat_session_dismissals where session_id = 'sess-chat'"),
+    ).toEqual([]);
+    // The other lane's PR row is history and survives with its lane mapping.
+    expect(db.get<{ id: string; lane_id: string }>("select id, lane_id from pull_requests where id = 'pr-parent'"))
+      .toMatchObject({ id: "pr-parent", lane_id: "lane-parent" });
+  });
+
   it("stores no free text a deleted lane could be reconstructed from", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

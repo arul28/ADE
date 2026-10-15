@@ -609,6 +609,24 @@ final class WorkChatLinkedPrSelectionTests: XCTestCase {
     XCTAssertEqual(visible.map(\.id), ["pr-1"])
   }
 
+  func testPrimaryLaneBackOnMainHidesItsPrsWhileTheLinkingChatKeepsThem() {
+    // The Primary lane cannot be deleted, so its lane surfaces must shed every
+    // PR once it is parked on `main` — while the chat that opened the PR still
+    // shows the thread that did the work. Mirrors desktop `selectLanePrs` /
+    // `selectChatPrs`.
+    let primary = lane(id: "lane-primary", branch: "main", type: "primary")
+    let prs = [
+      pr(id: "pr-linked", laneId: "lane-primary", number: 1501, headBranch: "fix/update-recovery", chatSessionIds: ["chat-1"]),
+    ]
+
+    XCTAssertEqual(selectLanePrs(lane: primary, pullRequests: prs).map(\.id), [])
+    XCTAssertEqual(workChatPullRequests(lane: primary, pullRequests: prs, sessionId: "chat-1").map(\.id), ["pr-linked"])
+
+    // The same lane checked out on the PR's branch shows it again.
+    let working = lane(id: "lane-primary", branch: "fix/update-recovery", type: "primary")
+    XCTAssertEqual(selectLanePrs(lane: working, pullRequests: prs).map(\.id), ["pr-linked"])
+  }
+
   func testNewestOpenPrLeadsTheList() {
     let l = lane(id: "lane-1", branch: "feature/a")
     let prs = [
