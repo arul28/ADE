@@ -33,7 +33,7 @@ import {
   type SpotifySignIn,
   type SpotifyTokens,
 } from "./spotifyAuth";
-import { createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
+import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 import { createSpotifyLocalPlayer, sdkTrack, type SpotifyLocalState } from "./spotifyLocalPlayer";
 
 /**
@@ -679,7 +679,7 @@ export function createSpotifyService(args: {
           break;
         case "volume": {
           if (device && !device.supportsVolume) throw new Error("This Spotify device doesn't allow volume control from ADE.");
-          const value = Math.max(0, Math.min(1, cmd.value));
+          const value = clampVolume(cmd.value) ?? p.volume;
           if (!(localIsActive() && await local.setVolume(value))) await api.volume(value);
           p.volume = value;
           // The slider's position is what the next launch starts from.

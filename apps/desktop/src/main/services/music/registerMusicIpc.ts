@@ -158,10 +158,13 @@ export function registerMusicIpc(args: {
     service.transfer({ deviceId: str(input?.deviceId), play: input?.play !== false }));
 
   // The player host must never outlive ADE, and a slider move made in the last
-  // moment still reaches the settings file.
+  // moment still reaches the settings file. `will-quit` covers the update
+  // install; ADE's own quit path ends at `app.exit()`, which skips it, so the
+  // exit hook is the one that always runs (`flush` writes synchronously).
   app.once("will-quit", () => {
     settings.flush();
     void service.dispose();
   });
+  process.once("exit", () => settings.flush());
   return service;
 }

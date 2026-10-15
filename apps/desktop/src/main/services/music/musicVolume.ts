@@ -23,7 +23,7 @@ export function clampVolume(value: unknown): number | null {
 
 export type VolumeMemory = {
   /** Where a player starts: the stored volume, or null when there was none. */
-  saved: number | null;
+  readonly saved: number | null;
   /** Remember a slider position; a value already remembered costs nothing. */
   remember: (value: number) => void;
 };
@@ -32,7 +32,9 @@ export type VolumeMemory = {
 export function createVolumeMemory(memory?: MusicVolumeMemory): VolumeMemory {
   let saved = clampVolume(memory?.get());
   return {
-    saved,
+    get saved() {
+      return saved;
+    },
     remember: (value: number) => {
       const clamped = clampVolume(value);
       if (clamped == null || clamped === saved) return;

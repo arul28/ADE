@@ -89,7 +89,7 @@ describe("stored home layouts", () => {
     expect(again.presets.map((entry) => entry.id)).toEqual(layouts.presets.map((entry) => entry.id));
   });
 
-  it("offers a store from before the presets the shipped stack, and keeps its layout", () => {
+  it("gives a store from before the presets the shipped stack, and keeps its layout", () => {
     const legacy = layoutWith([{ id: "feed", type: "feed", size: "l" }]);
     const layouts = normalizeHomeLayouts(null, legacy);
 
@@ -115,6 +115,25 @@ describe("stored home layouts", () => {
     useHomeLayoutStore.getState().remove("clock");
     reloadHomeLayoutsFromStorage();
     expect(useHomeLayoutStore.getState().layout.items.map((item) => item.type)).toEqual(["projects", "running", "prs", "heatmap"]);
+    window.localStorage.removeItem(HOME_LAYOUTS_STORAGE_KEY);
+    window.localStorage.removeItem(HOME_LAYOUT_STORAGE_KEY);
+  });
+
+  it("lets the user keep their saved layouts to the limit, with the shipped Default as one more", () => {
+    const mine = Array.from({ length: HOME_LAYOUT_PRESETS_MAX - 1 }, (_, i) => preset(`p${i}`, `P${i}`));
+    window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify({
+      defaultStack: HOME_DEFAULT_STACK_VERSION,
+      activeId: "default",
+      presets: [preset("default", "Default"), ...mine],
+    }));
+    reloadHomeLayoutsFromStorage();
+
+    // Eleven of their own plus the shipped one: the twelfth saved layout fits.
+    const first = useHomeLayoutStore.getState().savePresetAs("Twelfth");
+    expect(first).not.toBeNull();
+    expect(useHomeLayoutStore.getState().presets).toHaveLength(HOME_LAYOUT_PRESETS_STORED_MAX);
+    // And that is the limit: the page keeps room for the shipped Default.
+    expect(useHomeLayoutStore.getState().savePresetAs("Thirteenth")).toBeNull();
     window.localStorage.removeItem(HOME_LAYOUTS_STORAGE_KEY);
     window.localStorage.removeItem(HOME_LAYOUT_STORAGE_KEY);
   });

@@ -194,7 +194,8 @@ function defaultLayouts(): HomeLayouts {
  * The shipped stack takes over the "Default" preset and shows, once per
  * version. Everything the user saved themselves (other presets) stays where it
  * was, in the switcher, and none of it is dropped for lack of room:
- * `HOME_LAYOUT_PRESETS_STORED_MAX` reserves the shipped preset's slot.
+ * `HOME_LAYOUT_PRESETS_STORED_MAX` reserves the shipped preset's slot, and the
+ * presets read here are already capped at that, so at most they fill it.
  */
 function withShippedDefaultStack(layouts: HomeLayouts): HomeLayouts {
   const others = layouts.presets.filter((preset) => preset.id !== DEFAULT_PRESET_ID);
@@ -562,7 +563,9 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
     savePresetAs: (rawName) => {
       const { presets, layout } = get();
       const name = cleanPresetName(rawName);
-      if (!name || presets.length >= HOME_LAYOUT_PRESETS_MAX) return null;
+      // The shipped "Default" preset is not one of the user's saved layouts.
+      const saved = presets.filter((preset) => preset.id !== DEFAULT_PRESET_ID).length;
+      if (!name || saved >= HOME_LAYOUT_PRESETS_MAX) return null;
       const preset: HomeLayoutPreset = { id: newPresetId(), name: uniqueName(name, presets), layout: structuredClone(layout) };
       save([...presets, preset], preset.id);
       return preset;

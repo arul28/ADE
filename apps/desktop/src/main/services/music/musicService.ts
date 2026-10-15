@@ -20,7 +20,7 @@ import { musicPositionNow } from "../../../shared/types/music";
 import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
-import { createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
+import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 
 /**
  * The Music feature in the main process.
@@ -559,7 +559,7 @@ export function createMusicService(args: {
         const fresh = cmd.type === "playItems" || cmd.type === "playCollection";
         if (cmd.type === "pause" && !host) return { ok: true } as const;
         if (cmd.type === "volume" && !host) {
-          state.playback.volume = Math.max(0, Math.min(1, cmd.value));
+          state.playback.volume = clampVolume(cmd.value) ?? state.playback.volume;
           volume.remember(state.playback.volume);
           emit();
           return { ok: true } as const;

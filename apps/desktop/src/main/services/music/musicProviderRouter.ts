@@ -65,14 +65,20 @@ function createMusicSettings(dir: string, logger?: { warn: (event: string, data?
       logger?.warn("music.settings_unreadable", { error: error instanceof Error ? error.message : String(error) });
     }
   }
-  const writeCurrent = () => writeTextAtomic(file, JSON.stringify(value, null, 2));
+  /** The slider positions the file does not have yet (a pending write, or one that failed). */
+  let volumeDirty = false;
+  const writeCurrent = () => {
+    writeTextAtomic(file, JSON.stringify(value, null, 2));
+    volumeDirty = false;
+  };
   let volumeTimer: NodeJS.Timeout | null = null;
 
-  /** Persist, then remember: a write that fails leaves the old value in force. */
   const set = (next: Partial<Settings>) => {
     const merged = { ...value, ...next };
     writeTextAtomic(file, JSON.stringify(merged, null, 2));
     value = merged;
+    // The file has the slider positions too: whatever was pending is on disk.
+    volumeDirty = false;
   };
 
   /** Write the slider positions as they stand, once; `again` retries a failure once. */
@@ -97,19 +103,22 @@ function createMusicSettings(dir: string, logger?: { warn: (event: string, data?
     /** One provider's remembered volume, in the shape both music services take. */
     volumeFor: (provider: MusicProvider): MusicVolumeMemory => ({
       get: () => value.volume[provider],
+      // What arrives here is already clamped and deduped (`createVolumeMemory`).
       set: (volume) => {
         const clamped = clampVolume(volume);
-        if (clamped == null || clamped === value.volume[provider]) return;
-        // The value is in memory now (this session plays at it); the file follows.
+        if (clamped == null) return;
         value = { ...value, volume: { ...value.volume, [provider]: clamped } };
+        volumeDirty = true;
         saveVolumes(VOLUME_SAVE_MS, true);
       },
     }),
-    /** Write a slider position that is still waiting (ADE is quitting). */
+    /** Write a slider position the file is still missing (ADE is quitting). */
     flush: (): void => {
-      if (!volumeTimer) return;
-      clearTimeout(volumeTimer);
-      volumeTimer = null;
+      if (volumeTimer) {
+        clearTimeout(volumeTimer);
+        volumeTimer = null;
+      }
+      if (!volumeDirty) return;
       try {
         writeCurrent();
       } catch (error) {
