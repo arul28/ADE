@@ -2342,6 +2342,17 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     }
   };
   const accountSettingsStore = runtime.accountSettingsStore;
+  // OpenCode account changes are provider-account decisions, recorded like
+  // Claude and Codex accounts: the harness family only, never the upstream
+  // provider, label or account.
+  const captureOpenCodeAccount = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
+  const captureOpenCodeAccountOutcome = <T extends { ok: boolean }>(
+    action: "account_created" | "account_signed_out" | "default_selected",
+    result: T,
+  ): T => {
+    if (result.ok) captureOpenCodeAccount(action, "completed", "opencode");
+    return result;
+  };
   const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
     projectRoot: runtime.projectRoot,
     projectConfig: runtime.projectConfigService.getEffective(),
@@ -2379,27 +2390,36 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       }),
     opencodeAccounts: (args?: { providerId?: string | null }) =>
       listOpenCodeAccounts(buildOpenCodeAuthDeps(), { providerId: args?.providerId ?? null }),
-    opencodeAccountActivate: (args?: { id?: string }) =>
-      activateOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+    opencodeAccountActivate: async (args?: { id?: string }) =>
+      captureOpenCodeAccountOutcome(
+        "default_selected",
+        await activateOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+      ),
     opencodeAccountRename: (args?: { id?: string; label?: string }) =>
       renameOpenCodeAccount(buildOpenCodeAuthDeps(), {
         id: requireNonEmptyString(args?.id, "id"),
         label: requireNonEmptyString(args?.label, "label"),
       }),
-    opencodeAccountRemove: (args?: { id?: string }) =>
-      removeOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
-    opencodeCloudConnect: (args?: {
+    opencodeAccountRemove: async (args?: { id?: string }) =>
+      captureOpenCodeAccountOutcome(
+        "account_signed_out",
+        await removeOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+      ),
+    opencodeCloudConnect: async (args?: {
       providerId?: string;
       methodIndex?: number;
       inputs?: Record<string, string>;
       label?: string;
     }) =>
-      connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), {
-        providerId: requireNonEmptyString(args?.providerId, "providerId"),
-        methodIndex: typeof args?.methodIndex === "number" ? args.methodIndex : 0,
-        inputs: args?.inputs,
-        ...(typeof args?.label === "string" ? { label: args.label } : {}),
-      }),
+      captureOpenCodeAccountOutcome(
+        "account_created",
+        await connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), {
+          providerId: requireNonEmptyString(args?.providerId, "providerId"),
+          methodIndex: typeof args?.methodIndex === "number" ? args.methodIndex : 0,
+          inputs: args?.inputs,
+          ...(typeof args?.label === "string" ? { label: args.label } : {}),
+        }),
+      ),
     // Diagnostics and the updater report on the CLIs installed on the machine
     // this runtime runs on. Exposed as actions so Settings can show (and
     // update) another machine's install through that machine's own runtime,

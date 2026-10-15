@@ -5810,6 +5810,14 @@ export function registerIpc({
 
   // OpenCode accounts. This path runs only without a brain, so there is no
   // account store and cloud logins stay on this computer.
+  const captureOpenCodeAccount = providerAccountAnalyticsCapture(productAnalyticsService, "desktop");
+  const captureOpenCodeAccountOutcome = <T extends { ok: boolean }>(
+    action: "account_created" | "account_signed_out" | "default_selected",
+    result: T,
+  ): T => {
+    if (result.ok) captureOpenCodeAccount(action, "completed", "opencode");
+    return result;
+  };
   ipcMain.handle(
     IPC.aiOpencodeAccounts,
     async (_event, arg?: { providerId?: string | null }): Promise<OpenCodeAccountsResult> =>
@@ -5818,7 +5826,7 @@ export function registerIpc({
   ipcMain.handle(
     IPC.aiOpencodeAccountActivate,
     async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
-      await activateOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
+      captureOpenCodeAccountOutcome("default_selected", await activateOpenCodeAccount(buildOpenCodeAuthDeps(), arg)),
   );
   ipcMain.handle(
     IPC.aiOpencodeAccountRename,
@@ -5828,14 +5836,15 @@ export function registerIpc({
   ipcMain.handle(
     IPC.aiOpencodeAccountRemove,
     async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
-      await removeOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
+      captureOpenCodeAccountOutcome("account_signed_out", await removeOpenCodeAccount(buildOpenCodeAuthDeps(), arg)),
   );
   ipcMain.handle(
     IPC.aiOpencodeCloudConnect,
     async (
       _event,
       arg: { providerId: string; methodIndex: number; inputs?: Record<string, string>; label?: string },
-    ): Promise<OpenCodeCloudConnectResult> => await connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), arg),
+    ): Promise<OpenCodeCloudConnectResult> =>
+      captureOpenCodeAccountOutcome("account_created", await connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), arg)),
   );
 
   // Broadcast Pi sign-in transitions to all renderer windows. The relay/web
