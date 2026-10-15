@@ -1636,6 +1636,8 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** Longer than a recurring schedule lives (seven days), so a claim never lapses mid-schedule. */
+const SCHEDULED_WORK_CLAIM_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
 const PI_WORKER_EXIT_WAIT_MS = 5_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
@@ -11876,6 +11878,9 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
   const scheduledWorkStateKey = "agent-chat:scheduled-work:v1";
+  const scheduledWorkClaimKeyPrefix = "agent-chat:scheduled-work:claim:";
+  const scheduledWorkClaimKey = (schedule: { id: string; fireAt?: number }): string =>
+    `${scheduledWorkClaimKeyPrefix}${schedule.id}@${schedule.fireAt ?? "unscheduled"}`;
   // Event-driven waits (`chatWaitRegistry.ts`). Declared this early because
   // `emitChatEvent` signals it; events emitted before it exists need no
   // signal, since `start()` checks every persisted waiter once ready.
@@ -67507,6 +67512,32 @@ export function createAgentChatService(args: {
       return schedule.provider === "claude"
         && liveRuntime?.query != null
         && liveRuntime.busy;
+    },
+    // Dev runtimes and `ade serve` brains open the same project database, so
+    // the claim is an insert only one of them can win. SQLite serializes the
+    // writers; the claim outlives the longest recurring schedule, then goes.
+    claimFire: (schedule) => {
+      if (!db?.run || !db.runChanged) return true;
+      const claimedAt = Date.now();
+      db.run("delete from kv where key like ? and json_extract(value, '$.claimedAt') < ?", [
+        `${scheduledWorkClaimKeyPrefix}%`,
+        claimedAt - SCHEDULED_WORK_CLAIM_RETENTION_MS,
+      ]);
+      const won = db.runChanged("insert or ignore into kv(key, value) values (?, ?)", [
+        scheduledWorkClaimKey(schedule),
+        JSON.stringify({ claimedAt }),
+      ]) === 1;
+      if (!won) {
+        logger.info("agent_chat.scheduled_work_claimed_elsewhere", {
+          scheduleId: schedule.id,
+          sessionId: schedule.sessionId,
+          fireAt: schedule.fireAt ?? null,
+        });
+      }
+      return won;
+    },
+    releaseFire: (schedule) => {
+      db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
     fire: async (schedule, context) => {
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
