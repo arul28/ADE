@@ -7,6 +7,7 @@ import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
+import { capitalizeWord } from "./modelFacts";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
 export type ReasoningEffortPickerProps = {
@@ -52,7 +53,7 @@ function tierLabel(tier: string, useCodex56Labels = false): string {
   if (tier === "max") return "Max";
   if (tier === "ultra") return "Ultra";
   if (tier === "ultracode") return "Ultracode";
-  return tier.charAt(0).toUpperCase() + tier.slice(1);
+  return capitalizeWord(tier);
 }
 
 /** The footer's effort label for a tier, so a chip can show the same word. */

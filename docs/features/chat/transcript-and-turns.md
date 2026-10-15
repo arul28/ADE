@@ -128,7 +128,7 @@ Two helpers summarise a parsed stream:
 | Type | Purpose |
 |---|---|
 | `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the message was folded into the active turn rather than queued behind it (Claude's SDK `shouldQuery:false` send, Cursor's `Run.steer()`, OpenCode's `session.prompt` with `delivery: "steer"`, or Pi's `steer`), and `"failed"` if dispatch errored. Cursor, OpenCode, and Pi first write the row as `"accepted"` ("Steering…") before they await the provider, then move the same `steerId` to `"inline"` ("Steered") when the turn takes it. Cursor's `Run.steer()` resolves only once the turn reads the message at its next model step, so without the early row the message was invisible for that whole step. A refusal moves the row to `"queued"` (staged again), `"delivered"` (sent as its own turn), or `"failed"` (dropped), so it never stays `"accepted"`. The desktop draws the delivery state as one small line under the bubble, right-aligned with it and never inside it (see [Message delivery](README.md#message-delivery-turn-health-and-quiet-diagnostics)). Same-turn steers (`queued`, `inline`, `accepted` from every inline provider, and Codex `processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. |
-| `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. Codex text may carry an optional `phase` (`commentary` / `final_answer`); see Text merging. |
+| `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. Codex text may carry an optional `phase` (`commentary` / `partial_answer` / `final_answer`); see Text merging. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
 | `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Claude SDK `tool_result_meta` is retained as optional `toolResultMeta`, and the provider's raw payload as optional `structured`; both are local-only debug material — they are bounded on disk and stripped from the sync wire, because no renderer, TUI, web, or iOS client decodes either. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. Provider web tools add an optional `sources: ChatSourceRef[]` (at most 20, http(s) only, strings clipped) to their `tool_result`; unlike `structured` it travels on every wire, and the desktop row lists those hits like a native web search. |
@@ -1043,7 +1043,11 @@ implements a two-layer transform:
      working indicator.
    - **The answer** is the turn's last `text` row, or its last
      `phase: "final_answer"` row when the provider labelled one; a
-     `commentary` row is never the answer. When the provider labels none
+     `commentary` row is never the answer. A `phase: "partial_answer"` row is
+     an answer candidate — the last one wins if no `final_answer` follows —
+     but never displaces a `final_answer`. Codex emits it for a finished
+     statement it may follow with more output, and the terminal answer usually
+     restates only its own part. When the provider labels none
      (Claude), the last text can be a postscript to an earlier answer: if the
      previous non-empty text of the same turn is at least 400 characters and
      at least three times as long as the last text, and no more than three
@@ -1090,7 +1094,10 @@ implements a two-layer transform:
      typically the reply to a question the user asked alongside the work,
      written before the agent went off to work and ended on a status message
      (`proseStaysVisible`). A `commentary` row is narration by the provider's
-     own label and folds unless it embeds proof. A text that repeats the
+     own label and folds unless it embeds proof. A `partial_answer` row is the
+     provider's own label for content, so it stays visible however short it
+     is: the terminal answer does not repeat it, and folding it away would
+     hide an answer the user asked for. A text that repeats the
      answer word for word still folds, however long. The decision reads only
      the row's own prose, so replays reproduce it.
    - **Only history folds.** Thought rows, interim narration text, a Codex
@@ -1238,7 +1245,9 @@ Adjacent `text` events merge via `shouldMergeTextRows()`:
   `phase` and the phases differ. ADE reuses one `messageId` for consecutive
   assistant text until a tool call flushes it, so a Codex `commentary` message
   and its `final_answer` can share an id; they stay separate rows so the turn
-  fold can pick the answer. A merged row adopts a later fragment's `phase`
+  fold can pick the answer. A `partial_answer` stays separate from both for
+  the same reason — merging it into the narration that follows it would leave
+  it wearing the narration's label, which the fold then hides. A merged row adopts a later fragment's `phase`
   when its first fragment had none.
 - Events without `messageId` fall back to matching `turnId` and
   `itemId`.
@@ -1254,9 +1263,11 @@ next `message_start`. Each frame has its own `uuid`, so using it per delta
 gave every delta its own id and its own row, and the turn fold then hid
 all but the last fragment behind `Worked for …`.
 
-A `text` event can carry an optional `phase` (`"commentary"` or
-`"final_answer"`): the provider's own label for interim narration versus the
-turn's answer. Only Codex sends it, on the `agentMessage` item in
+A `text` event can carry an optional `phase` (`"commentary"`,
+`"partial_answer"`, or `"final_answer"`): the provider's own label for interim
+narration, a finished statement more output may follow, or the turn's terminal
+answer. `partial_answer` arrived with Codex 0.162. Only Codex sends any of
+them, on the `agentMessage` item in
 `item/started` / `item/completed` rather than on the text deltas, and not for
 every model, so an absent `phase` means unknown. The Codex handler records the
 phase per item id (cleared when the item or the turn ends) and stamps it on

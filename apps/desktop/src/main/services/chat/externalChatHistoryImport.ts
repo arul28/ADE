@@ -431,13 +431,20 @@ function codexMessageText(item: JsonRecord): string {
 }
 
 /**
- * Codex's commentary/final-answer label on an assistant message item. Codex
- * sends it on `agentMessage` items (and `phase` on rollout messages) only for
- * some models; anything else means the phase is unknown.
+ * Codex's phase label on an assistant message item. Codex sends it on
+ * `agentMessage` items (and `phase` on rollout messages) only for some models;
+ * anything else means the phase is unknown.
+ *
+ * `partial_answer` (codex 0.162+) means "stable answer text that more output
+ * may follow" — it is a third answer-ish label, not narration. Reading it is
+ * what keeps a finished-but-not-terminal answer from being mistaken for
+ * commentary, which the turn fold then hides.
  */
+const CODEX_MESSAGE_PHASES = ["commentary", "partial_answer", "final_answer"] as const;
+
 export function codexMessagePhase(item: Record<string, unknown> | null | undefined): AgentChatTextPhase | undefined {
   const phase = item?.phase;
-  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+  return CODEX_MESSAGE_PHASES.find((known) => known === phase);
 }
 
 function codexThreadItemToEvents(

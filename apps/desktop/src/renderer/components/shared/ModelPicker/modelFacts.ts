@@ -128,11 +128,20 @@ const REASONING_LABELS: Record<string, string> = {
   ultracode: "Ultracode",
 };
 
+/**
+ * A bare lowercase token as a word: `fast` -> `Fast`. Every tier and effort
+ * label in the picker spells an unrecognised value this one way, so a word ADE
+ * does not enumerate reads the same wherever it surfaces.
+ */
+export function capitalizeWord(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 /** The effort tier as a word. "Off" is a real answer, not a missing one. */
 export function reasoningEffortLabel(effort: string | null, model?: ModelDescriptor): string {
   if (!effort) return "Off";
   if (effort === "low" && usesCodexNamedEffortLabels(model?.providerModelId)) return "Light";
-  return REASONING_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
+  return REASONING_LABELS[effort] ?? capitalizeWord(effort);
 }
 
 /**

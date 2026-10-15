@@ -2007,6 +2007,7 @@ export function AgentChatComposer({
   effectiveReasoningEffort,
   fastMode = false,
   fastTier = null,
+  effectiveFastTier = null,
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
@@ -2205,6 +2206,12 @@ export function AgentChatComposer({
   fastMode?: boolean;
   /** Fast's tier for the selected model ("ultrafast" on Codex models that offer it). */
   fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast, when it has
+   * reported one. Reaches the picker's selected row so a declined request is
+   * visible; see `ModelListRow`.
+   */
+  effectiveFastTier?: string | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
@@ -7292,6 +7299,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastTier={fastTier}
+                  effectiveFastTier={effectiveFastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {
