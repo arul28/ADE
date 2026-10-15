@@ -28,9 +28,15 @@ export function ProjectLocationSection() {
   const [lastMove, setLastMove] = useState<ProjectMoveRecord | null>(null);
 
   const refresh = useCallback(() => {
-    if (!api || !root || remote) return;
-    void api.listVolumes().then(setVolumes).catch(() => setVolumes([]));
-    void api.status(root).then(setLastMove).catch(() => setLastMove(null));
+    if (!api || !root || remote || !isMacPlatform()) return;
+    void api.listVolumes().then(setVolumes).catch((error) => {
+      console.warn("[project-move] listing drives failed", error);
+      setVolumes([]);
+    });
+    void api.status(root).then(setLastMove).catch((error) => {
+      console.warn("[project-move] reading the last move failed", error);
+      setLastMove(null);
+    });
   }, [api, remote, root]);
 
   useEffect(() => {
@@ -39,7 +45,16 @@ export function ProjectLocationSection() {
     return () => window.removeEventListener(PROJECT_MOVE_CHANGED_EVENT, refresh);
   }, [refresh]);
 
-  if (!api || !isMacPlatform() || !root) return null;
+  if (!root) return null;
+  if (!api || !isMacPlatform()) {
+    return (
+      <ModernSection group="Project" anchor="project-location" title="Project location">
+        <ModernRows>
+          <ModernRow title="Moving a project to another drive" hint="Available on macOS for now." />
+        </ModernRows>
+      </ModernSection>
+    );
+  }
   const projectName = project?.displayName || root.split("/").pop() || "this project";
 
   if (remote) {

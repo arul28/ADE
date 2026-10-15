@@ -65,7 +65,6 @@ import { detectBrowsersCached } from "../browsers/browserDetection";
 import { browserIconDataUrl } from "../browsers/browserIcons";
 import { appIconDataUrlByName } from "../apps/appIcons";
 import type { ProjectMoveController } from "../projects/projectMoveController";
-import { readMoveRecord } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import type { ProjectMoveCleanupArgs } from "../../../shared/types/projectMove";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
@@ -5072,8 +5071,9 @@ export function registerIpc({
     );
   });
   ipcMain.handle(IPC.projectMoveStatus, async (_event, arg: { projectRoot?: unknown }) => {
-    if (!projectMoveController || typeof arg?.projectRoot !== "string") return null;
-    return projectMoveController.status(arg.projectRoot);
+    if (!projectMoveController) return null;
+    const { root, controller } = projectMoveRoot(arg?.projectRoot);
+    return controller.status(root);
   });
   ipcMain.handle(IPC.projectMoveAttention, async () => projectMoveController?.attention() ?? { records: [], nextReminderAt: null });
   ipcMain.handle(IPC.projectMoveCleanup, async (_event, arg: ProjectMoveCleanupArgs) => {
@@ -5086,9 +5086,8 @@ export function registerIpc({
     return projectMoveController.cleanup(arg);
   });
   ipcMain.handle(IPC.projectMoveReveal, async (_event, arg: { moveId?: unknown; which?: unknown }) => {
-    if (typeof arg?.moveId !== "string") return;
-    const record = readMoveRecord(arg.moveId);
-    const target = arg.which === "original" ? record?.originalParkedAt : record?.destinationRoot;
+    if (!projectMoveController || typeof arg?.moveId !== "string") return;
+    const target = projectMoveController.revealTarget(arg.moveId, arg.which === "original" ? "original" : "moved");
     if (target) shell.showItemInFolder(target);
   });
   ipcMain.handle(IPC.projectMoveChooseFolder, async (event, arg: { defaultPath?: unknown }) => {

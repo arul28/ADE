@@ -48,13 +48,29 @@ function stripTrailingSlash(value: string): string {
   return value.length > 1 ? value.replace(/\/+$/, "") : value;
 }
 
-/** `candidate` relative to whichever spelling of the root contains it, or null. */
+/**
+ * `candidate` relative to whichever spelling of the root contains it, or null.
+ * macOS and Windows disks ignore case, so a link git wrote as `/users/me/proj`
+ * still belongs to `/Users/me/Proj`.
+ */
 export function relativeToRoot(candidate: string, spellings: string[]): string | null {
+  const fold = process.platform === "darwin" || process.platform === "win32"
+    ? (value: string) => value.toLowerCase()
+    : (value: string) => value;
+  const folded = fold(candidate);
   for (const root of spellings) {
-    if (candidate === root) return "";
-    if (candidate.startsWith(`${root}/`)) return candidate.slice(root.length + 1);
+    const key = fold(root);
+    if (folded === key) return "";
+    if (folded.startsWith(`${key}/`)) return candidate.slice(root.length + 1);
   }
   return null;
+}
+
+/** `candidate` moved from under one of the old root's spellings to the same place under `newRoot`, or null when it was not under it. */
+export function remapUnderRoot(candidate: string, spellings: string[], newRoot: string): string | null {
+  const relative = relativeToRoot(candidate, spellings);
+  if (relative === null) return null;
+  return relative ? path.join(newRoot, relative) : newRoot;
 }
 
 export type WorktreeLink = {
@@ -184,9 +200,8 @@ export async function rewriteAbsoluteGitConfig(args: {
     if (newline < 0) continue;
     const key = entry.slice(0, newline);
     const value = entry.slice(newline + 1);
-    const relative = relativeToRoot(value, args.oldSpellings);
-    if (relative === null) continue;
-    const next = relative ? path.join(args.finalRoot, relative) : args.finalRoot;
+    const next = remapUnderRoot(value, args.oldSpellings, args.finalRoot);
+    if (next === null) continue;
     await gitConfig(configFile, ["--fixed-value", "--replace-all", key, next, value]);
     changed.push(key);
   }
@@ -213,9 +228,8 @@ export async function relinkAbsoluteSymlinks(args: {
       continue;
     }
     if (!path.isAbsolute(target)) continue;
-    const relative = relativeToRoot(target, args.oldSpellings);
-    if (relative === null) continue;
-    const next = relative ? path.join(args.finalRoot, relative) : args.finalRoot;
+    const next = remapUnderRoot(target, args.oldSpellings, args.finalRoot);
+    if (next === null) continue;
     const temp = `${link}.ade-move-${process.pid}`;
     fs.symlinkSync(next, temp);
     fs.renameSync(temp, link);

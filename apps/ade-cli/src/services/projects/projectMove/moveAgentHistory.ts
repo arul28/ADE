@@ -12,7 +12,7 @@ import {
 } from "../../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { piAgentDirectoryForEnvironment } from "../../../../../desktop/src/main/services/chat/piSessionStore";
 import { resolveMachineAdeDir } from "../machineLayout";
-import { relativeToRoot } from "./moveGitLinks";
+import { remapUnderRoot } from "./moveGitLinks";
 
 /**
  * Other agents' history for this project, which most tools file under a
@@ -104,9 +104,8 @@ export function planAgentHistoryRenames(args: {
   oldSpellings: string[];
   newRoot: string;
   knownPaths: string[];
-  homeDir?: string;
 }): HistoryRename[] {
-  const home = args.homeDir ?? os.homedir();
+  const home = os.homedir();
   const plans: HistoryRename[] = [];
   const seen = new Set<string>();
   const add = (plan: HistoryRename) => {
@@ -114,11 +113,7 @@ export function planAgentHistoryRenames(args: {
     seen.add(plan.from);
     plans.push(plan);
   };
-  const mapToNew = (oldPath: string): string | null => {
-    const relative = relativeToRoot(oldPath, args.oldSpellings);
-    if (relative === null) return null;
-    return relative ? path.join(args.newRoot, relative) : args.newRoot;
-  };
+  const mapToNew = (oldPath: string): string | null => remapUnderRoot(oldPath, args.oldSpellings, args.newRoot);
   const known = [...new Set(args.knownPaths)]
     .map((oldPath) => ({ oldPath, newPath: mapToNew(oldPath) }))
     .filter((entry): entry is { oldPath: string; newPath: string } => entry.newPath !== null);
@@ -206,10 +201,7 @@ function kimiHasProject(oldSpellings: string[], home: string): boolean {
   }
 }
 
-export function summarizeAgentHistory(
-  plans: HistoryRename[],
-  args: { oldSpellings: string[]; homeDir?: string },
-): ProjectMoveAgentHistory[] {
+export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: string[]): ProjectMoveAgentHistory[] {
   const byLabel = new Map<string, ProjectMoveAgentHistory>();
   for (const plan of plans) {
     const current = byLabel.get(plan.label);
@@ -236,7 +228,7 @@ export function summarizeAgentHistory(
     handling: "nothing",
     detail: "Their chats keep resuming. Codex and Copilot may ask you to trust the new folder once.",
   });
-  if (kimiHasProject(args.oldSpellings, args.homeDir ?? os.homedir())) {
+  if (kimiHasProject(oldSpellings, os.homedir())) {
     summary.push({
       provider: "kimi",
       label: "Kimi Code",

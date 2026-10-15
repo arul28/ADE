@@ -10,6 +10,7 @@ import type {
   ProjectMoveVolume,
 } from "../../../shared/types/projectMove";
 import type { Logger } from "../logging/logger";
+import type { GlobalState } from "../state/globalState";
 import {
   deleteParkedOriginal,
   recoverInterruptedMoves,
@@ -26,6 +27,65 @@ import {
   type ProjectActivity,
 } from "../../../../../ade-cli/src/services/projects/projectMove/projectMovePreflight";
 import { listMoveVolumes } from "../../../../../ade-cli/src/services/projects/projectMove/moveVolumes";
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Sorts a project's live sessions into what blocks a move (an agent at work,
+ * whether a chat turn or an agent CLI in a terminal) and what the move closes
+ * (a shell or a run).
+ */
+export function classifyProjectActivity(chatTitles: string[], sessions: unknown): ProjectActivity {
+  const runningChats = chatTitles.map((title) => title || "Untitled chat");
+  const openTerminals: string[] = [];
+  for (const session of Array.isArray(sessions) ? (sessions as Array<Record<string, unknown>>) : []) {
+    if (session.status !== "running" || typeof session.ptyId !== "string" || !session.ptyId) continue;
+    const toolType = typeof session.toolType === "string" ? session.toolType : "shell";
+    if (toolType.endsWith("-chat")) continue; // counted as a chat above
+    const label = [session.title, session.laneName].filter((part) => typeof part === "string" && part).join(" — ") || toolType;
+    if (toolType === "shell" || toolType === "run") openTerminals.push(label);
+    else runningChats.push(label);
+  }
+  return { runningChats, openTerminals };
+}
+
+/** `root` mapped to where a finished move put it; any other root unchanged. */
+export function movedRoot(root: string, record: ProjectMoveRecord, normalize: (root: string) => string = (value) => value): string {
+  const spellings = record.resume?.sourceSpellings ?? [record.sourceRoot];
+  return spellings.includes(root) || spellings.includes(normalize(root)) ? record.destinationRoot : root;
+}
+
+/** Recent projects, the last project and the update workspace, pointed at the moved project's new folder. */
+export function remapGlobalStateForMove(state: GlobalState, record: ProjectMoveRecord, normalize?: (root: string) => string): GlobalState {
+  const move = (root: string) => movedRoot(root, record, normalize);
+  return {
+    ...state,
+    recentProjects: (state.recentProjects ?? []).map((entry) => (entry.remote ? entry : { ...entry, rootPath: move(entry.rootPath) })),
+    lastProjectRoot: state.lastProjectRoot ? move(state.lastProjectRoot) : state.lastProjectRoot,
+    ...(state.updateWorkspace
+      ? {
+          updateWorkspace: {
+            localRoots: state.updateWorkspace.localRoots.map(move),
+            activeLocalRoot: state.updateWorkspace.activeLocalRoot ? move(state.updateWorkspace.activeLocalRoot) : null,
+          },
+        }
+      : {}),
+  };
+}
+
+/** Replaces, in place, every root in `roots` that the move took elsewhere with its new folder. */
+export function replaceMovedRoots(roots: Set<string>, record: ProjectMoveRecord, normalize?: (root: string) => string): void {
+  let moved = false;
+  for (const root of [...roots]) {
+    if (root !== record.destinationRoot && movedRoot(root, record, normalize) === record.destinationRoot) {
+      roots.delete(root);
+      moved = true;
+    }
+  }
+  if (moved) roots.add(record.destinationRoot);
+}
 
 export type ProjectMoveControllerDeps = {
   logger: Logger;
@@ -53,9 +113,9 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     },
 
     async preflight(args: { projectRoot: string; destinationRoot: string }): Promise<ProjectMovePreflight> {
-      const activity = await deps.getActivity(args.projectRoot).catch((error) => {
-        deps.logger.warn("project_move.activity_failed", { error: error instanceof Error ? error.message : String(error) });
-        return { runningChats: [], openTerminals: [] } satisfies ProjectActivity;
+      const activity = await deps.getActivity(args.projectRoot).catch((error): ProjectActivity => {
+        deps.logger.warn("project_move.activity_failed", { error: errorText(error) });
+        return { runningChats: [], openTerminals: [], unknownReason: "ADE's background service didn't answer." };
       });
       return preflightProjectMove({
         sourceRoot: args.projectRoot,
@@ -85,11 +145,21 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
         });
         if (record.state !== "done") {
           deps.logger.warn("project_move.failed", { step: record.failedStep, error: record.error });
-          await deps.afterFailedMove(record, windowId).catch(() => undefined);
+          await deps.afterFailedMove(record, windowId).catch((error) => {
+            deps.logger.warn("project_move.reopen_original_failed", { error: errorText(error) });
+          });
           return { ok: false, record, error: record.error ?? "The move failed. Your project wasn't changed." };
         }
-        deps.logger.info("project_move.done", { moveId: record.moveId, followUps: record.followUps.length });
-        await deps.afterMove(record, windowId);
+        deps.logger.info("project_move.done", { moveId: record.moveId, problems: record.problems.length });
+        // The move is done whatever happens now: a failed reopen is reported,
+        // never turned into "the move failed".
+        try {
+          await deps.afterMove(record, windowId);
+        } catch (error) {
+          deps.logger.warn("project_move.reopen_failed", { error: errorText(error) });
+          record.problems.push(`ADE couldn't open the project at its new folder: ${errorText(error)}. Open it from the project list.`);
+          writeMoveRecord(record);
+        }
         return { ok: true, record };
       } finally {
         running = null;
@@ -99,6 +169,12 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     /** The latest finished move into this project, for the Location row and the cleanup choice. */
     status(projectRoot: string): ProjectMoveRecord | null {
       return findMoveInto(path.resolve(projectRoot));
+    },
+
+    /** Where a move's kept original, or the moved project, is now. */
+    revealTarget(moveId: string, which: "original" | "moved"): string | null {
+      const record = readMoveRecord(moveId);
+      return (which === "original" ? record?.originalParkedAt : record?.destinationRoot) ?? null;
     },
 
     /**
@@ -135,14 +211,14 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
       return record;
     },
 
-    /** Settles moves a crash or quit interrupted. Called once at startup. */
+    /** Settles moves a crash or quit interrupted. Called once at startup, before the last project reopens. */
     async recover(): Promise<ProjectMoveRecord[]> {
       try {
         const settled = await recoverInterruptedMoves();
         for (const record of settled) deps.logger.info("project_move.recovered", { moveId: record.moveId, state: record.state });
         return settled;
       } catch (error) {
-        deps.logger.warn("project_move.recover_failed", { error: error instanceof Error ? error.message : String(error) });
+        deps.logger.warn("project_move.recover_failed", { error: errorText(error) });
         return [];
       }
     },

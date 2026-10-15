@@ -57,11 +57,9 @@ export async function chooseOldCopy(record: ProjectMoveRecord, choice: OldCopyCh
 export function OldCopyControls({
   record,
   onChange,
-  showKeep = true,
 }: {
   record: ProjectMoveRecord;
   onChange?: (next: ProjectMoveRecord) => void;
-  showKeep?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -80,13 +78,12 @@ export function OldCopyControls({
 
   return (
     <div className="ade-pm-controls">
-      {showKeep ? (
-        <button type="button" className="kit-btn kit-btn-ghost" disabled={busy} onClick={() => void choose("keep")}>Keep</button>
-      ) : null}
+      <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={busy} onClick={() => void choose("keep")}>Keep</button>
       <button
         ref={remindRef}
         type="button"
         className="kit-btn"
+        data-size="sm"
         disabled={busy}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
@@ -115,7 +112,7 @@ export function OldCopyControls({
           </button>
         ))}
       </AnchoredMenu>
-      <button type="button" className="kit-btn" data-tone="crit" disabled={busy} onClick={() => void choose("delete")}>Delete…</button>
+      <button type="button" className="kit-btn" data-size="sm" data-tone="crit" disabled={busy} onClick={() => void choose("delete")}>Delete…</button>
     </div>
   );
 }

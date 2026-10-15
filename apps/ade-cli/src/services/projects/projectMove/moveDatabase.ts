@@ -1,25 +1,9 @@
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveCrsqliteExtensionPath } from "../../../../../desktop/src/main/services/state/crsqliteExtension";
-import { relativeToRoot } from "./moveGitLinks";
-
-type SqliteModule = {
-  DatabaseSync: new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
-  backup: (source: DatabaseSyncType, destination: string) => Promise<number>;
-};
-
-let sqliteModule: SqliteModule | null = null;
-
-/** `node:sqlite`, loaded at runtime: a static import is rewritten by the desktop test bundler. */
-function sqlite(): SqliteModule {
-  if (!sqliteModule) {
-    const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-    sqliteModule = require("node:sqlite") as SqliteModule;
-  }
-  return sqliteModule;
-}
+import { hasColumn, hasTable, loadNodeSqlite } from "../../../../../desktop/src/main/services/projects/readOnlySqlite";
+import { remapUnderRoot } from "./moveGitLinks";
 
 /**
  * Every column that stores a path under the project. Synced tables first,
@@ -45,6 +29,10 @@ const PATH_COLUMNS: ReadonlyArray<readonly [table: string, column: string]> = [
 /** `kv` keys that carry the project root (layout state keyed by project). */
 const KV_KEY_PREFIXES = ["dock_layout:", "tiling_tree:", "graph_state:"];
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 export function projectDatabasePath(root: string): string {
   return path.join(root, ".ade", "ade.db");
 }
@@ -55,7 +43,7 @@ export function projectDatabasePath(root: string): string {
  * so committed rows still in the log are kept.
  */
 export async function snapshotProjectDatabase(sourceDbPath: string, destinationDbPath: string): Promise<void> {
-  const { DatabaseSync, backup } = sqlite();
+  const { DatabaseSync, backup } = loadNodeSqlite();
   for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${destinationDbPath}${suffix}`, { force: true });
   // Not read-only: a read-only open of a closed WAL database fails, since it
   // cannot create the shared-memory file.
@@ -68,22 +56,12 @@ export async function snapshotProjectDatabase(sourceDbPath: string, destinationD
   }
 }
 
-function hasColumn(db: DatabaseSyncType, table: string, column: string): boolean {
-  return Boolean(
-    db.prepare("select 1 as present from pragma_table_info(?) where name = ?").get(table, column),
-  );
-}
-
-function hasTable(db: DatabaseSyncType, table: string): boolean {
-  return Boolean(db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ?").get(table));
-}
-
 function openWithCrsqlite(dbPath: string): DatabaseSyncType {
   const extensionPath = resolveCrsqliteExtensionPath();
   if (!extensionPath) {
     throw new Error("ADE couldn't find its sync extension, so it can't update the project's data.");
   }
-  const { DatabaseSync } = sqlite();
+  const { DatabaseSync } = loadNodeSqlite();
   const db = new DatabaseSync(dbPath, { allowExtension: true });
   db.exec("PRAGMA busy_timeout = 5000");
   db.enableLoadExtension(true);
@@ -139,24 +117,31 @@ export function rewriteProjectDatabasePaths(args: {
           ).run(args.finalRoot, old.length + 1, old, old.length + 1, `${old}/`);
           bump(`${table}.${column}`, Number(result.changes));
         }
-        if (hasTable(db, "kv")) {
-          const rows = db.prepare("select key from kv where instr(key, ?) > 0").all(old) as Array<{ key: string }>;
-          for (const { key } of rows) {
-            if (!KV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-            db.prepare("update or replace kv set key = ? where key = ?").run(key.split(old).join(args.finalRoot), key);
-            bump("kv.key", 1);
-          }
+      }
+      if (hasTable(db, "kv")) {
+        // One pass over all spellings, so a key is never rewritten twice.
+        const spellings = [...args.oldSpellings].sort((a, b) => b.length - a.length);
+        const pattern = new RegExp(`(?:${spellings.map(escapeRegExp).join("|")})(?=$|[/:])`, "gu");
+        const rows = db.prepare("select key from kv").all() as Array<{ key: string }>;
+        for (const { key } of rows) {
+          if (!KV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+          const next = key.replace(pattern, args.finalRoot);
+          if (next === key) continue;
+          // A synced table: delete then update, never `replace`, so the change
+          // reaches other devices as an ordinary delete and an ordinary edit.
+          db.prepare("delete from kv where key = ?").run(next);
+          db.prepare("update kv set key = ? where key = ?").run(next, key);
+          bump("kv.key", 1);
         }
-        if (hasTable(db, "computer_use_artifacts") && hasColumn(db, "computer_use_artifacts", "metadata_json")) {
-          const rows = db.prepare(
-            "select rowid as rid, metadata_json as json from computer_use_artifacts where instr(metadata_json, ?) > 0",
-          ).all(old) as Array<{ rid: number; json: string }>;
-          for (const row of rows) {
-            const next = rewriteJsonPaths(row.json, [old], args.finalRoot, ["absolutePath", "path", "filePath"]);
-            if (next === row.json) continue;
-            db.prepare("update computer_use_artifacts set metadata_json = ? where rowid = ?").run(next, row.rid);
-            bump("computer_use_artifacts.metadata_json", 1);
-          }
+      }
+      if (hasTable(db, "computer_use_artifacts") && hasColumn(db, "computer_use_artifacts", "metadata_json")) {
+        const rows = db.prepare("select rowid as rid, metadata_json as json from computer_use_artifacts").all() as Array<{ rid: number; json: string | null }>;
+        for (const row of rows) {
+          if (!row.json || !args.oldSpellings.some((spelling) => row.json!.includes(spelling))) continue;
+          const next = rewriteJsonPaths(row.json, args.oldSpellings, args.finalRoot, ["absolutePath", "path", "filePath"]);
+          if (next === row.json) continue;
+          db.prepare("update computer_use_artifacts set metadata_json = ? where rowid = ?").run(next, row.rid);
+          bump("computer_use_artifacts.metadata_json", 1);
         }
       }
       db.exec("commit");
@@ -186,9 +171,9 @@ export function rewriteJsonPaths(json: string, oldSpellings: string[], finalRoot
     const out: Record<string, unknown> = {};
     for (const [key, inner] of Object.entries(value)) {
       if (keys.includes(key) && typeof inner === "string") {
-        const relative = relativeToRoot(inner, oldSpellings);
-        if (relative !== null) {
-          out[key] = relative ? path.join(finalRoot, relative) : finalRoot;
+        const remapped = remapUnderRoot(inner, oldSpellings, finalRoot);
+        if (remapped !== null) {
+          out[key] = remapped;
           changed = true;
           continue;
         }
@@ -209,7 +194,7 @@ export type DatabaseSummary = {
 
 /** Read-only look at a project's database, for the checks and the verification. */
 export function readProjectDatabaseSummary(dbPath: string): DatabaseSummary {
-  const { DatabaseSync } = sqlite();
+  const { DatabaseSync } = loadNodeSqlite();
   // `immutable=1` reads without creating `-shm`/`-wal` files and without
   // taking locks, so a check never changes the project it looks at.
   const db = new DatabaseSync(`file:${encodeURI(dbPath)}?immutable=1`, { readOnly: true });
@@ -237,7 +222,7 @@ export function verifyProjectDatabase(args: {
   expectedLaneIds: string[];
 }): string[] {
   const problems: string[] = [];
-  const { DatabaseSync } = sqlite();
+  const { DatabaseSync } = loadNodeSqlite();
   const db = new DatabaseSync(args.dbPath, { readOnly: true });
   try {
     const check = db.prepare("pragma quick_check").all() as Array<Record<string, string>>;

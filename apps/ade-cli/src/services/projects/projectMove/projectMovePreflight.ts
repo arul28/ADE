@@ -8,11 +8,13 @@ import type {
   ProjectMovePreflight,
   ProjectMoveVolume,
 } from "../../../../../desktop/src/shared/types/projectMove";
+import { formatBytes } from "../../../../../desktop/src/shared/formatting";
+import { isPathInside } from "../../../../../desktop/src/main/services/shared/pathCompare";
 import { detectCloudStorageProvider } from "../../../../../desktop/src/main/services/storage/cloudPlaceholder";
 import { planAgentHistoryRenames, summarizeAgentHistory } from "./moveAgentHistory";
 import { measureProject } from "./moveCopy";
-import { projectDatabasePath, readProjectDatabaseSummary } from "./moveDatabase";
-import { listWorktreeLinks, rootSpellings } from "./moveGitLinks";
+import { projectDatabasePath, readProjectDatabaseSummary, type DatabaseSummary } from "./moveDatabase";
+import { listWorktreeLinks, rootSpellings, type WorktreeLink } from "./moveGitLinks";
 import { ownsLeftoverCopy } from "./moveJournal";
 import { nearestExistingDir, readMoveVolume } from "./moveVolumes";
 
@@ -32,22 +34,15 @@ export type ProjectActivity = {
   runningChats: string[];
   /** Open terminals and running processes. They are closed by the move. */
   openTerminals: string[];
+  /** Set when ADE could not find out what is running: the move waits rather than guess. */
+  unknownReason?: string;
 };
-
-export function finalDestination(destinationParent: string, projectName: string): string {
-  return path.join(path.resolve(destinationParent), projectName);
-}
 
 export function copyLocation(destinationRoot: string): string {
   return `${destinationRoot}.ade-moving`;
 }
 
-function isInside(child: string, parent: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-export async function gitVersion(): Promise<[number, number] | null> {
+async function gitVersion(): Promise<[number, number] | null> {
   try {
     const { stdout } = await execFileAsync("git", ["--version"], { timeout: 10_000 });
     const match = stdout.match(/(\d+)\.(\d+)/u);
@@ -55,12 +50,6 @@ export async function gitVersion(): Promise<[number, number] | null> {
   } catch {
     return null;
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 /** Git busy in a checkout: another git command holds its index. */
@@ -126,14 +115,11 @@ export async function preflightProjectMove(args: {
   const destinationRoot = path.resolve(args.destinationRoot);
   const projectName = path.basename(sourceRoot);
   const oldSpellings = rootSpellings(sourceRoot);
-  const checks: ProjectMoveCheck[] = [];
-  const notes: ProjectMoveNote[] = [];
+  const base = { projectName, sourceRoot, destinationRoot };
 
   if (!fs.existsSync(sourceRoot)) {
     return {
-      projectName,
-      sourceRoot,
-      destinationRoot,
+      ...base,
       sourceVolume: null,
       destinationVolume: null,
       copyBytes: 0,
@@ -152,181 +138,211 @@ export async function preflightProjectMove(args: {
     measureProject(sourceRoot),
     gitVersion(),
   ]);
-
-  // Where it goes.
-  const destinationProblems: string[] = [];
-  if (process.platform !== "darwin") destinationProblems.push("Moving a project is only available on macOS for now.");
-  if (isInside(destinationRoot, sourceRoot)) destinationProblems.push("The new location is inside the project itself.");
-  else if (isInside(sourceRoot, destinationRoot)) destinationProblems.push("The project is inside the new location.");
-  if (fs.existsSync(destinationRoot)) destinationProblems.push(`There is already a folder at ${destinationRoot}. Pick another place or name.`);
-  if (fs.existsSync(copyLocation(destinationRoot)) && !ownsLeftoverCopy(destinationRoot)) {
-    destinationProblems.push(`A folder from an earlier attempt is at ${copyLocation(destinationRoot)}. Delete it, then try again.`);
-  }
-  const socketBytes = Buffer.byteLength(path.join(destinationRoot, ".ade", "ade.sock"));
-  if (socketBytes > MAX_SOCKET_PATH_BYTES) destinationProblems.push("That path is too long for ADE's project connection. Pick a shorter folder.");
-  if (detectCloudStorageProvider(destinationRoot)) destinationProblems.push("That folder is synced by a cloud service, which can evict files ADE needs. Pick a local folder.");
-  checks.push(destinationProblems.length
-    ? { id: "destination", status: "blocked", title: "The new location can't be used", detail: destinationProblems.join(" ") }
-    : { id: "destination", status: "ok", title: `New location: ${destinationRoot}` });
-
-  // The drive.
-  checks.push(driveCheck(sourceVolume, destinationVolume));
-
-  // Space.
-  const needed = sizes.copyBytes + SPACE_MARGIN_BYTES;
-  const free = destinationVolume?.freeBytes ?? 0;
   const where = destinationVolume?.name ?? "the new location";
+  const isMainCheckout = isDirectory(path.join(sourceRoot, ".git"));
+  const links = isMainCheckout ? listWorktreeLinks(sourceRoot, oldSpellings) : [];
+  const lanes = lanesCheck(sourceRoot, links);
+
+  const checks: ProjectMoveCheck[] = [
+    destinationCheck(sourceRoot, destinationRoot),
+    driveCheck(sourceVolume, destinationVolume),
+    spaceCheck(sizes, destinationVolume?.freeBytes ?? 0, where),
+    accessCheck(destinationRoot, where),
+    quietCheck(args.activity),
+    gitCheck({ sourceRoot, projectName, isMainCheckout, git, links }),
+    lanes.check,
+  ];
+
+  const agentHistory = summarizeAgentHistory(
+    planAgentHistoryRenames({ oldSpellings, newRoot: destinationRoot, knownPaths: [sourceRoot, ...lanes.knownLanePaths] }),
+    oldSpellings,
+  );
+
+  return {
+    ...base,
+    sourceVolume,
+    destinationVolume,
+    copyBytes: sizes.copyBytes,
+    dependencyBytes: sizes.dependencyBytes,
+    laneCount: lanes.laneCount,
+    checks,
+    canMove: !checks.some((check) => check.status === "blocked"),
+    notes: afterMoveNotes(sourceRoot, links, oldSpellings, sizes.dependencyBytes),
+    agentHistory,
+  };
+}
+
+function isDirectory(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function destinationCheck(sourceRoot: string, destinationRoot: string): ProjectMoveCheck {
+  const problems: string[] = [];
+  if (process.platform !== "darwin") problems.push("Moving a project is only available on macOS for now.");
+  if (isPathInside(destinationRoot, sourceRoot)) problems.push("The new location is inside the project itself.");
+  else if (isPathInside(sourceRoot, destinationRoot)) problems.push("The project is inside the new location.");
+  if (fs.existsSync(destinationRoot)) problems.push(`There is already a folder at ${destinationRoot}. Pick another place or name.`);
+  if (fs.existsSync(copyLocation(destinationRoot)) && !ownsLeftoverCopy(destinationRoot)) {
+    problems.push(`A folder from an earlier attempt is at ${copyLocation(destinationRoot)}. Delete it, then try again.`);
+  }
+  if (Buffer.byteLength(path.join(destinationRoot, ".ade", "ade.sock")) > MAX_SOCKET_PATH_BYTES) {
+    problems.push("That path is too long for ADE's project connection. Pick a shorter folder.");
+  }
+  if (detectCloudStorageProvider(destinationRoot)) problems.push("That folder is synced by a cloud service, which can evict files ADE needs. Pick a local folder.");
+  return problems.length
+    ? { id: "destination", status: "blocked", title: "The new location can't be used", detail: problems.join(" ") }
+    : { id: "destination", status: "ok", title: `New location: ${destinationRoot}` };
+}
+
+function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free: number, where: string): ProjectMoveCheck {
+  const needed = sizes.copyBytes + SPACE_MARGIN_BYTES;
   if (free < needed) {
-    checks.push({
+    return {
       id: "space",
       status: "blocked",
       title: `Not enough space on ${where}`,
       detail: `The project needs about ${formatBytes(needed)} and ${where} has ${formatBytes(free)} free.`,
-    });
-  } else if (free < needed + sizes.dependencyBytes) {
-    checks.push({
+    };
+  }
+  if (free < needed + sizes.dependencyBytes) {
+    return {
       id: "space",
       status: "warning",
-      title: `Enough space to move, tight for reinstalling dependencies`,
+      title: "Enough space to move, tight for reinstalling dependencies",
       detail: `Moving needs ${formatBytes(sizes.copyBytes)}; reinstalling dependencies later needs about ${formatBytes(sizes.dependencyBytes)} more.`,
-    });
-  } else {
-    checks.push({ id: "space", status: "ok", title: `Enough space on ${where}`, detail: `${formatBytes(sizes.copyBytes)} to copy, ${formatBytes(free)} free.` });
+    };
   }
+  return { id: "space", status: "ok", title: `Enough space on ${where}`, detail: `${formatBytes(sizes.copyBytes)} to copy, ${formatBytes(free)} free.` };
+}
 
-  // Access: write and remove a probe where the copy will go.
-  checks.push(accessCheck(destinationRoot, where));
-
-  // Nothing running.
-  if (args.activity.runningChats.length) {
-    checks.push({
+function quietCheck(activity: ProjectActivity): ProjectMoveCheck {
+  if (activity.unknownReason) {
+    return {
+      id: "quiet",
+      status: "blocked",
+      title: "ADE couldn't check whether agents are working",
+      detail: `${activity.unknownReason} Check again in a moment.`,
+    };
+  }
+  if (activity.runningChats.length) {
+    return {
       id: "quiet",
       status: "blocked",
       title: "Agents are working in this project",
       detail: "Wait for them to finish, or stop them, then check again.",
-      items: args.activity.runningChats,
-    });
-  } else if (args.activity.openTerminals.length) {
-    checks.push({
+      items: activity.runningChats,
+    };
+  }
+  if (activity.openTerminals.length) {
+    return {
       id: "quiet",
       status: "warning",
       title: "Open terminals will close",
       detail: "The move closes the project, which ends these. Chats are kept.",
-      items: args.activity.openTerminals,
-    });
-  } else {
-    checks.push({ id: "quiet", status: "ok", title: "Nothing is running in the project" });
+      items: activity.openTerminals,
+    };
   }
+  return { id: "quiet", status: "ok", title: "Nothing is running in the project" };
+}
 
-  // Git.
-  const gitProblems: string[] = [];
-  const gitWarnings: string[] = [];
-  const gitDir = path.join(sourceRoot, ".git");
-  let isMainCheckout = false;
+function gitCheck(args: {
+  sourceRoot: string;
+  projectName: string;
+  isMainCheckout: boolean;
+  git: [number, number] | null;
+  links: WorktreeLink[];
+}): ProjectMoveCheck {
+  const problems: string[] = [];
+  if (!args.isMainCheckout) problems.push("This project is itself a lane of another repository, so ADE can't move it on its own.");
+  if (!args.git) problems.push("ADE couldn't run git.");
+  else if (args.git[0] < MIN_GIT[0] || (args.git[0] === MIN_GIT[0] && args.git[1] < MIN_GIT[1])) {
+    problems.push(`Git ${args.git.join(".")} is too old. Update to git ${MIN_GIT.join(".")} or later.`);
+  }
+  const gitDir = path.join(args.sourceRoot, ".git");
+  const checkouts = args.isMainCheckout
+    ? [
+        { label: args.projectName, adminDir: gitDir },
+        ...args.links.map((link) => ({
+          label: link.relativePath ? path.basename(link.relativePath) : link.lanePath,
+          adminDir: path.join(gitDir, "worktrees", link.name),
+        })),
+      ]
+    : [];
+  const busy = checkouts.filter((checkout) => gitBusyIn(checkout.adminDir)).map((checkout) => checkout.label);
+  const operations = checkouts.flatMap((checkout) => {
+    const operation = gitOperationIn(checkout.adminDir);
+    return operation ? [`${checkout.label} (${operation})`] : [];
+  });
+  if (busy.length) problems.push(`Git is busy in ${busy.join(", ")}. Wait for it to finish.`);
+  if (problems.length) return { id: "git", status: "blocked", title: "Git isn't ready", detail: problems.join(" ") };
+  if (operations.length) return { id: "git", status: "warning", title: "Git is ready", detail: `In progress, and carried over as-is: ${operations.join(", ")}.` };
+  return { id: "git", status: "ok", title: "Git is ready" };
+}
+
+function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: ProjectMoveCheck; laneCount: number; knownLanePaths: string[] } {
+  let summary: DatabaseSummary;
   try {
-    isMainCheckout = fs.statSync(gitDir).isDirectory();
+    summary = readProjectDatabaseSummary(projectDatabasePath(sourceRoot));
   } catch {
-    isMainCheckout = false;
+    return {
+      check: { id: "lanes", status: "blocked", title: "ADE couldn't read this project's data", detail: "Open the project once so ADE can check it, then try again." },
+      laneCount: 0,
+      knownLanePaths: [],
+    };
   }
-  if (!isMainCheckout) gitProblems.push("This project is itself a lane of another repository, so ADE can't move it on its own.");
-  if (!git) gitProblems.push("ADE couldn't run git.");
-  else if (git[0] < MIN_GIT[0] || (git[0] === MIN_GIT[0] && git[1] < MIN_GIT[1])) {
-    gitProblems.push(`Git ${git.join(".")} is too old. Update to git ${MIN_GIT.join(".")} or later.`);
+  const laneCount = summary.lanes.filter((lane) => lane.status !== "archived" && lane.laneType !== "primary").length;
+  const knownLanePaths = summary.lanes.map((lane) => lane.worktreePath).filter(Boolean);
+  if (summary.projectCount !== 1) {
+    return {
+      check: { id: "lanes", status: "blocked", title: "ADE's data for this project needs a repair first", detail: `It lists ${summary.projectCount} projects instead of one.` },
+      laneCount,
+      knownLanePaths,
+    };
   }
-  const links = isMainCheckout ? listWorktreeLinks(sourceRoot, oldSpellings) : [];
-  const busy: string[] = [];
-  const operations: string[] = [];
-  if (isMainCheckout) {
-    if (gitBusyIn(gitDir)) busy.push(projectName);
-    const op = gitOperationIn(gitDir);
-    if (op) operations.push(`${projectName} (${op})`);
-    for (const link of links) {
-      const adminDir = path.join(gitDir, "worktrees", link.name);
-      const label = link.relativePath ? path.basename(link.relativePath) : link.lanePath;
-      if (gitBusyIn(adminDir)) busy.push(label);
-      const laneOp = gitOperationIn(adminDir);
-      if (laneOp) operations.push(`${label} (${laneOp})`);
-    }
-  }
-  if (busy.length) gitProblems.push(`Git is busy in ${busy.join(", ")}. Wait for it to finish.`);
-  if (operations.length) gitWarnings.push(`In progress, and carried over as-is: ${operations.join(", ")}.`);
-  checks.push(gitProblems.length
-    ? { id: "git", status: "blocked", title: "Git isn't ready", detail: gitProblems.join(" ") }
-    : gitWarnings.length
-      ? { id: "git", status: "warning", title: "Git is ready", detail: gitWarnings.join(" ") }
-      : { id: "git", status: "ok", title: "Git is ready" });
+  const outside = links.filter((link) => link.relativePath === null && link.exists);
+  const check: ProjectMoveCheck = outside.length
+    ? {
+        id: "lanes",
+        status: "warning",
+        title: `${outside.length === 1 ? "1 lane lives" : `${outside.length} lanes live`} outside the project`,
+        detail: "Not copied. ADE links it to the moved project.",
+        items: outside.map((link) => link.lanePath),
+      }
+    : { id: "lanes", status: "ok", title: `${laneCount} lane${laneCount === 1 ? "" : "s"} move with the project` };
+  return { check, laneCount, knownLanePaths };
+}
 
-  // Lanes.
-  let laneCount = 0;
-  let knownLanePaths: string[] = [];
-  try {
-    const summary = readProjectDatabaseSummary(projectDatabasePath(sourceRoot));
-    laneCount = summary.lanes.filter((lane) => lane.status !== "archived" && lane.laneType !== "primary").length;
-    knownLanePaths = summary.lanes.map((lane) => lane.worktreePath).filter(Boolean);
-    if (summary.projectCount !== 1) {
-      checks.push({ id: "lanes", status: "blocked", title: "ADE's data for this project needs a repair first", detail: `It lists ${summary.projectCount} projects instead of one.` });
-    }
-  } catch {
-    checks.push({ id: "lanes", status: "blocked", title: "ADE couldn't read this project's data", detail: "Open the project once so ADE can check it, then try again." });
-  }
-  if (!checks.some((check) => check.id === "lanes")) {
-    const outside = links.filter((link) => link.relativePath === null && link.exists);
-    checks.push(outside.length
-      ? {
-          id: "lanes",
-          status: "warning",
-          title: `${outside.length === 1 ? "1 lane lives" : `${outside.length} lanes live`} outside the project`,
-          detail: "Not copied. ADE links it to the moved project.",
-          items: outside.map((link) => link.lanePath),
-        }
-      : { id: "lanes", status: "ok", title: `${laneCount} lane${laneCount === 1 ? "" : "s"} move with the project` });
-  }
-
-  // What ADE leaves for the person.
-  const checkouts = [sourceRoot, ...links.filter((link) => link.relativePath !== null && link.exists).map((link) => path.join(sourceRoot, link.relativePath!))];
+/** What ADE leaves for the person to do after the move. */
+function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpellings: string[], dependencyBytes: number): ProjectMoveNote[] {
+  const notes: ProjectMoveNote[] = [];
+  const checkouts = [
+    sourceRoot,
+    ...links.flatMap((link) => (link.relativePath !== null && link.exists ? [path.join(sourceRoot, link.relativePath)] : [])),
+  ];
   const lockfile = lockfileKind(sourceRoot);
-  if (sizes.dependencyBytes > 0 || lockfile) {
+  if (dependencyBytes > 0 || lockfile) {
     notes.push({
       id: "dependencies",
       title: `Run ${lockfile ? `${lockfile} install` : "your install command"}`,
-      detail: `${formatBytes(sizes.dependencyBytes)} of dependencies are reinstalled, not copied.`,
+      detail: `${formatBytes(dependencyBytes)} of dependencies are reinstalled, not copied.`,
     });
   }
   const mentions = filesMentioningPath(checkouts, oldSpellings);
   if (mentions.length) {
     notes.push({
       id: "mentions",
-      title: `Update the old path in ${mentions.map((file) => path.basename(file)).filter((name, i, all) => all.indexOf(name) === i).join(", ")}`,
+      title: `Update the old path in ${[...new Set(mentions.map((file) => path.basename(file)))].join(", ")}`,
       detail: mentions.map((file) => path.relative(sourceRoot, file)).join("\n"),
     });
   }
   if (hasPythonEnvironment(checkouts)) {
     notes.push({ id: "python", title: "Recreate Python virtual environments", detail: "A virtualenv records its own folder." });
   }
-
-  const agentHistory = summarizeAgentHistory(
-    planAgentHistoryRenames({
-      oldSpellings,
-      newRoot: destinationRoot,
-      knownPaths: [sourceRoot, ...knownLanePaths],
-    }),
-    { oldSpellings },
-  );
-
-  return {
-    projectName,
-    sourceRoot,
-    destinationRoot,
-    sourceVolume,
-    destinationVolume,
-    copyBytes: sizes.copyBytes,
-    dependencyBytes: sizes.dependencyBytes,
-    laneCount,
-    checks,
-    canMove: !checks.some((check) => check.status === "blocked"),
-    notes,
-    agentHistory,
-  };
+  return notes;
 }
 
 function driveCheck(source: ProjectMoveVolume | null, destination: ProjectMoveVolume | null): ProjectMoveCheck {

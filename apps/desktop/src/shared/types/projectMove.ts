@@ -97,8 +97,6 @@ export type ProjectMoveProgress = {
   message: string;
   /** 0..1 for the current step, when it can be measured. */
   fraction?: number;
-  copiedFiles?: number;
-  totalFiles?: number;
 };
 
 export type ProjectMoveCleanupChoice = "pending" | "remind" | "keep" | "deleted";
@@ -110,11 +108,15 @@ export type ProjectMoveRecord = {
   destinationRoot: string;
   /** Where the original was parked after the switch-over. */
   originalParkedAt: string | null;
+  /** Where the original is about to be parked: journaled before the rename, so a crash in between can put it back. */
+  parkingAt?: string | null;
+  /** The move created `<destination>.ade-moving`; only then may a failure or a restart remove it. */
+  copyCreated?: boolean;
   originalBytes: number;
   destinationVolumeUuid: string | null;
   destinationVolumeName: string | null;
-  /** The drive the original (and the kept copy) is on, as Finder names it. */
-  sourceVolumeName?: string | null;
+  /** The destination is this Mac's internal disk. */
+  destinationInternal: boolean;
   startedAt: number;
   finishedAt: number | null;
   state: "running" | "failed" | "done";
@@ -126,10 +128,14 @@ export type ProjectMoveRecord = {
     remindAt?: number;
     deletedAt?: number;
   };
-  /** What ADE did after the switch-over, and anything it could not do. */
+  /** What ADE did after the switch-over. */
   followUps: string[];
+  /** What ADE could not do after the switch-over; the move itself succeeded. */
+  problems: string[];
   /** The process running the move, so a restart can tell an interrupted move from a live one. */
   pid?: number;
+  /** When this Mac last booted (minutes since the epoch): a pid from before a reboot is someone else's. */
+  bootMinute?: number;
   /** What a restart needs to finish an interrupted switch-over. */
   resume?: {
     sourceSpellings: string[];

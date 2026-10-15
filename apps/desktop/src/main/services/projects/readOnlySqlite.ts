@@ -7,7 +7,12 @@ type DatabaseSyncConstructor = new (
   options?: { allowExtension?: boolean; readOnly?: boolean },
 ) => DatabaseSyncType;
 
-let databaseSync: DatabaseSyncConstructor | null = null;
+export type NodeSqlite = {
+  DatabaseSync: DatabaseSyncConstructor;
+  backup: (source: DatabaseSyncType, destination: string) => Promise<number>;
+};
+
+let nodeSqlite: NodeSqlite | null = null;
 
 /**
  * `node:sqlite`, loaded on the first open. A static import is rewritten by the
@@ -16,17 +21,17 @@ let databaseSync: DatabaseSyncConstructor | null = null;
  * usage ledger worker, import this one without paying for SQLite until a
  * database is actually opened.
  */
-function loadDatabaseSync(): DatabaseSyncConstructor {
-  if (!databaseSync) {
+export function loadNodeSqlite(): NodeSqlite {
+  if (!nodeSqlite) {
     const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-    ({ DatabaseSync: databaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor });
+    nodeSqlite = require("node:sqlite") as NodeSqlite;
   }
-  return databaseSync;
+  return nodeSqlite;
 }
 
 /** Open `dbPath` read-only. Throws when the file cannot be opened. */
 export function openReadOnlyDatabase(dbPath: string): DatabaseSyncType {
-  const DatabaseSync = loadDatabaseSync();
+  const { DatabaseSync } = loadNodeSqlite();
   return new DatabaseSync(dbPath, { readOnly: true });
 }
 

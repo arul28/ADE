@@ -9,9 +9,10 @@ import type {
   ProjectMoveStepId,
 } from "../../../../../desktop/src/shared/types/projectMove";
 import { listAppleDeviceMarkers, writeAppleDeviceMarker } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
-import { PROJECT_MOVED_MARKER, ProjectRegistry } from "../projectRegistry";
+import { ProjectRegistry } from "../projectRegistry";
+import { readGitDirPointer } from "../projectRoots";
 import { applyAgentHistoryRenames, planAgentHistoryRenames } from "./moveAgentHistory";
-import { copyProjectTree, countCopiedEntries } from "./moveCopy";
+import { copyProjectTree, countCopiedEntries, diskUsageBytes, trackedDependencyDirs } from "./moveCopy";
 import {
   projectDatabasePath,
   readProjectDatabaseSummary,
@@ -19,25 +20,32 @@ import {
   rewriteProjectDatabasePaths,
   snapshotProjectDatabase,
   verifyProjectDatabase,
+  type DatabaseSummary,
 } from "./moveDatabase";
 import {
   enableRelativeWorktrees,
   listWorktreeLinks,
   pointOutsideLaneAt,
+  relativeToRoot,
   relinkAbsoluteSymlinks,
   rewriteAbsoluteGitConfig,
   rewriteWorktreeLinksInCopy,
   rootSpellings,
   type WorktreeLink,
 } from "./moveGitLinks";
-import { listMoveRecords, ownsLeftoverCopy, writeMoveRecord } from "./moveJournal";
+import {
+  currentBootMinute,
+  isMoveProcessAlive,
+  listMoveRecords,
+  ownsLeftoverCopy,
+  readMovedMarker,
+  writeMovedMarker,
+  writeMoveRecord,
+} from "./moveJournal";
 import { copyLocation } from "./projectMovePreflight";
 import { readMoveVolume } from "./moveVolumes";
 
 const execFileAsync = promisify(execFile);
-
-/** Written into the parked original so ADE refuses to open it by mistake (`assertProjectNotMovedAway`). */
-export const MOVED_MARKER_FILE = path.basename(PROJECT_MOVED_MARKER);
 
 export type ProjectMoveHooks = {
   /** Close the project in every window and in the background service. */
@@ -45,14 +53,12 @@ export type ProjectMoveHooks = {
   onProgress: (progress: ProjectMoveProgress) => void;
 };
 
-class MoveStepError extends Error {
-  constructor(readonly step: ProjectMoveStepId, message: string) {
-    super(message);
-  }
-}
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -69,14 +75,14 @@ async function git(cwd: string, args: string[]): Promise<string> {
 /** Processes that have a file open, from `lsof`. Empty when none (or `lsof` is unavailable). */
 async function processesHolding(file: string): Promise<number[]> {
   if (!fs.existsSync(file)) return [];
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-t", "--", file], { timeout: 15_000 });
-    return stdout.split("\n").map((line) => Number.parseInt(line, 10)).filter((pid) => Number.isFinite(pid));
+    ({ stdout } = await execFileAsync("/usr/sbin/lsof", ["-t", "--", file], { timeout: 15_000 }));
   } catch (error) {
     // lsof exits 1 when nothing has the file open.
-    const stdout = (error as { stdout?: string }).stdout ?? "";
-    return stdout.split("\n").map((line) => Number.parseInt(line, 10)).filter((pid) => Number.isFinite(pid));
+    stdout = (error as { stdout?: string }).stdout ?? "";
   }
+  return stdout.split("\n").map((line) => Number.parseInt(line, 10)).filter((pid) => Number.isFinite(pid));
 }
 
 async function processName(pid: number): Promise<string> {
@@ -85,7 +91,7 @@ async function processName(pid: number): Promise<string> {
     const name = path.basename(stdout.trim());
     return name ? `${name} (process ${pid})` : `Process ${pid}`;
   } catch {
-    return `Process ${pid}`;
+    return `Process ${pid}`; // the process exited meanwhile; its pid still names it
   }
 }
 
@@ -114,42 +120,37 @@ function uniqueParkedPath(sourceRoot: string, volumeName: string): string {
   return candidate;
 }
 
-/** Rewrites path values in small JSON files ADE keeps under `.ade`. */
-function rewriteAdeJsonFiles(copyRoot: string, oldSpellings: string[], finalRoot: string): number {
+/** JSON files ADE keeps under `.ade` that name paths inside the project. */
+function adeJsonFilesWithPaths(copyRoot: string): string[] {
   const files: string[] = [path.join(copyRoot, ".ade", "leftover-worktrees.json")];
-  const cache = path.join(copyRoot, ".ade", "cache");
-  for (const dir of ["mac-desktop-observations", "app-control-observations", "browser-observations"]) {
-    const root = path.join(cache, dir);
-    const walk = (current: string) => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        const full = path.join(current, entry.name);
-        if (entry.isDirectory()) walk(full);
-        else if (entry.name.endsWith(".json")) files.push(full);
-      }
-    };
-    walk(root);
-  }
-  let changed = 0;
-  for (const file of files) {
-    let text: string;
+  const walk = (current: string) => {
+    let entries: fs.Dirent[];
     try {
-      text = fs.readFileSync(file, "utf8");
+      entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
-      continue;
+      return; // the folder does not exist in this project
     }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".json")) files.push(full);
+    }
+  };
+  for (const dir of ["mac-desktop-observations", "app-control-observations", "browser-observations"]) {
+    walk(path.join(copyRoot, ".ade", "cache", dir));
+  }
+  return files;
+}
+
+/** Rewrites path values in small JSON files ADE keeps under `.ade`. */
+function rewriteAdeJsonFiles(copyRoot: string, oldSpellings: string[], finalRoot: string): void {
+  for (const file of adeJsonFilesWithPaths(copyRoot)) {
+    if (!fs.existsSync(file)) continue;
+    const text = fs.readFileSync(file, "utf8");
     if (!oldSpellings.some((spelling) => text.includes(spelling))) continue;
     const next = rewriteJsonPaths(text, oldSpellings, finalRoot, ["path", "filePath", "worktreePath", "absolutePath"]);
-    if (next === text) continue;
-    fs.writeFileSync(file, next);
-    changed += 1;
+    if (next !== text) fs.writeFileSync(file, next);
   }
-  return changed;
 }
 
 /** Simulators ADE created for this project's lanes record the project root. */
@@ -163,11 +164,158 @@ function rewriteSimulatorMarkers(oldSpellings: string[], finalRoot: string): num
   return changed;
 }
 
+type MoveRun = {
+  record: ProjectMoveRecord;
+  sourceRoot: string;
+  finalRoot: string;
+  copyRoot: string;
+  oldSpellings: string[];
+  hooks: ProjectMoveHooks;
+  step: ProjectMoveStepId;
+  progress: (message: string, extra?: Partial<ProjectMoveProgress>) => void;
+};
+
+function enter(run: MoveRun, step: ProjectMoveStepId, message: string): void {
+  run.step = step;
+  run.progress(message);
+}
+
+async function assertSameDrive(run: MoveRun, message: string): Promise<void> {
+  const { record } = run;
+  if (!record.destinationVolumeUuid) return;
+  const now = await readMoveVolume(run.finalRoot);
+  if (now?.uuid !== record.destinationVolumeUuid) throw new Error(`${record.destinationVolumeName ?? "The drive"} ${message}`);
+}
+
+/** 1. Close the project everywhere and wait until nothing has its data open. */
+async function prepare(run: MoveRun): Promise<WorktreeLink[]> {
+  enter(run, "prepare", "Closing the project");
+  const dbPath = projectDatabasePath(run.sourceRoot);
+  await run.hooks.closeProject(run.sourceRoot);
+  const holders = await waitUntilReleased(dbPath, 20_000);
+  if (holders.length) {
+    const names = await Promise.all(holders.map(processName));
+    throw new Error(`${[...new Set(names)].join(", ")} still has the project's data open. Quit it (or other copies of ADE), then try again.`);
+  }
+  return listWorktreeLinks(run.sourceRoot, run.oldSpellings);
+}
+
+/** 2. Copy the files, then the database through SQLite. Returns what the database held. */
+async function copy(run: MoveRun, links: WorktreeLink[], leftoverIsOurs: boolean): Promise<{ totalFiles: number; keep: string[]; before: DatabaseSummary }> {
+  const { record, copyRoot } = run;
+  enter(run, "copy", "Copying files");
+  await assertSameDrive(run, "was disconnected or replaced.");
+  if (fs.existsSync(copyRoot)) {
+    // Only ever a partial copy an earlier attempt of ADE's left behind.
+    if (!leftoverIsOurs) throw new Error(`Something is already at ${copyRoot}. Move it away, then try again.`);
+    run.progress("Removing the partial copy from an earlier attempt");
+    await fs.promises.rm(copyRoot, { recursive: true, force: true });
+  }
+  fs.mkdirSync(path.dirname(run.finalRoot), { recursive: true });
+  const keep = await trackedDependencyDirs(
+    run.sourceRoot,
+    links.flatMap((link) => (link.relativePath !== null && link.exists ? [link.relativePath] : [])),
+  );
+  record.copyCreated = true;
+  writeMoveRecord(record);
+  const { totalFiles } = await copyProjectTree({
+    sourceRoot: run.sourceRoot,
+    copyRoot,
+    keepDependencyDirs: keep,
+    onProgress: (copied, total) =>
+      run.progress(`Copying files (${copied.toLocaleString()} of ${total.toLocaleString()})`, {
+        fraction: total ? copied / total : undefined,
+      }),
+  }).catch(async (error) => {
+    await assertSameDrive(run, "was disconnected during the copy. Your project wasn't changed. Reconnect the drive and try again.");
+    throw error;
+  });
+  run.progress("Copying ADE's project data");
+  const copiedDb = projectDatabasePath(copyRoot);
+  await snapshotProjectDatabase(projectDatabasePath(run.sourceRoot), copiedDb).catch((error) => {
+    throw new Error(`Copying ADE's project data failed: ${errorText(error)}`);
+  });
+  // Read from the snapshot: it holds everything the write-ahead log held.
+  const before = readProjectDatabaseSummary(copiedDb);
+  if (before.projectCount !== 1 || !before.projectId) throw new Error("ADE's data for this project needs a repair first.");
+  record.resume = {
+    sourceSpellings: run.oldSpellings,
+    knownPaths: [run.sourceRoot, ...before.lanes.map((lane) => lane.worktreePath).filter(Boolean)],
+    moveAgentHistory: record.resume?.moveAgentHistory ?? false,
+    outsideLanes: links
+      .filter((link) => link.relativePath === null && link.exists)
+      .map((link) => ({ name: link.name, lanePath: link.lanePath })),
+  };
+  writeMoveRecord(record);
+  return { totalFiles, keep, before };
+}
+
+/** 3–4. Point git and ADE's data in the copy at the final location. */
+async function rewrite(run: MoveRun): Promise<WorktreeLink[]> {
+  const { copyRoot, finalRoot, oldSpellings } = run;
+  enter(run, "git", "Updating git links");
+  const links = rewriteWorktreeLinksInCopy({ copyRoot, finalRoot, oldSpellings });
+  await enableRelativeWorktrees(copyRoot);
+  const configKeys = await rewriteAbsoluteGitConfig({ copyRoot, finalRoot, oldSpellings });
+  const relinked = await relinkAbsoluteSymlinks({ copyRoot, finalRoot, oldSpellings });
+  run.progress(`Updated ${plural(links.inside.length, "lane link")}, ${plural(configKeys.length, "git setting")}, ${plural(relinked, "symlink")}`);
+
+  enter(run, "data", "Updating ADE's project data");
+  rewriteProjectDatabasePaths({ dbPath: projectDatabasePath(copyRoot), oldSpellings, finalRoot });
+  rewriteAdeJsonFiles(copyRoot, oldSpellings, finalRoot);
+  return links.inside;
+}
+
+/** 5. Prove the copy matches the original and points only at itself. */
+async function verify(run: MoveRun, args: { totalFiles: number; keep: string[]; before: DatabaseSummary; insideLanes: WorktreeLink[]; links: WorktreeLink[] }): Promise<void> {
+  enter(run, "verify", "Checking the copy");
+  const copied = await countCopiedEntries(run.copyRoot, args.keep);
+  if (copied !== args.totalFiles) {
+    throw new Error(`The copy has ${copied.toLocaleString()} items but the project has ${args.totalFiles.toLocaleString()}.`);
+  }
+  const dbProblems = verifyProjectDatabase({
+    dbPath: projectDatabasePath(run.copyRoot),
+    oldSpellings: run.oldSpellings,
+    finalRoot: run.finalRoot,
+    outsideLanePaths: args.links.filter((link) => link.relativePath === null).flatMap((link) => rootSpellings(link.lanePath)),
+    expectedProjectId: args.before.projectId ?? "",
+    expectedLaneIds: args.before.lanes.map((lane) => lane.id),
+  });
+  if (dbProblems.length) throw new Error(dbProblems.join(" "));
+  await verifyGit({ sourceRoot: run.sourceRoot, copyRoot: run.copyRoot, insideLanes: args.insideLanes, progress: run.progress });
+}
+
+/**
+ * 6. Park the original under a new name and put the copy in its place. The
+ * parked name is journaled before the rename, so a crash between the two
+ * renames can always be put back.
+ */
+async function switchOver(run: MoveRun): Promise<string> {
+  const { record } = run;
+  enter(run, "switch", "Switching to the new location");
+  await assertSameDrive(run, "was disconnected or replaced.");
+  const parked = uniqueParkedPath(run.sourceRoot, record.destinationInternal ? "This Mac" : record.destinationVolumeName ?? "new drive");
+  record.parkingAt = parked;
+  writeMoveRecord(record);
+  fs.renameSync(run.sourceRoot, parked);
+  record.originalParkedAt = parked;
+  writeMoveRecord(record);
+  try {
+    fs.renameSync(run.copyRoot, run.finalRoot);
+  } catch (error) {
+    fs.renameSync(parked, run.sourceRoot);
+    record.originalParkedAt = null;
+    record.parkingAt = null;
+    throw new Error(`Couldn't put the copy in place: ${errorText(error)}`);
+  }
+  return parked;
+}
+
 /**
  * Runs a move. The original is not changed until the switch-over, and the
  * copy is built at `<destination>.ade-moving`, a name nothing opens. Any
- * failure before the switch-over deletes that partial copy and leaves the
- * project exactly as it was.
+ * failure before the switch-over removes that partial copy (only if this move
+ * created it) and leaves the project exactly as it was.
  */
 export async function runProjectMove(args: {
   sourceRoot: string;
@@ -178,8 +326,7 @@ export async function runProjectMove(args: {
   const sourceRoot = path.resolve(args.sourceRoot);
   const finalRoot = path.resolve(args.destinationRoot);
   const copyRoot = copyLocation(finalRoot);
-  const oldSpellings = rootSpellings(sourceRoot);
-  const [destinationVolume, sourceVolume] = await Promise.all([readMoveVolume(finalRoot), readMoveVolume(sourceRoot)]);
+  const destinationVolume = await readMoveVolume(finalRoot);
   // A partial copy from an earlier failed attempt into the same place is
   // ADE's own; anything else at that name is not, and is never removed.
   const leftoverIsOurs = fs.existsSync(copyRoot) && ownsLeftoverCopy(finalRoot);
@@ -192,250 +339,128 @@ export async function runProjectMove(args: {
     originalBytes: 0,
     destinationVolumeUuid: destinationVolume?.uuid ?? null,
     destinationVolumeName: destinationVolume?.name ?? null,
-    sourceVolumeName: sourceVolume?.name ?? null,
+    destinationInternal: destinationVolume?.internal ?? false,
     startedAt: Date.now(),
     finishedAt: null,
     state: "running",
     cleanup: { choice: "pending" },
     followUps: [],
+    problems: [],
     pid: process.pid,
+    bootMinute: currentBootMinute(),
+    resume: { sourceSpellings: rootSpellings(sourceRoot), knownPaths: [sourceRoot], moveAgentHistory: args.moveAgentHistory, outsideLanes: [] },
   };
   writeMoveRecord(record);
-  let step: ProjectMoveStepId = "prepare";
-  const progress = (message: string, extra: Partial<ProjectMoveProgress> = {}) =>
-    args.hooks.onProgress({ moveId: record.moveId, step, message, ...extra });
-  const enter = (next: ProjectMoveStepId, message: string) => {
-    step = next;
-    progress(message);
+  const run: MoveRun = {
+    record,
+    sourceRoot,
+    finalRoot,
+    copyRoot,
+    oldSpellings: rootSpellings(sourceRoot),
+    hooks: args.hooks,
+    step: "prepare",
+    progress: (message, extra = {}) => args.hooks.onProgress({ moveId: record.moveId, step: run.step, message, ...extra }),
   };
 
-  const assertSameDrive = async () => {
-    if (!record.destinationVolumeUuid) return;
-    const now = await readMoveVolume(finalRoot);
-    if (now?.uuid !== record.destinationVolumeUuid) {
-      throw new MoveStepError(step, `${record.destinationVolumeName ?? "The drive"} was disconnected or replaced during the move.`);
-    }
-  };
-
-  let switched = false;
+  let parked: string;
   try {
-    // 1. Close the project everywhere and make sure nothing still has its data open.
-    enter("prepare", "Closing the project");
-    const dbPath = projectDatabasePath(sourceRoot);
-    const before = readProjectDatabaseSummary(dbPath);
-    if (before.projectCount !== 1 || !before.projectId) throw new MoveStepError("prepare", "ADE's data for this project needs a repair first.");
-    await args.hooks.closeProject(sourceRoot);
-    const holders = await waitUntilReleased(dbPath, 20_000);
-    if (holders.length) {
-      const names = await Promise.all(holders.map(processName));
-      throw new MoveStepError(
-        "prepare",
-        `${[...new Set(names)].join(", ")} still has the project's data open. Quit it (or other copies of ADE), then try again.`,
-      );
-    }
-    const originalLinks = listWorktreeLinks(sourceRoot, oldSpellings);
-    record.resume = {
-      sourceSpellings: oldSpellings,
-      knownPaths: [sourceRoot, ...before.lanes.map((lane) => lane.worktreePath).filter(Boolean)],
-      moveAgentHistory: args.moveAgentHistory,
-      outsideLanes: originalLinks
-        .filter((link) => link.relativePath === null && link.exists)
-        .map((link) => ({ name: link.name, lanePath: link.lanePath })),
-    };
-    writeMoveRecord(record);
-
-    // 2. Copy.
-    enter("copy", "Copying files");
-    await assertSameDrive();
-    if (fs.existsSync(copyRoot)) {
-      if (!leftoverIsOurs) throw new MoveStepError("copy", `Something is already at ${copyRoot}. Move it away, then try again.`);
-      progress("Removing the partial copy from an earlier attempt");
-      await fs.promises.rm(copyRoot, { recursive: true, force: true });
-    }
-    fs.mkdirSync(path.dirname(finalRoot), { recursive: true });
-    const { totalFiles } = await copyProjectTree({
-      sourceRoot,
-      copyRoot,
-      onProgress: (copiedFiles, total) =>
-        progress(`Copying files (${copiedFiles.toLocaleString()} of ${total.toLocaleString()})`, {
-          copiedFiles,
-          totalFiles: total,
-          fraction: total ? copiedFiles / total : undefined,
-        }),
-    }).catch(async (error) => {
-      const now = await readMoveVolume(finalRoot);
-      if (record.destinationVolumeUuid && now?.uuid !== record.destinationVolumeUuid) {
-        throw new MoveStepError(
-          "copy",
-          `${record.destinationVolumeName ?? "The drive"} was disconnected during the copy. Your project wasn't changed. Reconnect the drive and try again; ADE removes the partial copy then.`,
-        );
-      }
-      throw new MoveStepError("copy", errorText(error));
-    });
-    progress("Copying ADE's project data");
-    await snapshotProjectDatabase(dbPath, projectDatabasePath(copyRoot)).catch((error) => {
-      throw new MoveStepError("copy", `Copying ADE's project data failed: ${errorText(error)}`);
-    });
-
-    // 3. Git links.
-    enter("git", "Updating git links");
-    const links = rewriteWorktreeLinksInCopy({ copyRoot, finalRoot, oldSpellings });
-    await enableRelativeWorktrees(copyRoot);
-    const configKeys = await rewriteAbsoluteGitConfig({ copyRoot, finalRoot, oldSpellings });
-    const relinked = await relinkAbsoluteSymlinks({ copyRoot, finalRoot, oldSpellings });
-    progress(`Updated ${links.inside.length} lane link${links.inside.length === 1 ? "" : "s"}, ${configKeys.length} git setting${configKeys.length === 1 ? "" : "s"}, ${relinked} symlink${relinked === 1 ? "" : "s"}`);
-
-    // 4. ADE's data.
-    enter("data", "Updating ADE's project data");
-    const rewrite = rewriteProjectDatabasePaths({ dbPath: projectDatabasePath(copyRoot), oldSpellings, finalRoot });
-    if (rewrite.projectId !== before.projectId) throw new MoveStepError("data", "The copied project data has a different project id.");
-    rewriteAdeJsonFiles(copyRoot, oldSpellings, finalRoot);
-
-    // 5. Verify.
-    enter("verify", "Checking the copy");
-    const copied = await countCopiedEntries(copyRoot);
-    if (copied !== totalFiles) {
-      throw new MoveStepError("verify", `The copy has ${copied.toLocaleString()} items but the project has ${totalFiles.toLocaleString()}.`);
-    }
-    const dbProblems = verifyProjectDatabase({
-      dbPath: projectDatabasePath(copyRoot),
-      oldSpellings,
-      finalRoot,
-      outsideLanePaths: originalLinks
-        .filter((link) => link.relativePath === null)
-        .flatMap((link) => rootSpellings(link.lanePath)),
-      expectedProjectId: before.projectId,
-      expectedLaneIds: before.lanes.map((lane) => lane.id),
-    });
-    if (dbProblems.length) throw new MoveStepError("verify", dbProblems.join(" "));
-    await verifyGit({ sourceRoot, copyRoot, insideLanes: links.inside, progress });
-
-    // 6. Switch over.
-    enter("switch", "Switching to the new location");
-    await assertSameDrive();
-    const parked = uniqueParkedPath(sourceRoot, record.destinationVolumeName ?? "new drive");
-    fs.renameSync(sourceRoot, parked);
-    record.originalParkedAt = parked;
-    writeMoveRecord(record);
-    try {
-      fs.renameSync(copyRoot, finalRoot);
-    } catch (error) {
-      fs.renameSync(parked, sourceRoot);
-      record.originalParkedAt = null;
-      throw new MoveStepError("switch", `Couldn't put the copy in place: ${errorText(error)}`);
-    }
-    switched = true;
-    writeMoveRecord(record);
-    finishSwitch(record);
-    record.originalBytes = await folderBytes(parked);
-    record.state = "done";
-    record.finishedAt = Date.now();
-    writeMoveRecord(record);
-    return record;
+    const links = await prepare(run);
+    const copied = await copy(run, links, leftoverIsOurs);
+    const insideLanes = await rewrite(run);
+    await verify(run, { ...copied, insideLanes, links });
+    parked = await switchOver(run);
   } catch (error) {
-    const failedStep = error instanceof MoveStepError ? error.step : step;
-    if (!switched) {
+    if (record.copyCreated) {
       try {
         fs.rmSync(copyRoot, { recursive: true, force: true });
-      } catch {
-        record.followUps.push(`ADE couldn't remove the partial copy at ${copyRoot}. You can delete it.`);
+      } catch (cleanupError) {
+        record.problems.push(`ADE couldn't remove the partial copy at ${copyRoot} (${errorText(cleanupError)}). You can delete it.`);
       }
     }
     record.state = "failed";
-    record.failedStep = failedStep;
+    record.failedStep = run.step;
     record.error = errorText(error);
     record.finishedAt = Date.now();
     writeMoveRecord(record);
     return record;
   }
+  // The project now lives at the new location: whatever follows can only add
+  // problems to report, never turn the move back into a failure.
+  finishSwitch(record);
+  record.originalBytes = await diskUsageBytes(parked);
+  record.state = "done";
+  record.finishedAt = Date.now();
+  writeMoveRecord(record);
+  return record;
 }
 
 /**
  * Everything after the copy is in place: link outside lanes, mark the parked
  * original, re-key the registry, and point simulators and agent history at the
- * new location. Each part can run again, so a restart finishes a switch-over
- * that was interrupted.
+ * new location. Each part runs on its own and can run again, so one failing
+ * part is reported without undoing the others, and a restart finishes a
+ * switch-over that was interrupted.
  */
 function finishSwitch(record: ProjectMoveRecord): void {
   const resume = record.resume;
   const parked = record.originalParkedAt;
   if (!resume || !parked) return;
   const finalRoot = record.destinationRoot;
-  for (const lane of resume.outsideLanes) {
+  const attempt = (what: string, work: () => void) => {
     try {
-      if (fs.existsSync(lane.lanePath)) pointOutsideLaneAt({ ...lane, relativePath: null, exists: true }, finalRoot);
+      work();
     } catch (error) {
-      record.followUps.push(`The lane at ${lane.lanePath} couldn't be linked to the moved project: ${errorText(error)}`);
+      record.problems.push(`${what}: ${errorText(error)}`);
     }
+  };
+  attempt("ADE couldn't mark the old copy so it isn't opened by mistake", () =>
+    writeMovedMarker(parked, { movedTo: finalRoot, moveId: record.moveId }));
+  for (const lane of resume.outsideLanes) {
+    attempt(`The lane at ${lane.lanePath} couldn't be linked to the moved project`, () => {
+      if (fs.existsSync(lane.lanePath)) pointOutsideLaneAt({ ...lane, relativePath: null, exists: true }, finalRoot);
+    });
   }
-  fs.mkdirSync(path.join(parked, ".ade"), { recursive: true });
-  fs.writeFileSync(
-    path.join(parked, ".ade", MOVED_MARKER_FILE),
-    `${JSON.stringify({ movedTo: finalRoot, moveId: record.moveId, movedAt: new Date().toISOString() }, null, 2)}\n`,
-  );
-  new ProjectRegistry().relocate(resume.sourceSpellings, finalRoot);
-  const simulators = rewriteSimulatorMarkers(resume.sourceSpellings, finalRoot);
-  if (simulators) record.followUps.push(`${simulators} lane simulator${simulators === 1 ? "" : "s"} now point at the new location.`);
-  const plans = planAgentHistoryRenames({
-    oldSpellings: resume.sourceSpellings,
-    newRoot: finalRoot,
-    knownPaths: resume.knownPaths,
-  }).filter((plan) => plan.adeOwned || resume.moveAgentHistory);
-  const history = applyAgentHistoryRenames(plans);
-  if (history.moved) record.followUps.push(`Moved ${history.moved} chat history folder${history.moved === 1 ? "" : "s"} to the new location.`);
-  record.followUps.push(...history.problems);
-}
-
-/** Reverses `finishSwitch` for an original that was put back, in case part of it ran. */
-function undoFinishSwitch(record: ProjectMoveRecord): void {
-  const marker = path.join(record.sourceRoot, ".ade", MOVED_MARKER_FILE);
-  try {
-    const moveId = (JSON.parse(fs.readFileSync(marker, "utf8")) as { moveId?: string }).moveId;
-    if (moveId === record.moveId) fs.rmSync(marker, { force: true });
-  } catch {
-    // no marker
-  }
-  for (const lane of record.resume?.outsideLanes ?? []) {
-    if (fs.existsSync(lane.lanePath)) pointOutsideLaneAt({ ...lane, relativePath: null, exists: true }, record.sourceRoot);
-  }
-  const registry = new ProjectRegistry();
-  if (registry.findByRootPath(record.destinationRoot)) registry.relocate([record.destinationRoot], record.sourceRoot);
-}
-
-function processAlive(pid: number | undefined): boolean {
-  if (!pid || pid === process.pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  attempt("ADE couldn't update its project list", () => new ProjectRegistry().relocate(resume.sourceSpellings, finalRoot));
+  attempt("ADE couldn't update the lane simulators", () => {
+    const simulators = rewriteSimulatorMarkers(resume.sourceSpellings, finalRoot);
+    if (simulators) record.followUps.push(`${plural(simulators, "lane simulator")} now point at the new location.`);
+  });
+  attempt("ADE couldn't move the chat history", () => {
+    const plans = planAgentHistoryRenames({
+      oldSpellings: resume.sourceSpellings,
+      newRoot: finalRoot,
+      knownPaths: resume.knownPaths,
+    }).filter((plan) => plan.adeOwned || resume.moveAgentHistory);
+    const history = applyAgentHistoryRenames(plans);
+    if (history.moved) record.followUps.push(`Moved ${plural(history.moved, "chat history folder")} to the new location.`);
+    record.problems.push(...history.problems);
+  });
 }
 
 /**
- * Settles moves a crash or quit left "running". Before the switch-over the
- * original was never touched: the partial copy is removed. Halfway through
- * the switch-over the original is put back. After it, the remaining
- * bookkeeping is finished. Called once when ADE starts.
+ * Settles moves a crash or quit left "running". Once the copy is in place the
+ * move is finished. Otherwise the original is put back if it was parked, and
+ * the partial copy is removed if this move created it. Called once when ADE
+ * starts, before it reopens the last project.
  */
 export async function recoverInterruptedMoves(): Promise<ProjectMoveRecord[]> {
   const settled: ProjectMoveRecord[] = [];
   for (const record of listMoveRecords()) {
-    if (record.state !== "running" || processAlive(record.pid)) continue;
-    const copyRoot = copyLocation(record.destinationRoot);
+    if (record.state !== "running" || isMoveProcessAlive(record)) continue;
+    record.problems ??= [];
     try {
       if (record.originalParkedAt && fs.existsSync(record.destinationRoot)) {
         finishSwitch(record);
         record.state = "done";
-        record.originalBytes = await folderBytes(record.originalParkedAt);
         record.followUps.push("ADE stopped during the switch-over and finished it when it started again.");
+        record.originalBytes = await diskUsageBytes(record.originalParkedAt);
       } else {
-        if (record.originalParkedAt && !fs.existsSync(record.sourceRoot) && fs.existsSync(record.originalParkedAt)) {
-          fs.renameSync(record.originalParkedAt, record.sourceRoot);
-          record.originalParkedAt = null;
-          undoFinishSwitch(record);
-        }
-        if (fs.existsSync(copyRoot)) await fs.promises.rm(copyRoot, { recursive: true, force: true });
+        const parked = record.originalParkedAt ?? record.parkingAt;
+        if (parked && !fs.existsSync(record.sourceRoot) && fs.existsSync(parked)) fs.renameSync(parked, record.sourceRoot);
+        record.originalParkedAt = null;
+        record.parkingAt = null;
+        const copyRoot = copyLocation(record.destinationRoot);
+        if (record.copyCreated && fs.existsSync(copyRoot)) await fs.promises.rm(copyRoot, { recursive: true, force: true });
         record.state = "failed";
         record.error = "ADE stopped during the move. Your project wasn't changed.";
       }
@@ -468,16 +493,16 @@ async function verifyGit(args: {
     const inCopy = path.join(args.copyRoot, checkout.relative);
     const common = (await git(inCopy, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     if (fs.realpathSync(common) !== copyGitDir) {
-      throw new MoveStepError("verify", `${checkout.label} in the copy still uses the original's git data.`);
+      throw new Error(`${checkout.label} in the copy still uses the original's git data.`);
     }
-    const [original, copy] = await Promise.all([
+    const [original, copied] = await Promise.all([
       git(path.join(args.sourceRoot, checkout.relative), ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
       git(inCopy, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
     ]);
     const a = statusLines(original);
-    const b = statusLines(copy);
+    const b = statusLines(copied);
     if (a.length !== b.length || a.some((line, i) => line !== b[i])) {
-      throw new MoveStepError("verify", `${checkout.label} looks different in the copy than in the original.`);
+      throw new Error(`${checkout.label} looks different in the copy than in the original.`);
     }
   }
   const listed = (await git(args.copyRoot, ["worktree", "list", "--porcelain"]))
@@ -488,40 +513,31 @@ async function verifyGit(args: {
   for (const lane of args.insideLanes) {
     const expected = path.join(copyReal, lane.relativePath ?? "");
     if (!listed.some((entry) => entry === expected || entry === path.join(args.copyRoot, lane.relativePath ?? ""))) {
-      throw new MoveStepError("verify", `Git in the copy doesn't list the lane ${path.basename(lane.relativePath ?? "")}.`);
+      throw new Error(`Git in the copy doesn't list the lane ${path.basename(lane.relativePath ?? "")}.`);
     }
-  }
-}
-
-async function folderBytes(root: string): Promise<number> {
-  try {
-    const { stdout } = await execFileAsync("/usr/bin/du", ["-sk", root], { timeout: 10 * 60_000 });
-    return (Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10) || 0) * 1024;
-  } catch (error) {
-    const stdout = (error as { stdout?: string }).stdout ?? "";
-    return (Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10) || 0) * 1024;
   }
 }
 
 /**
  * Deletes the parked original once the person confirms. Only the exact path
- * the move recorded, and only while it still carries the moved marker.
+ * the move recorded, only while it still carries this move's marker, and never
+ * while a lane outside the project still keeps its git data in it.
  */
 export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<void> {
   const parked = record.originalParkedAt;
   if (!parked) throw new Error("ADE has no record of where the original was kept.");
-  const marker = path.join(parked, ".ade", MOVED_MARKER_FILE);
-  let markerMove: string | null = null;
-  try {
-    markerMove = (JSON.parse(fs.readFileSync(marker, "utf8")) as { moveId?: string }).moveId ?? null;
-  } catch {
-    markerMove = null;
-  }
-  if (markerMove !== record.moveId) {
+  if (readMovedMarker(parked)?.moveId !== record.moveId) {
     throw new Error(`The folder at ${parked} isn't the original ADE kept, so ADE won't delete it.`);
   }
   if (!fs.existsSync(record.destinationRoot)) {
     throw new Error("The moved project isn't at its new location right now, so ADE won't delete the original.");
+  }
+  const parkedSpellings = rootSpellings(parked);
+  for (const lane of record.resume?.outsideLanes ?? []) {
+    const gitDir = readGitDirPointer(lane.lanePath);
+    if (gitDir && relativeToRoot(gitDir, parkedSpellings) !== null) {
+      throw new Error(`The lane at ${lane.lanePath} still keeps its git data in the old copy, so ADE won't delete it yet.`);
+    }
   }
   await fs.promises.rm(parked, { recursive: true, force: false, maxRetries: 2 });
 }

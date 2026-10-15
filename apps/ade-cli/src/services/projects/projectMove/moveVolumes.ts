@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { readVolumeSpace } from "../../../../../desktop/src/main/services/storage/volume";
 import type { ProjectMoveVolume } from "../../../../../desktop/src/shared/types/projectMove";
 
 const execFileAsync = promisify(execFile);
@@ -71,15 +72,8 @@ export async function readMoveVolume(target: string): Promise<ProjectMoveVolume 
   const mountPath = await mountPointOf(target);
   if (!mountPath) return null;
   const info = await diskutilInfo(mountPath);
-  let freeBytes = 0;
-  let totalBytes = 0;
-  try {
-    const stats = fs.statfsSync(nearestExistingDir(target));
-    freeBytes = Number(stats.bavail) * Number(stats.bsize);
-    totalBytes = Number(stats.blocks) * Number(stats.bsize);
-  } catch {
-    // leave zeros; the space check then blocks with a clear message
-  }
+  // Zeros when unreadable: the space check then blocks with a clear message.
+  const { freeBytes, totalBytes } = readVolumeSpace(nearestExistingDir(target)) ?? { freeBytes: 0, totalBytes: 0 };
   const internal = info?.Internal === true;
   const visible = info?.FilesystemUserVisibleName ?? "";
   return {

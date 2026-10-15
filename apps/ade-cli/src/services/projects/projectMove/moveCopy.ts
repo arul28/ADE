@@ -11,45 +11,88 @@ const execFileAsync = promisify(execFile);
  * root: dependency folders (reinstalled after the move, and pnpm needs its
  * store on the new drive anyway; a lane's `node_modules` *link* to the main
  * checkout is kept and re-pointed, so lanes work once the main checkout is
- * reinstalled), the project database (copied separately
- * through SQLite so the write-ahead log is not lost), and sockets.
+ * reinstalled), the project database (copied separately through SQLite so the
+ * write-ahead log is not lost), and sockets. `keep` names dependency folders
+ * that hold files committed to git: those are part of the project and copied.
  */
-const FIND_EXCLUSIONS = [
-  "(",
-  "(", "-name", "node_modules", "-type", "d", ")",
-  "-o", "-path", "./.ade/ade.db",
-  "-o", "-path", "./.ade/ade.db-wal",
-  "-o", "-path", "./.ade/ade.db-shm",
-  "-o", "-type", "s",
-  ")", "-prune",
-];
-
-async function duKilobytes(root: string, ignoreDependencies: boolean): Promise<number> {
-  const args = ignoreDependencies ? ["-skI", "node_modules", root] : ["-sk", root];
-  try {
-    const { stdout } = await execFileAsync("/usr/bin/du", args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
-    return Number.parseInt(stdout.trim().split(/\s+/)[0] ?? "0", 10) || 0;
-  } catch (error) {
-    // du exits 1 when a few files are unreadable and still prints a total.
-    const stdout = (error as { stdout?: string }).stdout ?? "";
-    return Number.parseInt(stdout.trim().split(/\s+/)[0] ?? "0", 10) || 0;
-  }
+function findExclusions(keep: readonly string[]): string[] {
+  const kept = keep.flatMap((dir) => ["!", "-path", escapeFindPattern(dir)]);
+  return [
+    "(",
+    "(", "-name", "node_modules", "-type", "d", ...kept, ")",
+    "-o", "-path", "./.ade/ade.db",
+    "-o", "-path", "./.ade/ade.db-wal",
+    "-o", "-path", "./.ade/ade.db-shm",
+    "-o", "-type", "s",
+    ")", "-prune",
+  ];
 }
 
+/** `find -path` takes a glob, so a folder named with `*`, `?` or `[` must be escaped. */
+function escapeFindPattern(value: string): string {
+  return value.replace(/[\\*?[\]]/gu, (match) => `\\${match}`);
+}
+
+/**
+ * Dependency folders (`./a/node_modules`) that hold files committed to git, in
+ * the main checkout and the given lanes. Rare (a vendored or patched package),
+ * but those files are the project's own and must move with it.
+ */
+export async function trackedDependencyDirs(root: string, laneRelativePaths: readonly string[]): Promise<string[]> {
+  const dirs = new Set<string>();
+  for (const relative of ["", ...laneRelativePaths]) {
+    let stdout: string;
+    try {
+      ({ stdout } = await execFileAsync("git", ["-C", path.join(root, relative), "ls-files", "-z"], {
+        timeout: 5 * 60_000,
+        maxBuffer: 256 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      }));
+    } catch {
+      continue; // a checkout git cannot read is caught by the verify step
+    }
+    for (const file of stdout.split("\0")) {
+      const match = file.match(/^(.*?(?:^|\/)node_modules)\//u);
+      if (match?.[1]) dirs.add(`./${path.posix.join(relative, match[1])}`);
+    }
+  }
+  return [...dirs];
+}
+/** Bytes a folder takes on disk (`du`), optionally leaving out `node_modules`. */
+export async function diskUsageBytes(root: string, options: { ignoreDependencies?: boolean } = {}): Promise<number> {
+  const args = options.ignoreDependencies ? ["-skI", "node_modules", root] : ["-sk", root];
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("/usr/bin/du", args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 }));
+  } catch (error) {
+    // du exits 1 when a few files are unreadable and still prints a total.
+    stdout = (error as { stdout?: string }).stdout ?? "";
+  }
+  return (Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10) || 0) * 1024;
+}
+
+const measureCache = new Map<string, { at: number; value: Promise<{ copyBytes: number; dependencyBytes: number }> }>();
+/** The move dialog re-checks on every destination change; the project's size is measured once a minute at most. */
+const MEASURE_CACHE_MS = 60_000;
+
 /** Bytes the copy will write, and bytes of dependency folders it leaves out. */
-export async function measureProject(root: string): Promise<{ copyBytes: number; dependencyBytes: number }> {
-  const [withoutDependencies, total] = await Promise.all([duKilobytes(root, true), duKilobytes(root, false)]);
-  return {
-    copyBytes: withoutDependencies * 1024,
-    dependencyBytes: Math.max(0, total - withoutDependencies) * 1024,
-  };
+export function measureProject(root: string): Promise<{ copyBytes: number; dependencyBytes: number }> {
+  const cached = measureCache.get(root);
+  if (cached && Date.now() - cached.at < MEASURE_CACHE_MS) return cached.value;
+  const value = Promise.all([diskUsageBytes(root, { ignoreDependencies: true }), diskUsageBytes(root)])
+    .then(([withoutDependencies, total]) => ({
+      copyBytes: withoutDependencies,
+      dependencyBytes: Math.max(0, total - withoutDependencies),
+    }));
+  measureCache.set(root, { at: Date.now(), value });
+  return value;
 }
 
 /** Relative paths (`./a/b`) the copy includes, written to `listFile`. Returns how many. */
-export function writeCopyList(root: string, listFile: string): Promise<number> {
+export function writeCopyList(root: string, listFile: string, keep: readonly string[]): Promise<number> {
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(listFile);
-    const child = spawn("/usr/bin/find", [".", ...FIND_EXCLUSIONS, "-o", "-print"], {
+    const child = spawn("/usr/bin/find", [".", ...findExclusions(keep), "-o", "-print"], {
       cwd: root,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -88,19 +131,18 @@ function firstLine(text: string): string {
 export async function copyProjectTree(args: {
   sourceRoot: string;
   copyRoot: string;
+  keepDependencyDirs: readonly string[];
   onProgress: (copiedFiles: number, totalFiles: number) => void;
-  signal?: AbortSignal;
 }): Promise<{ totalFiles: number }> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-move-"));
   try {
     const listFile = path.join(workDir, "files.txt");
     const bomFile = path.join(workDir, "files.bom");
-    const totalFiles = await writeCopyList(args.sourceRoot, listFile);
+    const totalFiles = await writeCopyList(args.sourceRoot, listFile, args.keepDependencyDirs);
     await execFileAsync("/usr/bin/mkbom", ["-s", "-i", listFile, bomFile], { timeout: 10 * 60_000 });
     await new Promise<void>((resolve, reject) => {
       const child = spawn("/usr/bin/ditto", ["-V", "--bom", bomFile, args.sourceRoot, args.copyRoot], {
         stdio: ["ignore", "pipe", "pipe"],
-        signal: args.signal,
       });
       let copied = 0;
       let lastReport = 0;
@@ -145,10 +187,10 @@ function describeCopyFailure(errors: string, code: number | null): string {
 }
 
 /** How many entries the copy holds, counted with the same exclusions as the list. */
-export async function countCopiedEntries(copyRoot: string): Promise<number> {
+export async function countCopiedEntries(copyRoot: string, keep: readonly string[]): Promise<number> {
   const listFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-move-count-")), "files.txt");
   try {
-    return await writeCopyList(copyRoot, listFile);
+    return await writeCopyList(copyRoot, listFile, keep);
   } finally {
     fs.rmSync(path.dirname(listFile), { recursive: true, force: true });
   }

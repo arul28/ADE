@@ -19,27 +19,9 @@
 }
 .ade-pm-footer { display: flex; width: 100%; align-items: center; justify-content: flex-end; gap: 8px; }
 
-/* Drives: one choice card per drive. */
-.ade-pm-drives { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.ade-pm-drive {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: var(--radius-md);
-  background: var(--kit-panel-bg);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 100ms ease, border-color 100ms ease;
-}
-.ade-pm-drive:hover { background: var(--kit-hover); }
-.ade-pm-drive[data-active="true"] { border-color: var(--color-accent); }
-.ade-pm-drive:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 1px; }
-.ade-pm-drive-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ade-pm-drive-name { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Drives: kit choice cards (settingsModern.css), one per drive. */
+.ade-pm-drive-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pm .ade-modern-choice-body { gap: 8px; }
 
 /* The destination folder: the whole row opens the folder picker. */
 .ade-pm-path {
@@ -110,5 +92,3 @@
 .ade-pm-row-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 .ade-pm-controls { display: flex; align-items: center; gap: 6px; }
-.ade-pm-controls .kit-btn { height: 26px; padding: 0 10px; font-size: 12px; }
-.ade-pm-controls .kit-btn[data-tone="crit"] { color: var(--kit-crit); }

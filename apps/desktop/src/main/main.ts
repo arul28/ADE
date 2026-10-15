@@ -437,7 +437,12 @@ import {
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
-import { createProjectMoveController } from "./services/projects/projectMoveController";
+import {
+  classifyProjectActivity,
+  createProjectMoveController,
+  remapGlobalStateForMove,
+  replaceMovedRoots,
+} from "./services/projects/projectMoveController";
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
 import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
@@ -3285,26 +3290,14 @@ app.whenReady().then(async () => {
         logger: localRuntimeLogger,
         getActivity: async (projectRoot) => {
           const root = normalizeProjectRoot(projectRoot);
-          const runningChats: string[] = [];
-          const openTerminals: string[] = [];
           const inProcess = shouldUseInProcessProjectRuntime() ? projectContexts.get(root)?.agentChatService ?? null : null;
           const chats = inProcess
             ? runtimeChatRefs(await inProcess.listInterruptedChats())
             : runtimeChatRefs((await localRuntimePool.callActionForRoot(root, { domain: "chat", action: "listInterruptedChats" })).result);
-          for (const chat of chats) runningChats.push(chat.title || "Untitled chat");
-          if (!inProcess) {
-            const sessions = (await localRuntimePool.callActionForRoot(root, { domain: "session", action: "list" })).result;
-            for (const session of Array.isArray(sessions) ? sessions as Array<Record<string, unknown>> : []) {
-              if (session.status !== "running" || typeof session.ptyId !== "string" || !session.ptyId) continue;
-              const toolType = typeof session.toolType === "string" ? session.toolType : "shell";
-              if (toolType.endsWith("-chat")) continue;
-              const label = [session.title, session.laneName].filter((part) => typeof part === "string" && part).join(" — ") || toolType;
-              // An agent CLI in a terminal is an agent at work, not just a shell.
-              if (toolType === "shell" || toolType === "run") openTerminals.push(label);
-              else runningChats.push(label);
-            }
-          }
-          return { runningChats, openTerminals };
+          const sessions = inProcess
+            ? []
+            : (await localRuntimePool.callActionForRoot(root, { domain: "session", action: "list" })).result;
+          return classifyProjectActivity(chats.map((chat) => chat.title), sessions);
         },
         releaseProject: async (projectRoot) => {
           const root = normalizeProjectRoot(projectRoot);
@@ -3314,40 +3307,10 @@ app.whenReady().then(async () => {
           if (record) await localRuntimePool.removeProject(root, record.projectId);
         },
         afterMove: async (record, windowId) => {
-          const spellings = new Set(record.resume?.sourceSpellings ?? [record.sourceRoot]);
-          const moved = (root: string | null | undefined): string | null | undefined =>
-            root && (spellings.has(root) || spellings.has(normalizeProjectRoot(root))) ? record.destinationRoot : root;
-          const state = readGlobalState(globalStatePath);
-          writeGlobalState(globalStatePath, {
-            ...state,
-            recentProjects: (state.recentProjects ?? []).map((entry) =>
-              entry.remote ? entry : { ...entry, rootPath: moved(entry.rootPath) ?? entry.rootPath }),
-            lastProjectRoot: moved(state.lastProjectRoot) ?? undefined,
-            ...(state.updateWorkspace
-              ? {
-                  updateWorkspace: {
-                    localRoots: state.updateWorkspace.localRoots.map((root) => moved(root) ?? root),
-                    activeLocalRoot: moved(state.updateWorkspace.activeLocalRoot) ?? null,
-                  },
-                }
-              : {}),
-          });
+          writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
           // Every window that knew the project keeps it, at its new folder.
-          for (const knownRoots of windowKnownLocalProjectRoots.values()) {
-            let hadIt = false;
-            for (const root of [...knownRoots]) {
-              if (root !== record.destinationRoot && moved(root) === record.destinationRoot) {
-                knownRoots.delete(root);
-                hadIt = true;
-              }
-            }
-            if (hadIt) knownRoots.add(record.destinationRoot);
-          }
-          for (const tabRoots of windowProjectTabRoots.values()) {
-            const hadIt = [...tabRoots].some((root) => moved(root) === record.destinationRoot && root !== record.destinationRoot);
-            if (!hadIt) continue;
-            for (const root of [...tabRoots]) if (moved(root) === record.destinationRoot) tabRoots.delete(root);
-            tabRoots.add(record.destinationRoot);
+          for (const roots of [...windowKnownLocalProjectRoots.values(), ...windowProjectTabRoots.values()]) {
+            replaceMovedRoots(roots, record, normalizeProjectRoot);
           }
           attemptedProjectRoots.record(record.destinationRoot);
           await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.destinationRoot));
@@ -3361,19 +3324,17 @@ app.whenReady().then(async () => {
           await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.sourceRoot));
           if (windowId != null) bindWindowToProject(windowId, record.sourceRoot, { emit: true });
         },
-        emitProgress: (progress) => {
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (win.isDestroyed()) continue;
-            try {
-              win.webContents.send(IPC.projectMoveProgress, progress);
-            } catch {
-              // a closing window
-            }
-          }
-        },
+        emitProgress: (progress) => broadcast(IPC.projectMoveProgress, progress),
       })
     : null;
-  void projectMoveController?.recover();
+  // A move a crash interrupted is settled before the last project reopens
+  // (awaited below), so recents point at wherever the project ended up.
+  const projectMoveRecovery = (projectMoveController?.recover() ?? Promise.resolve([])).then((settled) => {
+    for (const record of settled) {
+      if (record.state !== "done") continue;
+      writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
+    }
+  });
   reportAppFallback = (reason) => {
     void autoDiagnosticsService
       .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
@@ -9536,6 +9497,7 @@ app.whenReady().then(async () => {
 
   registerPerfIpcHandlers();
 
+  await projectMoveRecovery;
   const savedUpdateState = readGlobalState(globalStatePath);
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
     restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,

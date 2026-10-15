@@ -24,6 +24,9 @@ import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { SettingsToggle } from "../settings/primitives";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
+import { joinParentAndName } from "../../lib/pathUtils";
+import { usageLeftLevel } from "../usage/usageDesign";
+import { Banner } from "../ui/notice";
 import { agentCheckLaunchArgs, announceProjectMoveChanged, displayPath, formatBytes, formatReminder, volumeFor } from "./projectMoveModel";
 import { OldCopyControls } from "./oldCopyActions";
 import "./projectMove.css";
@@ -36,10 +39,6 @@ const CHECK_DEBOUNCE_MS = 250;
 function parentOf(root: string): string {
   const index = root.lastIndexOf("/");
   return index > 0 ? root.slice(0, index) : "/";
-}
-
-function joinPath(parent: string, name: string): string {
-  return `${parent.replace(/\/+$/u, "")}/${name}`;
 }
 
 /** The project's own parent folder when staying on its drive, else the drive's usual projects folder. */
@@ -93,7 +92,7 @@ export function MoveProjectDialog({
   const checkRequest = useRef(0);
 
   const sourceVolume = useMemo(() => (volumes ? volumeFor(projectRoot, volumes) : null), [projectRoot, volumes]);
-  const destinationRoot = parentFolder ? joinPath(parentFolder, projectName) : null;
+  const destinationRoot = parentFolder ? joinParentAndName(parentFolder, projectName) : null;
   const selectedVolume = volumes && destinationRoot ? volumeFor(destinationRoot, volumes) : null;
 
   useEffect(() => {
@@ -219,29 +218,31 @@ export function MoveProjectDialog({
   ];
   const moving = stage === "moving";
   const canMove = stage === "setup" && !checking && Boolean(preflight) && !blocked && Boolean(destinationRoot);
-  const followUpWarnings = record?.followUps.filter((line) => /couldn't|already existed/u.test(line)) ?? [];
+  const problems = record?.problems ?? [];
 
-  const title = stage === "done" ? `${projectName} moved`
-    : stage === "failed" ? "The move didn't finish"
-      : moving ? `Moving ${projectName}` : `Move ${projectName}`;
+  const title: Record<Stage, string> = {
+    setup: `Move ${projectName}`,
+    moving: `Moving ${projectName}`,
+    done: `${projectName} moved`,
+    failed: "The move didn't finish",
+  };
 
-  const footer = stage === "setup" ? (
-    <div className="ade-pm-footer">
-      <button type="button" className="kit-btn kit-btn-ghost" onClick={onClose}>Cancel</button>
-      <button type="button" className="kit-btn kit-btn-primary" disabled={!canMove} onClick={() => void startMove()}>Move</button>
-    </div>
-  ) : stage === "moving" ? (
-    <div className="ade-pm-footer"><span className="ade-pm-muted">Keep the drive connected.</span></div>
-  ) : stage === "failed" ? (
-    <div className="ade-pm-footer">
-      <button type="button" className="kit-btn kit-btn-ghost" onClick={onClose}>Close</button>
-      <button type="button" className="kit-btn kit-btn-primary" onClick={() => { setStage("setup"); runChecks(); }}>Try again</button>
-    </div>
-  ) : (
-    <div className="ade-pm-footer">
-      <button type="button" className="kit-btn kit-btn-primary" onClick={onClose}>Done</button>
-    </div>
-  );
+  const footers: Record<Stage, React.ReactNode> = {
+    setup: (
+      <>
+        <button type="button" className="kit-btn kit-btn-ghost" onClick={onClose}>Cancel</button>
+        <button type="button" className="kit-btn kit-btn-primary" disabled={!canMove} onClick={() => void startMove()}>Move</button>
+      </>
+    ),
+    moving: <span className="ade-pm-muted">Keep the drive connected.</span>,
+    failed: (
+      <>
+        <button type="button" className="kit-btn kit-btn-ghost" onClick={onClose}>Close</button>
+        <button type="button" className="kit-btn kit-btn-primary" onClick={() => { setStage("setup"); runChecks(); }}>Try again</button>
+      </>
+    ),
+    done: <button type="button" className="kit-btn kit-btn-primary" onClick={onClose}>Done</button>,
+  };
 
   return (
     <Dialog
@@ -249,20 +250,20 @@ export function MoveProjectDialog({
       onOpenChange={(next) => {
         if (!next && !moving) onClose();
       }}
-      title={title}
+      title={title[stage]}
       size="md"
       dismissible={!moving}
       hideClose={moving}
       hideHeader={stage === "done"}
-      footer={footer}
+      footer={<div className="ade-pm-footer">{footers[stage]}</div>}
       testId="move-project-dialog"
     >
       <div className="ade-pm">
         {stage === "setup" ? (
           <>
-            <div className="ade-pm-drives" role="radiogroup" aria-label="Drive">
+            <div className="ade-modern-choices" role="radiogroup" aria-label="Drive">
               {(volumes ?? []).map((volume) => {
-                const used = volume.totalBytes ? 1 - volume.freeBytes / volume.totalBytes : 0;
+                const percentFree = volume.totalBytes ? (volume.freeBytes / volume.totalBytes) * 100 : 100;
                 const selected = selectedVolume?.mountPath === volume.mountPath;
                 return (
                   <button
@@ -270,19 +271,21 @@ export function MoveProjectDialog({
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    className="ade-pm-drive"
+                    className="ade-ap-choice"
                     data-active={selected ? "true" : undefined}
                     onClick={() => setParentFolder(defaultParentOn(volume, projectRoot, sourceVolume))}
                   >
-                    <span className="ade-pm-drive-head">
-                      {volume.internal ? <Laptop size={15} /> : <HardDrive size={15} />}
-                      <span className="ade-pm-drive-name">{volume.name}</span>
-                      {volume.mountPath === sourceVolume?.mountPath ? <span className="kit-tag">Now</span> : null}
+                    <span className="ade-modern-choice-body">
+                      <span className="ade-modern-choice-title">
+                        {volume.internal ? <Laptop size={15} /> : <HardDrive size={15} />}
+                        <span className="ade-pm-drive-name">{volume.name}</span>
+                        {volume.mountPath === sourceVolume?.mountPath ? <span className="kit-tag">Now</span> : null}
+                      </span>
+                      <span className="kit-meter" data-level={usageLeftLevel(percentFree)}>
+                        <span style={{ width: `${Math.round(100 - percentFree)}%` }} />
+                      </span>
+                      <span className="ade-modern-choice-hint kit-num">{formatBytes(volume.freeBytes)} free</span>
                     </span>
-                    <span className="kit-meter" data-level={used > 0.95 ? "crit" : used > 0.8 ? "warn" : undefined}>
-                      <span style={{ width: `${Math.round(used * 100)}%` }} />
-                    </span>
-                    <span className="ade-pm-muted kit-num">{formatBytes(volume.freeBytes)} free</span>
                   </button>
                 );
               })}
@@ -350,7 +353,7 @@ export function MoveProjectDialog({
                       : state === "current" ? <CircleNotch size={14} className="animate-spin" />
                         : <span className="ade-pm-step-dot" />}
                     {step.label}
-                    {state === "current" && step.id === "copy" && progress?.totalFiles ? (
+                    {state === "current" && step.id === "copy" && progress?.fraction != null ? (
                       <span className="ade-pm-muted kit-num">{Math.round((progress.fraction ?? 0) * 100)}%</span>
                     ) : null}
                   </li>
@@ -364,9 +367,10 @@ export function MoveProjectDialog({
         ) : null}
 
         {stage === "failed" ? (
-          <>
-            <Issue check={{ status: "blocked", title: error ?? "Something went wrong.", detail: "Your project wasn't changed." }} />
-          </>
+          <Banner
+            layout="inline"
+            model={{ id: "project-move-failed", tone: "error", title: error ?? "Something went wrong.", detail: "Your project wasn't changed." }}
+          />
         ) : null}
 
         {stage === "done" && record ? (
@@ -374,12 +378,12 @@ export function MoveProjectDialog({
             <div className="ade-pm-hero">
               <CheckCircle size={22} weight="fill" />
               <div>
-                <div className="ade-pm-hero-title">{projectName} is now on {record.destinationVolumeName === "This Mac" ? "this Mac" : record.destinationVolumeName ?? "the new drive"}</div>
+                <div className="ade-pm-hero-title">{projectName} is now on {record.destinationInternal ? "this Mac" : record.destinationVolumeName ?? "the new drive"}</div>
                 <div className="ade-pm-muted ade-pm-mono">{displayPath(record.destinationRoot)}</div>
               </div>
             </div>
 
-            {followUpWarnings.map((line) => <Issue key={line} check={{ status: "warning", title: line }} />)}
+            {problems.map((line) => <Issue key={line} check={{ status: "warning", title: line }} />)}
 
             <div className="kit-card">
               <div className="kit-card-body" data-flush="true">

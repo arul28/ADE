@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState, useSyncExternalStore } from "r
 import { FolderSimple } from "@phosphor-icons/react";
 import type { ProjectMoveRecord } from "../../../shared/types/projectMove";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { isMacPlatform } from "../../lib/platform";
 import { MoveProjectDialog } from "./MoveProjectDialog";
 import { chooseOldCopy } from "./oldCopyActions";
 import { displayPath, formatBytes, PROJECT_MOVE_CHANGED_EVENT, REMINDER_CHOICES } from "./projectMoveModel";
@@ -37,7 +38,8 @@ const REFRESH_MS = 10 * 60_000;
 export function ProjectMoveHost() {
   const target = useSyncExternalStore(subscribe, () => dialogTarget, () => null);
   const [attention, setAttention] = useState<ProjectMoveRecord[]>([]);
-  const api = window.ade.projectMove;
+  // Moving projects is macOS-only; elsewhere there is nothing to poll for.
+  const api = isMacPlatform() ? window.ade.projectMove : undefined;
 
   const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
 
@@ -46,7 +48,10 @@ export function ProjectMoveHost() {
     void api.attention().then((next) => {
       setAttention(next.records);
       setNextReminderAt(next.nextReminderAt);
-    }).catch(() => setAttention([]));
+    }).catch((error) => {
+      console.warn("[project-move] reading kept copies failed", error);
+      setAttention([]);
+    });
   }, [api]);
 
   // Wake exactly when the next reminder falls due (capped: a timer longer than
@@ -81,8 +86,8 @@ export function ProjectMoveHost() {
       title: `An old copy of ${record.projectName} is still kept`,
       detail: `${displayPath(record.originalParkedAt ?? "")} · ${formatBytes(record.originalBytes)}`,
       actions: [
-        { label: "Delete…", onClick: () => void chooseOldCopy(record, "delete") },
-        { label: `Remind me ${REMINDER_CHOICES[0]!.label.toLowerCase()}`, variant: "secondary", onClick: () => void chooseOldCopy(record, { remindInMs: REMINDER_CHOICES[0]!.ms }) },
+        { label: `Remind me ${REMINDER_CHOICES[0]!.label.toLowerCase()}`, onClick: () => void chooseOldCopy(record, { remindInMs: REMINDER_CHOICES[0]!.ms }) },
+        { label: "Delete…", variant: "secondary", onClick: () => void chooseOldCopy(record, "delete") },
         { label: "Keep", variant: "link", onClick: () => void chooseOldCopy(record, "keep") },
       ],
     },

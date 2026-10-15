@@ -295,6 +295,10 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-bg)); }
 .kit-btn-ghost { border-color: transparent; background: transparent; color: var(--kit-text-2); }
 .kit-btn-ghost:hover:not(:disabled) { background: var(--kit-hover); color: var(--color-fg); }
+/* A compact button for a control row inside a card, and the red text tone
+   for the destructive choice beside quieter ones (Delete next to Keep). */
+.kit-btn[data-size="sm"] { height: 26px; padding: 0 10px; font-size: 12px; }
+.kit-btn[data-tone="crit"] { color: var(--kit-crit); }
 
 /* A text field or select for card surfaces, the height of a .kit-btn. */
 .kit-input {

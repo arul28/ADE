@@ -4,6 +4,7 @@ import type {
 } from "../../../shared/types";
 import type { ProjectMoveRecord, ProjectMoveVolume } from "../../../shared/types/projectMove";
 import { resolveLaunchProviderAndModel } from "../../lib/linearBatchLaunch";
+import { isPathEqualOrDescendant } from "../../lib/pathUtils";
 
 /** Window event the move surfaces fire so the Location row and the banner re-read. */
 export const PROJECT_MOVE_CHANGED_EVENT = "ade:project-move-changed";
@@ -12,13 +13,7 @@ export function announceProjectMoveChanged(): void {
   window.dispatchEvent(new Event(PROJECT_MOVE_CHANGED_EVENT));
 }
 
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
-  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(bytes >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
+export { formatBytes } from "../../../shared/formatting";
 
 /** `~/Projects/ADE` for display (macOS home folders live at `/Users/<name>`). */
 export function displayPath(fullPath: string): string {
@@ -28,7 +23,7 @@ export function displayPath(fullPath: string): string {
 /** The drive a path is on: a `/Volumes/<name>` mount, else this Mac's internal disk. */
 export function volumeFor(root: string, volumes: ProjectMoveVolume[]): ProjectMoveVolume | null {
   const mounted = volumes
-    .filter((volume) => volume.mountPath.startsWith("/Volumes/") && (root === volume.mountPath || root.startsWith(`${volume.mountPath}/`)))
+    .filter((volume) => volume.mountPath.startsWith("/Volumes/") && isPathEqualOrDescendant(root, volume.mountPath))
     .sort((a, b) => b.mountPath.length - a.mountPath.length)[0];
   return mounted ?? volumes.find((volume) => volume.internal) ?? null;
 }

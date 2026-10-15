@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../../desktop/src/main/services/state/durableFile";
 import type { ProjectMoveRecord } from "../../../../../desktop/src/shared/types/projectMove";
@@ -10,12 +11,64 @@ import { resolveMachineAdeDir } from "../machineLayout";
  * partial copy is, and where the original was parked. The cleanup choice and
  * its reminder live here too, so they survive a restart.
  */
-export function projectMovesDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveMachineAdeDir(env), "project-moves");
+function projectMovesDir(): string {
+  return path.join(resolveMachineAdeDir(), "project-moves");
+}
+
+/** Written into a project's old folder when it moves, so nothing opens the kept copy by mistake. */
+export const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
+
+export type MovedMarker = { movedTo: string | null; moveId: string | null };
+
+/** The moved marker in `root`, or null when `root` is not a kept copy. */
+export function readMovedMarker(root: string): MovedMarker | null {
+  const marker = path.join(root, PROJECT_MOVED_MARKER);
+  if (!fs.existsSync(marker)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(marker, "utf8")) as { movedTo?: unknown; moveId?: unknown };
+    return {
+      movedTo: typeof parsed.movedTo === "string" ? parsed.movedTo : null,
+      moveId: typeof parsed.moveId === "string" ? parsed.moveId : null,
+    };
+  } catch {
+    // A marker that cannot be read still marks the folder as a kept copy.
+    return { movedTo: null, moveId: null };
+  }
+}
+
+export function writeMovedMarker(root: string, marker: { movedTo: string; moveId: string }): void {
+  fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+  writeFileAtomic(
+    path.join(root, PROJECT_MOVED_MARKER),
+    `${JSON.stringify({ ...marker, movedAt: new Date().toISOString() }, null, 2)}\n`,
+  );
+}
+
+/** When this Mac booted, in whole minutes since the epoch. */
+export function currentBootMinute(): number {
+  return Math.round((Date.now() - os.uptime() * 1000) / 60_000);
+}
+
+/**
+ * Whether the process that ran a move is still running. A pid recorded before
+ * a reboot (a power cut mid-copy) may now belong to an unrelated process, so
+ * a different boot means it is gone.
+ */
+export function isMoveProcessAlive(record: Pick<ProjectMoveRecord, "pid" | "bootMinute">): boolean {
+  const { pid } = record;
+  if (!pid || pid === process.pid) return false;
+  if (record.bootMinute != null && Math.abs(record.bootMinute - currentBootMinute()) > 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function recordPath(moveId: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(moveId)) throw new Error("Invalid move id.");
+  if (!/^[A-Za-z0-9_-]+$/u.test(moveId)) throw new Error("Invalid move id.");
   return path.join(projectMovesDir(), `${moveId}.json`);
 }
 
@@ -48,10 +101,12 @@ export function listMoveRecords(): ProjectMoveRecord[] {
   return records.sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** The move currently running, or interrupted, for a project. */
-export function findUnfinishedMove(root: string): ProjectMoveRecord | null {
+/** A move another live process is running right now for this project, as its source or destination. */
+export function findMoveInProgress(root: string): ProjectMoveRecord | null {
   return listMoveRecords().find(
-    (record) => record.state === "running" && (record.sourceRoot === root || record.destinationRoot === root),
+    (record) => record.state === "running"
+      && (record.sourceRoot === root || record.destinationRoot === root)
+      && isMoveProcessAlive(record),
   ) ?? null;
 }
 

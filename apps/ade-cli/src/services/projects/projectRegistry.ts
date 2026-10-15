@@ -8,7 +8,8 @@ import {
   type MachineAdeLayout,
 } from "./machineLayout";
 import { codedError } from "../../../../desktop/src/shared/codedError";
-import { resolveMachineAdeDir } from "./machineLayout";
+import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
@@ -419,7 +420,7 @@ export class ProjectRegistry {
     aliases[oldId] = newId;
     delete aliases[newId];
     fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
-    fs.writeFileSync(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
+    writeFileAtomic(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
     return next;
   }
 
@@ -598,35 +599,10 @@ export function assertLocalProjectDataAvailable(projectRoot: string): void {
  * project and the process running the move.
  */
 export function assertProjectNotBeingMoved(projectRoot: string): void {
-  const dir = path.join(resolveMachineAdeDir(), "project-moves");
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return;
-  }
-  const root = path.resolve(projectRoot);
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    let record: { state?: unknown; sourceRoot?: unknown; destinationRoot?: unknown; pid?: unknown };
-    try {
-      record = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as typeof record;
-    } catch {
-      continue;
-    }
-    if (record.state !== "running" || typeof record.pid !== "number") continue;
-    if (record.sourceRoot !== root && record.destinationRoot !== root) continue;
-    try {
-      process.kill(record.pid, 0);
-    } catch {
-      continue; // the process that ran it is gone; the next ADE start settles it
-    }
-    throw codedError("This project is being moved. It opens again when the move finishes.", "project_moving");
-  }
+  // A move whose process is gone is settled by the next ADE start instead.
+  if (!findMoveInProgress(path.resolve(projectRoot))) return;
+  throw codedError("This project is being moved. It opens again when the move finishes.", "project_moving");
 }
-
-/** Written into a project's old folder when it moves (see projectMove/projectMoveEngine.ts). */
-export const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
 
 /**
  * A project's old folder is kept after a move until the person deletes it.
@@ -636,23 +612,13 @@ export const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
 export function assertProjectNotMovedAway(projectRoot: string): void {
   // Any folder inside the old copy counts too: its lanes live there, and a
   // lane folder opened on its own would otherwise slip past.
-  let movedTo: string | null = null;
-  let found = false;
-  for (let dir = path.resolve(projectRoot); ; dir = path.dirname(dir)) {
-    const marker = path.join(dir, PROJECT_MOVED_MARKER);
-    if (fs.existsSync(marker)) {
-      found = true;
-      try {
-        const parsed = JSON.parse(fs.readFileSync(marker, "utf8")) as { movedTo?: unknown };
-        movedTo = typeof parsed.movedTo === "string" ? parsed.movedTo : null;
-      } catch {
-        movedTo = null;
-      }
-      break;
-    }
+  let marker: MovedMarker | null = null;
+  for (let dir = path.resolve(projectRoot); !marker; dir = path.dirname(dir)) {
+    marker = readMovedMarker(dir);
     if (path.dirname(dir) === dir) break;
   }
-  if (!found) return;
+  if (!marker) return;
+  const { movedTo } = marker;
   throw codedError(
     movedTo
       ? `This is the old copy of a project that moved to ${movedTo}. Open it there. ADE keeps this copy only until you delete it.`
