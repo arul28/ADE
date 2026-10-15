@@ -474,7 +474,7 @@ function CloudLoginForm({
       </label>
       <div className="ade-oc-cloud-note">
         <CloudCheck size={13} aria-hidden />
-        Saved to your ADE account. Each of your computers uses its own {cloudMethodName(method.methodId ?? "").toLowerCase()}.
+        Saved to your ADE account. Each of your computers uses its own {cloudMethodName(method.methodId ?? "")}.
       </div>
       <div className="ade-oc-cloud-actions">
         {onBack ? (
@@ -526,7 +526,7 @@ export function OpenCodeAddAccountDialog({
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title={cloudChoice ? cloudChoice.method.label : "Add an account"}
+      title={cloudChoice ? cloudMethodName(cloudChoice.method.methodId ?? "") : "Add an account"}
       description={cloudChoice
         ? `${providerName} · uses a login the computer already has. No key is stored.`
         : `${providerName} · OpenCode uses one account at a time.`}
