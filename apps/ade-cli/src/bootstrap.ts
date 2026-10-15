@@ -129,6 +129,8 @@ import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
+import { createJiraCredentialService } from "../../desktop/src/main/services/jira/jiraCredentialService";
+import { createJiraService } from "../../desktop/src/main/services/jira/jiraService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -453,6 +455,7 @@ export type AdeRuntime = {
   linearAgentRuntime?: LinearAgentRuntime | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
+  jiraService?: ReturnType<typeof createJiraService> | null;
   accountAuthService?: AccountAuthService | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
@@ -1038,6 +1041,7 @@ export async function createAdeRuntime(args: {
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
+    let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
     let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     const publishLinearChatLink = createLinearChatLinkPublisher({
@@ -2190,6 +2194,9 @@ export async function createAdeRuntime(args: {
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+    jiraServiceRef = createJiraService({
+      credentials: createJiraCredentialService({ credentialStore: new EncryptedFileCredentialStore() }),
+    });
     prServiceRef = headlessLinearServices.prService;
     // Follow-up PR branches an agent cuts inside its lane worktree: link their
     // PRs to the lane (and to the chats that were open when they were made).
@@ -3327,6 +3334,7 @@ export async function createAdeRuntime(args: {
         linearCredentialService: headlessLinearServices.linearCredentialService,
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
+        getJiraService: () => jiraServiceRef,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
         macDesktopService,
@@ -3500,6 +3508,7 @@ export async function createAdeRuntime(args: {
       ctoMemoryService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
+      jiraService: jiraServiceRef,
       accountAuthService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
       linearOAuthService,

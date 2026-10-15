@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Whether the Linear and GitHub Issues buttons show in the top bar.
+ * Whether the Linear, GitHub Issues and Jira buttons show in the top bar.
  *
  * Desktop-only, this machine's choice, like the usage control beside them: the
  * phone's Work ⋯ menu always lists both. Hiding a button does not disconnect
@@ -11,18 +11,19 @@ import { useSyncExternalStore } from "react";
 export type IssueTopBarPreferences = {
   linear: boolean;
   github: boolean;
+  jira: boolean;
 };
 
 const STORAGE_KEY = "ade.issueTopBarPreferences";
 const CHANGE_EVENT = "ade:issue-top-bar-preferences-changed";
-const DEFAULTS: IssueTopBarPreferences = { linear: true, github: true };
+const DEFAULTS: IssueTopBarPreferences = { linear: true, github: true, jira: true };
 
 function read(): IssueTopBarPreferences {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULTS;
     const saved = JSON.parse(raw) as Partial<IssueTopBarPreferences>;
-    return { linear: saved.linear !== false, github: saved.github !== false };
+    return { linear: saved.linear !== false, github: saved.github !== false, jira: saved.jira !== false };
   } catch {
     return DEFAULTS;
   }

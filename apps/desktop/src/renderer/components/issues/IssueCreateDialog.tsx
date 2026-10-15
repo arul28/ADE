@@ -9,7 +9,10 @@ import { requestLinearIssueLaunch } from "../../lib/linearLaunchRequests";
 import { announceIssueCreated, type IssueCreateRequest } from "../../lib/issueCreateRequests";
 import { showToast } from "../app/toast/toastStore";
 import { LinearMark } from "../lanes/linearBrand";
+import { JiraMark } from "../lanes/jiraBrand";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
+import { settingsRouteFor } from "../settings/settingsManifest";
 import { GitHubIssueFormFields } from "./GitHubIssueFormFields";
 import {
   loadGitHubRepoCatalog,
@@ -23,6 +26,8 @@ import {
   ChipPicker,
   GitHubCreateChips,
   GitHubMoreFields,
+  JiraCreateChips,
+  JiraMoreFields,
   LinearCreateChips,
   LinearMoreFields,
   linearTeamProjects,
@@ -32,18 +37,30 @@ import {
   rememberIssueProvider,
   writeIssueDraft,
   type GitHubFields,
+  type JiraFields,
   type IssueDraft,
   type IssueProvider,
   type LinearFields,
 } from "./issueCreateDraft";
-import { submitGitHubIssue, submitLinearIssue } from "./issueCreateSubmit";
+import { submitGitHubIssue, submitJiraIssue, submitLinearIssue } from "./issueCreateSubmit";
 import type { PickerOption } from "./IssuePickerMenu";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useLinearPickerCatalog } from "./linearIssueStore";
 import { useSimilarIssues } from "./useSimilarIssues";
+import type { JiraCreateMeta, JiraUser } from "../../../shared/types/jira";
+import {
+  announceJiraIssueCreated,
+  loadJiraAssignableUsers,
+  loadJiraCreateMeta,
+  loadJiraIssue,
+  loadJiraLabels,
+  noteJiraIssueCreated,
+  useJiraConnectionStatus,
+  useJiraProjects,
+} from "./jiraIssueStore";
 
 /**
- * Starting a new issue in Linear or GitHub, in one composer: a big title, the
+ * Starting a new issue in Linear, GitHub or Jira, in one composer: a big title, the
  * description, a row of property chips (the same pickers the viewer uses), and
  * a `⋯` row for the fields most issues skip. Templates fill it in; a GitHub
  * issue form replaces the description with its own fields.
@@ -71,7 +88,7 @@ function captureIssueCreated(provider: IssueProvider): void {
     properties: {
       feature: "issues",
       action: "issue_created",
-      outcome: provider === "linear" ? "tracker_linear" : "tracker_github",
+      outcome: provider === "linear" ? "tracker_linear" : provider === "github" ? "tracker_github" : "tracker_jira",
       source: "renderer_route",
     },
     dedupeKey: `issue_created:${provider}`,
@@ -98,6 +115,7 @@ function imageFiles(list: FileList | null | undefined): File[] {
 export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRequest; onClose: () => void }) {
   const projectRoot = useActiveProjectRoot();
   const parent = request.prefill?.parent ?? null;
+  const jiraParent = parent as unknown as { provider?: string; siteUrl?: string; key?: string } | null;
   // One read of the draft for the whole form, keyed to this project.
   const [initial] = useState(() => initialIssueForm(request, projectRoot));
   const [provider, setProvider] = useState<IssueProvider>(initial.provider);
@@ -105,6 +123,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const [body, setBody] = useState(initial.body);
   const [linear, setLinear] = useState<LinearFields>(initial.linear);
   const [github, setGitHub] = useState<GitHubFields>(initial.github);
+  const [jira, setJira] = useState<JiraFields>(initial.jira);
   const [formAnswers, setFormAnswers] = useState<GitHubIssueFormAnswers>(initial.formAnswers);
   const draftRef = useRef<IssueDraft | null>(null);
   const providerRef = useRef(provider);
@@ -123,10 +142,10 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     rememberIssueProvider(provider);
   }, [provider]);
   useEffect(() => {
-    draftRef.current = { title, body, linear, github, formAnswers };
+    draftRef.current = { title, body, linear, github, jira, formAnswers };
     const timer = window.setTimeout(() => writeIssueDraft(provider, projectRoot, draftRef.current), 400);
     return () => window.clearTimeout(timer);
-  }, [body, formAnswers, github, linear, projectRoot, provider, title]);
+  }, [body, formAnswers, github, jira, linear, projectRoot, provider, title]);
   // Closing inside the 400 ms window must not lose the last keystrokes. A
   // create clears `draftRef` first, so nothing is written back after it.
   useEffect(() => () => {
@@ -186,6 +205,70 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const formTemplate = template?.kind === "form" ? template : null;
   const templateRequired = provider === "github" && createCatalog.templates?.blankIssuesEnabled === false && templates.length > 0;
 
+  /* Jira data */
+  const jiraConnection = useJiraConnectionStatus(provider === "jira");
+  const jiraProjects = useJiraProjects(provider === "jira" && jiraConnection.status?.connected === true, jiraConnection.status?.siteUrl ?? "");
+  const [jiraMeta, setJiraMeta] = useState<JiraCreateMeta | null>(null);
+  const [jiraMetaError, setJiraMetaError] = useState<string | null>(null);
+  const [jiraUsers, setJiraUsers] = useState<JiraUser[]>([]);
+  const [jiraLabels, setJiraLabels] = useState<string[]>([]);
+  const [jiraCatalogError, setJiraCatalogError] = useState<string | null>(null);
+  const [jiraBoundProjectKeys, setJiraBoundProjectKeys] = useState<string[]>([]);
+  const [jiraBindingError, setJiraBindingError] = useState<string | null>(null);
+  const [jiraBindingRetry, setJiraBindingRetry] = useState(0);
+  useEffect(() => {
+    if (provider !== "jira") return;
+    let cancelled = false;
+    setJiraBindingError(null);
+    void window.ade.projectConfig.get()
+      .then((snapshot) => {
+        if (!cancelled) setJiraBoundProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setJiraBindingError(error instanceof Error ? error.message : "Couldn't load this project's Jira settings.");
+      });
+    return () => { cancelled = true; };
+  }, [jiraBindingRetry, projectRoot, provider]);
+  useEffect(() => {
+    if (provider !== "jira" || !jiraProjects.projects.length || jira.projectKey) return;
+    const projectKey = jiraBoundProjectKeys.find((key) => jiraProjects.projects.some((entry) => entry.key === key))
+      ?? jiraProjects.projects[0]?.key;
+    if (projectKey) setJira((current) => current.projectKey ? current : { ...current, projectKey });
+  }, [jira.projectKey, jiraBoundProjectKeys, jiraProjects.projects, provider]);
+  useEffect(() => {
+    if (provider !== "jira" || !jiraConnection.status?.connected || !jira.projectKey) {
+      setJiraMeta(null);
+      setJiraUsers([]);
+      setJiraLabels([]);
+      return;
+    }
+    let cancelled = false;
+    setJiraMeta(null);
+    setJiraMetaError(null);
+    setJiraCatalogError(null);
+    void loadJiraCreateMeta(projectRoot, jira.projectKey).then((meta) => {
+      if (cancelled) return;
+      setJiraMeta(meta);
+      setJira((current) => {
+        if (current.issueTypeId && meta?.issueTypes.some((entry) => entry.id === current.issueTypeId)) return current;
+        const firstSupported = meta?.issueTypes.find((entry) => !entry.fields.some((field) => field.required && !field.supported));
+        return { ...current, issueTypeId: firstSupported?.id ?? "" };
+      });
+    }).catch((error: unknown) => {
+      if (!cancelled) setJiraMetaError(error instanceof Error ? error.message : "Couldn't load Jira issue types.");
+    });
+    void Promise.all([
+      loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }),
+      loadJiraLabels(projectRoot),
+    ]).then(([users, labels]) => {
+      if (!cancelled) { setJiraUsers(users); setJiraLabels(labels); }
+    }).catch((error: unknown) => {
+      if (!cancelled) setJiraCatalogError(error instanceof Error ? error.message : "Couldn't load Jira fields.");
+    });
+    return () => { cancelled = true; };
+  }, [jira.projectKey, jiraConnection.status?.connected, projectRoot, provider]);
+  const refreshJiraProjects = useCallback(() => { void jiraProjects.refresh().catch(() => undefined); }, [jiraProjects.refresh]);
+
   const applyGitHubTemplate = (next: GitHubIssueTemplate | null) => {
     setGitHub((current) => ({
       ...current,
@@ -220,7 +303,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   };
 
   /* Similar issues, from what ADE already read */
-  const similar = useSimilarIssues(provider, repo, title);
+  const similar = useSimilarIssues(provider === "linear" ? "linear" : "github", provider === "github" ? repo : null, title);
 
   /* Pictures */
   const insertAtCursor = useCallback((text: string) => {
@@ -242,6 +325,10 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         dataBase64: await fileToBase64(file),
       })));
       setAttachments((current) => [...current, ...next].slice(0, 10));
+      return;
+    }
+    if (provider === "jira") {
+      setError("Jira image attachments are not available here. Add a link in the description instead.");
       return;
     }
     const upload = window.ade?.cto?.uploadLinearFile;
@@ -307,6 +394,26 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           openIssueRef({ ref: { provider: "linear", identifier: issue.identifier, url: issue.url }, source: "issue-viewer" });
         }
       } else {
+        if (provider === "jira") {
+          if (!jiraConnection.status?.connected || !jiraConnection.status.siteUrl) {
+            throw new Error("Connect Jira in Settings before creating an issue.");
+          }
+          const created = await submitJiraIssue({ title: trimmed, description: `${body}${contextFooter}`, fields: jira, meta: jiraMeta });
+          announceJiraIssueCreated(jiraConnection.status.siteUrl, created.key);
+          void loadJiraIssue(projectRoot, { provider: "jira", siteUrl: jiraConnection.status.siteUrl, key: created.key }, { force: true })
+            .then((issue) => { if (issue) noteJiraIssueCreated(projectRoot, issue); })
+            .catch(() => undefined);
+          showToast({
+            tone: "success",
+            title: `Created ${created.key}`,
+            message: trimmed,
+            actions: [{ label: "Start lane", onClick: () => showToast({ tone: "info", title: "Jira lane creation is coming soon", message: "Jira issue launch will be connected in the shared launcher." }) }],
+          });
+          captureIssueCreated("jira");
+          if (!createMore && request.origin !== "pane") {
+            openIssueRef({ ref: { provider: "jira", siteUrl: jiraConnection.status.siteUrl, key: created.key, url: created.url }, source: "issue-viewer" });
+          }
+        } else {
         const { issue, warnings } = await submitGitHubIssue({
           repo,
           title: trimmed,
@@ -332,6 +439,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         if (!createMore && request.origin !== "pane") {
           openIssueRef({ ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url }, source: "issue-viewer" });
         }
+        }
       }
       if (createMore) reset();
       else {
@@ -352,14 +460,14 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   /* Template chip */
   const templateOptions: PickerOption[] = provider === "linear"
     ? [{ id: "", label: "No template" }, ...(createOptions?.templates ?? []).map((entry) => ({ id: entry.id, label: entry.name }))]
-    : [
+    : provider === "github" ? [
       ...(createCatalog.templates?.blankIssuesEnabled !== false ? [{ id: "", label: "Blank issue" }] : []),
       ...templates.map((entry) => ({ id: entry.key, label: entry.name, keywords: entry.about ?? "" })),
-    ];
-  const templateLabel = provider === "linear" ? linearTemplate?.name ?? null : template?.name ?? null;
-  const hasTemplates = provider === "linear" ? (createOptions?.templates.length ?? 0) > 0 : templates.length > 0;
+    ] : [];
+  const templateLabel = provider === "linear" ? linearTemplate?.name ?? null : provider === "github" ? template?.name ?? null : null;
+  const hasTemplates = provider === "linear" ? (createOptions?.templates.length ?? 0) > 0 : provider === "github" && templates.length > 0;
 
-  const scopeLabel = provider === "linear" ? null : repo ? `${repo.owner}/${repo.name}` : "No GitHub repository";
+  const scopeLabel = provider === "linear" ? null : provider === "github" ? (repo ? `${repo.owner}/${repo.name}` : "No GitHub repository") : jira.projectKey || jiraConnection.status?.siteUrl || "Jira";
 
   return (
     <Dialog
@@ -386,7 +494,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       >
         <header className="kit-card-head border-b border-[color:var(--kit-rule)]">
           {parent ? (
-            provider === "linear" ? <LinearMark size={14} /> : <GithubLogo size={14} weight="fill" />
+            provider === "linear" ? <LinearMark size={14} /> : provider === "github" ? <GithubLogo size={14} weight="fill" /> : <JiraMark size={14} />
           ) : (
             <div className="kit-seg" data-case="sentence" role="group" aria-label="Tracker">
               <button type="button" className="inline-flex items-center gap-1" aria-pressed={provider === "linear"} onClick={() => setProvider("linear")}>
@@ -394,6 +502,9 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               </button>
               <button type="button" className="inline-flex items-center gap-1" aria-pressed={provider === "github"} onClick={() => setProvider("github")}>
                 <GithubLogo size={11} weight="fill" /> GitHub
+              </button>
+              <button type="button" className="inline-flex items-center gap-1" aria-pressed={provider === "jira"} onClick={() => setProvider("jira")}>
+                <JiraMark size={11} /> Jira
               </button>
             </div>
           )}
@@ -410,7 +521,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             <span className="truncate text-[12px] text-[color:var(--kit-text-2)]">{scopeLabel}</span>
           )}
           <span className="text-[color:var(--kit-text-3)]">›</span>
-          <span className="text-[12px]">{parent ? `New sub-issue of ${parent.provider === "linear" ? parent.identifier : `#${parent.number}`}` : "New issue"}</span>
+          <span className="text-[12px]">{parent ? `New sub-issue of ${parent.provider === "linear" ? parent.identifier : jiraParent?.provider === "jira" ? jiraParent.key : `#${parent.number}`}` : "New issue"}</span>
           <span className="ml-auto flex items-center gap-1">
             {hasTemplates ? (
               <ChipPicker
@@ -418,11 +529,11 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 display={templateLabel ?? (templateRequired ? "Pick a template" : "Template")}
                 muted={!templateLabel}
                 options={templateOptions}
-                selected={[provider === "linear" ? linear.templateId ?? "" : github.templateKey ?? ""]}
+                selected={[provider === "linear" ? linear.templateId ?? "" : provider === "github" ? github.templateKey ?? "" : ""]}
                 placeholder="Template…"
                 onPick={(id) => {
                   if (provider === "linear") applyLinearTemplate(id || null);
-                  else applyGitHubTemplate(templates.find((entry) => entry.key === id) ?? null);
+                  else if (provider === "github") applyGitHubTemplate(templates.find((entry) => entry.key === id) ?? null);
                 }}
               />
             ) : null}
@@ -433,6 +544,65 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-3 pt-4">
+          {provider === "jira" && !jiraConnection.loading && !jiraConnection.status?.connected ? (
+            <div className="mb-3">
+              <Banner layout="inline" model={{
+                id: "jira-create-not-connected",
+                tone: "warning",
+                title: "Jira is not connected",
+                detail: jiraConnection.status?.error?.message ?? "Connect Jira on this machine before creating issues.",
+                actions: [
+                  { label: "Jira settings", onClick: () => { window.location.hash = `#${settingsRouteFor("integrations.jira")}`; } },
+                  { label: "Retry", onClick: () => { void jiraConnection.refresh(); } },
+                ],
+              }} />
+            </div>
+          ) : null}
+          {provider === "jira" && jiraBindingError ? (
+            <div className="mb-3"><Banner layout="inline" model={{
+              id: "jira-create-project-binding-error",
+              tone: "warning",
+              title: "Couldn't load this project's Jira bindings",
+              detail: jiraBindingError,
+              actions: [{ label: "Retry", onClick: () => setJiraBindingRetry((value) => value + 1) }],
+            }} /></div>
+          ) : null}
+          {provider === "jira" && jiraProjects.error ? (
+            <div className="mb-3"><Banner layout="inline" model={{
+              id: "jira-create-projects-error",
+              tone: "warning",
+              title: "Couldn't load Jira projects",
+              detail: jiraProjects.error,
+              actions: [{ label: "Retry", onClick: refreshJiraProjects }],
+            }} /></div>
+          ) : null}
+          {provider === "jira" && jiraMetaError ? (
+            <div className="mb-3"><Banner layout="inline" model={{
+              id: "jira-create-meta-error",
+              tone: "warning",
+              title: `Couldn't load ${jira.projectKey} issue types`,
+              detail: jiraMetaError,
+              actions: [{ label: "Retry", onClick: () => {
+                void loadJiraCreateMeta(projectRoot, jira.projectKey, true).then(setJiraMeta).catch((cause: unknown) => setJiraMetaError(cause instanceof Error ? cause.message : "Couldn't load Jira issue types."));
+              } }],
+            }} /></div>
+          ) : null}
+          {provider === "jira" && jiraCatalogError ? (
+            <div className="mb-3"><Banner layout="inline" model={{
+              id: "jira-create-fields-error",
+              tone: "warning",
+              title: "Couldn't load Jira assignees or labels",
+              detail: jiraCatalogError,
+              actions: [{ label: "Retry", onClick: () => {
+                if (!jira.projectKey) return;
+                setJiraCatalogError(null);
+                void Promise.all([
+                  loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }),
+                  loadJiraLabels(projectRoot),
+                ]).then(([users, nextLabels]) => { setJiraUsers(users); setJiraLabels(nextLabels); }).catch((cause: unknown) => setJiraCatalogError(cause instanceof Error ? cause.message : "Couldn't load Jira fields."));
+              } }],
+            }} /></div>
+          ) : null}
           <input
             ref={titleRef}
             autoFocus
@@ -482,7 +652,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               <textarea
                 ref={bodyRef}
                 aria-label="Issue description"
-                placeholder="Add a description… (Markdown; paste or drop pictures)"
+                placeholder={provider === "jira" ? "Add a description… (Markdown)" : "Add a description… (Markdown; paste or drop pictures)"}
                 className="min-h-[160px] w-full resize-y bg-transparent text-[13px] leading-relaxed text-fg/90 outline-none placeholder:text-[color:var(--kit-text-3)] focus:!shadow-none"
                 value={body}
                 onChange={(event) => setBody(event.target.value)}
@@ -528,7 +698,9 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         <div className="flex flex-wrap items-center gap-1.5 border-t border-[color:var(--kit-rule)] px-4 py-2.5">
           {provider === "linear"
             ? <LinearCreateChips linear={linear} setLinear={setLinear} catalog={catalog} teamKey={teamKey} />
-            : <GitHubCreateChips github={github} setGitHub={setGitHub} repoCatalog={repoCatalog} types={createCatalog.types} />}
+            : provider === "github"
+              ? <GitHubCreateChips github={github} setGitHub={setGitHub} repoCatalog={repoCatalog} types={createCatalog.types} />
+              : <JiraCreateChips jira={jira} setJira={setJira} projects={jiraProjects.projects} meta={jiraMeta} users={jiraUsers} labels={jiraLabels} />}
           <button
             type="button"
             className="kit-icon-btn"
@@ -550,8 +722,10 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                   createOptions={createOptions}
                   parentLocked={parent?.provider === "linear"}
                 />
-              ) : (
+              ) : provider === "github" ? (
                 <GitHubMoreFields github={github} setGitHub={setGitHub} parentLocked={parent?.provider === "github"} />
+              ) : (
+                <JiraMoreFields jira={jira} setJira={setJira} parentLocked={jiraParent?.provider === "jira"} />
               )}
             </div>
           ) : null}
@@ -567,7 +741,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           <button
             type="button"
             className="kit-btn kit-btn-primary"
-            disabled={busy || uploads > 0 || (provider === "github" && !repo)}
+            disabled={busy || uploads > 0 || (provider === "github" && !repo) || (provider === "jira" && (!jiraConnection.status?.connected || !jira.projectKey || !jira.issueTypeId))}
             onClick={() => void submit()}
           >
             {busy ? <CircleNotch size={12} className="animate-spin" /> : null}

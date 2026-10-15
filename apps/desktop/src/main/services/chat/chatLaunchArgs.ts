@@ -11,6 +11,7 @@ import type {
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
+import { normalizeChatContextAttachments } from "../../../shared/chatContextAttachments";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -136,9 +137,11 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
 /** Every `chat.send` field except the session; `text` is only type-checked here. */
 function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<AgentChatSendArgs, "sessionId" | "text"> {
   const attachments = parseAgentChatFileRefs(value.attachments);
+  const contextAttachments = normalizeChatContextAttachments(value.contextAttachments);
   return {
     ...(asTrimmedString(value.displayText) ? { displayText: asTrimmedString(value.displayText)! } : {}),
     ...(attachments?.length ? { attachments } : {}),
+    ...(contextAttachments.length ? { contextAttachments } : {}),
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
     ...(asTrimmedString(value.executionMode) ? { executionMode: asTrimmedString(value.executionMode)! as AgentChatSendArgs["executionMode"] } : {}),
     ...(asTrimmedString(value.interactionMode) ? { interactionMode: asTrimmedString(value.interactionMode)! as AgentChatSendArgs["interactionMode"] } : {}),
@@ -190,9 +193,6 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   const message: ChatLaunchChatArgs["message"] = {
     text: rawMessage.text,
     ...parseAgentChatMessageFields(rawMessage),
-    ...(Array.isArray(rawMessage.contextAttachments)
-      ? { contextAttachments: rawMessage.contextAttachments.filter(isRecord) as unknown as NonNullable<AgentChatSendArgs["contextAttachments"]> }
-      : {}),
     ...(runtime ? { runtime } : {}),
   };
   return { create, message };

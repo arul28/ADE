@@ -24,12 +24,14 @@ import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
 import { LinearMark } from "../lanes/linearBrand";
+import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LaneBehaviorSection } from "./LaneBehaviorSection";
 import { LaneTemplatesSection } from "./LaneTemplatesSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
+import { JiraSection } from "./JiraSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
@@ -301,6 +303,12 @@ const TAB_GROUPS = {
     icon: <LinearMark size={15} />,
     tone: "violet",
   },
+  jira: {
+    title: "Jira",
+    description: "Issues and the Jira Cloud site connected on this machine.",
+    icon: <JiraMark size={15} />,
+    tone: "blue",
+  },
   disk: {
     title: "Disk",
     description: "What ADE keeps on this machine, and what you can clear.",
@@ -433,6 +441,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   integrations: [
     { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
+    { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", linksToTabMachine: true, title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],

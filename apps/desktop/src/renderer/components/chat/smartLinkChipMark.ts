@@ -1,4 +1,5 @@
 import type { SmartLinkProvider } from "../../../shared/smartLinks";
+import { JIRA_LOGO_PATH } from "../lanes/jiraBrand";
 import { LINEAR_LOGO_PATH } from "../lanes/linearBrand";
 
 // Inline SVG brand marks for composer smart-link chips. The chips are built
@@ -39,6 +40,8 @@ export function smartLinkChipMarkSvg(provider: SmartLinkProvider): string | null
       return svg(`<path fill-rule="evenodd" clip-rule="evenodd" d="${GITHUB_PATH}" />`);
     case "linear":
       return svg(`<path d="${LINEAR_LOGO_PATH}" />`);
+    case "jira":
+      return svg(`<path d="${JIRA_LOGO_PATH}" />`);
     case "ade":
       return svg(`<path fill-rule="evenodd" clip-rule="evenodd" d="${ADE_PATH}" />`);
     case "generic":

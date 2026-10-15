@@ -37,6 +37,7 @@ export type IssueOpenRequest = {
 
 const toolChannel = createPendingRequestChannel<IssueOpenRequest>("issue-tool");
 const sheetChannel = createPendingRequestChannel<IssueOpenRequest>("issue-sheet");
+const jiraPaneChannel = createPendingRequestChannel<void>("jira-issues-pane");
 
 const inPlaceHosts = new Set<symbol>();
 
@@ -81,3 +82,12 @@ export const clearPendingIssueToolRequest = toolChannel.clearPending;
 export const subscribeIssueSheetRequests = sheetChannel.subscribe;
 export const takePendingIssueSheetRequest = sheetChannel.takePending;
 export const clearPendingIssueSheetRequest = sheetChannel.clearPending;
+
+/** Ask the top-bar Jira button to open its pane, even from the issue sheet. */
+export function requestJiraIssuesPaneOpen(): void {
+  jiraPaneChannel.request(undefined);
+}
+
+export const subscribeJiraIssuesPaneRequests = jiraPaneChannel.subscribe;
+export const takePendingJiraIssuesPaneRequest = jiraPaneChannel.takePending;
+export const clearPendingJiraIssuesPaneRequest = jiraPaneChannel.clearPending;

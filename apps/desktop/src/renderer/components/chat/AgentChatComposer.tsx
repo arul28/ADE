@@ -3,12 +3,12 @@ import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
-import { linearIssueRef } from "../../../shared/issueRefs";
+import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -58,8 +58,11 @@ import {
   buildChatContextAttachmentPrompt,
   chatContextAttachmentKey,
   makeGitHubIssueContextAttachment,
+  makeJiraIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
   getModelById,
   modelSupportsFastMode,
@@ -162,7 +165,10 @@ import {
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { JiraMark, JiraStatusIcon, JIRA_BRAND } from "../lanes/jiraBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPaneModal } from "../app/LinearPaneModal";
+import { Banner } from "../ui/notice";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { showToast } from "../app/toast/toastStore";
 import {
@@ -1978,6 +1984,167 @@ function ActiveTurnStopButton({
   );
 }
 
+function JiraIssueSelectModal({
+  open,
+  pin,
+  selectedIssue,
+  onOpenChange,
+  onSelectIssue,
+  onRemoveIssue,
+}: {
+  open: boolean;
+  pin: OpenProjectBinding | null;
+  selectedIssue: LaneJiraIssue | null;
+  onOpenChange: (open: boolean) => void;
+  onSelectIssue: (issue: LaneJiraIssue) => void;
+  onRemoveIssue: (issue: LaneJiraIssue) => void;
+}) {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [issues, setIssues] = useState<LaneJiraIssue[]>([]);
+  const [siteLabel, setSiteLabel] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const jira = window.ade?.jira;
+          if (!jira?.getConnectionStatus || !jira.listIssues) {
+            throw new Error("Jira is not available in this ADE window.");
+          }
+          const status = await jira.getConnectionStatus(pinRef.current);
+          if (!status.connected || !status.siteUrl) {
+            throw new Error(status.error?.message ?? "Connect Jira in Settings to attach an issue.");
+          }
+          const page = await jira.listIssues({
+            state: "all",
+            query: query || undefined,
+            limit: 50,
+          }, pinRef.current);
+          if (cancelled) return;
+          setSiteLabel(new URL(status.siteUrl).host);
+          setIssues(page.issues
+            .map((issue) => jiraIssueToLaneIssue(issue, status.siteUrl!))
+            .filter((issue): issue is LaneJiraIssue => issue != null));
+        } catch (cause) {
+          if (cancelled) return;
+          setError(cause instanceof Error ? cause.message : "Jira request failed.");
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, query ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, pinKey, query, refreshKey]);
+
+  return (
+    <LinearPaneModal
+      open={open}
+      ariaLabel="Attach Jira issue"
+      loading={loading}
+      brand={{
+        surface: JIRA_BRAND.surface,
+        surfaceHover: JIRA_BRAND.surfaceHover,
+        accent: JIRA_BRAND.primaryBright,
+        border: JIRA_BRAND.border,
+      }}
+      mark={<JiraMark size={14} />}
+      headerTitle="Jira"
+      headerSubtitle={siteLabel ?? "Select an issue"}
+      refreshTitle="Refresh Jira issues"
+      closeTitle="Close Jira issues"
+      onRefresh={() => setRefreshKey((value) => value + 1)}
+      onClose={() => onOpenChange(false)}
+    >
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="shrink-0 border-b border-[color:var(--kit-rule)] p-3">
+          <label className="kit-input flex items-center gap-2 px-2">
+            <MagnifyingGlass size={13} className="shrink-0 text-[color:var(--kit-text-3)]" />
+            <input
+              aria-label="Search Jira issues"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-fg outline-none placeholder:text-[color:var(--kit-text-3)]"
+              placeholder="Search Jira issues…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {error ? (
+            <Banner layout="inline" model={{
+              id: "chat-jira-issue-picker-error",
+              tone: "error",
+              title: "Couldn't load Jira issues",
+              detail: error,
+              actions: [{ label: "Retry", onClick: () => setRefreshKey((value) => value + 1) }],
+            }} />
+          ) : loading && issues.length === 0 ? (
+            <div className="flex items-center gap-2 p-3 text-[12px] text-[color:var(--kit-text-3)]">
+              <CircleNotch size={13} className="animate-spin" /> Loading Jira issues…
+            </div>
+          ) : issues.length === 0 ? (
+            <p className="p-3 text-[12px] text-[color:var(--kit-text-3)]">No Jira issues match.</p>
+          ) : (
+            issues.map((issue) => {
+              const attached = selectedIssue?.id === issue.id;
+              return (
+                <div key={issue.id} className="kit-row flex items-center gap-2 !items-start !py-2">
+                  <span className="mt-[2px]"><JiraStatusIcon category={issue.statusCategory} /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block line-clamp-2 text-[12.5px] leading-snug text-fg/90">{issue.title}</span>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[color:var(--kit-text-3)]">
+                      <span className="kit-num">{issue.key}</span>
+                      <span>·</span>
+                      <span>{issue.statusName}</span>
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="kit-btn kit-btn-ghost shrink-0"
+                    aria-label={`${attached ? "Detach" : "Attach"} ${issue.key}`}
+                    onClick={() => {
+                      if (attached) onRemoveIssue(issue);
+                      else {
+                        onSelectIssue(issue);
+                        onOpenChange(false);
+                      }
+                    }}
+                  >
+                    {attached ? "Detach" : "Attach"}
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+        {loading && issues.length > 0 ? (
+          <div className="flex shrink-0 items-center gap-2 border-t border-[color:var(--kit-rule)] px-3 py-1.5 text-[11px] text-[color:var(--kit-text-3)]">
+            <CircleNotch size={12} className="animate-spin" /> Updating Jira issues…
+          </div>
+        ) : null}
+      </div>
+    </LinearPaneModal>
+  );
+}
+
 export function AgentChatComposer({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -2516,6 +2683,7 @@ export function AgentChatComposer({
   const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
+  const [jiraIssuePickerOpen, setJiraIssuePickerOpen] = useState(false);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -6493,6 +6661,26 @@ export function AgentChatComposer({
               </span>
             </button>
           ) : null}
+          <button
+            type="button"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            disabled={!canAttachIssueContext}
+            onClick={() => {
+              if (!canAttachIssueContext) return;
+              setIssueContextMenuOpen(false);
+              setJiraIssuePickerOpen(true);
+            }}
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+              style={{ background: JIRA_BRAND.surfaceHover, color: JIRA_BRAND.primaryBright }}
+            >
+              <JiraMark size={11} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Jira issue</span>
+            </span>
+          </button>
         </div>
       </div>
     </ViewportOverlayPortal>
@@ -6506,6 +6694,11 @@ export function AgentChatComposer({
   const selectedGitHubContextIssue = contextAttachments.find(
     (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
       attachment.type === "github_issue"
+    ),
+  )?.issue ?? null;
+  const selectedJiraContextIssue = contextAttachments.find(
+    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "jira_issue" }> => (
+      attachment.type === "jira_issue"
     ),
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
@@ -6573,6 +6766,23 @@ export function AgentChatComposer({
           if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
         }}
       />
+      {jiraIssuePickerOpen ? (
+        <JiraIssueSelectModal
+          open
+          pin={chatRuntimePin}
+          selectedIssue={selectedJiraContextIssue}
+          onOpenChange={setJiraIssuePickerOpen}
+          onSelectIssue={(issue) => {
+            onAddContextAttachment?.(makeJiraIssueContextAttachment(issue));
+          }}
+          onRemoveIssue={(issue) => {
+            const attachment = contextAttachments.find(
+              (entry) => entry.type === "jira_issue" && entry.issue.id === issue.id,
+            );
+            if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
+          }}
+        />
+      ) : null}
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
         <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
           Prompt copies to clipboard on send.{" "}
@@ -6981,6 +7191,12 @@ export function AgentChatComposer({
                     ref: { provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url },
                     source: "chip",
                   });
+                  return;
+                }
+                if (attachment.type === "jira_issue") {
+                  const issue = attachment.issue;
+                  const ref = jiraIssueRef(issue.siteUrl, issue.key, issue.url);
+                  if (ref) openIssueRef({ ref, source: "chip" });
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}

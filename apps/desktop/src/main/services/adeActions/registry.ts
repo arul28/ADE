@@ -4035,6 +4035,7 @@ export function getAdeActionDomainServices(
     linear_agent: buildLinearAgentDomainService(runtime),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
     github: buildGithubDomainService(runtime),
+    jira: toService(runtime.jiraService),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),

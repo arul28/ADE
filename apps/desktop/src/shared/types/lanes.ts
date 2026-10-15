@@ -1,6 +1,7 @@
 import type { AgentChatSessionSummary } from "./chat";
 import type { LaneEnvInitProgress } from "./config";
 import type { ConflictOverlap, ConflictStatus } from "./conflicts";
+import type { LaneJiraIssue } from "./jira";
 import type { LinearPriorityLabel } from "./linearSync";
 import type {
   DiffChanges,
@@ -134,6 +135,7 @@ export type LaneSummary = {
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
   githubIssueLinks?: LaneGitHubIssueLink[];
+  jiraIssueLinks?: LaneJiraIssueLink[];
 };
 
 export type LaneLinearIssue = {
@@ -277,11 +279,38 @@ export type LaneGitHubIssueLink = {
   updatedAt: string;
 };
 
+export type LaneJiraIssueLink = {
+  id: string;
+  laneId: string;
+  issue: LaneJiraIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type SessionGitHubIssueLink = {
   id: string;
   sessionId: string;
   laneId: string | null;
   issue: LaneGitHubIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SessionJiraIssueLink = {
+  id: string;
+  sessionId: string;
+  laneId: string | null;
+  issue: LaneJiraIssue;
   role: LaneLinearIssueLinkRole;
   source: LaneLinearIssueLinkSource;
   includeInPr: boolean;
@@ -387,6 +416,8 @@ export type CreateLaneArgs = {
   linearIssue?: LaneLinearIssue | null;
   /** A GitHub issue the lane is for: linked to the lane itself, so its PR says "Closes #N". */
   githubIssue?: LaneGitHubIssue | null;
+  /** A Jira issue the lane is for; linked to the lane itself for PR references. */
+  jiraIssue?: LaneJiraIssue | null;
 };
 
 export type CreateChildLaneArgs = {

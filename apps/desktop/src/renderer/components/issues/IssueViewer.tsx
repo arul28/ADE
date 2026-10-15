@@ -1,5 +1,6 @@
 import React from "react";
 import { GitHubIssueViewer } from "./GitHubIssueViewer";
+import { JiraIssueViewer } from "./JiraIssueViewer";
 import type { IssueViewerProps } from "./issueViewerParts";
 import { LinearIssueViewer } from "./LinearIssueViewer";
 import "./issueViewer.css";
@@ -16,5 +17,8 @@ export function IssueViewer(props: IssueViewerProps) {
   if (props.issueRef.provider === "linear") {
     return <LinearIssueViewer {...props} identifier={props.issueRef.identifier} />;
   }
-  return <GitHubIssueViewer {...props} githubRef={props.issueRef} />;
+  if (props.issueRef.provider === "github") {
+    return <GitHubIssueViewer {...props} githubRef={props.issueRef} />;
+  }
+  return <JiraIssueViewer {...props} jiraRef={props.issueRef} />;
 }

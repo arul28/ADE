@@ -83,6 +83,8 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // delegations, changes a Linear workspace for everyone in it.
   linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
   github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  // Jira credentials are machine-wide and never belong in an agent's hands.
+  jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
   // Linear webhook lifecycle mutates account-level state (registers/deletes a
   // webhook against the user's Linear organization), so it stays CTO-only;
@@ -310,6 +312,7 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   computer_use_artifacts: ["readArtifactRange"],
   // Mints the loopback stream token.
   mac_desktop: ["startStream"],
+  jira: ["connect"],
 };
 
 /**
@@ -364,6 +367,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archiveAndReclaim",
     "attachLinearIssueToSession",
     "attachGitHubIssueToSession",
+    "attachJiraIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -374,6 +378,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteTemplate",
     "detachLinearIssueFromSession",
     "detachGitHubIssueFromSession",
+    "detachJiraIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -405,6 +410,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listLinearIssuesForSession",
     "listGitHubIssuesForLaneSessions",
     "listGitHubIssuesForSession",
+    "listJiraIssuesForLaneSessions",
+    "listJiraIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -1005,6 +1012,23 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "publishCurrentProject",
     "setToken",
     "startAppUserDeviceAuth",
+  ],
+  jira: [
+    "getConnectionStatus",
+    "connect",
+    "disconnect",
+    "listProjects",
+    "listIssues",
+    "getIssue",
+    "listComments",
+    "addComment",
+    "updateIssue",
+    "listTransitions",
+    "transitionIssue",
+    "listAssignableUsers",
+    "listLabels",
+    "getCreateMeta",
+    "createIssue",
   ],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [

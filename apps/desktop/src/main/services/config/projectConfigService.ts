@@ -2045,6 +2045,36 @@ function mergeGithubConfig(
   return Object.keys(github).length ? github : undefined;
 }
 
+function coerceJiraProjectKeys(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const entry of value) {
+    const key = asString(entry)?.trim().toUpperCase();
+    if (!key || !/^[A-Z][A-Z0-9_]{0,9}$/.test(key) || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function coerceIssueTrackers(value: unknown): ProjectConfigFile["issueTrackers"] {
+  if (!isRecord(value) || !isRecord(value.jira)) return undefined;
+  const projectKeys = coerceJiraProjectKeys(value.jira.projectKeys);
+  return projectKeys.length ? { jira: { projectKeys } } : undefined;
+}
+
+function mergeIssueTrackers(
+  shared?: ProjectConfigFile["issueTrackers"],
+  local?: ProjectConfigFile["issueTrackers"],
+): EffectiveProjectConfig["issueTrackers"] {
+  const projectKeys = coerceJiraProjectKeys([
+    ...(shared?.jira?.projectKeys ?? []),
+    ...(local?.jira?.projectKeys ?? []),
+  ]);
+  return projectKeys.length ? { jira: { projectKeys } } : undefined;
+}
+
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return {
@@ -2077,6 +2107,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const laneCleanup = coerceLaneCleanupConfig(value.laneCleanup);
 
   const github = coerceGithubConfig(value.github);
+  const issueTrackers = coerceIssueTrackers(value.issueTrackers);
 
   const git = (() => {
     if (!isRecord(value.git)) return undefined;
@@ -2117,6 +2148,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(laneCleanup ? { laneCleanup } : {}),
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
+    ...(issueTrackers ? { issueTrackers } : {}),
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
@@ -2170,6 +2202,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.laneCleanup ? { laneCleanup: config.laneCleanup } : {}),
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
+    ...(config.issueTrackers ? { issueTrackers: config.issueTrackers } : {}),
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
@@ -2454,6 +2487,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     : undefined;
 
   const mergedGithub = mergeGithubConfig(shared.github, local.github);
+  const mergedIssueTrackers = mergeIssueTrackers(shared.issueTrackers, local.issueTrackers);
 
   const mergedGit = shared.git || local.git
     ? {
@@ -2524,6 +2558,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
+    ...(mergedIssueTrackers ? { issueTrackers: mergedIssueTrackers } : {}),
     git: {
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false,
       newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",

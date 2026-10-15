@@ -192,6 +192,7 @@ import type {
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
   noteAppleLocalViewerStarted,
   noteAppleLocalViewerStopped,
@@ -665,6 +666,7 @@ import type {
   SessionDeltaSummary,
   SessionLifecycleSettings,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
@@ -7658,6 +7660,38 @@ export function registerIpc({
   ): Promise<SessionGitHubIssueLink[]> => {
     const ctx = ensureLaneContext();
     return ctx.laneService.listGitHubIssuesForLaneSessions(arg);
+  });
+
+  ipcMain.handle(IPC.lanesAttachJiraIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneJiraIssue[] },
+  ): Promise<SessionJiraIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.attachJiraIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachJiraIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.detachJiraIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListJiraIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionJiraIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listJiraIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListJiraIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionJiraIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listJiraIssuesForLaneSessions(arg);
   });
 
   ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (

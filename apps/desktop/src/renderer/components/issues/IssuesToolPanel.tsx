@@ -5,6 +5,7 @@ import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAtt
 import { issueRefKey, issueRefLabel, type IssueRef } from "../../../shared/issueRefs";
 import {
   clearPendingIssueToolRequest,
+  requestJiraIssuesPaneOpen,
   subscribeIssueToolRequests,
   takePendingIssueToolRequest,
 } from "../../lib/issueNavigation";
@@ -13,6 +14,7 @@ import { requestLinearPaneOpen } from "../../lib/linearIssueQuickViewNavigation"
 import { linearBrowserIssueToLaneIssue } from "../app/linearIssueBrowserModel";
 import { LinearMark, LinearStateIcon } from "../lanes/linearBrand";
 import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { JiraMark, JiraStatusIcon } from "../lanes/jiraBrand";
 import { GithubLogo } from "@phosphor-icons/react";
 import { githubIssueToContextAttachment, useGitHubIssuePeek } from "./githubIssueStore";
 import { cn } from "../ui/cn";
@@ -27,6 +29,7 @@ import {
 } from "./issueTabsStore";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useLinearIssuePeek } from "./linearIssueStore";
+import { jiraIssueToContextAttachment, useJiraIssuePeek } from "./jiraIssueStore";
 
 /**
  * The Issues tool in the Work tools pane: the issues you opened from this
@@ -62,11 +65,16 @@ export function IssuesToolPanel({
   if (!active) {
     return (
       <WorkToolEmptyLine
-        title="Linear and GitHub issue links you click in chat open here"
+        title="Issue links you click in chat open here"
         action={(
-          <button type="button" className="kit-card-head-action !ml-0" onClick={() => requestLinearPaneOpen()}>
-            Browse Linear
-          </button>
+          <div className="flex items-center gap-3">
+            <button type="button" className="kit-card-head-action !ml-0" onClick={() => requestLinearPaneOpen()}>
+              Browse Linear
+            </button>
+            <button type="button" className="kit-card-head-action !ml-0" onClick={() => requestJiraIssuesPaneOpen()}>
+              Browse Jira
+            </button>
+          </div>
         )}
       />
     );
@@ -115,11 +123,13 @@ function IssueTabChip({
 }) {
   const linearIssue = useLinearIssuePeek(issueRef.provider === "linear" ? issueRef.identifier : null);
   const githubIssue = useGitHubIssuePeek(issueRef.provider === "github" ? { owner: issueRef.owner, repo: issueRef.repo, number: issueRef.number } : null);
+  const jiraIssue = useJiraIssuePeek(issueRef.provider === "jira" ? issueRef : null);
   const label = issueRefLabel(issueRef);
-  const title = linearIssue?.title ?? githubIssue?.title ?? null;
+  const title = linearIssue?.title ?? githubIssue?.title ?? jiraIssue?.title ?? null;
   const dragAttachment = linearIssue
     ? makeLinearIssueContextAttachment(linearBrowserIssueToLaneIssue(linearIssue))
-    : githubIssue && !githubIssue.isPullRequest ? githubIssueToContextAttachment(githubIssue) : null;
+    : githubIssue && !githubIssue.isPullRequest ? githubIssueToContextAttachment(githubIssue)
+      : jiraIssue ? jiraIssueToContextAttachment(jiraIssue, issueRef.provider === "jira" ? issueRef.siteUrl : "") : null;
   return (
     <div
       role="tab"
@@ -152,9 +162,10 @@ function IssueTabChip({
           : "text-[color:var(--kit-text-2)] hover:bg-[color:var(--kit-hover)] hover:text-fg",
       )}
     >
-      {issueRef.provider === "linear" ? <LinearMark size={11} /> : <GithubLogo size={11} weight="fill" />}
+      {issueRef.provider === "linear" ? <LinearMark size={11} /> : issueRef.provider === "github" ? <GithubLogo size={11} weight="fill" /> : <JiraMark size={11} />}
       {linearIssue ? <LinearStateIcon stateType={linearIssue.stateType} size={10} /> : null}
       {githubIssue ? <GitHubIssueStateIcon state={githubIssue.state} stateReason={githubIssue.stateReason} size={10} /> : null}
+      {jiraIssue ? <JiraStatusIcon category={jiraIssue.status.category} size={10} /> : null}
       <span className="kit-num">{label}</span>
       <button
         type="button"

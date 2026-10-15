@@ -13,6 +13,22 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type {
+  JiraComment,
+  JiraConnectArgs,
+  JiraConnectionStatus,
+  JiraCreateIssueArgs,
+  JiraCreateIssueResult,
+  JiraCreateMeta,
+  JiraIssueDetail,
+  JiraIssuePage,
+  JiraListIssuesArgs,
+  JiraProject,
+  JiraTransition,
+  LaneJiraIssue,
+  JiraUpdateIssueArgs,
+  JiraUser,
+} from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
@@ -719,6 +735,7 @@ import type {
   LaneListSnapshot,
   LaneSummary,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -6872,6 +6889,32 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "listGitHubIssuesForLaneSessions", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListGitHubIssuesForLaneSessions, args),
       ),
+    attachJiraIssueToSession: async (args: {
+      chatSessionId: string;
+      issues: LaneJiraIssue[];
+      role?: string;
+      source?: string;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+    }): Promise<SessionJiraIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "attachJiraIssueToSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesAttachJiraIssueToSession, args),
+      ),
+    detachJiraIssueFromSession: async (
+      args: { chatSessionId: string; issueId?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "detachJiraIssueFromSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDetachJiraIssueFromSession, args),
+      ),
+    listJiraIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionJiraIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listJiraIssuesForSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListJiraIssuesForSession, args),
+      ),
+    listJiraIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionJiraIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listJiraIssuesForLaneSessions", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListJiraIssuesForLaneSessions, args),
+      ),
     unlinkLinearIssues: async (args: { laneId: string; issueId?: string }): Promise<boolean> =>
       callProjectRuntimeActionOr("lane", "unlinkLinearIssues", { args }, () =>
         ipcRenderer.invoke(IPC.lanesUnlinkLinearIssues, args),
@@ -12313,6 +12356,68 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
       };
     },
+  },
+  jira: {
+    getConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "getConnectionStatus", {}, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    connect: async (args: JiraConnectArgs, pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "connect", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    disconnect: async (pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "disconnect", {}, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listProjects: async (args: { query?: string } = {}, pin?: OpenProjectBinding | null): Promise<JiraProject[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listProjects", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listIssues: async (args: JiraListIssuesArgs = {}, pin?: OpenProjectBinding | null): Promise<JiraIssuePage> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listIssues", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    getIssue: async (args: { key: string }, pin?: OpenProjectBinding | null): Promise<JiraIssueDetail> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "getIssue", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listComments: async (args: { key: string; cursor: string | null }, pin?: OpenProjectBinding | null): Promise<{ comments: JiraComment[]; nextCursor: string | null }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listComments", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    addComment: async (args: { key: string; body: string }, pin?: OpenProjectBinding | null): Promise<JiraComment> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "addComment", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    updateIssue: async (args: JiraUpdateIssueArgs, pin?: OpenProjectBinding | null): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "updateIssue", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listTransitions: async (args: { key: string }, pin?: OpenProjectBinding | null): Promise<JiraTransition[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listTransitions", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    transitionIssue: async (args: { key: string; transitionId: string }, pin?: OpenProjectBinding | null): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "transitionIssue", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listAssignableUsers: async (args: { projectKey?: string; key?: string; query?: string } = {}, pin?: OpenProjectBinding | null): Promise<JiraUser[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listAssignableUsers", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    listLabels: async (args: { query?: string } = {}, pin?: OpenProjectBinding | null): Promise<string[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "listLabels", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    getCreateMeta: async (args: { projectKey: string }, pin?: OpenProjectBinding | null): Promise<JiraCreateMeta> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "getCreateMeta", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
+    createIssue: async (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null): Promise<JiraCreateIssueResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "jira", "createIssue", { args }, async () => {
+        throw new Error("Jira needs a connected ADE runtime.");
+      }),
   },
   // Machine-owned ADE account (Clerk identity). Token-free surface only — the
   // raw bearer stays in the main process and is never exposed here.

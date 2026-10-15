@@ -2479,6 +2479,8 @@ function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): stri
       return `${attachment.type}:${attachment.issue.id}`;
     case "github_issue":
       return `${attachment.type}:${attachment.issue.id}`;
+    case "jira_issue":
+      return `${attachment.type}:${attachment.issue.id}`;
   }
 }
 

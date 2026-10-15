@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
 import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
@@ -351,6 +352,7 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import { runGit } from "../../../../desktop/src/main/services/git/git";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
@@ -587,6 +589,7 @@ type SyncRemoteCommandServiceArgs = {
   fileService: ReturnType<typeof createFileService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
   githubService?: ReturnType<typeof createGithubService> | null;
+  getJiraService?: () => ReturnType<typeof createJiraService> | null;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
@@ -1050,6 +1053,36 @@ function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): 
     chatSessionId: requireString(
       value.chatSessionId,
       "lanes.detachGitHubIssueFromSession requires chatSessionId.",
+    ),
+    ...(issueId ? { issueId } : {}),
+  };
+}
+
+function parseAttachJiraIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneJiraIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachJiraIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachJiraIssueToSession requires chatSessionId.",
+    ),
+    issues: value.issues as LaneJiraIssue[],
+  };
+}
+
+function parseDetachJiraIssueFromSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issueId?: string;
+} {
+  const issueId = asTrimmedString(value.issueId);
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.detachJiraIssueFromSession requires chatSessionId.",
     ),
     ...(issueId ? { issueId } : {}),
   };
@@ -4596,6 +4629,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.listGitHubIssuesForLaneSessions({
       laneId: requireString(payload.laneId, "lanes.listGitHubIssuesForLaneSessions requires laneId."),
     }));
+  register("lanes.attachJiraIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachJiraIssueToSession(parseAttachJiraIssueToSessionArgs(payload)));
+  register("lanes.detachJiraIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.detachJiraIssueFromSession(parseDetachJiraIssueFromSessionArgs(payload)));
+  register("lanes.listJiraIssuesForSession", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForSession({
+      chatSessionId: requireString(
+        payload.chatSessionId,
+        "lanes.listJiraIssuesForSession requires chatSessionId.",
+      ),
+    }));
+  register("lanes.listJiraIssuesForLaneSessions", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listJiraIssuesForLaneSessions({
+      laneId: requireString(payload.laneId, "lanes.listJiraIssuesForLaneSessions requires laneId."),
+    }));
   register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
@@ -7051,6 +7099,83 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       isPrivate,
     });
   }, "project");
+  const jira = () => requireService(args.getJiraService?.(), "Jira service not available on this machine.");
+  register("jira.getConnectionStatus", { viewerAllowed: true, observesAbort: true }, async () => jira().getConnectionStatus());
+  register("jira.connect", { viewerAllowed: false }, async (payload) => jira().connect({
+    siteUrl: requireString(payload.siteUrl, "jira.connect requires siteUrl."),
+    email: requireString(payload.email, "jira.connect requires email."),
+    apiToken: requireString(payload.apiToken, "jira.connect requires apiToken."),
+  }));
+  register("jira.disconnect", { viewerAllowed: false }, async () => jira().disconnect());
+  register("jira.listProjects", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listProjects({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.listIssues", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const state: JiraIssueListState = payload.state === "done" || payload.state === "all" ? payload.state : "open";
+    const projectKeys = Array.isArray(payload.projectKeys)
+      ? payload.projectKeys.filter((value): value is string => typeof value === "string")
+      : undefined;
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    const args = {
+      ...(projectKeys ? { projectKeys } : {}),
+      state,
+      ...(payload.assignee === "me" ? { assignee: "me" as const } : {}),
+      ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+      ...(typeof payload.jql === "string" ? { jql: payload.jql } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(typeof payload.cursor === "string" ? { cursor: payload.cursor } : {}),
+    };
+    return jira().listIssues(args);
+  });
+  register("jira.getIssue", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getIssue({ key: requireString(payload.key, "jira.getIssue requires key.") }));
+  register("jira.listComments", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listComments({
+      key: requireString(payload.key, "jira.listComments requires key."),
+      cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+    }));
+  register("jira.listTransitions", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listTransitions({ key: requireString(payload.key, "jira.listTransitions requires key.") }));
+  register("jira.listAssignableUsers", { viewerAllowed: true, observesAbort: true }, async (payload) => jira().listAssignableUsers({
+    ...(typeof payload.projectKey === "string" ? { projectKey: payload.projectKey } : {}),
+    ...(typeof payload.key === "string" ? { key: payload.key } : {}),
+    ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+  }));
+  register("jira.listLabels", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().listLabels({ ...(typeof payload.query === "string" ? { query: payload.query } : {}) }));
+  register("jira.getCreateMeta", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    jira().getCreateMeta({ projectKey: requireString(payload.projectKey, "jira.getCreateMeta requires projectKey.") }));
+  register("jira.addComment", { viewerAllowed: false }, async (payload) => jira().addComment({
+    key: requireString(payload.key, "jira.addComment requires key."),
+    body: requireString(payload.body, "jira.addComment requires body."),
+  }));
+  register("jira.updateIssue", { viewerAllowed: false }, async (payload) => jira().updateIssue({
+    key: requireString(payload.key, "jira.updateIssue requires key."),
+    ...(typeof payload.title === "string" ? { title: payload.title } : {}),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "assigneeAccountId")
+      ? { assigneeAccountId: typeof payload.assigneeAccountId === "string" ? payload.assigneeAccountId : null }
+      : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(payload, "dueDate")
+      ? { dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null }
+      : {}),
+  }));
+  register("jira.transitionIssue", { viewerAllowed: false }, async (payload) => jira().transitionIssue({
+    key: requireString(payload.key, "jira.transitionIssue requires key."),
+    transitionId: requireString(payload.transitionId, "jira.transitionIssue requires transitionId."),
+  }));
+  register("jira.createIssue", { viewerAllowed: false }, async (payload) => jira().createIssue({
+    projectKey: requireString(payload.projectKey, "jira.createIssue requires projectKey."),
+    issueTypeId: requireString(payload.issueTypeId, "jira.createIssue requires issueTypeId."),
+    title: requireString(payload.title, "jira.createIssue requires title."),
+    ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+    ...(Array.isArray(payload.labels) ? { labels: payload.labels.filter((value): value is string => typeof value === "string") } : {}),
+    ...(typeof payload.assigneeAccountId === "string" ? { assigneeAccountId: payload.assigneeAccountId } : {}),
+    ...(typeof payload.priorityId === "string" ? { priorityId: payload.priorityId } : {}),
+    ...(typeof payload.parentKey === "string" ? { parentKey: payload.parentKey } : {}),
+    ...(typeof payload.dueDate === "string" ? { dueDate: payload.dueDate } : {}),
+  }));
   register("projectConfig.get", { viewerAllowed: true }, async () =>
     redactProjectConfigSnapshotForRemote(
       requireService(args.projectConfigService, "Project config service not available.").get(),

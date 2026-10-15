@@ -5,13 +5,14 @@ import type {
   LinearIssueCreateOptions,
   LinearProjectMilestone,
 } from "../../../shared/types";
+import type { JiraCreateMeta, JiraProject, JiraUser } from "../../../shared/types/jira";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { PRIORITY_CHOICES } from "../app/linearIssueBrowserModel";
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { cn } from "../ui/cn";
 import { PickerMenu, type PickerOption, githubLabelOptions, githubPersonOptions } from "./IssuePickerMenu";
 import type { GitHubRepoCatalog } from "./githubIssueStore";
-import type { GitHubFields, LinearFields } from "./issueCreateDraft";
+import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft";
 
 /**
  * The create composer's property chips: a chip shows the value and opens the
@@ -368,5 +369,122 @@ export function GitHubMoreFields({
         onChange={(event) => setGitHub((current) => ({ ...current, parent: event.target.value }))}
       />
     </label>
+  );
+}
+
+export function JiraCreateChips({
+  jira,
+  setJira,
+  projects,
+  meta,
+  users,
+  labels,
+}: {
+  jira: JiraFields;
+  setJira: Setter<JiraFields>;
+  projects: JiraProject[];
+  meta: JiraCreateMeta | null;
+  users: JiraUser[];
+  labels: string[];
+}) {
+  const projectKey = jira.projectKey;
+  const types = meta?.issueTypes ?? [];
+  const issueType = types.find((entry) => entry.id === jira.issueTypeId) ?? null;
+  const assignee = users.find((entry) => entry.accountId === jira.assigneeAccountId) ?? null;
+  const pickedLabels = labels.filter((label) => jira.labels.includes(label));
+  const priorities = meta?.priorities ?? [];
+  const priority = priorities.find((entry) => entry.id === jira.priorityId) ?? null;
+  return (
+    <>
+      <ChipPicker
+        label="Jira project"
+        display={projectKey || "Project"}
+        muted={!projectKey}
+        options={projects.map((entry) => ({ id: entry.key, label: `${entry.key} · ${entry.name}` }))}
+        selected={projectKey ? [projectKey] : []}
+        placeholder="Project…"
+        onPick={(id) => setJira((current) => ({ ...current, projectKey: id, issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [] }))}
+      />
+      <label className="inline-flex h-7 max-w-[200px] items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Type
+        <select
+          aria-label="Jira issue type"
+          className="min-w-0 bg-transparent text-fg/85 outline-none"
+          value={jira.issueTypeId}
+          disabled={!meta}
+          onChange={(event) => setJira((current) => ({ ...current, issueTypeId: event.target.value }))}
+        >
+          <option value="">{meta ? "Choose type" : "Loading types…"}</option>
+          {types.map((entry) => {
+            const missing = entry.fields.filter((field) => field.required && !field.supported);
+            const reason = missing.length
+              ? `Required fields are not supported: ${missing.map((field) => field.name).join(", ")}.`
+              : undefined;
+            return <option key={entry.id} value={entry.id} disabled={Boolean(reason)} title={reason}>{entry.name}{reason ? ` — requires ${missing.map((field) => field.name).join(", ")}` : ""}</option>;
+          })}
+        </select>
+      </label>
+      <ChipPicker
+        label="Assignee"
+        display={assignee ? <><LinearAssigneeAvatar name={assignee.displayName} avatarUrl={assignee.avatarUrl} size={14} />{assignee.displayName}</> : "Assignee"}
+        muted={!assignee}
+        options={[{ id: "", label: "Unassigned" }, ...users.map((entry) => ({
+          id: entry.accountId,
+          label: entry.displayName,
+          keywords: entry.emailAddress ?? "",
+          icon: <LinearAssigneeAvatar name={entry.displayName} avatarUrl={entry.avatarUrl} size={14} />,
+        }))]}
+        selected={[jira.assigneeAccountId ?? ""]}
+        placeholder="Assign to…"
+        onPick={(id) => setJira((current) => ({ ...current, assigneeAccountId: id || null }))}
+      />
+      <ChipPicker
+        label="Priority"
+        display={priority?.name ?? "Priority"}
+        muted={!priority}
+        options={[{ id: "", label: "No priority" }, ...priorities.map((entry) => ({ id: entry.id, label: entry.name }))]}
+        selected={[jira.priorityId ?? ""]}
+        placeholder="Priority…"
+        onPick={(id) => setJira((current) => ({ ...current, priorityId: id || null }))}
+      />
+      <ChipPicker
+        label="Labels"
+        display={pickedLabels.length ? (pickedLabels.length === 1 ? pickedLabels[0]! : `${pickedLabels.length} labels`) : "Labels"}
+        muted={!pickedLabels.length}
+        multi
+        options={labels.map((label) => ({ id: label, label }))}
+        selected={jira.labels}
+        placeholder="Labels…"
+        onPick={(id) => setJira((current) => ({ ...current, labels: toggle(current.labels, id) }))}
+      />
+    </>
+  );
+}
+
+export function JiraMoreFields({ jira, setJira, parentLocked }: { jira: JiraFields; setJira: Setter<JiraFields>; parentLocked: boolean }) {
+  return (
+    <>
+      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Due
+        <input
+          type="date"
+          aria-label="Jira due date"
+          className="bg-transparent text-fg/85 outline-none [color-scheme:dark]"
+          value={jira.dueDate}
+          onChange={(event) => setJira((current) => ({ ...current, dueDate: event.target.value }))}
+        />
+      </label>
+      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+        Parent
+        <input
+          aria-label="Jira parent issue"
+          placeholder="PROJ-123"
+          className="w-[84px] bg-transparent font-mono text-fg/85 outline-none placeholder:text-[color:var(--kit-text-3)]"
+          value={jira.parentKey}
+          disabled={parentLocked}
+          onChange={(event) => setJira((current) => ({ ...current, parentKey: event.target.value.toUpperCase() }))}
+        />
+      </label>
+    </>
   );
 }

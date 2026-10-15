@@ -36,6 +36,7 @@ import {
   type LinearLookupContext,
 } from "./issueCliFields";
 import { buildGithubIssuePlan } from "./cliGithubIssue";
+import { buildJiraPlan } from "./cliJira";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -1174,6 +1175,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
+    $ ade jira status | connect | projects | list | issue | create | edit
+                                                    Connect to Jira Cloud and manage issues
     $ ade github issue list | view | create | edit | comment | close
                                                     Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1540,6 +1543,38 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
+`,
+  jira: `${ADE_BANNER}
+  ADE Jira
+
+  Connect this machine's ADE brain to Jira Cloud, then read and update issues.
+  Credentials are stored in the machine credential store. Jira Cloud API tokens
+  are read from stdin so they do not appear in shell history or process listings.
+
+  Connection:
+    $ ade --role cto jira connect --site https://example.atlassian.net --email you@example.com --token-stdin
+    $ ade jira status --text
+    $ ade --role cto jira disconnect
+
+  Read:
+    $ ade jira projects --text
+    $ ade jira list --project ADE --state open --mine --limit 30 --text
+    $ ade jira list --query "login crash" --jql 'priority = High' --text
+    $ ade jira issue ADE-42 --text
+
+  Create and update:
+    $ ade jira create --project ADE --type Bug --title "Login fails" --description-file notes.md --label auth
+    $ ade jira edit ADE-42 --title "Updated title" --label triage --remove-label needs-info
+    $ ade jira comment ADE-42 "Fixed in the next build"
+    $ ade jira transition ADE-42 --to "In Progress"
+    $ ade jira assign ADE-42 --assignee "Morgan Lee"
+    $ ade jira label ADE-42 --label triage
+    $ ade jira unlabel ADE-42 --label triage
+
+  Notes:
+    - connect and disconnect require --role cto.
+    - Pipe the API token into connect; ADE never prints or stores it in project files.
+    - Jira list results are paged; pass the returned cursor to --cursor for the next page.
 `,
   github: `${ADE_BANNER}
   ADE GitHub
@@ -19981,6 +20016,7 @@ function buildCliPlan(
   )
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
+  if (primary === "jira") return buildJiraPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }

@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
-import { linearIssueRef } from "../../../shared/issueRefs";
+import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
@@ -46,8 +46,13 @@ export function UserMessageIssueContext({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
       }, machinePin);
-    } else {
+    } else if (attachment.type === "github_issue") {
       void window.ade?.lanes?.detachGitHubIssueFromSession?.({
+        chatSessionId: sessionId,
+        issueId: attachment.issue.id,
+      }, machinePin);
+    } else {
+      void window.ade?.lanes?.detachJiraIssueFromSession?.({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
       }, machinePin);
@@ -77,6 +82,10 @@ export function UserMessageIssueContext({
               source: "chip",
             });
             return;
+          }
+          if (attachment.type === "jira_issue") {
+            const ref = jiraIssueRef(attachment.issue.siteUrl, attachment.issue.key, attachment.issue.url);
+            if (ref) openIssueRef({ ref, source: "chip" });
           }
         }}
         onRemoveContext={sessionId ? detachContext : undefined}

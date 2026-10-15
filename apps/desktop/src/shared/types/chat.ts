@@ -27,6 +27,7 @@ import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
+import type { LaneJiraIssue } from "./jira";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary, SessionActivityReport } from "./sessions";
@@ -853,9 +854,17 @@ export type AgentChatGitHubIssueContextAttachment = {
   attachedAt?: string;
 };
 
+export type AgentChatJiraIssueContextAttachment = {
+  type: "jira_issue";
+  issue: LaneJiraIssue;
+  source?: "manual" | "lane_link";
+  attachedAt?: string;
+};
+
 export type AgentChatContextAttachment =
   | AgentChatLinearIssueContextAttachment
-  | AgentChatGitHubIssueContextAttachment;
+  | AgentChatGitHubIssueContextAttachment
+  | AgentChatJiraIssueContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;

@@ -36,6 +36,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "linear_agent",
   "linear_issue_tracker",
   "github",
+  "jira",
   "feedback",
   "usage",
   "analytics",

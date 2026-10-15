@@ -1066,7 +1066,8 @@ function UserMessageSendConfirmations({
   if (event.deliveryState === "queued") return null;
 
   const contextAttachments = event.contextAttachments ?? [];
-  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
+  const hasIssueContext = contextAttachments.some((a) =>
+    a.type === "linear_issue" || a.type === "github_issue" || a.type === "jira_issue");
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
   if (!showSimRow && !hasIssueContext) return null;

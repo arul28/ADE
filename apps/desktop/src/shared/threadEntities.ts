@@ -29,6 +29,7 @@ import {
   type Chip,
 } from "./chips";
 import { buildDeeplink, type DeeplinkTarget } from "./deeplinks";
+import { normalizeJiraIssueKey, jiraIssueRef } from "./issueRefs";
 import { getModelById, resolveModelDescriptor } from "./modelRegistry";
 import { modelPermissionLabel } from "./modelPermissions";
 
@@ -41,6 +42,10 @@ export type ThreadEntityIndex = {
   sessions: readonly ThreadEntitySession[];
   /** Linear team keys this project uses, e.g. `ADE`. Case-insensitive. */
   linearTeamKeys?: readonly string[];
+  /** Jira project keys bound to this checkout, e.g. `OPS`. Case-insensitive. */
+  jiraProjectKeys?: readonly string[];
+  /** Jira site for this chat's machine, when its connection is available. */
+  jiraSiteUrl?: string | null;
   /** Slash commands and skills this chat can run, without the slash. */
   skillNames?: readonly string[];
 };
@@ -54,6 +59,8 @@ export type ThreadEntityLookup = {
   /** All lane and session ids, for 8+ character prefix matching. */
   idPrefixes: Array<{ id: string; kind: "lane" | "chat"; originalId: string }>;
   linearTeamKeys: Set<string>;
+  jiraProjectKeys: Set<string>;
+  jiraSiteUrl: string | null;
   skillNames: Set<string>;
 };
 
@@ -132,6 +139,8 @@ export function buildThreadEntityLookup(index: ThreadEntityIndex): ThreadEntityL
     sessionIds,
     idPrefixes,
     linearTeamKeys: new Set((index.linearTeamKeys ?? []).map((key) => key.toUpperCase())),
+    jiraProjectKeys: new Set((index.jiraProjectKeys ?? []).map((key) => key.toUpperCase())),
+    jiraSiteUrl: index.jiraSiteUrl ?? null,
     skillNames: new Set((index.skillNames ?? []).map((name) => name.toLowerCase())),
   };
 }
@@ -215,6 +224,20 @@ function linearChip(raw: string, lookup: ThreadEntityLookup): Chip | null {
   return deeplinkChip({ kind: "linear-issue", issueIdentifier: raw.toUpperCase() }, raw);
 }
 
+function jiraChip(raw: string, lookup: ThreadEntityLookup): Chip | null {
+  const key = normalizeJiraIssueKey(raw);
+  const projectKey = key?.split("-")[0];
+  if (!key || !projectKey || !lookup.jiraProjectKeys.has(projectKey) || !lookup.jiraSiteUrl) return null;
+  const ref = jiraIssueRef(lookup.jiraSiteUrl, key);
+  if (!ref || ref.provider !== "jira") return null;
+  return {
+    kind: "issue",
+    token: raw,
+    label: key,
+    source: { origin: "url", url: ref.url ?? `${ref.siteUrl}/browse/${ref.key}` },
+  };
+}
+
 function timeEntity(raw: string): ThreadEntity | null {
   const match = ISO_RE.exec(raw);
   if (!match) return null;
@@ -264,6 +287,10 @@ export function matchInlineCodeEntity(
   const permission = permissionChip(raw);
   if (permission) return chipEntity(permission);
 
+  // Bound Jira keys win over Linear team keys when a project uses both.
+  const jira = jiraChip(raw, lookup);
+  if (jira) return chipEntity(jira);
+
   const pr = PR_NUMBER_RE.exec(raw);
   if (pr) return chipEntity(deeplinkChip({ kind: "pr", prNumber: Number(pr[1]) }, raw));
 
@@ -309,7 +336,9 @@ const PROSE_PR_RE = /\b(?:PR|pull request)\s+(#\d{1,6})\b/gi;
 // never inside a path, branch name or version: `feat/ADE-1`, `ade-1-fix` and
 // `ADE-1.2` are not issue references. The key must also be one of this
 // workspace's teams (`linearChip`), so `SHA-256` and `UTF-8` never match.
-const PROSE_LINEAR_RE = /(?<![\w/#.-])([A-Z][A-Z0-9]{0,9}-\d{1,9})(?![\w-]|\.\d)/g;
+// Jira project keys may contain underscores; linearChip still applies its
+// narrower key rule after the Jira binding check.
+const PROSE_ISSUE_RE = /(?<![\w/#.-])([A-Z][A-Z0-9_]{0,9}-\d{1,9})(?![\w-]|\.\d)/g;
 
 /**
  * Entities in plain prose (text outside code), in document order, with no
@@ -347,11 +376,11 @@ export function findProseEntities(text: string, lookup: ThreadEntityLookup): Thr
     });
   }
 
-  if (lookup.linearTeamKeys.size > 0) {
-    for (const match of text.matchAll(PROSE_LINEAR_RE)) {
-      const chip = linearChip(match[1]!, lookup);
-      if (chip) matches.push({ start: match.index!, end: match.index! + match[1]!.length, entity: chipEntity(chip) });
-    }
+  for (const match of text.matchAll(PROSE_ISSUE_RE)) {
+    const raw = match[1]!;
+    const jira = jiraChip(raw, lookup);
+    const chip = jira ?? (lookup.linearTeamKeys.size > 0 ? linearChip(raw, lookup) : null);
+    if (chip) matches.push({ start: match.index!, end: match.index! + raw.length, entity: chipEntity(chip) });
   }
 
   matches.sort((a, b) => a.start - b.start);

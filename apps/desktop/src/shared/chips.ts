@@ -333,6 +333,8 @@ function smartLinkKindToChipKind(kind: SmartLinkPreview["kind"]): ChipKind {
       return "pr";
     case "github_issue":
       return "issue";
+    case "jira_issue":
+      return "issue";
     case "github_repo":
       return "repo";
     case "github_commit":

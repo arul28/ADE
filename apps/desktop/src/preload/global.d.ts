@@ -4,6 +4,22 @@ import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type {
+  JiraComment,
+  JiraConnectArgs,
+  JiraConnectionStatus,
+  JiraCreateIssueArgs,
+  JiraCreateIssueResult,
+  JiraCreateMeta,
+  JiraIssueDetail,
+  JiraIssuePage,
+  JiraListIssuesArgs,
+  JiraProject,
+  JiraTransition,
+  LaneJiraIssue,
+  JiraUpdateIssueArgs,
+  JiraUser,
+} from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
@@ -764,6 +780,7 @@ import type {
   SessionDeltaSummary,
   SessionLifecycleSettings,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   SessionBoardMoveResult,
   SessionBoardMoveUndoResult,
@@ -2130,6 +2147,17 @@ declare global {
         detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
         listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
+        attachJiraIssueToSession: (args: {
+          chatSessionId: string;
+          issues: LaneJiraIssue[];
+          role?: string;
+          source?: string;
+          includeInPr?: boolean;
+          closeOnMerge?: boolean;
+        }) => Promise<SessionJiraIssueLink[]>;
+        detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
+        listJiraIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionJiraIssueLink[]>;
+        listJiraIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionJiraIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
@@ -4255,6 +4283,23 @@ declare global {
           input: PublishProjectInput,
         ) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
+      };
+      jira: {
+        getConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        connect: (args: JiraConnectArgs, pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        disconnect: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
+        listProjects: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraProject[]>;
+        listIssues: (args?: JiraListIssuesArgs, pin?: OpenProjectBinding | null) => Promise<JiraIssuePage>;
+        getIssue: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraIssueDetail>;
+        listComments: (args: { key: string; cursor: string | null }, pin?: OpenProjectBinding | null) => Promise<{ comments: JiraComment[]; nextCursor: string | null }>;
+        addComment: (args: { key: string; body: string }, pin?: OpenProjectBinding | null) => Promise<JiraComment>;
+        updateIssue: (args: JiraUpdateIssueArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        listTransitions: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraTransition[]>;
+        transitionIssue: (args: { key: string; transitionId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
+        listAssignableUsers: (args?: { projectKey?: string; key?: string; query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraUser[]>;
+        listLabels: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<string[]>;
+        getCreateMeta: (args: { projectKey: string }, pin?: OpenProjectBinding | null) => Promise<JiraCreateMeta>;
+        createIssue: (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null) => Promise<JiraCreateIssueResult>;
       };
       account: {
         status: () => Promise<AdeAccountStatus>;

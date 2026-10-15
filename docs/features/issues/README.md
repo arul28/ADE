@@ -5,10 +5,10 @@ without leaving the page you are on. It used to open the whole Linear browser an
 search for the identifier, which covered the chat and made "show me this ticket"
 a search.
 
-Linear and GitHub issues both open natively and both are editable in place:
+Linear, GitHub and Jira issues open natively and are editable in place:
 status and the other properties through pickers, the title and description
 inline, and comments from the activity thread. Each tracker also has a top-bar
-pane for browsing. New issues start in one composer for both trackers.
+pane for browsing. New issues start in one composer for all three trackers.
 
 ## The rule: open it where you are
 
@@ -18,6 +18,7 @@ pane for browsing. New issues start in one composer for both trackers.
 | Any other page (Lanes, PRs, CTO, History), the command palette, an `ade://` deeplink from outside | The **issue sheet**, a right-side panel that floats over the page |
 | The top-bar Linear button | The Linear pane (browse, filter, batch launch) |
 | The top-bar GitHub Issues button | The GitHub Issues pane (this project's repository) |
+| The top-bar Jira button | The Jira pane (browse, filter and load more) |
 
 Every container reads the one issue by identifier. Linear's `issue(id:)`
 accepts `ADE-123` as well as a UUID, so nothing is searched for.
@@ -27,7 +28,7 @@ opens the web page in ADE's browser.
 
 Issue references an agent writes in plain text are chips too: `ADE-123` when
 `ADE` is one of the connected workspace's team keys (see below), and GitHub
-`/issues/N` links.
+`/issues/N` links. Jira `/browse/KEY-123` links open in the same viewer.
 
 ## The layout
 
@@ -111,10 +112,32 @@ clickable.
   installation keeps read-only until its owner accepts the update; the
   permission banner covers that window.
 
+## Jira
+
+Settings → Integrations → Jira connects this machine to one Jira Cloud site
+with an Atlassian API token. The token stays in the machine's encrypted
+credential store. A project can bind one or more Jira project keys; those keys
+also decide whether a bare `KEY-123` in agent prose is a Jira chip before ADE
+checks Linear's team keys. Jira URLs use `/browse/KEY-123`.
+
+The Jira viewer edits the title and Markdown description inline. Its property
+box changes status through the workflow transitions Jira offers, and edits
+assignee, priority, labels and due date; issue type is read-only. Comments load
+in pages. Reads use a per-issue cache and edits appear immediately, then roll
+back with a toast if Jira rejects them. Connection, authentication, permission
+and rate-limit errors explain the next action.
+
+The Jira pane filters by project, open/done/all, assignee and text, and loads
+older pages on demand while keeping existing rows visible during refresh. New
+issues use the shared composer with project, issue type, assignee, priority,
+labels, parent and due date. Issue types with required fields the form cannot
+fill are disabled with the missing field names. Description text is Markdown;
+the Jira API converts it to Atlassian Document Format.
+
 ## Creating issues
 
 One composer (`IssueCreateDialog.tsx`, mounted once by `IssueCreateHost` in
-the app shell) makes Linear and GitHub issues. It opens from:
+the app shell) makes Linear, GitHub and Jira issues. It opens from:
 
 - "New" in the header of the Linear pane and the GitHub Issues pane;
 - "New sub-issue" in an issue viewer's ⋯ menu (the parent is fixed);
@@ -138,6 +161,10 @@ The form is a big title, the description, a row of property chips (the same
   answers become the `### Label` body GitHub itself writes
   (`shared/githubIssueTemplates.ts`). `blank_issues_enabled: false` makes a
   template required.
+- **Jira fields.** Project, issue type, assignee, priority, labels, parent and
+  due date. The issue type list disables options that have unsupported required
+  fields. Jira stores the description as Atlassian Document Format; the form
+  takes Markdown and the runtime converts it.
 - **Pictures.** Paste or drop an image into the description. Linear uploads it
   at once (`cto.uploadLinearFile`; from the web client or a phone the bytes
 cross the sync channel, capped at 10 MB) and inserts the markdown. GitHub has no API
@@ -214,8 +241,8 @@ both from one sequence and `/issues` accepts either.
 
 ## Top-bar settings
 
-Settings → Integrations has "Show Linear in the top bar" and "Show GitHub
-issues in the top bar" (`issueTopBarPreferences.ts`), desktop-only and stored
+Settings → Integrations has "Show Linear in the top bar", "Show GitHub
+issues in the top bar" and "Show Jira in the top bar" (`issueTopBarPreferences.ts`), desktop-only and stored
 on this computer. Hiding a button disconnects nothing; links still open in the
 Issues tab and the sheet. Turning Linear off is signing out.
 

@@ -12197,6 +12197,35 @@ export function createAgentChatService(args: {
     }
   };
 
+  const recordJiraIssueContextForLane = (
+    managed: ManagedChatSession,
+    contextAttachments: AgentChatContextAttachment[],
+  ): void => {
+    if (contextAttachments.length === 0) return;
+    const issues = contextAttachments
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "jira_issue" }> =>
+        attachment.type === "jira_issue")
+      .map((attachment) => attachment.issue);
+    if (!issues.length) return;
+    try {
+      laneService.attachJiraIssueToSession?.({
+        chatSessionId: managed.session.id,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: false,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.jira_issue_session_link_failed", {
+        sessionId: managed.session.id,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while the Pi SDK worker was still being acquired. */
@@ -54578,6 +54607,7 @@ export function createAgentChatService(args: {
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
+    recordJiraIssueContextForLane(managed, contextAttachments);
 
     // The computer-use directive is epoch-scoped: re-sent when the lane or the
     // available backends change, not every turn. Its key is marked delivered at

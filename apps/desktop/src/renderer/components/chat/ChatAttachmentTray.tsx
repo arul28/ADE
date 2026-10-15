@@ -10,6 +10,7 @@ import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { JiraMark } from "../lanes/jiraBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { fgTint } from "../lanes/laneDesignTokens";
 /**
@@ -136,6 +137,8 @@ function ContextAttachmentChip({
       return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
     case "github_issue":
       return <GitHubIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
+    case "jira_issue":
+      return <JiraIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
   }
 }
 
@@ -263,6 +266,55 @@ function GitHubIssueContextChip({
           className="rounded-full text-current/55 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${identifier}`}
           aria-label={`Remove ${identifier}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(chatContextAttachmentKey(attachment));
+          }}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function JiraIssueContextChip({
+  attachment,
+  onRemove,
+  onOpen,
+}: {
+  attachment: AgentChatContextAttachment;
+  onRemove?: (key: string) => void;
+  onOpen?: (attachment: AgentChatContextAttachment) => void;
+}) {
+  if (attachment.type !== "jira_issue") return null;
+  const issue = attachment.issue;
+  const title = [issue.key, issue.title, issue.statusName].filter(Boolean).join(" - ");
+  return (
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
+        onOpen ? "cursor-pointer" : "",
+      )}
+      title={title}
+      data-testid="jira-issue-context-chip"
+      onClick={onOpen ? () => onOpen(attachment) : undefined}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-white/[0.08]">
+        <JiraMark size={11} />
+      </span>
+      <span className="shrink-0 rounded bg-white/[0.08] px-1 font-mono text-[10px] font-semibold text-fg/85">
+        {issue.key}
+      </span>
+      <span className="min-w-0 max-w-[240px] truncate font-sans text-[11px] font-medium text-fg/90">
+        {issue.title}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${issue.key}`}
+          aria-label={`Remove ${issue.key}`}
           onClick={(event) => {
             event.stopPropagation();
             onRemove(chatContextAttachmentKey(attachment));

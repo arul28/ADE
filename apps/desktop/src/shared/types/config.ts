@@ -2128,6 +2128,11 @@ export type ProjectConfigFile = {
      */
     autoMapByBranch?: boolean;
   };
+  issueTrackers?: {
+    jira?: {
+      projectKeys: string[];
+    };
+  };
   git?: {
     autoRebaseOnHeadChange?: boolean;
     newLaneBaseSource?: NewLaneBaseSource;
@@ -2175,6 +2180,11 @@ export type EffectiveProjectConfig = {
     };
     /** Auto-map same-repo PRs to lanes by branch. Defaults to true. */
     autoMapByBranch?: boolean;
+  };
+  issueTrackers?: {
+    jira?: {
+      projectKeys: string[];
+    };
   };
   git: {
     autoRebaseOnHeadChange: boolean;
