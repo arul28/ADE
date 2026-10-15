@@ -48,20 +48,41 @@ function stripTrailingSlash(value: string): string {
   return value.length > 1 ? value.replace(/\/+$/, "") : value;
 }
 
+const caseInsensitiveRoots = new Map<string, boolean>();
+
+/**
+ * Whether the disk under `root` ignores case (the default on macOS and
+ * Windows; a case-sensitive APFS volume does not). Probed once per root by
+ * looking the root up under a case-swapped name.
+ */
+function ignoresCase(root: string): boolean {
+  const cached = caseInsensitiveRoots.get(root);
+  if (cached !== undefined) return cached;
+  const swapped = root.replace(/\p{L}/gu, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
+  let result = false;
+  if (swapped !== root) {
+    try {
+      result = fs.existsSync(swapped) && fs.statSync(swapped).ino === fs.statSync(root).ino;
+    } catch {
+      result = false; // the root is gone: compare exactly
+    }
+  }
+  caseInsensitiveRoots.set(root, result);
+  return result;
+}
+
 /**
  * `candidate` relative to whichever spelling of the root contains it, or null.
- * macOS and Windows disks ignore case, so a link git wrote as `/users/me/proj`
- * still belongs to `/Users/me/Proj`.
+ * On a disk that ignores case, a link git wrote as `/users/me/proj` still
+ * belongs to `/Users/me/Proj`.
  */
 export function relativeToRoot(candidate: string, spellings: string[]): string | null {
-  const fold = process.platform === "darwin" || process.platform === "win32"
-    ? (value: string) => value.toLowerCase()
-    : (value: string) => value;
-  const folded = fold(candidate);
   for (const root of spellings) {
-    const key = fold(root);
-    if (folded === key) return "";
-    if (folded.startsWith(`${key}/`)) return candidate.slice(root.length + 1);
+    const head = candidate.slice(0, root.length);
+    const same = ignoresCase(root) ? head.toLowerCase() === root.toLowerCase() : head === root;
+    if (!same) continue;
+    if (candidate.length === root.length) return "";
+    if (candidate[root.length] === "/") return candidate.slice(root.length + 1);
   }
   return null;
 }
@@ -123,7 +144,8 @@ export function rewriteWorktreeLinksInCopy(args: {
   finalRoot: string;
   oldSpellings: string[];
 }): { inside: WorktreeLink[]; missing: WorktreeLink[]; outside: WorktreeLink[] } {
-  const links = listWorktreeLinks(args.copyRoot, args.oldSpellings);
+  // After a first move the links are relative, so they resolve inside the copy.
+  const links = listWorktreeLinks(args.copyRoot, [...args.oldSpellings, ...rootSpellings(args.copyRoot)]);
   const inside: WorktreeLink[] = [];
   const missing: WorktreeLink[] = [];
   const outside: WorktreeLink[] = [];

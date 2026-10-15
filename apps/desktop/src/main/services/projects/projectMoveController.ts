@@ -52,13 +52,13 @@ export function classifyProjectActivity(chatTitles: string[], sessions: unknown)
 }
 
 /** `root` mapped to where a finished move put it; any other root unchanged. */
-export function movedRoot(root: string, record: ProjectMoveRecord, normalize: (root: string) => string = (value) => value): string {
+function movedRoot(root: string, record: ProjectMoveRecord, normalize: (root: string) => string): string {
   const spellings = record.resume?.sourceSpellings ?? [record.sourceRoot];
   return spellings.includes(root) || spellings.includes(normalize(root)) ? record.destinationRoot : root;
 }
 
 /** Recent projects, the last project and the update workspace, pointed at the moved project's new folder. */
-export function remapGlobalStateForMove(state: GlobalState, record: ProjectMoveRecord, normalize?: (root: string) => string): GlobalState {
+export function remapGlobalStateForMove(state: GlobalState, record: ProjectMoveRecord, normalize: (root: string) => string): GlobalState {
   const move = (root: string) => movedRoot(root, record, normalize);
   return {
     ...state,
@@ -76,7 +76,7 @@ export function remapGlobalStateForMove(state: GlobalState, record: ProjectMoveR
 }
 
 /** Replaces, in place, every root in `roots` that the move took elsewhere with its new folder. */
-export function replaceMovedRoots(roots: Set<string>, record: ProjectMoveRecord, normalize?: (root: string) => string): void {
+export function replaceMovedRoots(roots: Set<string>, record: ProjectMoveRecord, normalize: (root: string) => string): void {
   let moved = false;
   for (const root of [...roots]) {
     if (root !== record.destinationRoot && movedRoot(root, record, normalize) === record.destinationRoot) {
@@ -96,7 +96,7 @@ export type ProjectMoveControllerDeps = {
   /** After a successful move: update recent projects and open the new location. */
   afterMove: (record: ProjectMoveRecord, windowId: number | null) => Promise<void>;
   /** After a failed move: reopen the untouched original. */
-  afterFailedMove: (record: ProjectMoveRecord, windowId: number | null) => Promise<void>;
+  afterFailedMove: (sourceRoot: string, windowId: number | null) => Promise<void>;
   emitProgress: (progress: ProjectMoveProgress) => void;
 };
 
@@ -134,20 +134,30 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
         const blocked = preflight.checks.find((check) => check.status === "blocked");
         if (blocked) return { ok: false, record: null, error: `${blocked.title}. ${blocked.detail ?? ""}`.trim() };
         deps.logger.info("project_move.started", { projectRoot: args.projectRoot, destinationRoot: args.destinationRoot });
-        const record = await runProjectMove({
-          sourceRoot: args.projectRoot,
-          destinationRoot: args.destinationRoot,
-          moveAgentHistory: args.moveAgentHistory,
-          hooks: {
-            closeProject: deps.releaseProject,
-            onProgress: deps.emitProgress,
-          },
+        const reopenOriginal = () => deps.afterFailedMove(args.projectRoot, windowId).catch((error) => {
+          deps.logger.warn("project_move.reopen_original_failed", { error: errorText(error) });
         });
+        let record: ProjectMoveRecord;
+        try {
+          record = await runProjectMove({
+            sourceRoot: args.projectRoot,
+            destinationRoot: args.destinationRoot,
+            moveAgentHistory: args.moveAgentHistory,
+            hooks: {
+              closeProject: deps.releaseProject,
+              onProgress: deps.emitProgress,
+            },
+          });
+        } catch (error) {
+          // Only the journal itself failing reaches here; the project was
+          // closed, so open it again wherever it is.
+          deps.logger.warn("project_move.crashed", { error: errorText(error) });
+          await reopenOriginal();
+          return { ok: false, record: null, error: `The move stopped: ${errorText(error)}` };
+        }
         if (record.state !== "done") {
           deps.logger.warn("project_move.failed", { step: record.failedStep, error: record.error });
-          await deps.afterFailedMove(record, windowId).catch((error) => {
-            deps.logger.warn("project_move.reopen_original_failed", { error: errorText(error) });
-          });
+          await reopenOriginal();
           return { ok: false, record, error: record.error ?? "The move failed. Your project wasn't changed." };
         }
         deps.logger.info("project_move.done", { moveId: record.moveId, problems: record.problems.length });
@@ -214,8 +224,9 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     /** Settles moves a crash or quit interrupted. Called once at startup, before the last project reopens. */
     async recover(): Promise<ProjectMoveRecord[]> {
       try {
-        const settled = await recoverInterruptedMoves();
+        const { settled, tidyUp } = await recoverInterruptedMoves();
         for (const record of settled) deps.logger.info("project_move.recovered", { moveId: record.moveId, state: record.state });
+        void tidyUp.catch((error) => deps.logger.warn("project_move.recover_tidy_up_failed", { error: errorText(error) }));
         return settled;
       } catch (error) {
         deps.logger.warn("project_move.recover_failed", { error: errorText(error) });

@@ -39,7 +39,7 @@ export function ProjectMoveHost() {
   const target = useSyncExternalStore(subscribe, () => dialogTarget, () => null);
   const [attention, setAttention] = useState<ProjectMoveRecord[]>([]);
   // Moving projects is macOS-only; elsewhere there is nothing to poll for.
-  const api = isMacPlatform() ? window.ade.projectMove : undefined;
+  const api = isMacPlatform() ? window.ade?.projectMove : undefined;
 
   const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
 

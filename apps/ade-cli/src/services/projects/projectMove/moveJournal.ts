@@ -16,7 +16,7 @@ function projectMovesDir(): string {
 }
 
 /** Written into a project's old folder when it moves, so nothing opens the kept copy by mistake. */
-export const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
+const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
 
 export type MovedMarker = { movedTo: string | null; moveId: string | null };
 
@@ -56,7 +56,8 @@ export function currentBootMinute(): number {
  */
 export function isMoveProcessAlive(record: Pick<ProjectMoveRecord, "pid" | "bootMinute">): boolean {
   const { pid } = record;
-  if (!pid || pid === process.pid) return false;
+  if (!pid) return false;
+  if (pid === process.pid) return true;
   if (record.bootMinute != null && Math.abs(record.bootMinute - currentBootMinute()) > 1) return false;
   try {
     process.kill(pid, 0);
@@ -118,7 +119,7 @@ export function findMoveInto(root: string): ProjectMoveRecord | null {
 /** Whether ADE itself left a partial copy at `destinationRoot` (a failed or interrupted move into it). */
 export function ownsLeftoverCopy(destinationRoot: string): boolean {
   return listMoveRecords().some(
-    (record) => record.destinationRoot === destinationRoot && record.state !== "done",
+    (record) => record.destinationRoot === destinationRoot && record.state !== "done" && record.copyCreated === true,
   );
 }
 

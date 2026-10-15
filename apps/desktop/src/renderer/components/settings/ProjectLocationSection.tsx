@@ -21,7 +21,7 @@ import {
 export function ProjectLocationSection() {
   const project = useAppStore((s) => s.project);
   const binding = useAppStore((s) => s.projectBinding);
-  const api = window.ade.projectMove;
+  const api = window.ade?.projectMove;
   const root = project?.rootPath ?? null;
   const remote = binding?.kind === "remote";
   const [volumes, setVolumes] = useState<ProjectMoveVolume[]>([]);

@@ -303,11 +303,23 @@ async function switchOver(run: MoveRun): Promise<string> {
   try {
     fs.renameSync(run.copyRoot, run.finalRoot);
   } catch (error) {
-    fs.renameSync(parked, run.sourceRoot);
+    try {
+      fs.renameSync(parked, run.sourceRoot);
+    } catch (restoreError) {
+      // Keep the verified copy: with the original stuck at its parked name it
+      // may be the only working one.
+      record.copyCreated = false;
+      throw new Error(
+        `Couldn't put the copy in place (${errorText(error)}), nor the original back (${errorText(restoreError)}). `
+        + `The original is at ${parked} and the checked copy at ${run.copyRoot}.`,
+      );
+    }
     record.originalParkedAt = null;
     record.parkingAt = null;
     throw new Error(`Couldn't put the copy in place: ${errorText(error)}`);
   }
+  record.switched = true;
+  writeMoveRecord(record);
   return parked;
 }
 
@@ -387,9 +399,10 @@ export async function runProjectMove(args: {
   // The project now lives at the new location: whatever follows can only add
   // problems to report, never turn the move back into a failure.
   finishSwitch(record);
-  record.originalBytes = await diskUsageBytes(parked);
   record.state = "done";
   record.finishedAt = Date.now();
+  writeMoveRecord(record);
+  record.originalBytes = await diskUsageBytes(parked);
   writeMoveRecord(record);
   return record;
 }
@@ -438,29 +451,48 @@ function finishSwitch(record: ProjectMoveRecord): void {
 }
 
 /**
- * Settles moves a crash or quit left "running". Once the copy is in place the
- * move is finished. Otherwise the original is put back if it was parked, and
- * the partial copy is removed if this move created it. Called once when ADE
- * starts, before it reopens the last project.
+ * Settles moves a crash or quit left "running". Once the copy was put in place
+ * the move only ever finishes (when its drive is connected; otherwise it waits
+ * for the next start). Before that, the original is put back if it was parked.
+ * Returns the settled moves at once; `tidyUp` does the slow disk work (sizing
+ * the kept original, removing a partial copy) afterwards, so ADE does not wait
+ * on it to open. Called once when ADE starts, before it reopens the last project.
  */
-export async function recoverInterruptedMoves(): Promise<ProjectMoveRecord[]> {
+export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveRecord[]; tidyUp: Promise<void> }> {
   const settled: ProjectMoveRecord[] = [];
+  const slowWork: Array<() => Promise<void>> = [];
   for (const record of listMoveRecords()) {
-    if (record.state !== "running" || isMoveProcessAlive(record)) continue;
+    if (record.state !== "running") continue;
+    if (record.pid !== process.pid && isMoveProcessAlive(record)) continue;
     record.problems ??= [];
+    const copyRoot = copyLocation(record.destinationRoot);
+    const placed = Boolean(record.switched)
+      || (Boolean(record.originalParkedAt) && fs.existsSync(record.destinationRoot) && !fs.existsSync(copyRoot));
     try {
-      if (record.originalParkedAt && fs.existsSync(record.destinationRoot)) {
+      if (placed) {
+        // The drive is not connected yet: finish at a later start, never undo.
+        if (!fs.existsSync(record.destinationRoot)) continue;
+        record.switched = true;
         finishSwitch(record);
         record.state = "done";
         record.followUps.push("ADE stopped during the switch-over and finished it when it started again.");
-        record.originalBytes = await diskUsageBytes(record.originalParkedAt);
+        const parked = record.originalParkedAt;
+        if (parked) {
+          slowWork.push(async () => {
+            record.originalBytes = await diskUsageBytes(parked);
+            writeMoveRecord(record);
+          });
+        }
       } else {
         const parked = record.originalParkedAt ?? record.parkingAt;
         if (parked && !fs.existsSync(record.sourceRoot) && fs.existsSync(parked)) fs.renameSync(parked, record.sourceRoot);
         record.originalParkedAt = null;
         record.parkingAt = null;
-        const copyRoot = copyLocation(record.destinationRoot);
-        if (record.copyCreated && fs.existsSync(copyRoot)) await fs.promises.rm(copyRoot, { recursive: true, force: true });
+        if (record.copyCreated) {
+          slowWork.push(async () => {
+            if (fs.existsSync(copyRoot)) await fs.promises.rm(copyRoot, { recursive: true, force: true });
+          });
+        }
         record.state = "failed";
         record.error = "ADE stopped during the move. Your project wasn't changed.";
       }
@@ -472,7 +504,10 @@ export async function recoverInterruptedMoves(): Promise<ProjectMoveRecord[]> {
     writeMoveRecord(record);
     settled.push(record);
   }
-  return settled;
+  const tidyUp = (async () => {
+    for (const work of slowWork) await work();
+  })();
+  return { settled, tidyUp };
 }
 
 async function verifyGit(args: {

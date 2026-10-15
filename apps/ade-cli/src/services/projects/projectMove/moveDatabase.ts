@@ -78,13 +78,6 @@ function closeWithCrsqlite(db: DatabaseSyncType): void {
   db.close();
 }
 
-export type DatabaseRewriteResult = {
-  projectId: string;
-  laneIds: string[];
-  /** `table.column` → rows rewritten. */
-  rewritten: Record<string, number>;
-};
-
 /**
  * Rewrites every stored path from the old root to the final root, in one
  * transaction with the sync extension loaded, so the change syncs to the
@@ -95,12 +88,8 @@ export function rewriteProjectDatabasePaths(args: {
   dbPath: string;
   oldSpellings: string[];
   finalRoot: string;
-}): DatabaseRewriteResult {
+}): void {
   const db = openWithCrsqlite(args.dbPath);
-  const rewritten: Record<string, number> = {};
-  const bump = (key: string, count: number) => {
-    if (count > 0) rewritten[key] = (rewritten[key] ?? 0) + count;
-  };
   try {
     const projects = db.prepare("select id from projects").all() as Array<{ id: string }>;
     if (projects.length !== 1) {
@@ -111,11 +100,10 @@ export function rewriteProjectDatabasePaths(args: {
       for (const old of args.oldSpellings) {
         for (const [table, column] of PATH_COLUMNS) {
           if (!hasTable(db, table) || !hasColumn(db, table, column)) continue;
-          const result = db.prepare(
+          db.prepare(
             `update "${table}" set "${column}" = ? || substr("${column}", ?)
              where "${column}" = ? or substr("${column}", 1, ?) = ?`,
           ).run(args.finalRoot, old.length + 1, old, old.length + 1, `${old}/`);
-          bump(`${table}.${column}`, Number(result.changes));
         }
       }
       if (hasTable(db, "kv")) {
@@ -131,7 +119,6 @@ export function rewriteProjectDatabasePaths(args: {
           // reaches other devices as an ordinary delete and an ordinary edit.
           db.prepare("delete from kv where key = ?").run(next);
           db.prepare("update kv set key = ? where key = ?").run(next, key);
-          bump("kv.key", 1);
         }
       }
       if (hasTable(db, "computer_use_artifacts") && hasColumn(db, "computer_use_artifacts", "metadata_json")) {
@@ -141,7 +128,6 @@ export function rewriteProjectDatabasePaths(args: {
           const next = rewriteJsonPaths(row.json, args.oldSpellings, args.finalRoot, ["absolutePath", "path", "filePath"]);
           if (next === row.json) continue;
           db.prepare("update computer_use_artifacts set metadata_json = ? where rowid = ?").run(next, row.rid);
-          bump("computer_use_artifacts.metadata_json", 1);
         }
       }
       db.exec("commit");
@@ -149,8 +135,6 @@ export function rewriteProjectDatabasePaths(args: {
       db.exec("rollback");
       throw error;
     }
-    const laneIds = (db.prepare("select id from lanes").all() as Array<{ id: string }>).map((row) => row.id);
-    return { projectId: projects[0]!.id, laneIds, rewritten };
   } finally {
     closeWithCrsqlite(db);
   }
@@ -195,9 +179,17 @@ export type DatabaseSummary = {
 /** Read-only look at a project's database, for the checks and the verification. */
 export function readProjectDatabaseSummary(dbPath: string): DatabaseSummary {
   const { DatabaseSync } = loadNodeSqlite();
-  // `immutable=1` reads without creating `-shm`/`-wal` files and without
-  // taking locks, so a check never changes the project it looks at.
-  const db = new DatabaseSync(`file:${encodeURI(dbPath)}?immutable=1`, { readOnly: true });
+  let db: DatabaseSyncType;
+  try {
+    // A read-only open sees rows still in the write-ahead log of an open project.
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.prepare("select 1").get();
+  } catch {
+    // A closed database has no shared-memory file for a read-only open to use.
+    // `immutable=1` then reads it without creating files or taking locks; a
+    // closed database has no log left to miss.
+    db = new DatabaseSync(`file:${encodeURI(dbPath)}?immutable=1`, { readOnly: true });
+  }
   try {
     const projects = db.prepare("select id from projects").all() as Array<{ id: string }>;
     const lanes = hasTable(db, "lanes")

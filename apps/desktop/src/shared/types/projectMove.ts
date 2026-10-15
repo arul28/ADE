@@ -112,6 +112,8 @@ export type ProjectMoveRecord = {
   parkingAt?: string | null;
   /** The move created `<destination>.ade-moving`; only then may a failure or a restart remove it. */
   copyCreated?: boolean;
+  /** The copy is in place at the destination: from here the move only ever finishes, never rolls back. */
+  switched?: boolean;
   originalBytes: number;
   destinationVolumeUuid: string | null;
   destinationVolumeName: string | null;

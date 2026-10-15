@@ -58,6 +58,7 @@ export async function trackedDependencyDirs(root: string, laneRelativePaths: rea
   }
   return [...dirs];
 }
+
 /** Bytes a folder takes on disk (`du`), optionally leaving out `node_modules`. */
 export async function diskUsageBytes(root: string, options: { ignoreDependencies?: boolean } = {}): Promise<number> {
   const args = options.ignoreDependencies ? ["-skI", "node_modules", root] : ["-sk", root];

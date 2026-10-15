@@ -15,7 +15,9 @@ export type NodeSqlite = {
 let nodeSqlite: NodeSqlite | null = null;
 
 /**
- * `node:sqlite`, loaded on the first open. A static import is rewritten by the
+ * `node:sqlite`, loaded on the first open. Shared by every caller, including
+ * ones that open a database for writing or back one up, so the workaround
+ * below lives in one place. A static import is rewritten by the
  * desktop test bundler into a missing `sqlite` URL, so it is a runtime require.
  * Loading it lazily lets modules that load with every ACP dialect, and the
  * usage ledger worker, import this one without paying for SQLite until a

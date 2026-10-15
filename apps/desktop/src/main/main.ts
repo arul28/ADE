@@ -3319,10 +3319,10 @@ app.whenReady().then(async () => {
           if (windowId != null) bindWindowToProject(windowId, record.destinationRoot, { emit: true });
           persistUpdateWorkspace();
         },
-        afterFailedMove: async (record, windowId) => {
-          if (!fs.existsSync(record.sourceRoot)) return;
-          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.sourceRoot));
-          if (windowId != null) bindWindowToProject(windowId, record.sourceRoot, { emit: true });
+        afterFailedMove: async (sourceRoot, windowId) => {
+          if (!fs.existsSync(sourceRoot)) return;
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(sourceRoot));
+          if (windowId != null) bindWindowToProject(windowId, sourceRoot, { emit: true });
         },
         emitProgress: (progress) => broadcast(IPC.projectMoveProgress, progress),
       })

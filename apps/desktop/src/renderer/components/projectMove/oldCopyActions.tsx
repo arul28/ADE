@@ -18,7 +18,7 @@ export type OldCopyChoice = "delete" | "keep" | { remindInMs: number };
  * when the person cancelled or it failed.
  */
 export async function chooseOldCopy(record: ProjectMoveRecord, choice: OldCopyChoice): Promise<ProjectMoveRecord | null> {
-  const api = window.ade.projectMove;
+  const api = window.ade?.projectMove;
   if (!api) return null;
   if (choice === "delete") {
     const confirmed = await confirmDialog({

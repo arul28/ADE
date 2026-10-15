@@ -29,6 +29,8 @@ import { usageLeftLevel } from "../usage/usageDesign";
 import { Banner } from "../ui/notice";
 import { agentCheckLaunchArgs, announceProjectMoveChanged, displayPath, formatBytes, formatReminder, volumeFor } from "./projectMoveModel";
 import { OldCopyControls } from "./oldCopyActions";
+// The drive cards are the settings kit's choice cards; the dialog opens from anywhere.
+import "../settings/primitives/settingsModern.css";
 import "./projectMove.css";
 
 type Stage = "setup" | "moving" | "done" | "failed";
@@ -78,7 +80,7 @@ export function MoveProjectDialog({
   projectRoot: string;
   projectName: string;
 }) {
-  const api = window.ade.projectMove;
+  const api = window.ade?.projectMove;
   const [stage, setStage] = useState<Stage>("setup");
   const [volumes, setVolumes] = useState<ProjectMoveVolume[] | null>(null);
   const [parentFolder, setParentFolder] = useState<string | null>(null);
@@ -90,6 +92,7 @@ export function MoveProjectDialog({
   const [error, setError] = useState<string | null>(null);
   const [startingCheck, setStartingCheck] = useState(false);
   const checkRequest = useRef(0);
+  const moveStarted = useRef(false);
 
   const sourceVolume = useMemo(() => (volumes ? volumeFor(projectRoot, volumes) : null), [projectRoot, volumes]);
   const destinationRoot = parentFolder ? joinParentAndName(parentFolder, projectName) : null;
@@ -152,7 +155,9 @@ export function MoveProjectDialog({
   };
 
   const startMove = async () => {
-    if (!api || !destinationRoot) return;
+    // Set before the first await: a double click must not start two moves.
+    if (!api || !destinationRoot || moveStarted.current) return;
+    moveStarted.current = true;
     setStage("moving");
     setProgress(null);
     setError(null);
@@ -174,6 +179,7 @@ export function MoveProjectDialog({
         setStage("failed");
       } else {
         // Refused before anything started (a check failed meanwhile).
+        moveStarted.current = false;
         setError(result.error);
         setStage("setup");
         runChecks();
@@ -238,7 +244,7 @@ export function MoveProjectDialog({
     failed: (
       <>
         <button type="button" className="kit-btn kit-btn-ghost" onClick={onClose}>Close</button>
-        <button type="button" className="kit-btn kit-btn-primary" onClick={() => { setStage("setup"); runChecks(); }}>Try again</button>
+        <button type="button" className="kit-btn kit-btn-primary" onClick={() => { moveStarted.current = false; setStage("setup"); runChecks(); }}>Try again</button>
       </>
     ),
     done: <button type="button" className="kit-btn kit-btn-primary" onClick={onClose}>Done</button>,
@@ -369,7 +375,13 @@ export function MoveProjectDialog({
         {stage === "failed" ? (
           <Banner
             layout="inline"
-            model={{ id: "project-move-failed", tone: "error", title: error ?? "Something went wrong.", detail: "Your project wasn't changed." }}
+            model={{
+              id: "project-move-failed",
+              tone: "error",
+              title: error ?? "Something went wrong.",
+              // Only the engine's own report proves the original was left alone.
+              detail: record ? "Your project wasn't changed." : "Check that the project opens where it was before you try again.",
+            }}
           />
         ) : null}
 
