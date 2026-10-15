@@ -226,6 +226,7 @@ export function OpenCodeAccountsSection({
 }: {
   providerId: string;
   providerName: string;
+  /** The machine as it reads mid-sentence: "this computer", or its name. */
   machineName: string;
   pin: OpenProjectBinding | null;
   accounts: OpenCodeAccount[];
@@ -525,8 +526,10 @@ export function OpenCodeAddAccountDialog({
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title={cloudChoice ? cloudChoice.method.label : `Add a ${providerName} account`}
-      description={cloudChoice ? `Uses a login this computer already has. No key is stored.` : undefined}
+      title={cloudChoice ? cloudChoice.method.label : "Add an account"}
+      description={cloudChoice
+        ? `${providerName} · uses a login the computer already has. No key is stored.`
+        : `${providerName} · OpenCode uses one account at a time.`}
       width={420}
     >
       {cloudChoice ? (
@@ -554,7 +557,7 @@ export function OpenCodeAddAccountDialog({
                 <span className="ade-oc-add-text">
                   <span className="ade-oc-add-title">{method.label}</span>
                   <span className="ade-oc-add-sub">
-                    {method.type === "cloud" ? "Uses this computer's own cloud login" : "Opens a browser sign-in"}
+                    {method.type === "cloud" ? "Uses the computer's own cloud login" : "Sign in through your browser"}
                   </span>
                 </span>
               </button>

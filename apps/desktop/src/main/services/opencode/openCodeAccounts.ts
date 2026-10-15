@@ -120,6 +120,9 @@ async function reconcileCloudLogins(deps: OpenCodeAuthDeps): Promise<boolean> {
         deps.logger.warn("opencode.cloud_login_sync_remove_failed", { providerId: credential.integrationId, error: errorMessage(err) });
       }
     }
+    // `integration.list` waits for this location's catalog; a connect sent to
+    // a server that just started reports a real provider as missing.
+    if (toAdd.length) await lease.client.integration.list({ location });
     for (const login of toAdd) {
       const previouslyActive = credentials.find((entry) => entry.integrationId === login.providerId && entry.active);
       try {
@@ -195,11 +198,18 @@ export async function listOpenCodeAccounts(
   const synced = readSyncedCloudLogins(deps);
   const syncedKeys = synced ? new Set(synced.map(cloudLoginKey)) : null;
   const providerId = args.providerId?.trim() || null;
+  // Rows arrive marked-active first, then newest. A provider with no row
+  // marked (logins from before 2.0 carry none) still uses its newest one, as
+  // OpenCode does (verified against 2.0.29), so that row reads as in use.
+  const inUse = new Set<string>();
   const accounts = readOpenCodeCredentials()
     .filter((credential) => !providerId || credential.integrationId === providerId)
-    .map((credential) => toAccount(credential, syncedKeys))
-    // In use first, then newest, the order OpenCode itself falls back in.
-    .sort((left, right) => Number(right.active) - Number(left.active) || right.updatedAt - left.updatedAt);
+    .map((credential) => {
+      const account = toAccount(credential, syncedKeys);
+      account.active = !inUse.has(credential.integrationId);
+      inUse.add(credential.integrationId);
+      return account;
+    });
   return { accounts };
 }
 

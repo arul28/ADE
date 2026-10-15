@@ -102,7 +102,7 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
       SELECT id AS id,
              integration_id AS integrationId,
              label AS label,
-             method_id AS methodId,
+             COALESCE(NULLIF(method_id, ''), json_extract(value, '$.methodID')) AS methodId,
              active AS active,
              time_updated AS updatedAt,
              json_extract(value, '$.type') AS type,

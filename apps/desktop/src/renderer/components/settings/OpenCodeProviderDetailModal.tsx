@@ -115,7 +115,9 @@ export function OpenCodeProviderDetailModal({
     [signInTarget.methods],
   );
   // Logins live on the machine this Settings page is showing.
-  const { pin, machineName } = useSettingsMachineScope();
+  const { pin, machineName, isThisMachine } = useSettingsMachineScope();
+  // How the machine reads inside a sentence: "Ready on this computer".
+  const machineLabel = isThisMachine ? "this computer" : machineName;
   // A machine whose ADE predates accounts cannot list them; the dialog then
   // keeps its plain sign-in, which still works there.
   const accountsState = useOpenCodeAccounts(signInTarget.providerId, pin);
@@ -227,7 +229,7 @@ export function OpenCodeProviderDetailModal({
                 <OpenCodeAccountsSection
                   providerId={signInTarget.providerId}
                   providerName={signInTarget.providerName}
-                  machineName={machineName}
+                  machineName={machineLabel}
                   pin={pin}
                   accounts={accounts}
                   loading={accountsState.loading}
@@ -339,7 +341,7 @@ export function OpenCodeProviderDetailModal({
                   <div style={sectionLabelStyle}>API key</div>
                   {accounts.length > 0 && provider.hasKey ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                      Not used while {machineName} has an account above. Signing out of all of them falls back to this key.
+                      Not used while an account above is signed in. Sign out of all of them to use this key.
                     </div>
                   ) : null}
                   {signInVia ? (
