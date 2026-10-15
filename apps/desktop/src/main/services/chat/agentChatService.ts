@@ -12035,6 +12035,8 @@ export function createAgentChatService(args: {
       });
     },
     requestAttention: requestSessionAttention,
+    clearInferredAttention: (sessionId, startedAt) =>
+      sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
   });
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
@@ -21287,7 +21289,24 @@ export function createAgentChatService(args: {
     // A running recording outranks the guess: it is a fact ADE knows.
     const recording = demoTrackRegistry.isChatRecording(managed.session.id);
     const detected = recording ? "recording" : observed;
-    if (!detected) return;
+    if (!detected) {
+      // A compaction that ends on a quiet chat restores "no activity" — null.
+      // The row must drop its chip then: nothing else clears it, so leaving it
+      // would read "Compacting…" (or "Compaction failed") on a chat that is
+      // demonstrably done. Only a compaction can null the detector here; every
+      // other path carries a value.
+      if (before !== "compacting" && before !== "compaction_failed") return;
+      try {
+        sessionService.clearSessionActivity(managed.session.id);
+        managed.activityRowNeedsWrite = false;
+      } catch (error) {
+        logger.warn("agent_chat.activity_detect_clear_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     const changed = detected !== (recording ? "recording" : before) || managed.activityRowNeedsWrite === true;
     // An unchanged detection only refills an empty row (an agent ran
     // `ade chat activity clear`): rewriting it would override an agent report
@@ -21476,7 +21495,16 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
-    turnEndQuestion.onEvent(managed.session.id, normalizedEvent);
+    const currentTurnStartedAt = managed.session.status === "active"
+      && managed.session.currentTurnStartedAt
+      && lastTurnStartedAtBySession.get(managed.session.id) === managed.session.currentTurnStartedAt
+      ? managed.session.currentTurnStartedAt
+      : null;
+    turnEndQuestion.onEvent(
+      managed.session.id,
+      normalizedEvent,
+      currentTurnStartedAt,
+    );
     if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
     }
@@ -22212,6 +22240,16 @@ export function createAgentChatService(args: {
       });
       return;
     }
+    // The SDK repeats its `compacting` status every ~30 s while one compaction
+    // runs, and each repeat would look like a new compaction: an extra open
+    // row, and — because a client counts a running compaction's elapsed from
+    // the newest "started" it has — an elapsed clock that restarts mid-run.
+    // Only the first frame of THIS compaction opens the row (the same key
+    // `emitChatEvent` files it under); a completed/failed event deletes that
+    // key, so the next compaction still starts fresh, and an entry left behind
+    // by a torn-down runtime cannot suppress a different turn's compaction.
+    const key = turnId ?? "native";
+    if (openNativeCompactions.get(managed.session.id)?.has(key)) return;
     // The real trigger arrives with the boundary (completed) event, so this
     // defaults to "auto".
     emitChatEvent(managed, {
@@ -45459,6 +45497,25 @@ export function createAgentChatService(args: {
     }
 
     persistChatState(managed);
+    // Importing a PR creates the lane before its first chat exists. Claim
+    // that durable origin only for a person's new Work chat, never a helper,
+    // identity, automation, handoff, or idempotently returned existing chat.
+    if (prService && !runtimeActor && !identityKey && !normalizedParentSessionId
+      && !launchedBySessionId && !recoveredFromSessionId && !automationId
+      && (surface ?? "work") === "work") {
+      const claim = prService.claimLanePrChatOrigin({ laneId, sessionId });
+      if (claim.status === "retry") {
+        try {
+          await deleteSession({ sessionId });
+        } catch (error) {
+          logger.warn("agent_chat.pr_origin_create_cleanup_failed", {
+            sessionId,
+            error: getErrorMessage(error),
+          });
+        }
+        throw new Error(claim.message);
+      }
+    }
     // Only a person's choice moves the machine's defaults.
     if (!runtimeActor) rememberLaunchDefaults(managed.session);
     return managed.session;

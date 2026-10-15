@@ -1055,6 +1055,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
+  // A PR-origin chat handoff is consumed by one machine's first new chat on
+  // the imported lane; replicating the pending claim could attach twice.
+  "pull_request_lane_chat_origins",
   // A PR watch wakes a chat on THIS machine. A replicated row would let a
   // second machine's brain wake its own copy of the chat too, so the watch and
   // the ids of comments ADE posted (which never wake it) stay local.
@@ -3188,6 +3191,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)");
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)");
+
+  // A lane created from a PR may have exactly one review chat explicitly
+  // associated with that PR. This pending origin is consumed by the first
+  // agent chat created on that lane; it is machine-local so two runtimes cannot
+  // race to attach different chats from replicated copies of the same marker.
+  db.run(`
+    create table if not exists pull_request_lane_chat_origins (
+      project_id text not null,
+      lane_id text not null,
+      pr_id text not null,
+      created_at text not null,
+      claimed_session_id text,
+      claimed_at text,
+      merge_followup_pending integer not null default 0,
+      primary key (project_id, lane_id),
+      foreign key(project_id) references projects(id) on delete cascade,
+      foreign key(lane_id) references lanes(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pr on pull_request_lane_chat_origins(project_id, pr_id)");
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_page on pull_request_lane_chat_origins(project_id, merge_followup_pending, created_at, lane_id)");
+  db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_session on pull_request_lane_chat_origins(project_id, claimed_session_id, merge_followup_pending)");
 
   // PR Watch / Ship (`prChatWatchStore.ts`). Machine-local: see
   // LOCAL_ONLY_CRR_EXCLUDED_TABLES.

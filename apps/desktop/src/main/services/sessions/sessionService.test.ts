@@ -1916,6 +1916,56 @@ describe("sessionService resume metadata", () => {
   });
 });
 
+describe("sessionService attention ownership", () => {
+  it("clears inferred attention only when its source and timestamp predate turn start", async () => {
+    const projectRoot = makeProjectRoot("ade-session-attention-owner-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-attention-owner",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-attention-owner.log",
+      toolType: "claude-chat",
+    });
+    const sessionId = "session-attention-owner";
+    const startedAt = "2026-10-14T12:00:00.000Z";
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "agent_explicit", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionSource).toBe("agent_explicit");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "provider_structured", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionSource).toBe("provider_structured");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T12:01:00.000Z", "turn_end_question", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionRequestedAt).toBe("2026-10-14T12:01:00.000Z");
+
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = ? where id = ?",
+      ["2026-10-14T11:59:00.000Z", "turn_end_question", sessionId],
+    );
+    service.clearAttentionRequest(sessionId, "turn_end_question", startedAt);
+    expect(service.get(sessionId)?.attentionRequestedAt).toBeNull();
+  });
+});
+
 describe("sessionService snooze overlay", () => {
   async function makeService(prefix: string) {
     const projectRoot = makeProjectRoot(prefix);

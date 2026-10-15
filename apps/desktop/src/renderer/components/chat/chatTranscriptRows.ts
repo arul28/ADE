@@ -3365,7 +3365,13 @@ export function appendCollapsedChatTranscriptEvent(
       if (previous) {
         rows[actualIndex] = {
           ...rows[actualIndex]!,
-          timestamp: envelope.timestamp,
+          // Two "started" rows are one compaction still running (an older peer
+          // repeats Claude's `compacting` status every ~30s). The row counts
+          // its elapsed from this timestamp, so a repeat must not move it
+          // forward — that is what restarted the "Compacting 42s" clock.
+          timestamp: previous.state === "started" && incoming.state === "started"
+            ? rows[actualIndex]!.timestamp
+            : envelope.timestamp,
           event: toContextCompactChatEvent(mergeNormalizedContextCompact(previous, incoming)),
         };
         return;

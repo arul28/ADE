@@ -456,8 +456,13 @@ export function createSessionActivityDetector(): SessionActivityDetector {
         state = "compacting";
       } else {
         // Back to what the chat was doing; null when nothing was known, rather
-        // than claiming an activity the chat never reported.
-        state = event.state === "failed" ? "compaction_failed" : beforeCompaction;
+        // than claiming an activity the chat never reported. A cancellation is
+        // not a failure — the person's Stop or the provider aborting its own
+        // `/compact` asks nothing of anyone, so it must not leave the amber
+        // "Compaction failed" row standing.
+        state = event.state === "failed" && event.failReason !== "interrupted"
+          ? "compaction_failed"
+          : beforeCompaction;
         beforeCompaction = null;
       }
       return { activity: state, counted: true };

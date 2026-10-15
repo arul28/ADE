@@ -13,6 +13,7 @@ import {
 import { isChatToolType } from "../sessions/chatSessionProjection";
 import { sessionHasOpenLinkedPrs } from "../../../shared/prChatScope";
 import type { AgentChatSessionSummary } from "../../../shared/types";
+import { getErrorMessage } from "../shared/utils";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
   const mergedMs = Date.parse(mergedAt ?? "");
@@ -63,13 +64,13 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
 }
 
 /**
- * What a chat's liveness looks like to a caller that is not the chat service.
- *
- * Deliberately `status` alone. The sole consumer (`hasActiveChatTurn`) acts on
- * nothing else — `awaitingInput` is a stable resting state, not a running turn
- * — so carrying it would only invite a future reader to defer on it.
+ * The chat liveness fields needed by PR settlement. `status` detects an active
+ * turn; `idleSinceAt` proves an origin chat has completed its first turn. An
+ * idle state without that timestamp is a newly created chat that has not run.
  */
-export type ChatLivenessSummary = Pick<AgentChatSessionSummary, "status">;
+export type ChatLivenessSummary = Pick<AgentChatSessionSummary, "status"> & {
+  idleSinceAt?: string | null;
+};
 
 /**
  * The one adapter from the chat service to a `getChatLiveness` callback.
@@ -79,20 +80,24 @@ export type ChatLivenessSummary = Pick<AgentChatSessionSummary, "status">;
  * desktop-only copy would protect nobody. Exported so the two cannot drift into
  * disagreeing about what "live" means.
  *
- * Reports `status` and nothing else; what counts as "active" is the consumer's
- * policy, but no consumer needs any other field to decide it.
+ * Reports only the fields PR settlement consumes, so the adapter does not
+ * expose the full chat service summary.
  */
 export function chatLivenessReader(
   agentChatService: { getSessionSummary: (sessionId: string) => Promise<AgentChatSessionSummary | null> },
 ): (sessionId: string) => Promise<ChatLivenessSummary | null> {
   return async (sessionId: string) => {
     const summary = await agentChatService.getSessionSummary(sessionId);
-    return summary ? { status: summary.status } : null;
+    return summary ? { status: summary.status, idleSinceAt: summary.idleSinceAt ?? null } : null;
   };
 }
 
+type PendingOriginFollowup = { pr_id: string; lane_id: string; session_id: string };
+type SettleCommitGuard = (sessionId: string) => boolean;
+
 export function createPrMergeAutoSettlementService(args: {
-  db: Pick<AdeDb, "getJson" | "setJson">;
+  db: Pick<AdeDb, "getJson" | "setJson"> & Partial<Pick<AdeDb, "get" | "all" | "run" | "runChanged">>;
+  projectId?: string;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
   /**
@@ -111,7 +116,10 @@ export function createPrMergeAutoSettlementService(args: {
    * `hasActiveChatTurn`.
    */
   getChatLiveness?: (sessionId: string) => Promise<ChatLivenessSummary | null>;
-  logger?: { debug: (event: string, meta?: Record<string, unknown>) => void };
+  logger?: {
+    debug: (event: string, meta?: Record<string, unknown>) => void;
+    warn?: (event: string, meta?: Record<string, unknown>) => void;
+  };
 }) {
 
 
@@ -139,6 +147,7 @@ export function createPrMergeAutoSettlementService(args: {
   // merge transition, so retain that bounded watch set instead of every state
   // we have ever observed.
   const previouslyWatchablePrIds = new Set<string>();
+  let pendingOriginFollowupCursor: { createdAt: string; laneId: string } | null = null;
 
   /**
    * The sessions a merged PR may consider, before the archived/settled/tool-type
@@ -181,9 +190,10 @@ export function createPrMergeAutoSettlementService(args: {
    * merged PR is ever settled or announced.
    *
    * No liveness (no `getChatLiveness`, or nothing for this session — every
-   * non-chat and tracked-CLI row) therefore settles immediately, as it did
-   * before this gate existed. Teardown's `mayInterruptActiveTurn` policy is the
-   * backstop: if a turn is somehow running it aborts rather than interrupting.
+   * non-chat and tracked-CLI row) leaves ordinary merge handling unchanged.
+   * An explicit PR-origin chat separately requires a completed first turn.
+   * Teardown's `mayInterruptActiveTurn` policy remains the backstop for other
+   * chats: if a turn is running it aborts rather than interrupts.
    *
    * A THROWN read is the one case that is not "no liveness": an unreachable
    * liveness source is not evidence the turn ended, so it counts as active and
@@ -191,12 +201,275 @@ export function createPrMergeAutoSettlementService(args: {
    * (a `readActiveWork` that times out aborts rather than files), so the two
    * halves agree; this gate is still the one that keeps the deferral cheap.
    */
-  const hasActiveChatTurn = async (sessionId: string): Promise<boolean> => {
+  const readChatLiveness = async (sessionId: string): Promise<ChatLivenessSummary | null> => {
     try {
-      const chat = await args.getChatLiveness?.(sessionId);
-      return chat?.status === "active";
+      return await args.getChatLiveness?.(sessionId) ?? null;
     } catch {
+      return { status: "active", idleSinceAt: null };
+    }
+  };
+
+  const hasActiveChatTurn = async (sessionId: string): Promise<boolean> =>
+    (await readChatLiveness(sessionId))?.status === "active";
+
+  const readPendingOriginFollowups = (): PendingOriginFollowup[] => {
+    const projectId = args.projectId;
+    const all = args.db.all;
+    if (!projectId || !all) return [];
+    const readPage = (after: { createdAt: string; laneId: string } | null) => {
+      const cursorSql = after
+        ? "and (origin.created_at, origin.lane_id) > (?, ?)"
+        : "";
+      const params = after ? [projectId, after.createdAt, after.laneId] : [projectId];
+      return all<PendingOriginFollowup & { created_at: string }>(
+        `select origin.pr_id, origin.lane_id, origin.claimed_session_id as session_id,
+                origin.created_at as created_at
+           from pull_request_lane_chat_origins origin
+           join pull_requests pr on pr.id = origin.pr_id and pr.project_id = origin.project_id
+          where origin.project_id = ? and origin.merge_followup_pending = 1
+            and origin.claimed_session_id is not null
+            and pr.state = 'merged' and pr.detached_at is null
+            ${cursorSql}
+          order by origin.created_at asc, origin.lane_id asc
+          limit 500`,
+        params,
+      );
+    };
+    try {
+      let rows = readPage(pendingOriginFollowupCursor);
+      if (rows.length === 0 && pendingOriginFollowupCursor) {
+        pendingOriginFollowupCursor = null;
+        rows = readPage(null);
+      }
+      const last = rows.at(-1);
+      pendingOriginFollowupCursor = last
+        ? { createdAt: last.created_at, laneId: last.lane_id }
+        : null;
+      return rows;
+    } catch (error) {
+      if (!/no such table/i.test(getErrorMessage(error))) {
+        args.logger?.warn?.("prs.origin_merge_followup_read_failed", {
+          projectId: args.projectId,
+          error: getErrorMessage(error),
+        });
+      }
+      return [];
+    }
+  };
+
+  /**
+   * True when the origin's stored lane still matches the live PR, chat edge,
+   * and terminal session. A chat moved by `updateMeta({ laneId })` or a PR
+   * remapped to another lane leaves the origin pointing at a lane nothing
+   * occupies; `claimOriginForSettle` would then reject it after teardown on
+   * every poll, keeping the merged PR permanently unhandled. A stale binding is
+   * cleared here and reported false so both the normal path and the handled
+   * follow-up skip it instead of retrying forever.
+   */
+  const originBindingFresh = (origin: PendingOriginFollowup): boolean => {
+    const projectId = args.projectId;
+    const get = args.db.get;
+    const run = args.db.run;
+    if (!projectId || !get) return false;
+    try {
+      const aligned = get<{ ok: number }>(
+        `select 1 as ok
+           from pull_requests pr, terminal_sessions ts
+          where pr.id = ? and pr.project_id = ?
+            and ts.id = ?
+            and pr.lane_id = ?
+            and ts.lane_id = ?
+            and exists (
+              select 1 from pull_request_chat_sessions edge
+               where edge.project_id = ? and edge.pr_id = ?
+                 and edge.session_id = ? and edge.lane_id = ?
+            )
+          limit 1`,
+        [
+          origin.pr_id, projectId, origin.session_id, origin.lane_id, origin.lane_id,
+          projectId, origin.pr_id, origin.session_id, origin.lane_id,
+        ],
+      );
+      if (aligned) return true;
+      run?.(
+        `update pull_request_lane_chat_origins set merge_followup_pending = 0
+          where project_id = ? and pr_id = ? and claimed_session_id = ?`,
+        [projectId, origin.pr_id, origin.session_id],
+      );
+      return false;
+    } catch (error) {
+      if (/no such table/i.test(getErrorMessage(error))) return false;
+      args.logger?.warn?.("prs.origin_binding_check_failed", {
+        projectId,
+        prId: origin.pr_id,
+        sessionId: origin.session_id,
+        error: getErrorMessage(error),
+      });
       return true;
+    }
+  };
+
+  /** Indexed point lookup, independent of the bounded follow-up page. */
+  const findPendingOriginForSession = (
+    sessionId: string,
+  ): PendingOriginFollowup | null | undefined => {
+    const projectId = args.projectId;
+    const get = args.db.get;
+    if (!projectId || !get) return null;
+    try {
+      const origin = get<PendingOriginFollowup>(
+        `select origin.pr_id, origin.lane_id, origin.claimed_session_id as session_id
+           from pull_request_lane_chat_origins origin
+           join pull_requests pr on pr.id = origin.pr_id and pr.project_id = origin.project_id
+          where origin.project_id = ? and origin.claimed_session_id = ?
+            and origin.merge_followup_pending = 1
+            and pr.state = 'merged' and pr.detached_at is null
+          limit 1`,
+        [projectId, sessionId],
+      ) ?? null;
+      if (!origin) return null;
+      // A stale binding is cleared and treated as "no origin", so the normal
+      // path settles the session without the origin commit guard.
+      if (!originBindingFresh(origin)) return null;
+      return origin;
+    } catch (error) {
+      if (/no such table/i.test(getErrorMessage(error))) return null;
+      args.logger?.warn?.("prs.origin_merge_followup_candidate_read_failed", {
+        projectId,
+        sessionId,
+        error: getErrorMessage(error),
+      });
+      return undefined;
+    }
+  };
+
+  const claimOriginForSettle = (origin: PendingOriginFollowup): SettleCommitGuard => {
+    const projectId = args.projectId;
+    const runChanged = args.db.runChanged;
+    return (sessionId) => {
+      if (!projectId || !runChanged) return false;
+      return runChanged(
+      `update pull_request_lane_chat_origins
+          set merge_followup_pending = 0
+        where project_id = ? and lane_id = ? and pr_id = ?
+          and claimed_session_id = ? and merge_followup_pending = 1
+          and exists (
+            select 1 from pull_requests pr
+             where pr.id = pull_request_lane_chat_origins.pr_id
+               and pr.project_id = pull_request_lane_chat_origins.project_id
+               and pr.lane_id = pull_request_lane_chat_origins.lane_id
+               and pr.detached_at is null and pr.state = 'merged'
+          )
+          and exists (
+            select 1 from pull_request_chat_sessions edge
+             where edge.project_id = pull_request_lane_chat_origins.project_id
+               and edge.pr_id = pull_request_lane_chat_origins.pr_id
+               and edge.lane_id = pull_request_lane_chat_origins.lane_id
+               and edge.session_id = ?
+          )
+          and not exists (
+            select 1 from pull_request_chat_session_dismissals dismissal
+             where dismissal.project_id = pull_request_lane_chat_origins.project_id
+               and dismissal.pr_id = pull_request_lane_chat_origins.pr_id
+               and dismissal.session_id = ?
+          )
+          and not exists (
+            select 1 from pull_request_chat_sessions other_edge
+             join pull_requests other_pr
+               on other_pr.id = other_edge.pr_id
+              and other_pr.project_id = other_edge.project_id
+             where other_edge.project_id = pull_request_lane_chat_origins.project_id
+               and other_edge.session_id = ?
+               and other_edge.pr_id <> pull_request_lane_chat_origins.pr_id
+               and other_pr.detached_at is null
+               and other_pr.state in ('open', 'draft')
+          )
+          and exists (
+            select 1 from terminal_sessions ts
+             where ts.id = ? and ts.lane_id = pull_request_lane_chat_origins.lane_id
+               and (ts.settled_at is null or ts.settle_override is not null)
+          )`,
+        [projectId, origin.lane_id, origin.pr_id, sessionId, sessionId, sessionId, sessionId, sessionId],
+      ) === 1;
+    };
+  };
+
+  /**
+   * A lane imported from a PR can produce its first chat after the merge was
+   * already marked handled. Only the one-shot origin edge records this narrow
+   * follow-up; ordinary links and reopened chats never re-open merge handling.
+   */
+  const processHandledOriginFollowups = async (
+    followups: PendingOriginFollowup[],
+    prsById: Map<string, PrSummary>,
+    prs: PrSummary[],
+    polledAt: string,
+  ): Promise<void> => {
+    const projectId = args.projectId;
+    for (const followup of followups) {
+      const pr = prsById.get(followup.pr_id);
+      if (!pr) continue;
+      // A stale binding (chat moved lanes / PR remapped) is cleared here so
+      // `claimOriginForSettle` never rejects it after teardown on every poll.
+      if (!originBindingFresh(followup)) continue;
+      const state = getPrMergeAutoSettlementState(args.db);
+      if (
+        pr.state !== "merged"
+        || !getSessionLifecycleSettings(args.db).autoSettleLaneSessionsOnPrMerge
+        || !state?.enabledSince
+      ) continue;
+      if (!isMergeAtOrAfter(pr.mergedAt, state.enabledSince)) {
+        if (projectId && args.db.run) {
+          try {
+            args.db.run(
+              `update pull_request_lane_chat_origins set merge_followup_pending = 0
+                where project_id = ? and pr_id = ? and claimed_session_id = ? and merge_followup_pending = 1`,
+              [projectId, followup.pr_id, followup.session_id],
+            );
+          } catch (error) {
+            args.logger?.warn?.("prs.origin_merge_followup_clear_failed", {
+              projectId,
+              prId: followup.pr_id,
+              sessionId: followup.session_id,
+              error: getErrorMessage(error),
+            });
+          }
+        }
+        continue;
+      }
+      // A normal open→merged pass owns this PR until it either files its work
+      // or defers on an active turn. The narrow follow-up runs only after that
+      // pass has marked the PR handled.
+      if (!state.handledPrIds.includes(pr.id)) continue;
+
+      const session = args.sessionService.get(followup.session_id);
+      if (!session || session.archivedAt || session.settledAt || !isChatToolType(session.toolType)) {
+        if (projectId && args.db.run) {
+          try {
+            args.db.run(
+              `update pull_request_lane_chat_origins set merge_followup_pending = 0
+                where project_id = ? and pr_id = ? and claimed_session_id = ? and merge_followup_pending = 1`,
+              [projectId, followup.pr_id, followup.session_id],
+            );
+          } catch (error) {
+            args.logger?.warn?.("prs.origin_merge_followup_clear_failed", {
+              projectId,
+              prId: followup.pr_id,
+              sessionId: followup.session_id,
+              error: getErrorMessage(error),
+            });
+          }
+        }
+        continue;
+      }
+      if (sessionHasOpenLinkedPrs(prs, session.id, { excludingPrId: pr.id })) continue;
+      const liveness = await readChatLiveness(session.id);
+      if (!liveness || liveness.status === "active" || !liveness.idleSinceAt) continue;
+      await args.sessionService.settleSessionsReportingAborts([session.id], {
+        outcome: `PR #${pr.githubPrNumber} merged`,
+        settledAt: polledAt,
+        source: "pr_merge",
+      }, claimOriginForSettle(followup));
     }
   };
 
@@ -243,6 +516,10 @@ export function createPrMergeAutoSettlementService(args: {
     }
 
     const enabledSince = state.enabledSince;
+    const prsById = new Map(prs.map((pr) => [pr.id, pr]));
+    const pendingOriginFollowups = readPendingOriginFollowups()
+      .filter((origin) => prsById.get(origin.pr_id)?.state === "merged");
+    const pendingOriginBySession = new Map<string, PendingOriginFollowup | null | undefined>();
     const candidates = prs.filter(
       (pr) =>
         pr.state === "merged"
@@ -292,7 +569,32 @@ export function createPrMergeAutoSettlementService(args: {
           abandonedThisPr = true;
           continue;
         }
-        if (await hasActiveChatTurn(session.id)) {
+        let pendingOrigin = pendingOriginBySession.get(session.id);
+        if (!pendingOriginBySession.has(session.id)) {
+          pendingOrigin = findPendingOriginForSession(session.id);
+          pendingOriginBySession.set(session.id, pendingOrigin);
+        }
+        if (pendingOrigin === undefined) {
+          args.logger?.debug("prs.auto_settle_deferred_origin_lookup_failed", {
+            prNumber: pr.githubPrNumber,
+            laneId: pr.laneId,
+            sessionId: session.id,
+          });
+          abandonedThisPr = true;
+          continue;
+        }
+        if (pendingOrigin) {
+          const liveness = await readChatLiveness(session.id);
+          if (!liveness || liveness.status === "active" || !liveness.idleSinceAt) {
+            args.logger?.debug("prs.auto_settle_deferred_origin_first_turn", {
+              prNumber: pr.githubPrNumber,
+              laneId: pr.laneId,
+              sessionId: session.id,
+            });
+            abandonedThisPr = true;
+            continue;
+          }
+        } else if (await hasActiveChatTurn(session.id)) {
           args.logger?.debug("prs.auto_settle_deferred_active_turn", {
             prNumber: pr.githubPrNumber,
             laneId: pr.laneId,
@@ -305,7 +607,7 @@ export function createPrMergeAutoSettlementService(args: {
           outcome: `PR #${pr.githubPrNumber} merged`,
           settledAt: polledAt,
           source: "pr_merge",
-        });
+        }, pendingOrigin ? claimOriginForSettle(pendingOrigin) : undefined);
         settledSessionIds.push(...settleResult.settled);
         if (settleResult.aborted.length) {
           // The session became active while the settle was in flight. Leaving
@@ -364,6 +666,7 @@ export function createPrMergeAutoSettlementService(args: {
         });
       }
     }
+    await processHandledOriginFollowups(pendingOriginFollowups, prsById, prs, polledAt);
     rememberSnapshot();
   };
 

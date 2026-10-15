@@ -27,6 +27,17 @@ A remote Mac runtime supports control, screenshots, recording, and Preview
 Lab. Its live view is the same helper H.264 path; a Windows desktop bound to
 that Mac watches and drives over the stream.
 
+When a desktop simulator request is interrupted by a project switch, the error
+names the requested action and explains that the active project changed or is
+still loading. Wait for loading to finish, return to the simulator's project,
+and retry. If the error persists, close and reopen that project tab. ADE keeps
+the project-routing guard in place so a request cannot target the wrong project.
+Requests started on a loaded project retain that project's runtime until they
+finish. Live-view cleanup captures the runtime when it acquires the stream,
+so switching tabs does not redirect cleanup or discard a successful shutdown
+or recording stop. Ordinary Work tools keep the unpinned route on the tab's
+own machine, so their lane list continues to use the loaded project lanes.
+
 Each launched simulator session has one owner chat/lane. A second chat trying
 to launch against an active session receives
 `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` (and the Apple-prefixed

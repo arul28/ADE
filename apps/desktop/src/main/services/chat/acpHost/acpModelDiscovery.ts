@@ -41,6 +41,7 @@ import {
 import type { Logger } from "../../logging/logger";
 import { acpProbeConfigHome } from "../../ai/acpAuthProbe";
 import { resolveAcpExecutable } from "../../ai/acpExecutables";
+import { prepareAcpProbeSpawnPlan } from "../../ai/acpProbeSpawnPlan";
 import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
 import { COPILOT_REASONING_EFFORTS } from "./acpDialects/copilot";
@@ -162,7 +163,16 @@ function readFile(): PersistedFile {
       const entry = raw as Record<string, unknown>;
       if (typeof entry.savedAt !== "number" || !Number.isFinite(entry.savedAt)) continue;
       if (!Array.isArray(entry.models)) continue;
-      const models = entry.models.filter((model): model is ModelDescriptor => isDescriptorFor(provider, model));
+      const models = entry.models.filter((model): model is ModelDescriptor => isDescriptorFor(provider, model)).map((model) => {
+        // Older catalogs predate Copilot's --effort support. Restore the
+        // fallback immediately, rather than hiding the control until the
+        // six-hour catalog refresh. Keep any provider-reported tiers intact.
+        if (provider !== "copilot" || model.reasoningTiers?.length) return model;
+        const tiers = copilotFallbackTiers(model.providerModelId);
+        return tiers.length
+          ? { ...model, reasoningTiers: tiers, capabilities: { ...model.capabilities, reasoning: true } }
+          : model;
+      });
       if (models.length) providers[provider] = { savedAt: entry.savedAt, models };
     }
     fileMemo = { version: CACHE_FILE_VERSION, providers };
@@ -258,12 +268,12 @@ async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">,
   const cwd = path.join(os.tmpdir(), "ade-acp-model-probe");
   fs.mkdirSync(cwd, { recursive: true });
   const executable = resolveAcpExecutable(provider, { env });
-  const spawnPlan = dialect.buildSpawnPlan({
+  const spawnPlan = await prepareAcpProbeSpawnPlan(provider, dialect.buildSpawnPlan({
     binaryPath: executable.path,
     cwd,
     baseEnv: env,
     configHome: acpProbeConfigHome(provider, env),
-  });
+  }));
   const connection = createAcpConnection({ dialect, spawnPlan });
   try {
     const init = await initializeAcpConnection({ connection, dialect, timeoutMs: PROBE_TIMEOUT_MS });

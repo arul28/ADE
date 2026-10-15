@@ -286,7 +286,12 @@ export function compactionFailLabel(reason?: ContextCompactFailReason): string {
   switch (reason) {
     case "timed_out":
       return "Compaction timed out";
+    // An interrupted compaction was aborted, not broken: Claude Code's own
+    // `/compact` says "Compaction canceled." when it aborts, and an ACP
+    // provider's `cancelled` status maps to this same reason. Saying "failed"
+    // spent the alarm on an outcome the model (or the person's Stop) chose.
     case "interrupted":
+      return "Compaction cancelled";
     case "teardown":
     case "provider_error":
     case "quota":

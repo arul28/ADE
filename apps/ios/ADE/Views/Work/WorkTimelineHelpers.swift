@@ -4795,6 +4795,26 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
     )
   }
+  if existing.kind == "contextCompact", existing.isInProgress, incoming.isInProgress {
+    // A host that repeats Claude's `compacting` status while one compaction
+    // runs emits another "started" under the same card id. Last-wins would
+    // move the card's timestamp forward, restarting the "Compacting context ·
+    // 42 s" clock mid-run; keep the first start and let the incoming card win
+    // everywhere else.
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: existing.timestamp,
+      turnId: incoming.turnId,
+      body: incoming.body ?? existing.body,
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      isInProgress: incoming.isInProgress
+    )
+  }
   return incoming
 }
 

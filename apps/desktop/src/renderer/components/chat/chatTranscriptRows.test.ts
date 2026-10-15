@@ -130,6 +130,27 @@ describe("chatTranscriptRows", () => {
     }));
   });
 
+  it("keeps the first started time when a repeated compaction start merges", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-07-10T18:18:53.000Z" };
+    const start = (timestamp: string, sequence: number): AgentChatEventEnvelope => ({
+      ...base,
+      timestamp,
+      sequence,
+      event: { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-compact" },
+    });
+    // Claude repeats its `compacting` status every ~30s while one compaction
+    // runs. The row counts its elapsed from this timestamp, so the repeat must
+    // merge into the first row rather than move it forward — that reset is the
+    // "Compacting 42s" clock restarting mid-run.
+    const [row] = collapseChatTranscriptEvents([
+      start("2026-07-10T18:18:53.000Z", 1),
+      start("2026-07-10T18:19:23.000Z", 2),
+    ]);
+
+    expect(row?.timestamp).toBe("2026-07-10T18:18:53.000Z");
+    expect(row?.event).toEqual(expect.objectContaining({ type: "context_compact", state: "started" }));
+  });
+
   it("extracts and normalizes localhost URLs from tool output text", () => {
     expect(
       extractLocalhostUrlsFromText("Local: http://localhost:5173/\nNetwork: http://0.0.0.0:5173/"),

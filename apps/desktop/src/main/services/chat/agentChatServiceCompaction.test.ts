@@ -131,6 +131,11 @@ describe("createAgentChatService", () => {
           return;
         }
         // Begin: SDK status flips to "compacting" before the boundary lands.
+        // Claude repeats this status every ~30s while one compaction runs; a
+        // repeat is the same compaction and must not open a second row (the
+        // divider's elapsed clock is the timestamp of the row's newest
+        // "started").
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         // End: the compact boundary marks completion with the real trigger/tokens.
         yield {
@@ -221,6 +226,43 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ state: "started", trigger }),
         expect.objectContaining({ state: "failed", trigger, failReason: "provider_error" }),
       ]);
+    });
+
+    it("drops the compacting chip when a compaction ends on a chat with no prior activity", async () => {
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-compact-clear", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compact-clear", status: "compacting" };
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: "sdk-session-compact-clear",
+          compact_metadata: { trigger: "manual", pre_tokens: 120_000, post_tokens: 18_000 },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compact-clear",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.runSessionTurn({ sessionId: session.id, text: "/compact", timeoutMs: 15_000 });
+
+      // Nothing was happening before the compaction, so there is no prior
+      // activity to restore: the row must be cleared, or it reads "Compacting…"
+      // on a chat that is demonstrably done.
+      await vi.waitFor(() => expect(sessionService.setDetectedSessionActivity).toHaveBeenCalled());
+      await vi.waitFor(() => expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id));
     });
 
     it.each([

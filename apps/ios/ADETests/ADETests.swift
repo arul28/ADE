@@ -24645,6 +24645,32 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.isInProgress, false)
   }
 
+  func testWorkContextCompactLifecycleKeepsFirstStartWhenTheHostRepeatsCompacting() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+      // A host that repeats Claude's `compacting` status every ~30s sends
+      // another "started" for the same compaction. The running divider counts
+      // its elapsed from the card's timestamp, so the repeat must not move it.
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:31.000Z",
+        sequence: 2,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.timestamp, "2026-06-15T00:00:01.000Z")
+    XCTAssertEqual(cards.first?.isInProgress, true)
+  }
+
   func testWorkContextCompactLifecycleMergesCrossTurnCompletionByCompactionId() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
