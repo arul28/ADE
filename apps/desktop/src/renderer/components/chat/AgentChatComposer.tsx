@@ -7299,7 +7299,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastTier={fastTier}
-                  {...(effectiveFastTier ? { effectiveFastTier } : {})}
+                  effectiveFastTier={effectiveFastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {

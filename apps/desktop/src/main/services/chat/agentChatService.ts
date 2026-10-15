@@ -365,6 +365,7 @@ import {
   uuidV7TimestampMs,
   type CodexSubagentResultTarget,
 } from "./codexSubagentUsage";
+import { codexGoalClearParams, codexGoalOrigin, codexGoalOriginFromMessage, codexGoalSetParams } from "./codexGoalParams";
 import { codexAuthModeFromAccountRead, createTurnUsageAccountResolvers } from "./providerUsageAccount";
 import {
   createClaudeTurnRequestTally,
@@ -6037,62 +6038,6 @@ function normalizeAdeCodexGoal(goal: CodexThreadGoal | null): CodexThreadGoal | 
     ...goal,
     tokenBudget: null,
     ...(goal.status === "budget_limited" ? { status: "active" as const } : {}),
-  };
-}
-
-/**
- * Who mutated a Codex goal. Codex 0.162 records this and reads a missing
- * provenance as "no user authorization", so every ADE goal mutation has to
- * state it.
- *
- * `"user"` means a person acted: the composer's `/goal` command, the goal
- * controls in the chat, and the goal RPCs when the runtime stamped no actor
- * (the runtime stamps one only for an agent's or the CTO's call, so `ade chat
- * goal` run by an agent is not the user — see {@link codexGoalOrigin}).
- * Everything ADE does on its own — seeding a goal into a fresh thread, clearing
- * a token budget the user never set, tidying up around a fork or handoff — is
- * `"automatic"`, which is also what an unclassified path falls back to:
- * claiming the user authorized something they did not is worse than claiming
- * nothing.
- */
-type CodexGoalMutationOrigin = "user" | "automatic";
-
-/** `origin` on the goal RPCs. Omitted entirely on servers that predate it. */
-function codexGoalOriginParams(
-  origin: CodexGoalMutationOrigin,
-  serverVersion: CodexServerVersion | null,
-): { origin?: CodexGoalMutationOrigin } {
-  return codexServerSupportsGoalMutationOrigin(serverVersion) ? { origin } : {};
-}
-
-function codexGoalSetParams(
-  params: Record<string, unknown>,
-  origin: CodexGoalMutationOrigin,
-  serverVersion: CodexServerVersion | null,
-): Record<string, unknown> {
-  return {
-    ...params,
-    tokenBudget: null,
-    ...codexGoalOriginParams(origin, serverVersion),
-  };
-}
-
-/**
- * `thread/goal/clear`, which takes the same provenance as `set`.
- *
- * The id is typed loosely on purpose: the composer's `/goal clear` sends the
- * session's current thread id, which callers have always passed through as-is
- * rather than inventing an empty string, and a missing one is the server's to
- * reject. Behaviour here is unchanged from the inline params this replaced.
- */
-function codexGoalClearParams(
-  threadId: string | undefined,
-  origin: CodexGoalMutationOrigin,
-  serverVersion: CodexServerVersion | null,
-): Record<string, unknown> {
-  return {
-    threadId,
-    ...codexGoalOriginParams(origin, serverVersion),
   };
 }
 
@@ -25865,17 +25810,19 @@ export function createAgentChatService(args: {
       const sanitizedFallback = normalizeAdeCodexGoal(fallback);
       return setCodexGoalAndMaybeEmitUpdate(managed, runtime, sanitizedFallback, updateKind);
     };
-    // Every caller below is the user's own `/goal` command, or the card ADE
-    // shows to confirm replacing or clearing a goal, so these carry their
-    // authorization. ADE's own goal bookkeeping goes through the call sites
-    // that pass "automatic".
+    // `/goal` arrives as message text, and the same path serves a person
+    // typing it and an agent sending into its own chat (`ade chat send …`).
+    // Only the runtime's provenance stamps tell those apart, so the literal
+    // "user" this used to pass let an agent inherit the user's authorization
+    // for a goal no person asked for.
+    const goalMutationOrigin = codexGoalOriginFromMessage(args.metadata);
     const setCodexGoalObjective = async (objective: string): Promise<CodexThreadGoal | null> => {
       const normalizedObjective = validateCodexGoalObjectiveText(objective);
       const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
         objective: normalizedObjective,
         status: "active",
-      }, "user", runtime.serverVersion), "Goal update failed");
+      }, goalMutationOrigin, runtime.serverVersion), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, {
         objective: normalizedObjective,
@@ -25888,7 +25835,7 @@ export function createAgentChatService(args: {
       const response = await requestCodexGoalControl<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
         threadId: managed.session.threadId,
         status,
-      }, "user", runtime.serverVersion), "Goal update failed");
+      }, goalMutationOrigin, runtime.serverVersion), "Goal update failed");
       if (!response) return null;
       return applyCodexGoalUpdateWithFallback(response, previous
         ? { ...previous, status, tokenBudget: null }
@@ -25897,7 +25844,7 @@ export function createAgentChatService(args: {
     const clearCodexGoal = async (): Promise<boolean> => {
       const response = await requestCodexGoalControl("thread/goal/clear", codexGoalClearParams(
         managed.session.threadId,
-        "user",
+        goalMutationOrigin,
         runtime.serverVersion,
       ), "Goal update failed");
       if (!response) return false;
@@ -63730,6 +63677,11 @@ export function createAgentChatService(args: {
         // Service tiers are model-specific. A model switch is a hard reset of
         // the cloud speed choice; the next request must opt in again.
         delete managed.session.cursorCloudServiceTier;
+        // The same applies to what the Codex server *reported*: it describes
+        // the tier the previous model was last granted. Left in place it would
+        // outlive its model, drawing a badge — possibly an amber "declined" —
+        // for a tier no request in this chat can still produce.
+        delete managed.session.codexServiceTier;
       }
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;
@@ -66920,16 +66872,6 @@ export function createAgentChatService(args: {
     persistChatState(managed);
     return goal;
   };
-
-  /**
-   * `runtimeActor` is stamped by the runtime on an agent's or the CTO's call
-   * and never by a renderer (`registerIpc` drops a renderer's copy), so an
-   * absent actor means a person. That distinction is exactly what the goal
-   * RPCs' `origin` records, and `ade chat goal` — an agent command — lands on
-   * the same method as the chat's goal controls.
-   */
-  const codexGoalOrigin = (args: { runtimeActor?: AgentChatRuntimeActor }): CodexGoalMutationOrigin =>
-    args.runtimeActor ? "automatic" : "user";
 
   const setCodexGoal = async (args: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
     const normalizedObjective = validateCodexGoalObjectiveText(args.objective);

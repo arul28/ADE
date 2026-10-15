@@ -115,6 +115,31 @@ describe("createAgentChatService", () => {
           .toMatchObject({ origin: "automatic" });
       });
 
+      it.each([
+        ["an agent relaying into the chat", { agentRelay: { fromSessionId: "agent-1" } }],
+        ["a parent-dispatched child turn", { spawnDispatch: { parentSessionId: "parent-1", dispatchedAt: "t" } }],
+      ])("does not let %s claim the user's authorization for a /goal", async (_name, metadata) => {
+        // `/goal` arrives as message text, and an agent can send that text into
+        // its own chat (`ade chat send …`). The provenance stamps above are the
+        // only thing that tells the two apart, so a literal "user" here would
+        // hand an agent the user's authorization.
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "/goal pause",
+          metadata,
+        }, { awaitDispatch: true });
+
+        expect(goalSetParams()).toMatchObject({ status: "paused", origin: "automatic" });
+      });
+
       it("marks a goal the user typed as theirs", async () => {
         mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
         const { service, session } = await goalSession();

@@ -1175,7 +1175,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         fastModeOn={!serviceTierMode && fastMode && isActive}
                         fastTier={isActive ? fastTier : null}
                         ultrafastEnabled={ultrafastEnabled}
-                        {...(isActive && !serviceTierMode && effectiveFastTier ? { effectiveFastTier } : {})}
+                        effectiveFastTier={effectiveFastTier}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {

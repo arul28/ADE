@@ -881,6 +881,27 @@ describe("ModelPicker", () => {
       expect(effectiveBadge(row)).toBeNull();
     });
 
+    it("draws nothing while Fast is off, because nothing was asked", async () => {
+      // With Fast off ADE sends no tier at all, so the server resolves one from
+      // the user's own config.toml and can still report `priority`. The badge
+      // answers a request; with no request there is nothing to answer, and the
+      // "as asked" wording would be a lie.
+      const user = userEvent.setup();
+      render(
+        <ModelPicker
+          value={ULTRA_GPT.id}
+          onChange={vi.fn()}
+          models={[ULTRA_GPT]}
+          fastMode={false}
+          fastTier="ultrafast"
+          onFastModeChange={vi.fn()}
+          effectiveFastTier="priority"
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      expect(effectiveBadge(await findModelRow(ULTRA_GPT.id))).toBeNull();
+    });
+
     it("names the tier that matches the ask, unmarked", async () => {
       const row = await renderUltrafastChat("ultrafast");
       const badge = effectiveBadge(row);

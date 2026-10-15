@@ -11,6 +11,7 @@ import {
 import type { CursorCloudServiceTier } from "../../../../shared/types/config";
 import { ModelRowLogo } from "../ProviderLogos";
 import {
+  capitalizeWord,
   isLocalModel,
   modelDetailLine,
   subProviderLabel,
@@ -18,6 +19,13 @@ import {
 import { cn } from "../../ui/cn";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
+
+/**
+ * The row's amber, one ramp. Two pills in this file warn — the sign-in prompt
+ * and a Fast tier the server declined — and they used to carry two different
+ * alpha ladders for the same meaning.
+ */
+const MODEL_ROW_WARN_TONE = "border-amber-400/40 bg-amber-400/[0.10] text-amber-200/90";
 
 /**
  * A reported service tier, spelled the way a person reads it. The server
@@ -28,8 +36,7 @@ import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion"
  */
 function fastTierLabel(tier: string | null | undefined): string | null {
   const trimmed = tier?.trim();
-  if (!trimmed) return null;
-  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+  return trimmed ? capitalizeWord(trimmed) : null;
 }
 
 export type ModelListRowProps = {
@@ -129,6 +136,9 @@ export const ModelListRow = memo(function ModelListRow({
     && requestedFastTier
     && effectiveFastLabel.toLowerCase() !== requestedFastTier,
   );
+  // One owner for "does this row draw the badge", so the render and the row's
+  // aria-label can never disagree about it.
+  const showBadge = Boolean(isActive && requestedFastTier && effectiveFastLabel);
   const reducedMotion = usePrefersReducedMotion();
   const thinks = Boolean(model.capabilities?.reasoning) || (model.reasoningTiers?.length ?? 0) > 0;
   const seesImages = Boolean(model.capabilities?.vision);
@@ -268,7 +278,14 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}`}
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}${
+            // This label replaces the descendants' accessible names, so the
+            // badge beside the chip is otherwise invisible to a screen reader —
+            // and "the server gave you a different tier" is exactly the kind of
+            // state a colour and a mouse-only title must not be the only carrier
+            // of.
+            showBadge ? `, running ${effectiveFastLabel}${fastTierDeclined ? ` instead of the ${fastTierLabel(requestedFastTier)} this chat asked for` : ""}` : ""
+          }`}
           data-model-id={model.id}
           data-active={isActive ? "true" : undefined}
           onFocus={onFocus}
@@ -331,7 +348,10 @@ export const ModelListRow = memo(function ModelListRow({
               tabIndex={isFocused ? 0 : -1}
               onClick={handleSignInClick}
               onKeyDown={handleSignInKeyDown}
-              className="shrink-0 self-center rounded-full border border-amber-400/30 bg-amber-400/[0.08] px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200/85 hover:bg-amber-400/[0.14]"
+              className={cn(
+                "shrink-0 self-center rounded-full border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide hover:bg-amber-400/[0.16]",
+                MODEL_ROW_WARN_TONE,
+              )}
             >
               Sign in
             </button>
@@ -423,7 +443,12 @@ export const ModelListRow = memo(function ModelListRow({
               that asked for it. Only the chat's own row carries it: the report
               is the session's, not the model's, and reading it on every row
               would claim every model runs what this one does. */}
-          {showFastChip && isActive && effectiveFastLabel ? (
+          {/* Only while Fast is actually on. With Fast off ADE sends no tier at
+              all (`codexServiceTierArgs` omits it so the server re-resolves
+              from the user's config.toml), so there is no request for the
+              report to answer — and a badge saying "as asked" when nothing was
+              asked is worse than no badge. */}
+          {showBadge ? (
             <span
               data-model-picker-effective-tier={fastTierDeclined ? "declined" : "matched"}
               title={fastTierDeclined
@@ -431,9 +456,7 @@ export const ModelListRow = memo(function ModelListRow({
                 : `The server is running ${effectiveFastLabel}, as asked.`}
               className={cn(
                 "inline-flex h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9px] font-semibold uppercase leading-none tracking-wide",
-                fastTierDeclined
-                  ? "border-amber-400/40 bg-amber-400/[0.10] text-amber-200/90"
-                  : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55",
+                fastTierDeclined ? MODEL_ROW_WARN_TONE : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55",
               )}
             >
               {effectiveFastLabel}

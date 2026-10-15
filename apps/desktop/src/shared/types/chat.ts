@@ -5571,12 +5571,11 @@ export type AgentChatCodexGetGoalArgs = {
   sessionId: string;
 };
 
-/** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
-type CodexGoalCaller = { runtimeActor?: AgentChatRuntimeActor };
-
-export type AgentChatCodexSetGoalArgs = CodexGoalCaller & {
+export type AgentChatCodexSetGoalArgs = {
   sessionId: string;
   objective: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 /**
@@ -5628,13 +5627,17 @@ export type AgentChatCodexRealtimeState = {
   error: string | null;
 };
 
-export type AgentChatCodexSetGoalStatusArgs = CodexGoalCaller & {
+export type AgentChatCodexSetGoalStatusArgs = {
   sessionId: string;
   status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
-export type AgentChatCodexClearGoalArgs = CodexGoalCaller & {
+export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexResetMemoryArgs = {
