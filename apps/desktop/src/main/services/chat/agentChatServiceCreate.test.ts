@@ -1294,7 +1294,7 @@ describe("createAgentChatService", () => {
       await second.service.runSessionTurn({ sessionId: session.id, text: "What word did I ask you to remember?" });
       expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      expect(freshThread.send.mock.calls.map(([message]) => claudeInputText(message)).join("\n")).toContain("MANGO");
+      expect((freshThread.send.mock.calls as unknown[][]).map(([message]) => claudeInputText(message)).join("\n")).toContain("MANGO");
       await vi.waitFor(() => expect(readPersistedChatState(session.id).claudeFreshThreadPending).toBeUndefined());
 
       // The same model sent again (a settings save) keeps a preset; a plain
