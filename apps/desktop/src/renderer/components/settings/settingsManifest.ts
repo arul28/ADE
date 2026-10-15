@@ -273,6 +273,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Project",
   },
   {
+    id: "general.project-location",
+    label: "Project location",
+    keywords: ["move", "relocate", "drive", "disk", "external", "folder", "path", "space", "storage"],
+    tab: "general",
+    anchor: "project-location",
+    scope: "machine",
+    web: "hidden",
+    group: "Project",
+  },
+  {
     id: "general.ade-cli",
     label: "ADE command line",
     keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],

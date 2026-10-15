@@ -37,6 +37,7 @@ import type {
 import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -1764,6 +1765,11 @@ export class LocalRuntimeConnectionPool {
       if (cached && cachedProjectSatisfiesRegistration(cached, registration)) {
         return cached;
       }
+
+      // A caller still holding a project's folder from before a move (a tab,
+      // a chat pane) reaches the project at its new folder.
+      const movedRoot = resolveMovedProjectRoot(normalizedRoot);
+      if (movedRoot !== normalizedRoot) return await this.ensureProject(movedRoot, registration);
 
       const registrationPromise = this.registerProject(normalizedRoot, registration);
       const nextPending = {
