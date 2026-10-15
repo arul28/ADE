@@ -70,7 +70,7 @@ export function JiraSection() {
     setProjectError(null);
     try {
       const snapshot = await window.ade.projectConfig.get(pinRef.current);
-      setProjectKeys(snapshot.shared.issueTrackers?.jira?.projectKeys ?? []);
+      setProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : "Couldn't load this project's Jira project bindings.");
     }
@@ -135,16 +135,18 @@ export function JiraSection() {
     setProjectError(null);
     try {
       const snapshot = await window.ade.projectConfig.get(pinRef.current);
-      const shared = snapshot.shared;
+      // The shared layer is never written (`.ade/ade.yaml` is not config
+      // input any more), so the binding lives in this checkout's local.yaml.
+      const local = snapshot.local;
       await window.ade.projectConfig.save({
-        shared: {
-          ...shared,
+        shared: snapshot.shared,
+        local: {
+          ...local,
           issueTrackers: {
-            ...(shared.issueTrackers ?? {}),
+            ...(local.issueTrackers ?? {}),
             jira: { projectKeys: nextKeys },
           },
         },
-        local: snapshot.local,
       }, pinRef.current);
       setProjectKeys(nextKeys);
       window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT));
@@ -224,7 +226,7 @@ export function JiraSection() {
         <ModernRows>
           <ModernRow
             title="Bound Jira projects"
-            hint="The selection is saved in shared project configuration, so teammates get the same defaults."
+            hint="Saved for this checkout on this machine."
             control={connected ? (
               projectLoading ? <CircleNotch size={13} className="animate-spin" /> : (
                 <ChipPicker

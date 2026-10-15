@@ -51,7 +51,7 @@ a linked-issue snapshot refreshed when a turn ends instead of polling.
   `[jira:<reason>]` (reason from `JiraErrorReason`), so the renderer can parse
   the reason with `parseJiraError(err)` from `shared/jiraErrors.ts`.
 
-- **Project binding.** Project config (shared, committed) gains
+- **Project binding.** Project config (`.ade/local.yaml`; the shared layer is not written any more) gains
   `issueTrackers?: { jira?: { projectKeys: string[] } }` in
   `shared/types/config.ts`. It tells ADE which Jira projects this repo's work
   lives in: the pane's default filter, the create form's default project, and
