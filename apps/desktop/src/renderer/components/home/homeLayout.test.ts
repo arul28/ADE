@@ -7,6 +7,7 @@ import {
   HOME_DEFAULT_STACK_VERSION,
   HOME_LAYOUTS_STORAGE_KEY,
   HOME_LAYOUT_PRESETS_MAX,
+  HOME_LAYOUT_PRESETS_STORED_MAX,
   HOME_LAYOUT_STORAGE_KEY,
   defaultHomeLayout,
   layoutCells,
@@ -34,9 +35,9 @@ describe("stored home layouts", () => {
     ["a version 2 whose active id is gone", { ...current, activeId: "gone", presets: [preset("a", "A"), preset("b", "B")] }, ["a", "b"], "a", ["clock"]],
     ["a version 2 with duplicate ids", { ...current, activeId: "b", presets: [preset("a", "A"), preset("a", "Again"), preset("b", "B")] }, ["a", "b"], "b", ["clock"]],
     [
-      "more presets than the limit",
-      { ...current, activeId: "p0", presets: Array.from({ length: HOME_LAYOUT_PRESETS_MAX + 5 }, (_, i) => preset(`p${i}`, `P${i}`)) },
-      Array.from({ length: HOME_LAYOUT_PRESETS_MAX }, (_, i) => `p${i}`),
+      "more presets than a store holds",
+      { ...current, activeId: "p0", presets: Array.from({ length: HOME_LAYOUT_PRESETS_STORED_MAX + 5 }, (_, i) => preset(`p${i}`, `P${i}`)) },
+      Array.from({ length: HOME_LAYOUT_PRESETS_STORED_MAX }, (_, i) => `p${i}`),
       "p0",
       ["clock"],
     ],
@@ -69,6 +70,35 @@ describe("stored home layouts", () => {
     expect(layouts.presets[1]!.layout.items.map((item) => item.type)).toEqual(["pomodoro"]);
     // Never more presets than the page keeps room for.
     expect(layouts.presets.length).toBeLessThanOrEqual(HOME_LAYOUT_PRESETS_MAX);
+  });
+
+  it("keeps every saved layout when the shipped stack takes its slot", () => {
+    // A store at the user's limit with no "default" preset left (it can be
+    // deleted): the shipped stack needs one slot, and it takes one the store
+    // has room for — nothing the user saved is dropped.
+    const full = Array.from({ length: HOME_LAYOUT_PRESETS_MAX }, (_, i) => preset(`p${i}`, `P${i}`));
+    const layouts = normalizeHomeLayouts({ activeId: "p7", presets: full });
+
+    expect(layouts.activeId).toBe("default");
+    expect(layouts.presets).toHaveLength(HOME_LAYOUT_PRESETS_STORED_MAX);
+    expect(layouts.presets.map((entry) => entry.id)).toEqual([
+      "default", "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11",
+    ]);
+    // What was written down stays: reading the migrated store again leaves it alone.
+    const again = normalizeHomeLayouts({ ...layouts });
+    expect(again.presets.map((entry) => entry.id)).toEqual(layouts.presets.map((entry) => entry.id));
+  });
+
+  it("offers a store from before the presets the shipped stack, and keeps its layout", () => {
+    const legacy = layoutWith([{ id: "feed", type: "feed", size: "l" }]);
+    const layouts = normalizeHomeLayouts(null, legacy);
+
+    expect(layouts.presets.map((entry) => entry.id)).toEqual(["default", "previous"]);
+    expect(layouts.activeId).toBe("default");
+    expect(layouts.presets[0]!.layout.items.map((item) => item.type)).toEqual(shipped);
+    expect(layouts.presets[1]!.layout.items.map((item) => item.type)).toEqual(["feed"]);
+    // An unreadable version 2 falls back the same way.
+    expect(normalizeHomeLayouts("not a store", legacy).presets[1]!.name).toBe("Previous layout");
   });
 
   it("writes the shipped stack down, so the migration happens once", () => {

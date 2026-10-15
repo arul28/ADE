@@ -1,4 +1,5 @@
-import { MUSIC_SPOTIFY_ADE_DEVICE_NAME } from "../../../shared/types/music";
+import { MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_DEFAULT_VOLUME } from "../../../shared/types/music";
+import { clampVolume } from "./musicVolume";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
 import type { SpotifyTrack } from "./spotifyApi";
 
@@ -160,7 +161,7 @@ export function createSpotifyLocalPlayer(args: {
         // `ready` carries the timeout; a host that never says it is ready must not hang every play.
         await Promise.race([h.ready, ready.then(() => undefined)]);
         await Promise.race([loaded, ready.then(() => undefined)]);
-        await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume: Math.max(0, Math.min(1, args.volume())) }, READY_TIMEOUT_MS);
+        await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume: clampVolume(args.volume()) ?? MUSIC_SPOTIFY_DEFAULT_VOLUME }, READY_TIMEOUT_MS);
         const id = await ready;
         // Stopped (tab closed, sign-out, switch) while this start was in flight.
         if (gen !== generation) throw new Error("Spotify's player was stopped while it started.");

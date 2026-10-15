@@ -15,7 +15,7 @@ import type {
   MusicSearchResult,
   MusicState,
 } from "../../../shared/types/music";
-import { isAdeSpotifyDevice as isAdeDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
+import { isAdeSpotifyDevice as isAdeDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_DEFAULT_VOLUME, MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
 import {
   createSpotifyApi,
   SPOTIFY_NO_DEVICE_MESSAGE,
@@ -33,6 +33,7 @@ import {
   type SpotifySignIn,
   type SpotifyTokens,
 } from "./spotifyAuth";
+import { createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 import { createSpotifyLocalPlayer, sdkTrack, type SpotifyLocalState } from "./spotifyLocalPlayer";
 
 /**
@@ -95,9 +96,6 @@ type AsyncCredentialStore = {
 /** What is stored: the refresh token, tied to the Client ID it was issued for. */
 type StoredSession = { clientId: string; refreshToken: string };
 
-/** ADE's own player starts here when the slider was never touched (see `playback.volume`). */
-export const SPOTIFY_DEFAULT_VOLUME = 0.8;
-
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 const REPEAT_FROM_SPOTIFY: Record<string, MusicRepeatMode> = { off: 0, track: 1, context: 2 };
@@ -131,11 +129,11 @@ export function createSpotifyService(args: {
   /** Where ADE's own Spotify player runs: the music host and a profile folder. Null executable: no local player. */
   playerHost?: { executable: string | null; userDataDir: string };
   /**
-   * Where the volume slider's position is kept between launches. Absent in
-   * tests and any build without the settings file: the volume then lives as
-   * long as this service does.
+   * Where the volume slider's position is kept between launches
+   * (`musicProviderRouter`). Absent in tests: the volume then lives as long as
+   * this service does.
    */
-  volume?: { get: () => number | null; set: (value: number) => void };
+  volume?: MusicVolumeMemory;
   logger?: Logger;
   fetchImpl?: typeof fetch;
 }) {
@@ -157,17 +155,8 @@ export function createSpotifyService(args: {
   let sessionGen = 0;
   let watchGen = 0;
   let persisting: Promise<unknown> = Promise.resolve();
-  /** The slider was left somewhere: ADE's player starts there, and this is where it is written back. */
-  const volumeOf = (value: unknown) =>
-    typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : null;
-  const savedVolume = volumeOf(args.volume?.get());
-  let lastSavedVolume = savedVolume;
-  const rememberVolume = (value: number) => {
-    const clamped = volumeOf(value);
-    if (clamped == null || clamped === lastSavedVolume) return;
-    lastSavedVolume = clamped;
-    args.volume?.set(clamped);
-  };
+  /** The slider was left somewhere: ADE's player starts there, and this keeps it. */
+  const volume = createVolumeMemory(args.volume);
   /** Credential writes and deletes, strictly in the order they were asked for. */
   const persist = (write: () => Promise<void>): Promise<void> => {
     const next = persisting.then(write, write);
@@ -192,7 +181,7 @@ export function createSpotifyService(args: {
       queueLength: 0,
       shuffle: false,
       repeat: 0,
-      volume: savedVolume ?? SPOTIFY_DEFAULT_VOLUME,
+      volume: volume.saved ?? MUSIC_SPOTIFY_DEFAULT_VOLUME,
     },
     queueRevision: 0,
   };
@@ -694,7 +683,7 @@ export function createSpotifyService(args: {
           if (!(localIsActive() && await local.setVolume(value))) await api.volume(value);
           p.volume = value;
           // The slider's position is what the next launch starts from.
-          rememberVolume(value);
+          volume.remember(value);
           break;
         }
         case "shuffle":

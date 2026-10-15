@@ -111,7 +111,6 @@
 .ade-skyline-corner .ade-skyline-corner-sub { white-space: normal; text-wrap: balance; }
 .ade-skyline-corner[data-shown] { opacity: 1; transform: none; transition-duration: 600ms; }
 .ade-skyline-corner-stat { display: flex; flex-direction: column; gap: 2px; }
-.ade-skyline-corner-stat[data-align="end"] { align-items: flex-end; text-align: right; }
 .ade-skyline-corner-label { font-size: 11px; color: var(--kit-text-3); }
 /* The number and its unit share a line, baseline-aligned; the date sits on the
    line under them, so a long range wraps in the column instead of running

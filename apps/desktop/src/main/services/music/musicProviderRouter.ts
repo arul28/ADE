@@ -12,7 +12,9 @@ import type {
   MusicState,
 } from "../../../shared/types/music";
 import { MUSIC_SPOTIFY_REDIRECT_URI } from "../../../shared/types/music";
+import { writeTextAtomic } from "../shared/utils";
 import type { MusicService } from "./musicService";
+import { clampVolume, type MusicVolumeMemory } from "./musicVolume";
 import { normalizeSpotifyClientId } from "./spotifyAuth";
 import type { SpotifyService } from "./spotifyService";
 
@@ -36,9 +38,14 @@ type Settings = {
 };
 
 const SETTINGS_FILE = "music-settings.json";
-
-const clampVolume = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? Math.round(Math.max(0, Math.min(1, value)) * 100) / 100 : null;
+/**
+ * A slider drag sends a move per percent — each one reaches the store — so the
+ * file is written once the drag settles instead of once per step. A failed
+ * write (a scanner holding the file, a full disk) is retried once, then the
+ * next move tries again; the value itself is in memory either way.
+ */
+const VOLUME_SAVE_MS = 250;
+const VOLUME_SAVE_RETRY_MS = 2_000;
 
 function createMusicSettings(dir: string, logger?: { warn: (event: string, data?: Record<string, unknown>) => void }) {
   const file = path.join(dir, SETTINGS_FILE);
@@ -58,32 +65,55 @@ function createMusicSettings(dir: string, logger?: { warn: (event: string, data?
       logger?.warn("music.settings_unreadable", { error: error instanceof Error ? error.message : String(error) });
     }
   }
+  const writeCurrent = () => writeTextAtomic(file, JSON.stringify(value, null, 2));
+  let volumeTimer: NodeJS.Timeout | null = null;
+
+  /** Persist, then remember: a write that fails leaves the old value in force. */
   const set = (next: Partial<Settings>) => {
     const merged = { ...value, ...next };
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
-    fs.renameSync(tmp, file);
+    writeTextAtomic(file, JSON.stringify(merged, null, 2));
     value = merged;
   };
+
+  /** Write the slider positions as they stand, once; `again` retries a failure once. */
+  const saveVolumes = (delayMs: number, again: boolean) => {
+    if (volumeTimer) clearTimeout(volumeTimer);
+    volumeTimer = setTimeout(() => {
+      volumeTimer = null;
+      try {
+        writeCurrent();
+      } catch (error) {
+        logger?.warn("music.volume_save_failed", { error: error instanceof Error ? error.message : String(error) });
+        if (again) saveVolumes(VOLUME_SAVE_RETRY_MS, false);
+      }
+    }, delayMs);
+    volumeTimer.unref?.();
+  };
+
   return {
     get: (): Settings => value,
     /** Persist, then remember: a write that fails leaves the old value in force. */
     set,
-    /** The volume a player's slider was left at, or null when it was never set. */
-    getVolume: (provider: MusicProvider): number | null => value.volume[provider],
-    /**
-     * Remembers a slider position. A drag sends one of these per step, so a
-     * value the file already has is not written again; a write that fails is
-     * reported and the session carries on.
-     */
-    setVolume: (provider: MusicProvider, volume: number) => {
-      const clamped = clampVolume(volume);
-      if (clamped == null || clamped === value.volume[provider]) return;
+    /** One provider's remembered volume, in the shape both music services take. */
+    volumeFor: (provider: MusicProvider): MusicVolumeMemory => ({
+      get: () => value.volume[provider],
+      set: (volume) => {
+        const clamped = clampVolume(volume);
+        if (clamped == null || clamped === value.volume[provider]) return;
+        // The value is in memory now (this session plays at it); the file follows.
+        value = { ...value, volume: { ...value.volume, [provider]: clamped } };
+        saveVolumes(VOLUME_SAVE_MS, true);
+      },
+    }),
+    /** Write a slider position that is still waiting (ADE is quitting). */
+    flush: (): void => {
+      if (!volumeTimer) return;
+      clearTimeout(volumeTimer);
+      volumeTimer = null;
       try {
-        set({ volume: { ...value.volume, [provider]: clamped } });
+        writeCurrent();
       } catch (error) {
-        logger?.warn("music.volume_save_failed", { provider, error: error instanceof Error ? error.message : String(error) });
+        logger?.warn("music.volume_save_failed", { error: error instanceof Error ? error.message : String(error) });
       }
     },
   };

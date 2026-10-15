@@ -20,6 +20,7 @@ import { musicPositionNow } from "../../../shared/types/music";
 import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
+import { createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 
 /**
  * The Music feature in the main process.
@@ -144,29 +145,19 @@ export function createMusicService(args: {
   tokens: DeveloperTokenProvider;
   credentials: AsyncCredentialStore;
   /**
-   * Where the volume slider's position is kept between launches. Absent in
-   * tests and any build without the settings file: the volume then lives as
-   * long as this service does.
+   * Where the volume slider's position is kept between launches
+   * (`musicProviderRouter`). Absent in tests: the volume then lives as long as
+   * this service does.
    */
-  volume?: { get: () => number | null; set: (value: number) => void };
+  volume?: MusicVolumeMemory;
   broadcast: (state: MusicState) => void;
   logger?: Logger;
   idleUnloadMs?: number;
   fetchImpl?: typeof fetch;
 }) {
   const idleUnloadMs = args.idleUnloadMs ?? IDLE_UNLOAD_MS;
-  const volumeOf = (value: unknown) =>
-    typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : null;
-  // The slider was left somewhere: the host starts there (see `configure`).
-  const savedVolume = volumeOf(args.volume?.get());
-  let lastSavedVolume = savedVolume;
-  /** Remember the slider's position; unchanged values (every host report) cost nothing. */
-  const rememberVolume = (value: number) => {
-    const clamped = volumeOf(value);
-    if (clamped == null || clamped === lastSavedVolume) return;
-    lastSavedVolume = clamped;
-    args.volume?.set(clamped);
-  };
+  /** The slider's position: the host starts there (see `configure`). */
+  const volume = createVolumeMemory(args.volume);
   let userToken: string | null = null;
   let userTokenLoaded: Promise<void> | null = null;
   let host: MusicHost | null = null;
@@ -196,7 +187,7 @@ export function createMusicService(args: {
       queueLength: 0,
       shuffle: false,
       repeat: 0,
-      volume: savedVolume ?? 1,
+      volume: volume.saved ?? 1,
     },
     queueRevision: 0,
   };
@@ -569,7 +560,7 @@ export function createMusicService(args: {
         if (cmd.type === "pause" && !host) return { ok: true } as const;
         if (cmd.type === "volume" && !host) {
           state.playback.volume = Math.max(0, Math.min(1, cmd.value));
-          rememberVolume(state.playback.volume);
+          volume.remember(state.playback.volume);
           emit();
           return { ok: true } as const;
         }
@@ -642,7 +633,7 @@ export function createMusicService(args: {
         applyHostState(result, { positionIsNews: cmd.type === "seek" });
         // The host's reply carries the volume it now plays at; that is the
         // position to start from next time.
-        if (cmd.type === "volume") rememberVolume(state.playback.volume);
+        if (cmd.type === "volume") volume.remember(state.playback.volume);
         return { ok: true } as const;
       });
     } catch (error) {

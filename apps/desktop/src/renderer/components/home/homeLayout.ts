@@ -13,9 +13,9 @@ import { captureHomeWidgetAdded } from "./homeAnalytics";
  *
  * Saved layouts: the page keeps named presets ("Default" first) and shows the
  * active one; every edit lands in the active preset. Version 2 storage holds
- * the presets. Version 1 held one layout; it loads as the "Default" preset,
- * and the active layout is still mirrored there so an older build keeps
- * opening the page the user last saw.
+ * the presets; the active one is mirrored to version 1
+ * (`ade.home.layout.v1`), which older builds read and this one falls back to
+ * when version 2 is missing or unusable.
  *
  * A new shipped stack reaches everybody once: `defaultStack` records the
  * version this store has seen, and an older one (or none) puts the new stack
@@ -172,8 +172,14 @@ export type HomeLayouts = {
 
 export const DEFAULT_PRESET_ID = "default";
 const PRESET_NAME_MAX = 40;
-/** Saved layouts the page keeps; "Save as…" is off at the limit. */
+/**
+ * Saved layouts the page lets the user keep; "Save as…" is off at the limit.
+ * A stored store holds one more than that: the shipped "Default" preset, so
+ * putting it in never drops a layout the user saved.
+ */
 export const HOME_LAYOUT_PRESETS_MAX = 12;
+/** What a stored store may hold: the user's layouts, plus the shipped "Default". */
+export const HOME_LAYOUT_PRESETS_STORED_MAX = HOME_LAYOUT_PRESETS_MAX + 1;
 
 function defaultLayouts(): HomeLayouts {
   return {
@@ -186,11 +192,12 @@ function defaultLayouts(): HomeLayouts {
 
 /**
  * The shipped stack takes over the "Default" preset and shows, once per
- * version. Everything the user saved themselves (other presets) stays where
- * it was, in the switcher.
+ * version. Everything the user saved themselves (other presets) stays where it
+ * was, in the switcher, and none of it is dropped for lack of room:
+ * `HOME_LAYOUT_PRESETS_STORED_MAX` reserves the shipped preset's slot.
  */
 function withShippedDefaultStack(layouts: HomeLayouts): HomeLayouts {
-  const others = layouts.presets.filter((preset) => preset.id !== DEFAULT_PRESET_ID).slice(0, HOME_LAYOUT_PRESETS_MAX - 1);
+  const others = layouts.presets.filter((preset) => preset.id !== DEFAULT_PRESET_ID);
   const shipped: HomeLayoutPreset = { id: DEFAULT_PRESET_ID, name: uniqueName("Default", others), layout: defaultHomeLayout() };
   return { version: 2, defaultStack: HOME_DEFAULT_STACK_VERSION, activeId: DEFAULT_PRESET_ID, presets: [shipped, ...others] };
 }
@@ -201,23 +208,32 @@ export function cleanPresetName(value: unknown): string | null {
   return name || null;
 }
 
+/** The shipped stack a stored layout has already taken: its marker, or 0 when it has none or cannot be read. */
+function storedDefaultStack(stored: unknown): number {
+  const marker = stored && typeof stored === "object" ? (stored as { defaultStack?: unknown }).defaultStack : null;
+  return typeof marker === "number" && Number.isFinite(marker) ? Math.max(0, Math.floor(marker)) : 0;
+}
+
 /**
- * Reads stored layouts: version 2 when present and usable, else the shipped
- * default. Bad entries are dropped one by one; there is always at least one
- * preset and the active id always names one of them.
+ * Reads stored layouts: version 2 when present and usable, else the version 1
+ * layout beside the shipped default, else the shipped default. Bad entries are
+ * dropped one by one; there is always at least one preset and the active id
+ * always names one of them.
  *
  * A store that has not seen the current shipped stack (a `defaultStack` below
  * HOME_DEFAULT_STACK_VERSION, or none at all) comes back showing it; the
  * caller persists that, so it happens once. A store from before the presets
- * (version 1) gets it too: the stack everyone opens the page to is the point.
+ * (version 1) gets it too — the stack everyone opens the page to is the point
+ * — with the layout it held kept as a preset of its own, so opening on the new
+ * stack costs nobody their arrangement.
  */
-export function normalizeHomeLayouts(stored: unknown): HomeLayouts {
+export function normalizeHomeLayouts(stored: unknown, legacy?: unknown): HomeLayouts {
   if (stored && typeof stored === "object" && Array.isArray((stored as { presets?: unknown }).presets)) {
-    const raw = stored as { activeId?: unknown; defaultStack?: unknown; presets: unknown[] };
+    const raw = stored as { activeId?: unknown; presets: unknown[] };
     const seen = new Set<string>();
     const presets: HomeLayoutPreset[] = [];
     for (const entry of raw.presets) {
-      if (!entry || typeof entry !== "object" || presets.length >= HOME_LAYOUT_PRESETS_MAX) continue;
+      if (!entry || typeof entry !== "object" || presets.length >= HOME_LAYOUT_PRESETS_STORED_MAX) continue;
       const preset = entry as Record<string, unknown>;
       const id = typeof preset.id === "string" && preset.id ? preset.id.slice(0, 64) : null;
       if (!id || seen.has(id)) continue;
@@ -226,10 +242,20 @@ export function normalizeHomeLayouts(stored: unknown): HomeLayouts {
     }
     if (presets.length > 0) {
       const activeId = typeof raw.activeId === "string" && seen.has(raw.activeId) ? raw.activeId : presets[0]!.id;
-      const defaultStack = typeof raw.defaultStack === "number" && Number.isFinite(raw.defaultStack) ? Math.max(1, Math.floor(raw.defaultStack)) : 1;
-      const layouts: HomeLayouts = { version: 2, defaultStack, activeId, presets };
-      return defaultStack >= HOME_DEFAULT_STACK_VERSION ? layouts : withShippedDefaultStack(layouts);
+      const stack = storedDefaultStack(stored);
+      const layouts: HomeLayouts = { version: 2, defaultStack: Math.max(1, stack), activeId, presets };
+      return stack >= HOME_DEFAULT_STACK_VERSION ? layouts : withShippedDefaultStack(layouts);
     }
+  }
+  // Nothing usable in version 2. The version 1 layout is this computer's own
+  // arrangement: it becomes a preset, and the shipped stack opens the page.
+  if (legacy != null) {
+    return withShippedDefaultStack({
+      version: 2,
+      defaultStack: 1,
+      activeId: DEFAULT_PRESET_ID,
+      presets: [{ id: "previous", name: "Previous layout", layout: normalizeHomeLayout(legacy) }],
+    });
   }
   return defaultLayouts();
 }
@@ -241,18 +267,21 @@ function parseStored(key: string): unknown {
 
 function readStoredLayouts(): HomeLayouts {
   let stored: unknown = null;
+  let legacy: unknown = null;
   try {
     stored = parseStored(HOME_LAYOUTS_STORAGE_KEY);
   } catch {
-    // Unreadable: the shipped default below.
+    // Unreadable version 2: the version 1 layout below.
   }
-  const storedStack = stored && typeof stored === "object" && typeof (stored as { defaultStack?: unknown }).defaultStack === "number"
-    ? (stored as { defaultStack: number }).defaultStack
-    : 0;
-  const layouts = normalizeHomeLayouts(stored);
+  try {
+    legacy = parseStored(HOME_LAYOUT_STORAGE_KEY);
+  } catch {
+    // Unreadable too: the shipped default.
+  }
+  const layouts = normalizeHomeLayouts(stored, legacy);
   // The shipped stack landed here: write it down now, so the migration runs
   // once and an edit made this session is not undone by the next launch.
-  if (storedStack < layouts.defaultStack) writeStoredLayouts(layouts);
+  if (storedDefaultStack(stored) < HOME_DEFAULT_STACK_VERSION) writeStoredLayouts(layouts);
   return layouts;
 }
 

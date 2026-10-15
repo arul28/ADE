@@ -89,7 +89,7 @@ export function registerMusicIpc(args: {
     appVersion: app.getVersion(),
     tokens,
     credentials: args.credentials,
-    volume: { get: () => settings.getVolume("apple"), set: (value) => settings.setVolume("apple", value) },
+    volume: settings.volumeFor("apple"),
     broadcast: (state) => router?.onAppleState(state),
     logger: args.logger,
   });
@@ -98,7 +98,7 @@ export function registerMusicIpc(args: {
     playerHost: { executable: hostExecutable, userDataDir: path.join(app.getPath("userData"), "music-player-spotify") },
     credentials: args.spotifyCredentials,
     clientId: () => settings.get().spotifyClientId,
-    volume: { get: () => settings.getVolume("spotify"), set: (value) => settings.setVolume("spotify", value) },
+    volume: settings.volumeFor("spotify"),
     openExternal: openExternalUrl,
     broadcast: (state) => router?.onSpotifyState(state),
     logger: args.logger,
@@ -157,8 +157,10 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.transfer, (input: { deviceId: string; play?: boolean }) =>
     service.transfer({ deviceId: str(input?.deviceId), play: input?.play !== false }));
 
-  // The player host must never outlive ADE.
+  // The player host must never outlive ADE, and a slider move made in the last
+  // moment still reaches the settings file.
   app.once("will-quit", () => {
+    settings.flush();
     void service.dispose();
   });
   return service;
