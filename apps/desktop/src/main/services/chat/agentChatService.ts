@@ -21289,7 +21289,24 @@ export function createAgentChatService(args: {
     // A running recording outranks the guess: it is a fact ADE knows.
     const recording = demoTrackRegistry.isChatRecording(managed.session.id);
     const detected = recording ? "recording" : observed;
-    if (!detected) return;
+    if (!detected) {
+      // A compaction that ends on a quiet chat restores "no activity" — null.
+      // The row must drop its chip then: nothing else clears it, so leaving it
+      // would read "Compacting…" (or "Compaction failed") on a chat that is
+      // demonstrably done. Only a compaction can null the detector here; every
+      // other path carries a value.
+      if (before !== "compacting" && before !== "compaction_failed") return;
+      try {
+        sessionService.clearSessionActivity(managed.session.id);
+        managed.activityRowNeedsWrite = false;
+      } catch (error) {
+        logger.warn("agent_chat.activity_detect_clear_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     const changed = detected !== (recording ? "recording" : before) || managed.activityRowNeedsWrite === true;
     // An unchanged detection only refills an empty row (an agent ran
     // `ade chat activity clear`): rewriting it would override an agent report
@@ -22223,6 +22240,16 @@ export function createAgentChatService(args: {
       });
       return;
     }
+    // The SDK repeats its `compacting` status every ~30 s while one compaction
+    // runs, and each repeat would look like a new compaction: an extra open
+    // row, and — because a client counts a running compaction's elapsed from
+    // the newest "started" it has — an elapsed clock that restarts mid-run.
+    // Only the first frame of THIS compaction opens the row (the same key
+    // `emitChatEvent` files it under); a completed/failed event deletes that
+    // key, so the next compaction still starts fresh, and an entry left behind
+    // by a torn-down runtime cannot suppress a different turn's compaction.
+    const key = turnId ?? "native";
+    if (openNativeCompactions.get(managed.session.id)?.has(key)) return;
     // The real trigger arrives with the boundary (completed) event, so this
     // defaults to "auto".
     emitChatEvent(managed, {
