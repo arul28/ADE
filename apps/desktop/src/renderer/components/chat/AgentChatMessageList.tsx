@@ -59,7 +59,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
+import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedaction";
 import { cn } from "../ui/cn";
@@ -200,6 +200,7 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
+import { VoiceSessionCard } from "./VoiceSessionCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
 import {
   isUsageLimitTurn,
@@ -3563,6 +3564,12 @@ function renderEvent(
         />
       );
     }
+
+    // A finished voice conversation draws its own card — a head with the
+    // duration and what the call produced, the transcript under it. It is not
+    // a system event with a fold, so it never reaches the generic notice row.
+    const voiceSession = readVoiceSessionNotice(event);
+    if (voiceSession) return <VoiceSessionCard session={voiceSession} />;
 
     const inferredSeverity = event.severity
       ?? (

@@ -512,6 +512,16 @@ export function readSpawnCompletedNotice(event: AgentChatEvent): SpawnCompletedN
   };
 }
 
+/**
+ * The voice conversation a notice reports, or null. One reader so the chat row,
+ * and anything else that wants the numbers, key on the same discriminator the
+ * producer sets instead of probing the shape of `detail`.
+ */
+export function readVoiceSessionNotice(event: AgentChatEvent): AgentChatVoiceSession | null {
+  if (event.type !== "system_notice" || event.status !== "voice_session") return null;
+  return event.voiceSession ?? null;
+}
+
 /** One-line notice when a child can no longer report to a deleted parent chat. */
 export function spawnParentGoneNoticeMessage(): string {
   return "This chat used to report back to another chat that was deleted. It will keep working here on its own.";
@@ -586,6 +596,28 @@ export type AgentChatNoticeDetailMetric = {
 export type AgentChatNoticeDetailSection = {
   title: string;
   items: Array<string | AgentChatNoticeDetailMetric>;
+};
+
+/**
+ * A voice conversation that has ended, as the chat's own card reads it.
+ *
+ * Carried on the notice itself rather than inside `detail`. `detail` is what
+ * every other surface prints, and iOS renders an object `detail` as
+ * pretty-printed JSON — so `detail` keeps the readable transcript and the
+ * structured numbers ride beside it, where a decoder that does not know the
+ * field simply ignores it.
+ */
+export type AgentChatVoiceSession = {
+  durationMs: number;
+  /** Spoken turns the user took. */
+  requests: number;
+  /** Requests that actually reached the agent; a refused route is not one. */
+  handoffs: number;
+  /** True when the user asked for the call to end instead of pressing End. */
+  endedByVoice: boolean;
+  /** Why the call ended, when it was not the user ending it. */
+  error?: string | null;
+  transcript: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
 export type AgentChatNoticeDetail = {
@@ -2117,6 +2149,8 @@ export type AgentChatEvent =
       status?: string;
       message: string;
       detail?: string | AgentChatNoticeDetail;
+      /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
+      voiceSession?: AgentChatVoiceSession;
       steerId?: string;
       turnId?: string;
     }

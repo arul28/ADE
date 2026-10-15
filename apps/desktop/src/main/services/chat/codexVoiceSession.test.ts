@@ -181,12 +181,13 @@ function hostedVoiceHarness(options: { chatIsRunning?: boolean } = {}) {
   };
   const messageSent = deferred<Record<string, unknown>>();
   const sendMessage = vi.fn(async (args: Record<string, unknown>) => { messageSent.resolve(args); });
+  const emitChatEvent = vi.fn();
   const logger = { info: vi.fn(), warn: vi.fn() } as unknown as Logger;
   const sessions = createCodexVoiceSessions<CodexVoiceChat, CodexVoiceRuntime>({
     logger,
     requestTimeoutMs: 5_000,
     ensureChat: () => chat,
-    emitChatEvent: vi.fn(),
+    emitChatEvent,
     sendMessage,
     steer: vi.fn().mockResolvedValue(undefined),
     chatIsRunning: () => options.chatIsRunning ?? false,
@@ -200,7 +201,7 @@ function hostedVoiceHarness(options: { chatIsRunning?: boolean } = {}) {
     resolveCodexExecutable: () => ({ executable: "codex", env: process.env }),
     chatSummary: () => null,
   });
-  return { chat, hostProcess, messageSent: messageSent.promise, sendMessage, sessions };
+  return { chat, hostProcess, messageSent: messageSent.promise, sendMessage, emitChatEvent, sessions };
 }
 
 async function stopHostedVoiceHarness(harness: ReturnType<typeof hostedVoiceHarness>, token: string): Promise<void> {
@@ -520,6 +521,268 @@ describe("createCodexVoiceSessions", () => {
       await harness.hostProcess.waitForRequestCount(5);
       const spoken = harness.hostProcess.requests.find((request) => request.method === "thread/realtime/appendSpeech");
       expect(spoken?.params).toMatchObject({ text: "answer from the queued turn" });
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+});
+
+/**
+ * The prose streamer. This is the part of narration no running app can show
+ * without a live Codex call and a microphone, so the test is the only way to
+ * see it work.
+ */
+describe("Codex voice narration", () => {
+  const spokenLines = (harness: ReturnType<typeof hostedVoiceHarness>): string[] =>
+    harness.hostProcess.requests
+      .filter((request) => request.method === "thread/realtime/appendSpeech")
+      .map((request) => String((request.params as { text?: unknown } | undefined)?.text ?? ""));
+
+  /** Starts a hosted session and hands it a spoken request, so a turn is followed. */
+  async function speakingHarness() {
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+      item: { type: "handoff_request", input_transcript: "spoken request" },
+    });
+    await harness.messageSent;
+    return { harness, token: result.token };
+  }
+
+  it("speaks the answer as it is written instead of once at the end", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "I checked the PR and its CI. " } as never);
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "Everything is green, so it is merging now. " } as never);
+      expect(spokenLines(harness)).toEqual([
+        "I checked the PR and its CI.",
+        "Everything is green, so it is merging now.",
+      ]);
+
+      // The turn's end must not read the answer a second time.
+      harness.sessions.observeChatEvent(harness.chat, { type: "done", turnId: "turn-1", status: "completed" } as never);
+      expect(spokenLines(harness)).toHaveLength(2);
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+
+  it("says the prose and drops the code around it", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.observeChatEvent(harness.chat, {
+        type: "text",
+        text: "Here is the fix:\n\n```ts\nconst secret = 42;\n```\n\nThat should do it. ",
+      } as never);
+      harness.sessions.observeChatEvent(harness.chat, { type: "done", turnId: "turn-1", status: "completed" } as never);
+
+      const spoken = spokenLines(harness).join(" ");
+      expect(spoken).toContain("Here is the fix:");
+      expect(spoken).toContain("That should do it.");
+      expect(spoken).not.toContain("secret");
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+
+  it("stays quiet while the user is talking", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/delta", {
+        role: "user",
+        delta: "hold on",
+      });
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "The tests all passed. " } as never);
+      expect(spokenLines(harness)).toEqual([]);
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+});
+
+/**
+ * Hanging up because of something the user did not say is the one mistake here
+ * that cannot be taken back, so the wording that decides it is pinned by test.
+ * Reaching it any other way needs a live Codex call and a microphone.
+ */
+describe("Codex voice ending on request", () => {
+  it.each([
+    ["can you end the call", true],
+    ["please hang up now", true],
+    ["stop the conversation", true],
+    ["bye", true],
+    ["that's all for now", true],
+    ["don't end the call", false],
+    ["no need to hang up", false],
+    ["does this end the call?", false],
+    ["is there a way to close the session?", false],
+    // A terminal is full of other "sessions" and other "calls".
+    ["stop the session", false],
+    ["close the session", false],
+    ["stop the call to the API and stub it locally", false],
+  ])("reads %j as a request to end: %s", async (utterance, shouldEnd) => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: utterance,
+      });
+      // The voice is given a moment to say goodbye before the call closes.
+      await vi.advanceTimersByTimeAsync(4_000);
+      const state = harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token });
+      expect(state.status).toBe(shouldEnd ? "ended" : "live");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("keeps the call open when the user says the farewell and then keeps talking", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // A transcriber splits one utterance into segments, so "That's it" is a
+      // farewell only if nothing follows it.
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: "that's all",
+      });
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: "wait, one more thing",
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("live");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("counts a user's words in a native call even when they arrive as the flat transcript", async () => {
+    // Both transports are client-managed now, so which shape carries the user's
+    // words must not decide whether they get the floor.
+    const harness = nativeVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: "chat-1", sdp: "offer\r\n" });
+    const calls = harness.runtimeRequest.mock.calls as unknown as Array<[string, { text?: string }?]>;
+    const spoken = () => calls
+      .filter(([method]) => method === "thread/realtime/appendSpeech")
+      .map(([, params]) => String(params?.text ?? ""));
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+        item: { type: "handoff_request", input_transcript: "spoken request" },
+      });
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: "hold on a second",
+      });
+
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "The tests all passed. " } as never);
+      expect(spoken()).toEqual([]);
+    } finally {
+      await harness.sessions.stop({ sessionId: "chat-1", token: result.token });
+    }
+  });
+
+  it("keeps an explicit request to end when the user trails off afterwards", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // "end the call" is what they meant; a trailing "okay" in the next
+      // segment does not retract it, where a trailing word after a bare
+      // farewell does.
+      for (const text of ["can you end the call", "okay"]) {
+        harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", { role: "user", text });
+      }
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("ended");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("lets a later explicit request outrank an earlier farewell", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // A "bye" that is then said plainly is no longer a farewell that the next
+      // stray word can call off.
+      for (const text of ["that's all for now", "can you end the call", "actually hold on"]) {
+        harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", { role: "user", text });
+      }
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("ended");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("lets a handed-off farewell be called off like a spoken one", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // The model hands a farewell over instead of saying goodbye itself, and
+      // it never reaches the agent. How it was asked has to survive that path:
+      // armed as a plain end, the "wait" below could not call it off and the
+      // call would hang up on someone still talking.
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+        item: { type: "handoff_request", input_transcript: "bye" },
+      });
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: "wait, one more thing",
+      });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("live");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("leaves the readable transcript in detail and the card's numbers beside it", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      for (const [role, text] of [["user", "hello there"], ["assistant", "Hey! What's up?"], ["user", "can you end the call"]]) {
+        harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", { role, text });
+      }
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      const notice = harness.emitChatEvent.mock.calls
+        .map(([, event]) => event as { type?: string; detail?: unknown; voiceSession?: Record<string, unknown> })
+        .find((event) => event.type === "system_notice");
+      // `detail` is what a surface without the card prints — iOS pretty-prints an
+      // object there as raw JSON — so it keeps the transcript as text.
+      expect(typeof notice?.detail).toBe("string");
+      expect(String(notice?.detail)).toContain("You: hello there");
+      expect(notice?.voiceSession).toMatchObject({ endedByVoice: true, requests: 2 });
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("never sends a request to end the call on to the agent", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+        item: { type: "handoff_request", input_transcript: "Can you end this call" },
+      });
+
+      // The agent cannot end a call it has no control over, so a turn asking it
+      // to is a turn spent explaining that back to the user.
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("ended");
     } finally {
       await stopHostedVoiceHarness(harness, result.token);
     }

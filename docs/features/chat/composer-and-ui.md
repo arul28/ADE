@@ -37,7 +37,7 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The chat progress drawer (one scroll, no tab strip, no placeholder areas: progress, proof, Droid mission and sources each appear only once they have content) plus the Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
 | `VoiceDictationButton.tsx`, `microphonePermissionGuidance.ts`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*`, `apps/desktop/src/main/services/transcription/microphoneAccess.ts` | Desktop dictation UI, platform permission boundary, and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. Main asks Electron for the platform microphone status; Windows denied/restricted states return explicit Privacy & security > Microphone guidance, while unknown/not-determined states are left to Chromium's origin permission flow. The header indicator and composer pill render the same recording state. |
 | `apps/desktop/src/main/services/transcription/*` | Electron main-process transcription service. Writes captured 16 kHz mono PCM to WAV, runs the bundled transcribe.cpp `transcribe-cli` against the downloaded Parakeet Ultra model (which punctuates and capitalizes itself), reads the transcript file, and applies deterministic glossary cleanup. Threads are capped at about the physical core count, because transcribe.cpp slows sharply when oversubscribed. The model download is single-flight: any later `downloadModel` call joins the in-flight install, including the renderer installer rejoining after its own call failed while main kept going. After the model verifies, the install runs one silent half-second transcription (`stage: "warmup"` on the progress event, shown as "Finishing setup") so the first real dictation is not the cold one (about 28 s cold against under 2 s warm on an M3 Pro); a failed warm-up is logged and still leaves the model installed. |
-| `CodexVoice.tsx` (`useCodexVoice`, `CodexVoiceButton`, `CodexVoiceBar`), `apps/desktop/src/main/services/chat/codexVoiceSession.ts` (session service: transports, hand-off routing, captions, summary), `apps/desktop/src/main/services/chat/codexVoiceHost.ts`, `apps/desktop/src/shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations: a spoken conversation with any chat, carried by the Codex app server's realtime API on the user's ChatGPT sign-in. See [Voice conversations](#voice-conversations). |
+| `CodexVoice.tsx` (`useCodexVoice`, `CodexVoiceButton`, `CodexVoiceBar`), `VoiceSessionCard.tsx` (the card a finished call leaves in the chat), `apps/desktop/src/main/services/chat/codexVoiceSession.ts` (the call: transports, hand-off routing, turn adoption, captions, summary), `apps/desktop/src/main/services/chat/codexVoiceNarration.ts` (what the voice says and when: the turn stream, milestones, barge-in, the end-request matcher), `apps/desktop/src/main/services/chat/codexVoiceHost.ts`, `apps/desktop/src/shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations: a spoken conversation with any chat, carried by the Codex app server's realtime API on the user's ChatGPT sign-in. See [Voice conversations](#voice-conversations). |
 | `apps/desktop/resources/voice/voice-glossary.json`, `apps/desktop/resources/whisper/README.md` | Shared dictation glossary and release notes for the materialized speech-to-text binary. `materialize-whisper-resources.mjs` builds `transcribe-cli` from a pinned transcribe.cpp commit; the binary is ignored by git and the model is downloaded at runtime. |
 | `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` | `useSessionLifecycleSnapshot(sessionId)`, the lifecycle read behind `ChatLifecyclePill` (settled and snoozed, one chip above the composer). It reads the row from the local per-project session cache the Work tab already mirrors into the app store, then falls back to the root cross-machine lane snapshot for a foreign chat; a bounded render-only deadline timer repaints an open snoozed row when it expires, with no extra IPC or lifecycle write. The pill's Wake now calls `wakeSessionNow` from `renderer/components/terminals/sessionLifecycleActions.ts`. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. Optional `canvasFill` overrides `--chat-canvas-bg`; the Work new-chat draft passes `transparent` so `WorkViewArea`'s mesh shows through. On the Work surface only, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` (32 px title + 1 px hairline), the same token as `.ade-tool-header`. Other hosts keep their own header height. |
@@ -1666,7 +1666,11 @@ same brain. Audio still flows from the computer the user is sitting at.
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
 | native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread. ADE adopts that turn (normally ADE ignores a turn it did not start) and shows the spoken request as its user message. Adoption also runs on the resumed-turn path, because starting voice resumes the thread. |
-| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | `clientManagedHandoffs: true`. Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, relays short `[STATUS]` progress lines, and speaks the chat's final answer back with `thread/realtime/appendSpeech`. |
+| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
+
+Both modes set `clientManagedHandoffs: true`, so Codex never speaks an agent's
+output on its own and ADE is the single place that decides what voice says and
+when. That is what makes a Codex chat behave the same as every other provider.
 
 In both modes a spoken request is a normal `user_message` with
 `metadata.voiceInput`; `describeUserMessageStatus` shows it as "Spoken" with a
@@ -1674,14 +1678,85 @@ mic glyph. Subagent start and finish events reach the voice session as
 context, and a finish is also spoken, so voice does not report a subagent as
 done while it still runs.
 
-**Live UI.** While voice is live, `CodexVoiceBar` sits above the composer:
-a level meter from the real audio tracks, a status (Connecting, Listening,
-Speaking, Working on it, Muted), the newest caption, a timer, Mute, and End.
-Captions and the working flag come from `chat.getCodexRealtimeState`, polled
-every 300 ms only while a session is live. The chat gets one line when the
-session ends ("Voice conversation · 2:26 · 8 requests · 5 handed to the
-agent"); its detail holds the full transcript. Small talk that voice answers
-itself stays out of the thread.
+**Narration.** Voice talks about the work while it happens instead of reading
+the finished answer once. ADE follows the turn a hand-off produced (host) or
+that Codex ran on the chat's thread (native), and streams its prose into speech
+as it is written:
+
+- Prose is taken a sentence at a time, and a stream that pauses is flushed
+  after `SPEECH_FLUSH_MS`. A turn with no line breaks still starts speaking
+  while it is being written.
+- Fenced code is dropped whole, opening fence to closing one, and markdown is
+  stripped. An agent writes far more code than prose, and reading it aloud is
+  the fastest way to make voice worse than silence. `speakableText` does the
+  same job for a turn that was never streamed.
+- Milestones are spoken too: an announced plan, a long command starting
+  (`chatty` only), an error, a subagent finishing. They are gated by
+  `NARRATION_MIN_GAP_MS` and said once per turn.
+- A long quiet stretch gets a progress line — what the agent is running, what
+  tool it is using — once the voice has said nothing for `NARRATION_IDLE_MS`.
+  Left silent, the realtime model fills that gap with "still on it"; handing it
+  the real progress is what makes the pause informative. The idle clock counts
+  the model's own speech, because `thread/realtime/outputAudio/delta` updates
+  `lastSpokeAt`, so a progress line is never read over the model talking.
+- The turn's end says only what was not already streamed, so nothing is read
+  twice.
+
+The user always wins. The realtime protocol has no cancel call — the only
+speech controls are `appendText`, `appendSpeech`, `appendAudio`, `start` and
+`stop` — so barge-in is restraint rather than interruption: `speakNow` refuses
+while the user's words were transcribed within `BARGE_IN_HOLD_MS`, and dropped
+narration is *not* queued, because describing a step that already finished is
+worse than saying nothing. A result is the exception: `speakResult` defers it
+until the user stops rather than losing it.
+
+The `updates` preference finally does something. `balanced` (the default) and
+`chatty` narrate; `chatty` adds long-command starts. `quiet` is what voice did
+before narration existed — ack, then the answer once at the end.
+
+**Instructing it.** The developer item tells voice it is the narrator rather
+than a log reader, and that work in progress has not concluded: it says what
+the agent looks like it is doing, and states a result flatly only when the
+agent's own finished message says it. It is also told the user can cut in at
+any time.
+
+**Ending it.** End is not the only way out. When the user's own transcribed
+words ask for it — "end the call", "hang up", or a bare farewell — `asksToEnd`
+marks the session and it closes `END_GRACE_MS` later, which leaves the voice
+room to say goodbye. The matcher is deliberately narrow: a negation ("don't end
+the call") and a question that is not a request ("does this end the call?") both
+back out, because hanging up on someone who did not ask is the one mistake here
+that cannot be taken back. `speakNow` refuses once the call is on its way out, so
+narration never talks over the farewell.
+
+A request to end is also *not* routed to the agent. Voice hands it over like any
+other request, and routing it bought a chat turn explaining that the agent could
+not end a call it never had control over. `handleHandoff` checks `asksToEnd`
+first and ends the call instead — which also decides the race, since either the
+hand-off or the user's own transcript may arrive first.
+
+**The bar.** `CodexVoiceBar` is the composer's **own top row** — a `voiceBar`
+slot on `ChatComposerShell`, drawn inside the glass above the input rather than
+as a second box above the composer. It is one line: a waveform, the newest
+caption taking the width, then the state word, the timer, and two quiet round
+buttons (mute, end). The waveform is the only thing that moves, so it carries
+the state — dim and still while connecting or muted, reactive to whoever is
+talking otherwise. Colour is the accent on the waveform and the state word only.
+
+The status reads Connecting, Listening, Speaking, Working or Muted. Captions and
+the working flag come from `chat.getCodexRealtimeState`, polled every 300 ms
+only while a session is live. Small talk that voice answers itself stays out of
+the thread.
+
+**The card.** A session that ends leaves a `system_notice` with
+`status: "voice_session"`: a one-line `message` every surface reads ("Voice
+conversation · 2:26 · 8 requests · 5 handed to the agent"), the readable
+transcript in `detail`, and the numbers the card needs in a `voiceSession` field
+beside them. `VoiceSessionCard` draws that field as a `ChatCard` — a head with
+the duration and what the call produced, the transcript opening underneath.
+The numbers ride **beside** `detail` rather than inside it because iOS prints an
+object `detail` as pretty-printed JSON, which would have replaced the readable
+transcript on the phone with a blob.
 
 **Context and style.** At start, voice gets Codex's own startup context plus an
 ADE developer item: the chat, lane, worktree, and model, the rules above, the
