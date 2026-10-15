@@ -105,7 +105,8 @@ function commonDir(checkout: string): string {
   return fs.realpathSync(path.resolve(checkout, git(checkout, ["rev-parse", "--git-common-dir"])));
 }
 
-// The copy is made with macOS `ditto`/`mkbom`; the feature is macOS only.
+// DARWIN-GATE: the copy is made with macOS `ditto`/`mkbom` (the feature is macOS
+// only), and no macOS runner executes the ade-cli vitest suites.
 describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
   it("moves the project with its lanes, tracked dependencies and data, and keeps the original parked", async () => {
     const source = path.join(tmp, "Proj");
