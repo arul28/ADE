@@ -663,7 +663,9 @@ own headers, chat action panes and floating previews); what differs:
   while it asks for the user. Chats from other machines are included through
   their row's binding (remembered with `machineRouter.rememberSessionPin`).
   `SessionListPane` reports the list (`WorkFocusQueueItem`: session + binding)
-  through `onFocusQueueChange`, so the grid and the list cannot disagree.
+  through `onFocusQueueChange`, so the grid and the list cannot disagree. The
+  project sidebar stays mounted while collapsed, keeping that report live as
+  chats enter or leave the grid; the roster moves below the grid.
 - **No Tools pane.** Each chat header shows **Open in full view**
   (`onOpenFullView`, `WorkHeaderOpenFullViewButton`) where the Tools toggle
   would be. It leaves the grid and opens that chat in the normal view, Tools and

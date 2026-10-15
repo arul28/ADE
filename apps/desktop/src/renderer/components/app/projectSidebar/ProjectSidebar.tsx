@@ -96,12 +96,11 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
     navigate(stored ?? "/settings");
   }, [navigate, projectRoot, routeKey, settingsActive]);
 
-  if (hidden) return null;
-
   return (
     <aside
       className="ade-project-sidebar relative flex h-full min-h-0 shrink-0 flex-col"
-      style={{ width }}
+      hidden={hidden}
+      style={{ width, display: hidden ? "none" : undefined }}
       data-tour="app.sidebar"
       data-testid="project-sidebar"
     >
