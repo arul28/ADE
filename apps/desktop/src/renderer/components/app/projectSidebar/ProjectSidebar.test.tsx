@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
-import React from "react";
+import React, { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../../state/appStore";
 import { ProjectSidebar } from "./ProjectSidebar";
@@ -118,6 +118,19 @@ function SlotHost({ children }: { children: React.ReactNode }) {
   return <div ref={setTarget}>{children}</div>;
 }
 
+function FocusQueueReportProbe({
+  queue,
+  onChange,
+}: {
+  queue: readonly string[];
+  onChange: (queue: readonly string[]) => void;
+}) {
+  useEffect(() => {
+    onChange(queue);
+  }, [onChange, queue]);
+  return null;
+}
+
 describe("settings return routes", () => {
   afterEach(() => {
     resetSettingsReturnRoutesForTest();
@@ -171,5 +184,40 @@ describe("ProjectSidebarSlot hold", () => {
     const settings = screen.getByText("Settings sections").parentElement;
     expect(held?.hidden).toBe(true);
     expect(settings?.hidden).toBe(false);
+  });
+});
+
+describe("ProjectSidebar Focus queue", () => {
+  beforeEach(() => {
+    useAppStore.setState({ project: { rootPath: ROOT, name: "ADE" }, projectBinding: null } as any);
+  });
+
+  afterEach(() => {
+    cleanup();
+    setProjectSidebarHidden(false);
+    window.localStorage.clear();
+  });
+
+  it("keeps queue reports current while the sidebar is collapsed", () => {
+    const reportedQueues: string[][] = [];
+    const reportQueue = (queue: readonly string[]) => reportedQueues.push([...queue]);
+    const tree = (queue: readonly string[]) => (
+      <MemoryRouter initialEntries={["/work"]}>
+        <ProjectSidebarSlotProvider>
+          <ProjectSidebar route="/work" />
+          <ProjectSidebarSlot active>
+            <FocusQueueReportProbe queue={queue} onChange={reportQueue} />
+          </ProjectSidebarSlot>
+        </ProjectSidebarSlotProvider>
+      </MemoryRouter>
+    );
+
+    const view = render(tree(["first-chat"]));
+    expect(reportedQueues).toEqual([["first-chat"]]);
+
+    act(() => setProjectSidebarHidden(true));
+    view.rerender(tree(["second-chat"]));
+
+    expect(reportedQueues).toEqual([["first-chat"], ["second-chat"]]);
   });
 });
