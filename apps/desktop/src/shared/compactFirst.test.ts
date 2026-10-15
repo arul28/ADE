@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache } from "./claudePromptCache";
-import { compactFirstMinTokensFromEnv, compactFirstOffer, warmIdleCompactAtMs } from "./compactFirst";
+import { compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, warmIdleCompactAtMs } from "./compactFirst";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
 
 const NOW = Date.parse("2026-10-09T12:00:00.000Z");
@@ -21,7 +21,19 @@ describe("compactFirstOffer", () => {
     ["context exactly 200k", { events: [done(90)], contextTokens: 200_000 }, true],
     ["context just under 200k", { events: [done(90)], contextTokens: 199_999 }, false],
     ["mode never", { events: [done(90)], contextTokens: 250_000, mode: "never" as const }, false],
-    ["non-claude provider", { events: [done(90)], contextTokens: 250_000, provider: "codex" }, false],
+    // Every provider the offer covers waits out its own cache window, and none
+    // offers early: an early offer would read the chat at full price instead of
+    // the cached one.
+    ["codex idle just under OpenAI's 30-minute cache", { events: [done(29)], contextTokens: 250_000, provider: "codex" }, false],
+    ["codex idle past OpenAI's 30-minute cache", { events: [done(31)], contextTokens: 250_000, provider: "codex" }, true],
+    ["mode never on a Codex chat", { events: [done(90)], contextTokens: 250_000, provider: "codex", mode: "never" as const }, false],
+    ["a Pi model on an OpenAI vendor, just under 30 minutes", { events: [done(29)], contextTokens: 250_000, provider: "pi", model: "openai/gpt-6.1-sol" }, false],
+    ["a Pi model on an OpenAI vendor, past 30 minutes", { events: [done(31)], contextTokens: 250_000, provider: "pi", model: "openai/gpt-6.1-sol" }, true],
+    ["an OpenCode model on Claude", { events: [done(61)], contextTokens: 250_000, provider: "opencode", model: "anthropic/claude-sonnet-5.5" }, true],
+    // An unknown vendor assumes the longest window, so the offer can only be late.
+    ["an OpenCode model whose vendor is unknown, at 30 minutes", { events: [done(31)], contextTokens: 250_000, provider: "opencode", model: "mystery/model" }, false],
+    ["an OpenCode model whose vendor is unknown, past an hour", { events: [done(61)], contextTokens: 250_000, provider: "opencode", model: "mystery/model" }, true],
+    ["a provider whose /compact ADE cannot run", { events: [done(90)], contextTokens: 250_000, provider: "cursor" }, false],
     ["a new turn started after the last done", { events: [done(90), started(80)], contextTokens: 250_000 }, false],
     ["no finished turn yet", { events: [], contextTokens: 250_000 }, false],
     ["context unknown", { events: [done(90)] }, false],
@@ -70,6 +82,11 @@ describe("warmIdleCompactAtMs", () => {
     ["an unknown cache lifetime", { mode: "always" as const, cache: null, contextTokens: 250_000 }, null],
     ["a chat under the floor", { mode: "always" as const, cache: hourCache, contextTokens: 150_000 }, null],
     ["a turn is running", { mode: "always" as const, cache: hourCache, contextTokens: 250_000, events: [done(10), started(5)] }, null],
+    // The automatic timer is Claude's alone. Codex, Pi and OpenCode only ever
+    // offer: their cache is short or their vendor is unknown, and nothing in
+    // ADE starts a compaction there on its own.
+    ["Always on a Codex chat", { mode: "always" as const, cache: hourCache, contextTokens: 250_000, provider: "codex" }, null],
+    ["Always on an OpenCode chat", { mode: "always" as const, cache: hourCache, contextTokens: 250_000, provider: "opencode" }, null],
   ])("%s", (_name, args, expected) => {
     expect(warmIdleCompactAtMs({ provider: "claude", events: [done(10)], ...args })).toBe(expected);
   });
@@ -96,6 +113,27 @@ describe("the prompt cache lifetime a Claude turn wrote", () => {
     expect(normalizeClaudePromptCache({ ttl: "5m", since: "not a date" })).toEqual({ ttl: "5m" });
     expect(normalizeClaudePromptCache({ ttl: "2h" })).toBeNull();
     expect(normalizeClaudePromptCache("1h")).toBeNull();
+  });
+});
+
+describe("compactFirstIdleMsFromEnv", () => {
+  it.each([
+    ["60000", 60_000],
+    [undefined, null],
+    ["", null],
+    ["0", null],
+    ["-5", null],
+    ["12.5", null],
+    ["soon", null],
+  ])("reads %j as %j", (value, expected) => {
+    expect(compactFirstIdleMsFromEnv({ ADE_COMPACT_FIRST_IDLE_MS: value })).toBe(expected);
+  });
+
+  it("wins over every provider's own window, so the offer can be tried without waiting out a cache", () => {
+    expect(compactFirstIdleMs({ provider: "codex", idleMs: 60_000 })).toBe(60_000);
+    expect(compactFirstIdleMs({ provider: "claude", cache: { ttl: "1h" }, idleMs: 60_000 })).toBe(60_000);
+    // An unset or unusable override leaves the table in charge.
+    expect(compactFirstIdleMs({ provider: "codex", idleMs: null })).toBe(30 * 60_000);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   fs,
   installRealTranscriptParser,
   legacyClaudeSendPayload,
+  mockState,
   path,
   query,
   readPersistedChatState,
@@ -370,6 +371,68 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => expect(deliveredTexts()).toEqual(["hello again", "and this"]));
       await vi.waitFor(() => expect(events().some((event: any) => event?.type === "system_notice" && event.severity === "warning")).toBe(true));
       expect(events().filter((event: any) => event?.type === "user_message" && event.deliveryState === "cancelled")).toEqual([]);
+    });
+
+    it("holds a Codex send until its compaction ends and the turn that carried it closes, then sends the message", async () => {
+      installRealTranscriptParser();
+      const previousIdleMs = process.env.ADE_COMPACT_FIRST_IDLE_MS;
+      // The window is the offer's clock; one millisecond is the documented
+      // override, so a chat whose turn just ended is already past it.
+      process.env.ADE_COMPACT_FIRST_IDLE_MS = "1";
+      try {
+        const onEvent = vi.fn();
+        const { service, projectConfigService } = createService({ onEvent });
+        // Off by default outside Claude; this chat turned the offer on.
+        projectConfigService.get.mockReturnValue({ effective: { ai: { compaction: { codex: { idleMode: "ask" } } } } });
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+        const usage = { inputTokens: 250_000, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+        writeTestTranscriptEnvelopes(session.id, [
+          { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
+          { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "codex_token_usage", usage: { threadId: "thread-old", turnId: "turn-old", last: usage, total: usage } } },
+          { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 3, event: { type: "done", turnId: "turn-old", status: "completed" } },
+        ] as AgentChatEventEnvelope[]);
+
+        const send = service.sendMessage({ sessionId: session.id, text: "hello again", compactFirst: true });
+        const dispatchedTurnStarts = () => mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/compact/start")).toBe(true);
+        }, { timeout: 10_000, interval: 25 });
+        // The compaction is the only thing on the wire so far: the message waits
+        // for it instead of racing it.
+        expect(dispatchedTurnStarts()).toBe(0);
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: { turnId: "turn-compact", item: { id: "compact-1", type: "contextCompaction" } },
+        });
+        expect(dispatchedTurnStarts()).toBe(0);
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/completed",
+          params: { turnId: "turn-compact", item: { id: "compact-1", type: "contextCompaction" } },
+        });
+        await send;
+        await vi.waitFor(() => expect(dispatchedTurnStarts()).toBe(1), { timeout: 10_000, interval: 25 });
+        const events = onEvent.mock.calls.map((call) => call[0]?.event);
+        expect(events.some((event: any) => event?.type === "error" && /already active/i.test(event.message ?? ""))).toBe(false);
+        expect(events.some((event: any) => event?.type === "system_notice" && /did not finish/i.test(event.message ?? ""))).toBe(false);
+
+        const turnNumber = mockState.codexTurnCounter;
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: `turn-${turnNumber}`, status: "inProgress" } },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: `turn-${turnNumber}`, status: "completed" } },
+        });
+      } finally {
+        if (previousIdleMs === undefined) delete process.env.ADE_COMPACT_FIRST_IDLE_MS;
+        else process.env.ADE_COMPACT_FIRST_IDLE_MS = previousIdleMs;
+      }
     });
 
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {

@@ -55352,6 +55352,15 @@ export function createAgentChatService(args: {
         await new Promise((resolve) => setTimeout(resolve, COMPACT_FIRST_IDLE_POLL_MS));
       }
       const compacted = managed.compactionEmitterState.sessionCompactionCount > before;
+      // The same fact the Claude turn path records, so "how often people ask
+      // for Compact first" counts every provider that can offer it.
+      onCompactionOutcome?.({
+        sessionId,
+        action: "compact_first",
+        outcome: compacted ? "completed" : "failed",
+        mode: "manual",
+        provider: managed.session.provider,
+      });
       logger.info("agent_chat.compact_first_inline", { sessionId, provider: managed.session.provider, compacted });
       return compacted ? "completed" : "failed";
     } catch (error) {
