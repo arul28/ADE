@@ -440,6 +440,15 @@ pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
 - **The host** is a WKWebView with no window on screen, which WebKit throttles
   like a background tab; 73-81 MB across the host, its WebContent, Networking
   and GPU processes. The Windows host (WebView2) measured 141 MB private.
+- **The Windows Spotify host** (same `ade-music-host.exe`, `--page page-spotify`,
+  Spotify's Web Playback SDK instead of MusicKit) measured on 2026-10-15 at
+  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to ADE's
+  own Connect device: 3.5% CPU and 237.7 MB private across the host and its 9
+  WebView2 children; 0.2% and 237.2 MB paused. The memory is 1.7x the Apple
+  Music host's 141 MB because the SDK runs its player in an `sdk.scdn.co`
+  iframe and Widevine decodes in its own process, so the tree has more
+  renderers; `--renderer-process-limit=1` does not cover either. Ceiling:
+  6% CPU playing, 320 MB private.
 - **Open item:** while the playing song's row is on screen, its three
   equalizer bars (a CSS `steps()` animation) make Chromium update style and
   draw every frame (243 style updates/s on this 240 Hz display). Driving the
