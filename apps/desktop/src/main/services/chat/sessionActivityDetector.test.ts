@@ -108,4 +108,24 @@ describe("session activity detection", () => {
       .toEqual({ activity: null, counted: false });
     expect(detector.observe(tool("bash", { command: "" }), 3_000)).toEqual({ activity: "exploring", counted: true });
   });
+
+  it("restores the prior activity for a cancelled compaction, and marks only a real failure", () => {
+    const detector = createSessionActivityDetector();
+    detector.observe(command("npm test"), 1_000);
+    expect(detector.observe({ type: "context_compact", trigger: "manual", state: "started", turnId: "turn-1" }, 2_000).activity)
+      .toBe("compacting");
+    // A Stop, or Claude Code cancelling its own /compact, arrives as
+    // failReason "interrupted" — it asks nothing of the person, so the row
+    // goes back to what the chat was doing instead of the amber failure state.
+    expect(detector.observe(
+      { type: "context_compact", trigger: "manual", state: "failed", failReason: "interrupted", turnId: "turn-1" },
+      3_000,
+    ).activity).toBe("testing");
+    expect(detector.observe({ type: "context_compact", trigger: "auto", state: "started", turnId: "turn-2" }, 4_000).activity)
+      .toBe("compacting");
+    expect(detector.observe(
+      { type: "context_compact", trigger: "auto", state: "failed", failReason: "timed_out", turnId: "turn-2" },
+      5_000,
+    ).activity).toBe("compaction_failed");
+  });
 });
