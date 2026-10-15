@@ -912,7 +912,7 @@ export function createSpotifyService(args: {
         return { ok: false, error: errorMessage(error) };
       }
     },
-    /** The Music tab closed or the provider changed: stop polling. Spotify keeps playing. */
+    /** The Music tab closed or the provider changed: stop watching, and pause and stop ADE's own player. A device elsewhere keeps playing. */
     unloadPlayer: async () => {
       disengage();
     },

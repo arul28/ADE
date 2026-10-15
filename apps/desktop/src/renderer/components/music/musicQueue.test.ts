@@ -79,7 +79,7 @@ describe("queueing songs from a list", () => {
 
 describe("Music store actions through the bridge", () => {
   const stateFor = (provider: "apple" | "spotify") => ({ provider, availability: "ready", message: null } as unknown as MusicState);
-  const bridge = (overrides: Record<string, unknown>) => {
+  const bridge = <T extends Record<string, unknown>>(overrides: T) => {
     const music = {
       command: vi.fn(async () => ({ ok: true })),
       getState: vi.fn(async () => stateFor("apple")),
@@ -88,7 +88,7 @@ describe("Music store actions through the bridge", () => {
       ...overrides,
     };
     Object.defineProperty(window, "ade", { configurable: true, writable: true, value: { music } });
-    return music;
+    return music as typeof music & T;
   };
 
   it("Try again after a failed Connect connects again; after any other error it re-reads the state", async () => {
