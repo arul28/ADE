@@ -1,12 +1,13 @@
 import React, { useState } from "react";
-import type { ProviderCompactionSettings } from "../../../../shared/compactionSettings";
+import { claudeSubagentWindowIneffective, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
 import { providerSupportsManualCompact } from "../../../../shared/contextCompaction";
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
-import { SettingsToggle } from "../primitives/SettingsControls";
 import { showToast } from "../../app/toast/toastStore";
 
 const FIELD_CLASS = "rounded border border-border bg-background px-2 py-1 text-xs";
 const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
+/** Claude's compaction windows, in the 100k steps it accepts. */
+const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_000);
 
 /**
  * Reads a token-count field on blur. An empty field means "use the default"
@@ -37,7 +38,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
   if (!supported) return <p className="text-xs text-muted-fg">This provider compacts by itself. ADE cannot change when.</p>;
   const settings = value ?? {};
   const control = (key: "atTokens" | "reserveTokens" | "keepRecentTokens", label: string, max?: number) => (
-    <input aria-label={label} type="number" min={1} max={max} disabled={saving} key={settings[key] ?? "default"} defaultValue={settings[key] ?? ""} placeholder="Default"
+    <input aria-label={label} type="number" min={1} max={max} disabled={saving} key={settings[key] ?? "default"} defaultValue={settings[key] ?? ""} placeholder={key === "atTokens" ? "Auto" : "Default"}
       className={NUMBER_INPUT_CLASS}
       onBlur={(event) => {
         const parsed = parsePositiveTokenInput(event.target.value, max);
@@ -50,6 +51,13 @@ export function CompactionSettings({ provider, value, account = false, onChange 
         void save({ ...settings, [key]: parsed });
       }} />
   );
+  const windowSelect = (key: "atTokens" | "subagentAtTokens", label: string, autoLabel: string) => (
+    <select aria-label={label} disabled={saving} value={settings[key] ?? "auto"}
+      className={FIELD_CLASS}
+      onChange={(event) => void save({ ...settings, [key]: event.target.value === "auto" ? null : Number(event.target.value) })}>
+      <option value="auto">{autoLabel}</option>{CLAUDE_WINDOW_STEPS.map((n) => <option key={n} value={n}>{n / 1000}k</option>)}
+    </select>
+  );
   return <ModernRows>
     {account ? <ModernRow title="This account" control={<select aria-label="Account compaction setting" disabled={saving} value={value ? "custom" : "inherit"}
       className={FIELD_CLASS}
@@ -57,12 +65,13 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       <option value="inherit">Same as provider default</option><option value="custom">Custom</option>
     </select>} /> : null}
     {(!account || value) ? <>
-      {provider !== "codex" ? <ModernRow title="Auto-compact" control={<SettingsToggle label="Auto-compact" checked={settings.enabled !== false} onChange={(enabled) => void save({ ...settings, enabled })} />} /> : null}
-      {provider === "claude" ? <ModernRow title="Auto-compact at" hint="Applies at the next query start." control={<select aria-label="Auto-compact at" disabled={saving} value={settings.atTokens ?? "auto"}
-        className={FIELD_CLASS}
-        onChange={(event) => void save({ ...settings, atTokens: event.target.value === "auto" ? null : Number(event.target.value) })}>
-        <option value="auto">Auto (recommended)</option>{Array.from({ length: 10 }, (_, i) => (i + 1) * 100_000).map((n) => <option key={n} value={n}>{n / 1000}k</option>)}
-      </select>} /> : provider === "codex" ? <ModernRow title="Auto-compact at" hint="Token count, capped at the active model window." control={control("atTokens", "Auto-compact at")} /> : <>
+      {provider === "claude" ? <>
+        <ModernRow title="Compact at" hint="Applies at the next query start." control={windowSelect("atTokens", "Compact at", "Auto (default)")} />
+        <ModernRow title="Subagents compact at" hint={claudeSubagentWindowIneffective(settings)
+          ? "No effect: subagents can only compact earlier than the main chat. Pick a lower number, or raise Compact at."
+          : "Subagents can only compact earlier than the main chat, never later. Applies at the next query start."}
+          control={windowSelect("subagentAtTokens", "Subagents compact at", "Auto (same as the main chat)")} />
+      </> : provider === "codex" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
         <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
         <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
       </>}

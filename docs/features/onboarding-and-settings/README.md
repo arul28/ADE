@@ -530,9 +530,11 @@ Renderer — onboarding:
   to Repair the stored sign-in then Reconnect; active/signed_out names both
   causes and offers both actions. No machine-repair copy says "Sign in again":
   the person is signed in, and the browser step is called "Confirm it's you".
-  Rows show the install beside the name (`accountMachineRowLabel`, "MacBook Pro
-  · ADE Alpha", with the ADE home on hover), so two installs on one Mac do not
-  look like a duplicate. The Remove sheet starts with a warning for a machine
+  Rows show the name alone (`accountMachineRowName`) and name the install
+  separately beside it only when it is not the regular app
+  (`accountMachineInstallLabel`, "MacBook Pro" then "ADE Alpha"), with the ADE
+  home on hover, so two installs on one Mac do not look like a duplicate. The
+  Remove sheet starts with a warning for a machine
   seen in the last five minutes ("It was active 2 minutes ago. Removing it
   disconnects it from your account until someone confirms it on that
   computer.") from `accountMachineRemovalConfirmBody`, the same body the web
@@ -2236,8 +2238,10 @@ file, so they have exactly one identity per machine.
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
   same file under `settings.<provider>` and default to off.
-- **Auto-compact.** Each provider page shows the compaction settings ADE can
-  apply for that harness (`CompactionSettings.tsx`); the provider-level values
+- **Compaction.** Each provider page shows the compaction settings ADE can
+  apply for that harness (`CompactionSettings.tsx`): **Compact at** (Auto by
+  default) and, for Claude, **Subagents compact at** and **After the cache
+  expires**. There is no on/off switch: every chat compacts when it fills; the provider-level values
   live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
   more than one account, the actions menu of each account card has an
   **Auto-compact** page ("Same as provider default" or Custom), stored as
@@ -2308,12 +2312,17 @@ not carry the install command.
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance sends each new chat to
-  the account whose weekly room resets soonest, so room is used before it
-  resets. A running chat stays on its account; one that hits a usage limit
-  moves to another account with room (with the switch off, the limit offers
-  that move instead). Auto-start sends one tiny request on the cheapest model
-  when a window ends, each logged with its cost. Both read and write
+  and one line saying where new chats go. Smart balance normally sends new
+  chats to the account whose weekly room resets soonest, so room is used before
+  it resets. When another usable account has at least 30 percentage points
+  more five-hour headroom, Claude routes two consecutive new chats to the
+  weekly-first account, then one to the account with the most five-hour room.
+  This rotation ends when the gap reaches 15 points. **Next chat** previews
+  the next slot. Codex remains weekly-first. A
+  running chat stays on its account; one that hits a usage limit moves to
+  another account with room (with the switch off, the limit offers that move
+  instead). Auto-start sends one tiny request on the cheapest model when a
+  window ends, each logged with its cost. Both read and write
   `provider_instances` `getSettings`/`setSettings`.
 - **One card per account**, in a grid that fits as many 290px columns as the
   width allows, then evens them out over the rows (`balancedColumns`): two cards

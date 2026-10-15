@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.106] - 2026-10-15
+
+### Desktop and web
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+### iOS
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+## [1.2.105] - 2026-10-15
+
+### Desktop and web
+
+- Voice narrates the work while it happens (#1631).
+- Model picker redesign, Codex Ultrafast, and @ menu recents (#1627).
+- Balance Claude five-hour capacity across accounts (#1629).
+- Spotify alongside Apple Music (#1624).
+- Move a project safely to a new drive (#1633).
+- Plan mode ends after approval, and Compact first queues your message (#1622, #1621).
+- Machine updates never restart a current machine (#1626).
+- PR reviews and attention states stay in sync (#1635).
+
+### iOS
+
+- Chats that work but show nothing are reported to Sentry (#1630).
+
 ## [1.2.104] - 2026-10-14
 
 ### Desktop and web
@@ -2485,7 +2512,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.104...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.106...HEAD
+[1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
+[1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
 [1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
 [1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
 [1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102

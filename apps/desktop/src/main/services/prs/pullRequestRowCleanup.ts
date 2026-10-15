@@ -104,6 +104,15 @@ function pruneEmptyPrGroups(db: DbLike, projectId: string): void {
   );
 }
 
+function runDeleteAllowMissingTable(db: DbLike, sql: string, params: unknown[]): void {
+  try {
+    db.run(sql, params);
+  } catch (error) {
+    if (error instanceof Error && /no such table/i.test(error.message)) return;
+    throw error;
+  }
+}
+
 export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds: string[]): void {
   const scope = projectPrScope(projectId, prIds);
   if (!scope) return;
@@ -123,24 +132,22 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
      where pr_id in (${scope.selectSql})`,
     scope.params,
   );
-  try {
-    db.run(
-      `delete from pull_request_chat_sessions
-       where pr_id in (${scope.selectSql})`,
-      scope.params,
-    );
-  } catch {
-    // Older test/embedded databases may predate the optional edge table.
-  }
-  try {
-    db.run(
-      `delete from pull_request_chat_session_dismissals
-       where pr_id in (${scope.selectSql})`,
-      scope.params,
-    );
-  } catch {
-    // Older test/embedded databases may predate the unlink tombstone table.
-  }
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_chat_sessions where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_chat_session_dismissals where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_lane_chat_origins
+     where project_id = ? and pr_id in (${scope.selectSql})`,
+    [projectId, ...scope.params],
+  );
   db.run(`delete from pull_requests where id in (${scope.selectSql})`, scope.params);
   pruneEmptyPrGroups(db, projectId);
 }
@@ -237,24 +244,22 @@ function detachRows(
   // Chat ownership is live routing metadata, not lane-deletion history. Once
   // the lane is detached its sessions are deleted, so retaining these edges
   // would send future PR cards to a chat that no longer exists.
-  try {
-    db.run(
-      `delete from pull_request_chat_sessions
-       where pr_id in (${scope.selectSql})`,
-      scope.params,
-    );
-  } catch {
-    // Older databases are upgraded before this path is normally reached.
-  }
-  try {
-    db.run(
-      `delete from pull_request_chat_session_dismissals
-       where pr_id in (${scope.selectSql})`,
-      scope.params,
-    );
-  } catch {
-    // Older databases are upgraded before this path is normally reached.
-  }
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_chat_sessions where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_chat_session_dismissals where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  runDeleteAllowMissingTable(
+    db,
+    `delete from pull_request_lane_chat_origins
+     where project_id = ? and pr_id in (${scope.selectSql})`,
+    [projectId, ...scope.params],
+  );
   pruneEmptyPrGroups(db, projectId);
 }
 

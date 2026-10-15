@@ -66,7 +66,8 @@ wall of utilities.
 | `.kit-legend` | A chart legend item: swatch `<i>`, label, value `<b>`. |
 | `.kit-icon-btn` | A borderless square icon button. |
 | `.kit-find-bar` | On a `.kit-card`: the floating ⌘F bar, one 36px row with 24px icon buttons (`shared/FindBar.tsx`). |
-| `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. |
+| `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. `data-size="sm"` is the 26px row size; `data-tone="crit"` colours a destructive choice's text. |
+| `.kit-input` | A text field or select for card surfaces, the height of a `.kit-btn`. `aria-invalid="true"` tints the border. |
 | `.kit-rule` | A 1px divider. |
 
 Variables worth knowing: `--kit-text-2` and `--kit-text-3` (secondary and

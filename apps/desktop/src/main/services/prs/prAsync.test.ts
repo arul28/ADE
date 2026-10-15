@@ -10,6 +10,9 @@ import {
   setSessionLifecycleSettings,
 } from "../sessions/sessionLifecycleSettings";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./prMergeAutoSettlementService";
+import { createSessionService } from "../sessions/sessionService";
+import { createPrChatLinkStore } from "./prChatLinkStore";
+import { savePrMergeAutoSettlementState } from "../sessions/sessionLifecycleSettings";
 import { createPrPollingService } from "./prPollingService";
 import { buildPrSummaryPrompt, createPrSummaryService, parsePrSummaryJson } from "./prSummaryService";
 import {
@@ -942,6 +945,7 @@ describe("prMergeAutoSettlementService", () => {
   function createMemoryDb() {
     const values = new Map<string, unknown>();
     return {
+      get: () => null,
       getJson: <T>(key: string): T | null => values.has(key) ? values.get(key) as T : null,
       setJson: (key: string, value: unknown): void => { values.set(key, value); },
     };
@@ -956,6 +960,7 @@ describe("prMergeAutoSettlementService", () => {
     });
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1003,14 +1008,11 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["cli-blocked"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
-    expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
-      ["chat-ready"],
-      expect.anything(),
-    );
+    ]);
+    expect(settleSessionsReportingAborts.mock.calls.flatMap(([ids]) => ids)).not.toContain("chat-ready");
     expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr-sessions-auto-settled",
       prId: "pr-1",
@@ -1034,6 +1036,7 @@ describe("prMergeAutoSettlementService", () => {
       return { settled: ids, aborted: [] };
     });
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [{
@@ -1098,10 +1101,10 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:03:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["chat-waiting"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
-    );
+    ]);
     expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
     expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual(["pr-1", "pr-2"]);
   });
@@ -1110,6 +1113,7 @@ describe("prMergeAutoSettlementService", () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [{
@@ -1174,16 +1178,17 @@ describe("prMergeAutoSettlementService", () => {
       prs: [oldMerge, futureMerge],
       polledAt: "2026-03-24T12:03:05.000Z",
     });
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["chat-ready"],
       { outcome: "PR #202 merged", settledAt: "2026-03-24T12:03:05.000Z", source: "pr_merge" },
-    );
+    ]);
   });
 
   it("settles only the chats explicitly linked to a merged PR", async () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1205,10 +1210,10 @@ describe("prMergeAutoSettlementService", () => {
     });
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["chat-owned"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
+    ]);
   });
 
   /**
@@ -1229,6 +1234,7 @@ describe("prMergeAutoSettlementService", () => {
     }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1283,6 +1289,7 @@ describe("prMergeAutoSettlementService", () => {
     const getChatLiveness = vi.fn(async () => ({ status: "idle" as const }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1347,6 +1354,7 @@ describe("prMergeAutoSettlementService", () => {
     }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1420,6 +1428,7 @@ describe("prMergeAutoSettlementService", () => {
     const debug = vi.fn();
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: {
         list: vi.fn(() => [
@@ -1495,6 +1504,7 @@ describe("prMergeAutoSettlementService", () => {
     });
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [
@@ -1560,6 +1570,7 @@ describe("prMergeAutoSettlementService", () => {
     const getChatLiveness = vi.fn(async () => ({ status: chatStatus }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: {
         list: vi.fn(() => [
@@ -1626,6 +1637,7 @@ describe("prMergeAutoSettlementService", () => {
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [{
@@ -1690,6 +1702,7 @@ describe("prMergeAutoSettlementService", () => {
     const db = createMemoryDb();
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({ settled: ids, aborted: [] as Array<{ sessionId: string; reason: string }> }));
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: withSessionLookup({
         list: vi.fn(() => [{
@@ -1754,6 +1767,7 @@ describe("prMergeAutoSettlementService", () => {
       settledAt: settledSessionIds.has(session.id) ? "2026-03-24T12:01:05.000Z" : null,
     });
     const service = createPrMergeAutoSettlementService({
+      projectId: "proj-1",
       db: db as any,
       sessionService: {
         get: vi.fn((sessionId: string) => {
@@ -1803,14 +1817,11 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["cli-merged-work"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
-    expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
-      ["chat-merged-work"],
-      expect.anything(),
-    );
+    ]);
+    expect(settleSessionsReportingAborts.mock.calls.flatMap(([ids]) => ids)).not.toContain("chat-merged-work");
     expect(settleSessionsReportingAborts).not.toHaveBeenCalledWith(
       ["chat-other-pr"],
       expect.anything(),
@@ -1857,10 +1868,10 @@ describe("prMergeAutoSettlementService", () => {
       polledAt: "2026-03-24T12:01:05.000Z",
     });
 
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["chat-past-page"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
+    ]);
   });
 
   it("still settles exactly the declared sessions when a PR links its chats", async () => {
@@ -1887,10 +1898,10 @@ describe("prMergeAutoSettlementService", () => {
 
     // A declaration is explicit, so a live sibling PR does not suppress it.
     expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
-    expect(settleSessionsReportingAborts).toHaveBeenCalledWith(
+    expect(settleSessionsReportingAborts.mock.calls.map((call) => call.slice(0, 2))).toContainEqual([
       ["chat-linked"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
-    );
+    ]);
   });
 
   /**
@@ -1902,18 +1913,149 @@ describe("prMergeAutoSettlementService", () => {
   it("reads liveness as the chat's own status, and reports nothing for a chat it cannot find", async () => {
     const getSessionSummary = vi.fn(async (sessionId: string) => (
       sessionId === "chat-live"
-        // A real summary carries dozens of fields; only `status` may reach the
-        // gate, so a future field cannot quietly become a second deferral reason.
+        // A real summary carries dozens of fields; the gate reads the projected
+        // status and completed-turn timestamp, never awaitingInput.
         ? { id: sessionId, status: "active", awaitingInput: true, provider: "claude" } as any
         : null
     ));
     const readLiveness = chatLivenessReader({ getSessionSummary });
 
-    expect(await readLiveness("chat-live")).toEqual({ status: "active" });
+    expect(await readLiveness("chat-live")).toEqual({ status: "active", idleSinceAt: null });
     // Not "idle" and not a throw: no chat is no evidence either way, and the
     // gate's own contract turns that into "settle now".
     expect(await readLiveness("chat-missing")).toBeNull();
     expect(getSessionSummary).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("PR-origin merge lifecycle", () => {
+  const roots: string[] = [];
+  const databases: Awaited<ReturnType<typeof openKvDb>>[] = [];
+  afterEach(() => {
+    for (const db of databases.splice(0)) db.close();
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  async function fixture(count = 1, handled = true) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-origin-merge-"));
+    roots.push(root);
+    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    databases.push(db);
+    const before = "2026-03-24T12:00:00.000Z";
+    const after = "2026-03-24T12:02:00.000Z";
+    const prs: PrSummary[] = [];
+    db.run("insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values ('proj-1', ?, 'ADE', 'main', ?, ?)", [root, before, before]);
+    db.run("begin immediate");
+    try {
+      for (let n = 0; n < count; n++) {
+        const lane = `lane-${n}`;
+        const pr = `pr-${n}`;
+        const chat = `chat-${n}`;
+        db.run("insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values (?, 'proj-1', ?, 'main', ?, ?, 'active', ?)", [lane, lane, lane, path.join(root, lane), before]);
+        db.run("insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state, base_branch, head_branch, created_at, updated_at, merged_at) values (?, 'proj-1', ?, 'acme', 'ade', ?, ?, 'merged', 'main', ?, ?, ?, ?)", [pr, lane, n + 1, `https://github.com/acme/ade/pull/${n + 1}`, lane, before, after, after]);
+        db.run("insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status, tool_type) values (?, ?, 'review', ?, '', 'running', 'codex-chat')", [chat, lane, before]);
+        db.run("insert into pull_request_chat_sessions(id, project_id, pr_id, lane_id, session_id, created_at, updated_at) values (?, 'proj-1', ?, ?, ?, ?, ?)", [`edge-${n}`, pr, lane, chat, before, before]);
+        db.run("insert into pull_request_lane_chat_origins(project_id, lane_id, pr_id, created_at, claimed_session_id, claimed_at, merge_followup_pending) values ('proj-1', ?, ?, ?, ?, ?, 1)", [lane, pr, new Date(Date.parse(before) + n).toISOString(), chat, before]);
+        prs.push(createSummary({ id: pr, laneId: lane, githubPrNumber: n + 1, state: "merged", mergedAt: after, chatSessionIds: [chat] }));
+      }
+      db.run("commit");
+    } catch (error) { db.run("rollback"); throw error; }
+    savePrMergeAutoSettlementState(db, { enabledSince: before, handledPrIds: handled ? prs.map(pr => pr.id) : prs.slice(0, -1).map(pr => pr.id) });
+    let completed = false;
+    let live: "idle" | "active" = "idle";
+    let duringLiveness = () => {};
+    let duringTeardown = () => {};
+    const sessions = createSessionService({ db, runSettleTeardown: async () => {
+      duringTeardown();
+      return { confirmed: true, residue: [] };
+    } });
+    const store = createPrChatLinkStore({ db, projectId: "proj-1", logger: createLogger(), knownStackNumberForPr: () => null });
+    const service = createPrMergeAutoSettlementService({
+      db, projectId: "proj-1", sessionService: sessions, emitEvent: () => {}, logger: createLogger(),
+      getChatLiveness: async (id) => {
+        duringLiveness();
+        return { status: live, idleSinceAt: completed && id === `chat-${count - 1}` ? after : null };
+      },
+    });
+    return {
+      db, sessions, store, prs,
+      poll: () => service.processSnapshot({ prs, polledAt: after }),
+      complete: () => { completed = true; },
+      active: () => { live = "active"; },
+      idle: () => { live = "idle"; },
+      onLiveness: (fn: () => void) => { duringLiveness = fn; },
+      onTeardown: (fn: () => void) => { duringTeardown = fn; },
+      pending: (id = "chat-0") => db.get<{ pending: number }>("select merge_followup_pending as pending from pull_request_lane_chat_origins where claimed_session_id = ?", [id])?.pending,
+    };
+  }
+
+  it.each([true, false])("waits for a completed first turn with handled=%s, then files only once", async (handled) => {
+    const f = await fixture(1, handled);
+    await f.poll();
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+    f.complete(); f.active();
+    await f.poll();
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+    f.idle(); await f.poll();
+    expect(f.sessions.get("chat-0")?.settledAt).not.toBeNull();
+    expect(f.pending()).toBe(0);
+    f.sessions.unsettleSession("chat-0");
+    await f.poll();
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+  });
+
+  it.each(["liveness", "teardown", "other_pr"])("keeps user work when %s changes the live PR relationship", async (race) => {
+    const f = await fixture(); f.complete();
+    const unlink = () => { f.store.unlinkPrFromChatSession({ prId: "pr-0", sessionId: "chat-0" }); };
+    if (race === "liveness") f.onLiveness(unlink);
+    else if (race === "teardown") f.onTeardown(unlink);
+    else f.onTeardown(() => {
+      f.db.run("insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state, base_branch, head_branch, created_at, updated_at) values ('other', 'proj-1', 'lane-0', 'acme', 'ade', 999, 'https://github.com/acme/ade/pull/999', 'open', 'main', 'other', '2026-03-24', '2026-03-24')");
+      f.store.linkPrToChatSession({ prId: "other", laneId: "lane-0", sessionId: "chat-0" });
+    });
+    await f.poll();
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+    expect(f.pending()).toBe(race === "other_pr" ? 1 : 0);
+  });
+
+  it("rolls back the pending receipt when the canonical settle write fails", async () => {
+    const f = await fixture(); f.complete();
+    f.db.run("create trigger fail_settle before update of settled_at on terminal_sessions when new.settled_at is not null begin select raise(abort, 'injected settle failure'); end");
+    await expect(f.poll()).rejects.toThrow("injected settle failure");
+    expect(f.pending()).toBe(1);
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+    f.db.run("drop trigger fail_settle");
+    await f.poll();
+    expect(f.pending()).toBe(0);
+    expect(f.sessions.get("chat-0")?.settledAt).not.toBeNull();
+  });
+
+  it.each([true, false])("protects and eventually handles origins beyond a deferred page with handled=%s", async (handled) => {
+    const f = await fixture(501, handled);
+    await f.poll();
+    expect(f.sessions.get("chat-500")?.settledAt).toBeNull();
+    f.complete();
+    await f.poll();
+    expect(f.sessions.get("chat-500")?.settledAt).not.toBeNull();
+    expect(f.pending("chat-500")).toBe(0);
+    expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
+  });
+
+  it("clears a stale origin whose chat moved lanes so the merged PR is still handled", async () => {
+    const f = await fixture(1, false); f.complete();
+    // The claimed chat is moved to another lane (updateMeta({ laneId })) while
+    // the origin row keeps the original lane. The commit guard would reject the
+    // mismatch after teardown on every poll, keeping the PR out of handledPrIds
+    // forever. The lookup must clear the stale binding and settle without it.
+    f.db.run(
+      "insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-elsewhere', 'proj-1', 'moved', 'main', 'moved', ?, 'active', '2026-03-24T12:00:00.000Z')",
+      ["/tmp/lane-elsewhere"],
+    );
+    f.db.run("update terminal_sessions set lane_id = 'lane-elsewhere' where id = 'chat-0'");
+    await f.poll();
+    expect(f.pending()).toBe(0);
+    // Settled through the normal path (chatSessionIds declares chat-0) without the origin guard.
+    expect(f.sessions.get("chat-0")?.settledAt).not.toBeNull();
   });
 });
 

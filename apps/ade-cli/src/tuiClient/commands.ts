@@ -154,6 +154,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/usage", description: "Show Claude and Codex limits plus session usage", placement: "chat", category: "Model" },
   { name: "/insights", description: "Generate Claude session insights through the active SDK session", placement: "chat", providers: ["claude"], category: "Model" },
+  { name: "/compact-first", description: "Compact the chat before your next message once its cache has expired", placement: "inline", argumentHint: "[on|off]", providers: ["claude"], category: "Model" },
   { name: "/fast", description: "Toggle Claude fast mode through the active SDK session", placement: "chat", argumentHint: "[on|off]", providers: ["claude"], category: "Model" },
   { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete]", providers: ["claude", "codex", "muse"], category: "Model" },
   // An orchestration parent can surface a stalled child turn, so recovery

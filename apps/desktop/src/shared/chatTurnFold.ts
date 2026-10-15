@@ -13,6 +13,12 @@
  * 1. Nothing folds while a turn is live. Only a turn with a `done` row folds.
  * 2. The ANSWER is the last text row of the turn — or the last `final_answer`
  *    row when the provider labelled one. `commentary` rows are never the answer.
+ *    A `partial_answer` row is an answer candidate but never wins over a
+ *    `final_answer`: it is a finished statement the provider may follow with
+ *    more output, and when it does the terminal answer usually restates only
+ *    the last part. It therefore stays visible rather than folding as
+ *    narration ({@link proseStaysVisible}), because the text it contributes is
+ *    content that the final answer does not repeat.
  *    Without a label, a last text written after a few work rows is a
  *    postscript when the text before it is much longer, and that longer text
  *    is the answer ({@link answerBeforePostscript}).
@@ -30,6 +36,9 @@
  *    off to work and ended on a status message — and any prose that embeds
  *    proof images ({@link proseStaysVisible}). `commentary` prose is
  *    narration by the provider's own label and folds unless it embeds proof.
+ *    `partial_answer` prose is the provider's own label for content and stays
+ *    visible for the same reason proof does: the fold must not hide an answer
+ *    the turn's terminal text does not repeat.
  *    An earlier text that repeats the answer word for word still folds
  *    ({@link TurnFold.duplicateAnswerKeys}). A fold that would hide only
  *    trivial rows (status/diagnostics receipts, empty text) is not drawn.
@@ -59,7 +68,7 @@ export type TurnFoldRowRole =
   /** Visible only when it was still live at turn end. */
   | "keep_if_live";
 
-export type TurnFoldTextPhase = "commentary" | "final_answer";
+export type TurnFoldTextPhase = "commentary" | "partial_answer" | "final_answer";
 
 export type TurnEndStatus = "completed" | "interrupted" | "failed";
 
@@ -570,6 +579,10 @@ function proseStaysVisible(row: TurnFoldRow): boolean {
   if (!text) return false;
   if (PROSE_PROOF_PATTERN.test(text) || PROSE_IMAGE_PATTERN.test(text)) return true;
   if (row.phase === "commentary") return false;
+  // A partial answer is content the terminal answer does not repeat, so it is
+  // never narration to fold away — no matter how short it is. Length is the
+  // fallback for providers that label nothing, not a test this label must pass.
+  if (row.phase === "partial_answer") return true;
   return text.length >= TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS || PROSE_STRUCTURE_PATTERN.test(text);
 }
 

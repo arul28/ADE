@@ -117,6 +117,7 @@ try {
   }
   for (const file of [coreDll, winFormsDll, loaderDll]) fs.copyFileSync(file, path.join(staging, path.basename(file)));
   fs.cpSync(path.join(sourceRoot, "page"), path.join(staging, "page"), { recursive: true });
+  fs.cpSync(path.join(sourceRoot, "page-spotify"), path.join(staging, "page-spotify"), { recursive: true });
   // Swap in whole: a half-written host directory must never be what ships.
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.renameSync(staging, outputDir);

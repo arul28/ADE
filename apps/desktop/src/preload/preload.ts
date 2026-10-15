@@ -1,4 +1,14 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type {
+  ProjectMoveAttention,
+  ProjectMoveCleanupArgs,
+  ProjectMovePreflight,
+  ProjectMoveProgress,
+  ProjectMoveRecord,
+  ProjectMoveResult,
+  ProjectMoveStartArgs,
+  ProjectMoveVolume,
+} from "../shared/types/projectMove";
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
@@ -5044,6 +5054,25 @@ const adeBridge = {
       return () => {
         ipcRenderer.removeListener(IPC.diagnosticsAutoSent, listener);
       };
+    },
+  },
+  projectMove: {
+    listVolumes: (): Promise<ProjectMoveVolume[]> => ipcRenderer.invoke(IPC.projectMoveListVolumes),
+    preflight: (args: { projectRoot: string; destinationRoot: string }): Promise<ProjectMovePreflight> =>
+      ipcRenderer.invoke(IPC.projectMovePreflight, args),
+    start: (args: ProjectMoveStartArgs): Promise<ProjectMoveResult> => ipcRenderer.invoke(IPC.projectMoveStart, args),
+    status: (projectRoot: string): Promise<ProjectMoveRecord | null> =>
+      ipcRenderer.invoke(IPC.projectMoveStatus, { projectRoot }),
+    attention: (): Promise<ProjectMoveAttention> => ipcRenderer.invoke(IPC.projectMoveAttention),
+    cleanup: (args: ProjectMoveCleanupArgs): Promise<ProjectMoveRecord> => ipcRenderer.invoke(IPC.projectMoveCleanup, args),
+    reveal: (args: { moveId: string; which: "original" | "moved" }): Promise<void> =>
+      ipcRenderer.invoke(IPC.projectMoveReveal, args),
+    chooseFolder: (defaultPath?: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.projectMoveChooseFolder, { defaultPath }),
+    onProgress: (cb: (progress: ProjectMoveProgress) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: ProjectMoveProgress) => cb(progress);
+      ipcRenderer.on(IPC.projectMoveProgress, listener);
+      return () => ipcRenderer.removeListener(IPC.projectMoveProgress, listener);
     },
   },
   recovery: {
@@ -13812,6 +13841,10 @@ const adeBridge = {
     unload: () => ipcRenderer.invoke(MUSIC_IPC.unload),
     showSignIn: () => ipcRenderer.invoke(MUSIC_IPC.showSignIn),
     cancelSignIn: () => ipcRenderer.invoke(MUSIC_IPC.cancelSignIn),
+    selectProvider: (provider) => ipcRenderer.invoke(MUSIC_IPC.selectProvider, provider),
+    configureSpotify: (args) => ipcRenderer.invoke(MUSIC_IPC.configureSpotify, args),
+    devices: () => ipcRenderer.invoke(MUSIC_IPC.devices),
+    transfer: (args) => ipcRenderer.invoke(MUSIC_IPC.transfer, args),
     onState: (cb: (state: MusicState) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
       ipcRenderer.on(MUSIC_IPC.stateEvent, listener);

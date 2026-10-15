@@ -26,6 +26,9 @@
   font-size: 12.5px;
   color: var(--color-fg);
 }
+.ade-home-app-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.ade-home-app-row > span { color: var(--color-fg); }
+.ade-home-app-row .kit-btn { gap: 4px; }
 .ade-home-look-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) 44px; align-items: center; gap: 10px; }
 .ade-home-look-row > span { color: var(--kit-text-2); }
 .ade-home-look-row > .kit-seg { grid-column: 2 / 4; justify-self: start; }

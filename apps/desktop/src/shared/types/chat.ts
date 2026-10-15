@@ -512,6 +512,16 @@ export function readSpawnCompletedNotice(event: AgentChatEvent): SpawnCompletedN
   };
 }
 
+/**
+ * The voice conversation a notice reports, or null. One reader so the chat row,
+ * and anything else that wants the numbers, key on the same discriminator the
+ * producer sets instead of probing the shape of `detail`.
+ */
+export function readVoiceSessionNotice(event: AgentChatEvent): AgentChatVoiceSession | null {
+  if (event.type !== "system_notice" || event.status !== "voice_session") return null;
+  return event.voiceSession ?? null;
+}
+
 /** One-line notice when a child can no longer report to a deleted parent chat. */
 export function spawnParentGoneNoticeMessage(): string {
   return "This chat used to report back to another chat that was deleted. It will keep working here on its own.";
@@ -586,6 +596,28 @@ export type AgentChatNoticeDetailMetric = {
 export type AgentChatNoticeDetailSection = {
   title: string;
   items: Array<string | AgentChatNoticeDetailMetric>;
+};
+
+/**
+ * A voice conversation that has ended, as the chat's own card reads it.
+ *
+ * Carried on the notice itself rather than inside `detail`. `detail` is what
+ * every other surface prints, and iOS renders an object `detail` as
+ * pretty-printed JSON — so `detail` keeps the readable transcript and the
+ * structured numbers ride beside it, where a decoder that does not know the
+ * field simply ignores it.
+ */
+export type AgentChatVoiceSession = {
+  durationMs: number;
+  /** Spoken turns the user took. */
+  requests: number;
+  /** Requests that actually reached the agent; a refused route is not one. */
+  handoffs: number;
+  /** True when the user asked for the call to end instead of pressing End. */
+  endedByVoice: boolean;
+  /** Why the call ended, when it was not the user ending it. */
+  error?: string | null;
+  transcript: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
 export type AgentChatNoticeDetail = {
@@ -1088,7 +1120,21 @@ export type AgentChatDevinCloudConfig = {
   pinned?: boolean;
 };
 
-export type AgentChatTextPhase = "commentary" | "final_answer";
+/**
+ * The provider's own label for a piece of assistant text, when it sends one.
+ *
+ * - `commentary` — mid-turn narration (preamble, progress). Never the answer.
+ * - `partial_answer` — stable answer text that more output may follow. This is
+ *   *content*, not narration: codex emits it for a result it has finished
+ *   stating while it goes on to produce another, so the turn's terminal answer
+ *   does not repeat it.
+ * - `final_answer` — the turn's declared terminal answer.
+ *
+ * Only Codex labels these, and not for every model; absent means unknown and
+ * the reader falls back to position. See `chatTurnFold.ts` for how each one is
+ * treated at turn end.
+ */
+export type AgentChatTextPhase = "commentary" | "partial_answer" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
 export type AgentChatImportProvider = ExternalSessionProvider;
@@ -2117,6 +2163,8 @@ export type AgentChatEvent =
       status?: string;
       message: string;
       detail?: string | AgentChatNoticeDetail;
+      /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
+      voiceSession?: AgentChatVoiceSession;
       steerId?: string;
       turnId?: string;
     }
@@ -2885,6 +2933,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   /** Cursor Cloud service tier; absent/null means let Cursor choose. */
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
@@ -3073,7 +3127,7 @@ export type AgentChatRuntimeOwnerRef = {
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   compactionIdleMode?: "ask" | "always" | "never";
-  /** Set only by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`: the lowered Compact first limit. */
+  /** The Compact first floor for a Claude chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
   compactFirstMinTokens?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;
@@ -3104,6 +3158,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
@@ -3954,6 +4014,12 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
@@ -4160,6 +4226,8 @@ export type AgentChatCliLaunchProvider =
  * launch. Provider/model/permission build the startup command server-side.
  */
 export type AgentChatLaunchCliArgs = {
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast" | null;
   laneId: string;
   provider: AgentChatCliLaunchProvider;
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
@@ -4286,6 +4354,8 @@ export type AgentChatHandoffArgs = {
    */
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -4324,6 +4394,8 @@ export type AgentChatCrossMachineTargetConfig = {
   targetModelId: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -5536,6 +5608,8 @@ export type AgentChatCodexGetGoalArgs = {
 export type AgentChatCodexSetGoalArgs = {
   sessionId: string;
   objective: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 /**
@@ -5590,10 +5664,14 @@ export type AgentChatCodexRealtimeState = {
 export type AgentChatCodexSetGoalStatusArgs = {
   sessionId: string;
   status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexResetMemoryArgs = {
@@ -5685,8 +5763,20 @@ export type AgentChatUpdateSessionArgs = {
   /** Persist that the takeover banner was shown and answered or dismissed. */
   subagentTakeoverPromptShown?: boolean;
   modelId?: ModelId;
+  /**
+   * Move the chat onto a saved preset (its harness and its model; `modelId` is
+   * then ignored), or `null` to leave the one it runs on. A `modelId` alone
+   * leaves a preset only when it names another model.
+   */
+  presetId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;

@@ -12,6 +12,7 @@ import { buildUniversalSwiftProduct, exitIfCachedHelper } from "./native-helper-
  * entry and signed by electron-builder's pass over Contents/Resources:
  *   ade-music-host/ade-music-host          (universal)
  *   ade-music-host/page/index.html, player.js, ade-icon.png
+ *   ade-music-host/page-spotify/index.html, player.js     (Spotify)
  *
  * The page is copied before the release cache check: the cache holds only the
  * binary. The Windows half is `build-music-host-win.mjs`.
@@ -21,6 +22,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const packageRoot = path.join(desktopRoot, "native", "ADEMusicHostMac");
 const pageSource = path.join(desktopRoot, "native", "ADEMusicHostWin", "page");
+// Spotify's Web Playback SDK page, run by the same host with its own profile.
+const spotifyPageSource = path.join(desktopRoot, "native", "ADEMusicHostWin", "page-spotify");
 const outputDir = path.join(desktopRoot, "resources", "native", "ade-music-host");
 const outputPath = path.join(outputDir, "ade-music-host");
 
@@ -36,6 +39,8 @@ if (process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
 fs.mkdirSync(outputDir, { recursive: true });
 fs.rmSync(path.join(outputDir, "page"), { recursive: true, force: true });
 fs.cpSync(pageSource, path.join(outputDir, "page"), { recursive: true });
+fs.rmSync(path.join(outputDir, "page-spotify"), { recursive: true, force: true });
+fs.cpSync(spotifyPageSource, path.join(outputDir, "page-spotify"), { recursive: true });
 
 exitIfCachedHelper(outputPath);
 

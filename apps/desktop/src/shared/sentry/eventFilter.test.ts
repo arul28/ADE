@@ -95,8 +95,34 @@ describe("createSentryEventHooks", () => {
     ["sync being off", "Sync service is not available", true],
     ["too many open files", "EMFILE: too many open files, watch", false],
     ["an ordinary error", "Cannot read properties of undefined (reading 'id')", false],
+    ["a lane deleted while a view held its id", "Lane not found: 6f2c0b1e", true],
+    ["a paired machine that is asleep", "Can't reach MacBook Pro — it may be asleep or ADE may be stopped there.", true],
+    ["a dirty worktree, wherever it is quoted", "Error: DIRTY_WORKTREE: Uncommitted changes detected in a.ts.", true],
+    ["a GitHub outage", "GitHub API request failed (HTTP 502)", true],
+    ["a GitHub client error, which is ADE's", "GitHub API request failed (HTTP 422)", false],
+    ["a screenshot cleaned up while a chat still shows it", "Path does not exist: C:\p\.ade\cache\obs-1.png", true],
+    ["any other missing file", "Path does not exist: /app/config.json", false],
+    ["a path the renderer may not read", "Path is outside allowed directories.", false],
+    ["an agent's bad selector", "Invalid element selector: [aria-label=6 more companies:]", true],
+    ["an agent driving a lane with no screen", "MAC_DESKTOP_NO_DISPLAY: Lane l1 has no Mac Desktop screen. Start one first.", true],
+    ["a desktop driver that crashed", "MAC_DESKTOP_DRIVER_CRASHED: helper exited", false],
+    ["a remote machine that is slow to answer", "Remote ADE service timed out waiting for method ade/actions/call pr.refresh (30000ms).", true],
+    ["a Mac-only surface asked for before the runtime connected", "Mac Desktop is not available on this machine.", true],
   ])("drops expected outcomes: %s", (_label, value, dropped) => {
     const hooks = createSentryEventHooks();
     expect(hooks.beforeSend(errorEvent(value)) === null).toBe(dropped);
+  });
+
+  it("keeps a crash whose cause is an expected outcome", () => {
+    const hooks = createSentryEventHooks();
+    const crash = {
+      level: "fatal",
+      exception: { values: [
+        { type: "Error", value: "Lane not found: 6f2c0b1e" },
+        { type: "TypeError", value: "Cannot read properties of undefined (reading 'worktreePath')" },
+      ] },
+    };
+    expect(hooks.beforeSend(crash)).not.toBeNull();
+    expect(hooks.beforeSend({ level: "fatal", message: "Lane not found: 6f2c0b1e" })).toBeNull();
   });
 });

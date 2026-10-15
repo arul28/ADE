@@ -15,6 +15,10 @@ import { getErrorMessage, nowIso } from "../shared/utils";
 const PENDING_STACK_ATTACH_CAP = 200;
 
 export type PrChatLinkStore = ReturnType<typeof createPrChatLinkStore>;
+export type LanePrChatOriginClaimResult =
+  | { status: "linked" }
+  | { status: "ignored" }
+  | { status: "retry"; message: string };
 
 /**
  * Owns the PR↔chat edge (`pull_request_chat_sessions`) and unlink-tombstone
@@ -318,6 +322,12 @@ export function createPrChatLinkStore(args: {
           [projectId, unlinkArgs.prId, sessionId],
         );
         if (unlinkArgs.dismiss !== false) writeChatSessionDismissal(unlinkArgs.prId, sessionId);
+        db.run(
+          `update pull_request_lane_chat_origins
+              set merge_followup_pending = 0
+            where project_id = ? and pr_id = ? and claimed_session_id = ?`,
+          [projectId, unlinkArgs.prId, sessionId],
+        );
         db.run("commit");
       } catch (error) {
         try {
@@ -335,6 +345,159 @@ export function createPrChatLinkStore(args: {
         error: getErrorMessage(error),
       });
       return false;
+    }
+  };
+
+  /**
+   * Remember the explicit origin of a lane imported from a PR. The marker is
+   * one-shot: the first agent chat created on that lane consumes it, whether
+   * or not it can safely become the PR's chat. This prevents unrelated later
+   * chats from inheriting the lane's PR forever.
+   */
+  const rememberLanePrChatOrigin = (origin: { prId: string; laneId: string }): boolean => {
+    try {
+      const pr = db.get<{ lane_id: string; detached_at: string | null }>(
+        `select lane_id, detached_at from pull_requests
+          where id = ? and project_id = ? limit 1`,
+        [origin.prId, projectId],
+      );
+      if (!pr || pr.lane_id !== origin.laneId || pr.detached_at != null) return false;
+      db.run(
+        `insert or replace into pull_request_lane_chat_origins(project_id, lane_id, pr_id, created_at)
+         values (?, ?, ?, ?)`,
+        [projectId, origin.laneId, origin.prId, nowIso()],
+      );
+      return true;
+    } catch (error) {
+      logger.warn("prs.lane_chat_origin_write_failed", {
+        prId: origin.prId,
+        laneId: origin.laneId,
+        error: getErrorMessage(error),
+      });
+      return false;
+    }
+  };
+
+  /**
+   * Consume a lane's explicit PR origin for the first chat created there.
+   * Refuses cross-lane sessions, explicit unlinks, and chats
+   * already claimed by another PR. The transaction makes competing chat
+   * launches deterministic and consumes an ambiguous origin only once.
+   */
+  const claimLanePrChatOrigin = (claim: { laneId: string; sessionId: string }): LanePrChatOriginClaimResult => {
+    const requestedSessionId = String(claim.sessionId ?? "").trim();
+    if (!requestedSessionId) {
+      return { status: "retry", message: "The new chat has no session id for its PR link." };
+    }
+    let sessionId = requestedSessionId;
+    try {
+      db.run("begin immediate");
+      try {
+        const origin = db.get<{ pr_id: string }>(
+          `select pr_id from pull_request_lane_chat_origins
+            where project_id = ? and lane_id = ? and claimed_session_id is null limit 1`,
+          [projectId, claim.laneId],
+        );
+        if (!origin) {
+          db.run("commit");
+          return { status: "ignored" };
+        }
+        sessionId = resolveCanonicalChatSessionId(requestedSessionId) ?? "";
+        if (!sessionId) {
+          db.run("commit");
+          return { status: "retry", message: "The new chat is not persisted yet; retry its PR link." };
+        }
+        const pr = db.get<{ lane_id: string; state: string; detached_at: string | null }>(
+          `select lane_id, state, detached_at from pull_requests
+            where id = ? and project_id = ? limit 1`,
+          [origin.pr_id, projectId],
+        );
+        const session = db.get<{ lane_id: string | null; project_id: string | null }>(
+          `select ts.lane_id, lane.project_id
+             from terminal_sessions ts
+             left join lanes lane on lane.id = ts.lane_id
+            where ts.id = ? limit 1`,
+          [sessionId],
+        );
+        // A mismatched or incomplete caller must not burn the origin: another
+        // correctly scoped create can still claim it. This also keeps a session
+        // from another project from matching a coincidentally equal lane id.
+        if (
+          !session
+          || session.project_id !== projectId
+          || String(session.lane_id ?? "").trim() !== claim.laneId
+        ) {
+          db.run("commit");
+          return { status: "retry", message: "The new chat does not belong to this PR lane and project." };
+        }
+
+        // An explicit unlink wins over this automatic origin. Leave the marker
+        // available for a later deliberate chat on the imported lane.
+        const dismissed = db.get<{ id: string }>(
+          `select id from pull_request_chat_session_dismissals
+            where project_id = ? and pr_id = ? and session_id = ? limit 1`,
+          [projectId, origin.pr_id, sessionId],
+        );
+        if (dismissed) {
+          db.run("commit");
+          return { status: "ignored" };
+        }
+
+        if (!pr || pr.lane_id !== claim.laneId || pr.detached_at != null) {
+          db.run(
+            `delete from pull_request_lane_chat_origins
+              where project_id = ? and lane_id = ? and pr_id = ?`,
+            [projectId, claim.laneId, origin.pr_id],
+          );
+          db.run("commit");
+          return { status: "ignored" };
+        }
+
+        const existing = db.all<{ pr_id: string }>(
+          `select pr_id from pull_request_chat_sessions
+            where project_id = ? and session_id = ?`,
+          [projectId, sessionId],
+        );
+        if (existing.length > 0) {
+          db.run(
+            `delete from pull_request_lane_chat_origins
+              where project_id = ? and lane_id = ? and pr_id = ?`,
+            [projectId, claim.laneId, origin.pr_id],
+          );
+          db.run("commit");
+          return { status: "ignored" };
+        }
+
+        const now = nowIso();
+        db.run(
+          `insert into pull_request_chat_sessions(
+             id, project_id, pr_id, lane_id, session_id, created_at, updated_at
+           ) values (?, ?, ?, ?, ?, ?, ?)`,
+          [randomUUID(), projectId, origin.pr_id, claim.laneId, sessionId, now, now],
+        );
+        db.run(
+          `update pull_request_lane_chat_origins
+              set claimed_session_id = ?, claimed_at = ?, merge_followup_pending = 1
+            where project_id = ? and lane_id = ? and pr_id = ? and claimed_session_id is null`,
+          [sessionId, now, projectId, claim.laneId, origin.pr_id],
+        );
+        db.run("commit");
+        return { status: "linked" };
+      } catch (error) {
+        try {
+          db.run("rollback");
+        } catch {
+          // Preserve the original claim error.
+        }
+        throw error;
+      }
+    } catch (error) {
+      logger.warn("prs.lane_chat_origin_claim_failed", {
+        laneId: claim.laneId,
+        sessionId,
+        error: getErrorMessage(error),
+      });
+      return { status: "retry", message: "Could not save the PR link for this new chat. Retry the chat launch." };
     }
   };
 
@@ -443,6 +606,8 @@ export function createPrChatLinkStore(args: {
     writeChatSessionDismissal,
     linkPrToChatSession,
     unlinkPrFromChatSession,
+    rememberLanePrChatOrigin,
+    claimLanePrChatOrigin,
     pendingAgentStackAttaches,
     rememberPendingAttach,
     attachNewStackLayerToParentChats,

@@ -14,6 +14,7 @@ import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
+import { ProjectMoveHost } from "../projectMove/ProjectMoveHost";
 import type {
   AiSettingsStatus,
   GitHubStatus,
@@ -1076,6 +1077,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         and dismissal.
       */}
       <AppBannerHost />
+      <ProjectMoveHost />
       <ProjectTransitionErrorAlert />
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />

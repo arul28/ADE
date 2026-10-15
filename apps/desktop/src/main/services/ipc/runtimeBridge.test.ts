@@ -129,6 +129,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     streamEventsForTarget: remoteStreamEventsForTargetMock,
     subscribeEventsForTarget: remoteSubscribeEventsForTargetMock,
     disconnect: remoteDisconnectMock,
+    onEntryConnected: vi.fn(() => () => {}),
     onEntryEvicted: vi.fn(() => () => {}),
     onPortForwardsInvalidated: onPortForwardsInvalidatedMock,
   })),

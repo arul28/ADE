@@ -1080,6 +1080,16 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  ProjectMoveAttention,
+  ProjectMoveCleanupArgs,
+  ProjectMovePreflight,
+  ProjectMoveProgress,
+  ProjectMoveRecord,
+  ProjectMoveResult,
+  ProjectMoveStartArgs,
+  ProjectMoveVolume,
+} from "../shared/types/projectMove";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1381,6 +1391,22 @@ declare global {
          * them on the next subscribe. Called after the toast is rendered.
          */
         ackAutoSent: (references: string[]) => Promise<void>;
+      };
+      /**
+       * Moving a project to a new folder on this Mac. Optional: older preloads
+       * lack it, and the Settings row hides itself then. Local only: the
+       * project must live on the machine this window runs on.
+       */
+      projectMove?: {
+        listVolumes: () => Promise<ProjectMoveVolume[]>;
+        preflight: (args: { projectRoot: string; destinationRoot: string }) => Promise<ProjectMovePreflight>;
+        start: (args: ProjectMoveStartArgs) => Promise<ProjectMoveResult>;
+        status: (projectRoot: string) => Promise<ProjectMoveRecord | null>;
+        attention: () => Promise<ProjectMoveAttention>;
+        cleanup: (args: ProjectMoveCleanupArgs) => Promise<ProjectMoveRecord>;
+        reveal: (args: { moveId: string; which: "original" | "moved" }) => Promise<void>;
+        chooseFolder: (defaultPath?: string) => Promise<string | null>;
+        onProgress: (cb: (progress: ProjectMoveProgress) => void) => () => void;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
@@ -4730,7 +4756,7 @@ declare global {
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
-      /** Apple Music: playback through the on-demand player host, browsing through the Apple Music API. */
+      /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */
       music?: MusicBridge;
       perf: {
         getConfig: () => Promise<{

@@ -73,7 +73,7 @@ type LaneLifecycleBackend = {
     isEditProtected: boolean;
     status: { dirty: boolean };
   }>>;
-  getReclaimRisk: (laneId: string) => Promise<{
+  getReclaimRisk: (args: { laneId: string }) => Promise<{
     dirty: boolean;
     activeChatCount: number;
     activePtyCount: number;
@@ -428,7 +428,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           [lane.id, projectId],
         );
         if (inPrGroup) continue;
-        const risk = await laneService.getReclaimRisk(lane.id);
+        const risk = await laneService.getReclaimRisk({ laneId: lane.id });
         if (risk.dirty || risk.activeChatCount > 0 || risk.activePtyCount > 0 || risk.activeWatcherCount > 0) continue;
         if (risk.blockedReasons.some((reason) => reason.code === "unmerged_work")) continue;
         const lastActivityMs = latestLaneActivityMs(lane.id, row.created_at);

@@ -594,6 +594,7 @@ describe("createAgentChatService", () => {
       provider: "cursor",
       model: "composer-2",
       modelId: "cursor/composer-2",
+      permissionMode: "plan",
       cursorModeId: "plan",
     });
 
@@ -635,6 +636,9 @@ describe("createAgentChatService", () => {
     });
     await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
       cursorModeId: "agent",
+      interactionMode: "default",
+      permissionMode: "default",
+      opencodePermissionMode: "edit",
     });
   });
 

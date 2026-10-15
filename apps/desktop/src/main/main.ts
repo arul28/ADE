@@ -223,7 +223,7 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathKey, pathsEqual } from "./services/shared/pathCompare";
-import { assertLocalProjectDataAvailable, deriveProjectId, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -437,6 +437,12 @@ import {
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
+import {
+  classifyProjectActivity,
+  createProjectMoveController,
+  remapGlobalStateForMove,
+  replaceMovedRoots,
+} from "./services/projects/projectMoveController";
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
 import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
@@ -572,9 +578,10 @@ configureDesktopUserDataPath();
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
 initMainSentry({
-  // `localRuntime.callAction` carries every brain action; name the action.
+  // The runtime action channels (this machine's brain and a paired machine's)
+  // carry every action; name the action.
   ipcLabel: (channel, args) => {
-    if (channel !== IPC.localRuntimeCallAction) return channel;
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
     const request = readRuntimeActionRequest(args);
     if (!request) return channel;
     return request.action ? `${request.domain}.${request.action}` : request.domain;
@@ -3273,6 +3280,61 @@ app.whenReady().then(async () => {
         .catch(() => undefined);
     },
   });
+
+  // Moving a project to a new folder (macOS). The move runs here, in the
+  // process that owns the windows, because it has to close the project in
+  // every window and in the background service, then reopen it at the new
+  // location. The engine itself is shared with the CLI.
+  const projectMoveController = process.platform === "darwin"
+    ? createProjectMoveController({
+        logger: localRuntimeLogger,
+        getActivity: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          const inProcess = shouldUseInProcessProjectRuntime() ? projectContexts.get(root)?.agentChatService ?? null : null;
+          const chats = inProcess
+            ? runtimeChatRefs(await inProcess.listInterruptedChats())
+            : runtimeChatRefs((await localRuntimePool.callActionForRoot(root, { domain: "chat", action: "listInterruptedChats" })).result);
+          const sessions = inProcess
+            ? []
+            : (await localRuntimePool.callActionForRoot(root, { domain: "session", action: "list" })).result;
+          return classifyProjectActivity(chats.map((chat) => chat.title), sessions);
+        },
+        releaseProject: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          await closeProjectByPath(root);
+          openProjectDataWatch.forget(root);
+          const record = new ProjectRegistry().findByRootPath(root);
+          if (record) await localRuntimePool.removeProject(root, record.projectId);
+        },
+        afterMove: async (record, windowId) => {
+          writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
+          // Every window that knew the project keeps it, at its new folder.
+          for (const roots of [...windowKnownLocalProjectRoots.values(), ...windowProjectTabRoots.values()]) {
+            replaceMovedRoots(roots, record, normalizeProjectRoot);
+          }
+          attemptedProjectRoots.record(record.destinationRoot);
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.destinationRoot));
+          // A switch the renderer did not start: tell the window, so its
+          // cached binding (and every call it routes) uses the new folder.
+          if (windowId != null) bindWindowToProject(windowId, record.destinationRoot, { emit: true });
+          persistUpdateWorkspace();
+        },
+        afterFailedMove: async (sourceRoot, windowId) => {
+          if (!fs.existsSync(sourceRoot)) return;
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(sourceRoot));
+          if (windowId != null) bindWindowToProject(windowId, sourceRoot, { emit: true });
+        },
+        emitProgress: (progress) => broadcast(IPC.projectMoveProgress, progress),
+      })
+    : null;
+  // A move a crash interrupted is settled before the last project reopens
+  // (awaited below), so recents point at wherever the project ended up.
+  const projectMoveRecovery = (projectMoveController?.recover() ?? Promise.resolve([])).then((settled) => {
+    for (const record of settled) {
+      if (record.state !== "done") continue;
+      writeGlobalState(globalStatePath, remapGlobalStateForMove(readGlobalState(globalStatePath), record, normalizeProjectRoot));
+    }
+  });
   reportAppFallback = (reason) => {
     void autoDiagnosticsService
       .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
@@ -4545,11 +4607,9 @@ app.whenReady().then(async () => {
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
       // this same bootstrap, and every call here is read per-turn.
-      macDesktopTurnRecorder: {
+      macDesktopRuntime: {
         hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
         supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-        beginTurn: (args) => macDesktopService.beginTurn(args),
-        noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
       },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
@@ -4687,6 +4747,7 @@ app.whenReady().then(async () => {
     });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,
@@ -5217,7 +5278,6 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
-      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
@@ -9305,20 +9365,27 @@ app.whenReady().then(async () => {
     },
   });
 
-  // The Music tab: Apple Music through an on-demand player host. The user's
-  // Music-User-Token stays in this app's own user data (see musicTokenStore).
+  // The Music tab: Apple Music through an on-demand player host, or Spotify as
+  // a Connect remote. Each sign-in stays in its own encrypted file in this
+  // app's user data (see musicTokenStore).
   registerMusicIpc({
     credentials: createMusicTokenStore({ dir: path.join(app.getPath("userData"), "music-player"), logger: getMachineMainLogger() }),
+    spotifyCredentials: createMusicTokenStore({
+      dir: path.join(app.getPath("userData"), "music-player"),
+      fileName: "spotify-session.enc",
+      serviceName: "Spotify",
+      logger: getMachineMainLogger(),
+    }),
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }),
     getAccountToken: () => getSignedInAccountAccessToken(getSharedAccountAuthService({
       secretsDir: machineAdeLayout.secretsDir,
     })),
     logger: getMachineMainLogger(),
-    onConnectOutcome: (outcome) => captureFeatureUsedAnalytics({
+    onConnectOutcome: (outcome, provider) => captureFeatureUsedAnalytics({
       analytics: productAnalyticsService,
       surface: "desktop",
       feature: "home",
-      action: "music_connected",
+      action: provider === "spotify" ? "spotify_connected" : "music_connected",
       outcome,
     }),
   });
@@ -9393,6 +9460,7 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    projectMoveController,
     onAccountRollupFetcherReady: (fetcher) => {
       machineAccountRollupFetcher = fetcher;
     },
@@ -9430,6 +9498,7 @@ app.whenReady().then(async () => {
 
   registerPerfIpcHandlers();
 
+  await projectMoveRecovery;
   const savedUpdateState = readGlobalState(globalStatePath);
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
     restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,

@@ -89,6 +89,30 @@ streaming in the background, perf runs off.
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 
+### Composer pickers
+
+`SCREENCAST=1 interaction.mjs pickers 8`, warm rounds, two runs, on the Work
+composer of a new chat (dev build, 2026-10-14, on `e3bf1ff82` plus the picker
+redesign). "Before" is the same app session with the pre-redesign pickers.
+`SCREENCAST=1` keeps a covered dev window drawing; without it a hidden window
+draws no frames and every row waits out its cap.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---|---|---|
+| Model picker: open to first frame | `interaction.mjs pickers` | 83–88 ms | 80–82 ms | 110 ms |
+| Model picker: long frames while opening | same | 57–67 ms | 65–66 ms | 85 ms |
+| Model picker: switch provider rail (Cursor, 5 sub-tabs) | same | 59–63 ms | 42 ms | 80 ms |
+| Model picker: switch provider rail (Anthropic) | same | 22–24 ms | 22 ms | 40 ms |
+| Effort picker: open to first frame | same | 25–26 ms | 23 ms | 40 ms |
+| Permission picker: open to first frame | same | 12–15 ms | 13 ms | 30 ms |
+
+Opening the model picker is mostly React mounting the panel in the dev build
+and Radix placing it (two forced layouts). Its rows are a fixed 50 px so the
+virtual list never measures them; rendered rows are kept to one screen plus
+four. A popover's open/close animation applies to the popper wrapper's child
+only: a descendant selector made every nested Radix part with `data-state`
+(each row's context-menu trigger) fade out and back on each open.
+
 ### Brain and services
 
 Run without the app (`scripts/perf/service/`).
@@ -186,7 +210,7 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
-| `interaction.mjs tabs\|chats\|projects [rounds]` | Per tab, chat or project switch: time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
+| `interaction.mjs tabs\|chats\|projects\|pickers [rounds]` | Per tab, chat or project switch, or composer picker open (`pickers`; `SCREENCAST=1` for a covered window): time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
@@ -440,6 +464,15 @@ pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
 - **The host** is a WKWebView with no window on screen, which WebKit throttles
   like a background tab; 73-81 MB across the host, its WebContent, Networking
   and GPU processes. The Windows host (WebView2) measured 141 MB private.
+- **The Windows Spotify host** (same `ade-music-host.exe`, `--page page-spotify`,
+  Spotify's Web Playback SDK instead of MusicKit) measured on 2026-10-15 at
+  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to ADE's
+  own Connect device: 3.5% CPU and 237.7 MB private across the host and its 9
+  WebView2 children; 0.2% and 237.2 MB paused. The memory is 1.7x the Apple
+  Music host's 141 MB because the SDK runs its player in an `sdk.scdn.co`
+  iframe and Widevine decodes in its own process, so the tree has more
+  renderers; `--renderer-process-limit=1` does not cover either. Ceiling:
+  6% CPU playing, 320 MB private.
 - **Open item:** while the playing song's row is on screen, its three
   equalizer bars (a CSS `steps()` animation) make Chromium update style and
   draw every frame (243 style updates/s on this 240 Hz display). Driving the
@@ -706,3 +739,64 @@ host call are context, not ceilings.
 - Host commands rose by a few `prs.getGitHubSnapshot` reads that follow the
   host's own revision bumps; switching to Merged still reads it three times,
   which is the next thing to trim.
+
+### Spotify (playing inside ADE)
+
+Measured 2026-10-14 on this Mac Studio, dev build in an App Control session,
+signed in with Premium, DevTools closed, other agents running. Spotify's Web
+Playback SDK runs in the same macOS host as Apple Music (`page-spotify`, its own
+WebKit profile). Apple Music's rows above are the comparison; Spotify has no
+before. "Play accepted" is from the command to the first playing state, which
+Spotify's service sets when Spotify accepts the play, not when audio starts.
+
+| Metric | How | Apple Music | Spotify | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10`, 4 runs | 0.5-0.8% | 0.6-1.1% | 3% |
+| Same, playing: physical footprint | same | 75-81 MB | 77-82 MB | 120 MB |
+| Same, paused: CPU / footprint | same, 3 runs | 0.0-0.2% / 73-75 MB | 0.1-0.2% / 75 MB | 1% / 120 MB |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0/s | 0/s | 0.2/s |
+| Tab opened, then play 2.5 s later (the player starts with the tab) | `cdp.mjs eval`: `unload`, `warm`, wait, `playItems`, 5 runs | — | 0.15-0.35 s (was 1.2-1.5 s before the player started with the tab) | 0.6 s |
+| Play accepted, player not running (play the instant it starts) | `music.mjs first-play cold`, 4 runs | 0.76-1.15 s | 1.19-1.61 s | 2 s |
+| Same, player running | `music.mjs first-play warm`, 3 runs | 0.16-0.39 s | 0.16-0.17 s | 0.6 s |
+| Tab closed: player processes / audio output | `pgrep`, `pmset -g assertions` | 0 / none | 0 / none | 0 / none |
+
+- `music.mjs first-play` plays five songs of a search for Spotify (it has no
+  charts).
+- A cold start is about 0.25 s to launch the host, 0.2 s to load the SDK,
+  0.2 s until the SDK asks for a token, then 0.4-0.8 s for Spotify to register
+  the device over the network. None of it can be skipped, so the player starts
+  when the tab opens (like Apple Music's host) and stops after five minutes
+  without playing.
+- While ADE's own player plays, the Web API is read once a minute instead of
+  every 15 s: the SDK reports track, pause and position changes itself.
+- The service's request budget (`spotifyService.test.ts`, fake time): a closed
+  tab makes 0 requests; a device other than ADE playing 200-second songs makes
+  at most 46 reads and 6 pushes per ten minutes.
+- Windows (WebView2, Widevine) is measured separately; see the Windows numbers
+  in the PR.
+
+### Focus attention inference (2026-10-15)
+
+Service measurement on the baseline MacBook Pro, Node 22.23.2: four representative
+reply endings, 20,000 classifications per round, six interleaved warm rounds.
+Baseline source: `c01b80fd2`; candidate: the Focus lifecycle fix. This measures
+local classification only, excluding the optional model request.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Reply-ending classification, median per call | 0.00131 ms | 0.00136 ms | Existing 25% regression rule |
+
+Warm service polling was measured separately with the same baseline and
+candidate (`1d3b6389e`, plus query type annotations): 1,000 already-handled PRs,
+no pending origins, an in-memory native SQLite database, 100 polls per round,
+eight interleaved rounds with the first two discarded.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Handled PR snapshot, median per poll | 1.31 ms | 1.40 ms | Existing 25% regression rule |
+
+The polling increase is about 7%, within the budget. The classification
+difference is within measurement noise. The reported optional offer is
+now decided locally, so that case does not make a model request. These service
+numbers do not establish Electron idle, GPU, typing, or memory performance;
+those desktop scenarios were not measured for this change.

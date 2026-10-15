@@ -64,6 +64,8 @@ import { detectInstalledEditorTargets } from "../editors/editorDetection";
 import { detectBrowsersCached } from "../browsers/browserDetection";
 import { browserIconDataUrl } from "../browsers/browserIcons";
 import { appIconDataUrlByName } from "../apps/appIcons";
+import type { ProjectMoveController } from "../projects/projectMoveController";
+import type { ProjectMoveCleanupArgs } from "../../../shared/types/projectMove";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {
@@ -95,7 +97,7 @@ import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope }
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
-import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
@@ -1526,57 +1528,6 @@ function getUnavailableAiStatus(): AiSettingsStatus {
   };
 }
 
-function detectClaudeAuthModeFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability["auth"]["mode"] {
-  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
-  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
-  if (localCredentials) return "api_key";
-  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
-  if (cli || connection.authAvailable) return "oauth";
-  return "none";
-}
-
-function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
-  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
-  return resolved.source === "bundled"
-    ? { present: true, source: "bundled", path: resolved.path }
-    : { present: false, source: "missing", path: null };
-}
-
-function buildClaudeAvailabilityFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability {
-  const bundledBinary = resolveBundledClaudeBinary();
-  const binary = bundledBinary.present
-    ? bundledBinary
-    : {
-        present: connection.runtimeDetected,
-        source: connection.runtimeDetected ? "path" as const : "missing" as const,
-        path: connection.path,
-      };
-  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
-  const blockerIsOnlyAboutPath = binary.source === "bundled"
-    && [
-      "could not find the claude cli",
-      "cli not found",
-      "claude cli is installed",
-      "add that bin directory",
-    ].some((needle) => normalizedBlocker.includes(needle));
-  const ready = binary.present
-    && connection.authAvailable
-    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
-  const authMode = detectClaudeAuthModeFromConnection(connection);
-  return {
-    binary,
-    auth: {
-      ready,
-      mode: ready ? authMode : "none",
-      detail: ready ? null : connection.blocker,
-    },
-  };
-}
-
 function redactedCliAuthFromStatuses(
   cliStatuses: Awaited<ReturnType<typeof detectCliAuthStatuses>>,
 ): AiDetectedAuth[] {
@@ -1918,6 +1869,7 @@ export function registerIpc({
   localRuntimeConnectionPool,
   projectRecoveryConnectionPool,
   injectedProjectRecoveryService,
+  projectMoveController = null,
   createWindow,
   projectTabDrag,
   closeWindow,
@@ -1958,6 +1910,8 @@ export function registerIpc({
    * real instead of splitting it across two objects.
    */
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
+  /** Moves a project to a new folder on this Mac (null where moving isn't offered). */
+  projectMoveController?: ProjectMoveController | null;
   createWindow?: (args?: {
     projectRoot?: string | null;
     remoteBinding?: RemoteOpenProjectBinding;
@@ -4997,7 +4951,7 @@ export function registerIpc({
   // missing and which way people recover. Nothing about the project. The 1 h
   // dedupe bounds a retry loop to 24 events per key per day.
   const captureProjectDataRecovery = (
-    action: "project_data_restore" | "project_data_start_fresh",
+    action: "project_data_restore" | "project_data_start_fresh" | "project_move",
     outcome: "completed" | "failed",
   ) => {
     try {
@@ -5036,6 +4990,69 @@ export function registerIpc({
       throw error;
     }
     captureProjectDataRecovery("project_data_start_fresh", "completed");
+  });
+
+  // Moving a project. Every call names a project this machine has open or
+  // recently opened; a renderer cannot point the move at an arbitrary folder.
+  const projectMoveRoot = (requested: unknown): { root: string; controller: ProjectMoveController } => {
+    const controller = projectMoveController;
+    if (!controller) throw new Error("Moving projects isn't available here.");
+    if (typeof requested !== "string" || !requested.trim()) throw new Error("A project is required.");
+    const root = resolveRequestedProjectRoot(requested.trim());
+    if (!root) throw new Error("That project isn't open on this computer.");
+    return { root, controller };
+  };
+  const requireDestination = (value: unknown): string => {
+    if (typeof value !== "string" || !path.isAbsolute(value.trim())) throw new Error("Pick a folder for the project.");
+    return path.resolve(value.trim());
+  };
+  ipcMain.handle(IPC.projectMoveListVolumes, async () => projectMoveController?.listVolumes() ?? []);
+  ipcMain.handle(IPC.projectMovePreflight, async (_event, arg: { projectRoot?: unknown; destinationRoot?: unknown }) => {
+    const { root, controller } = projectMoveRoot(arg?.projectRoot);
+    return controller.preflight({ projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot) });
+  });
+  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown }) => {
+    const { root, controller } = projectMoveRoot(arg?.projectRoot);
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    const result = await controller.start(
+      { projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot), moveAgentHistory: arg?.moveAgentHistory === true },
+      windowId,
+    );
+    // A move refused before it began (another move running, a check that now
+    // blocks) has no record and is not counted.
+    if (result.record) captureProjectDataRecovery("project_move", result.ok ? "completed" : "failed");
+    return result;
+  });
+  ipcMain.handle(IPC.projectMoveStatus, async (_event, arg: { projectRoot?: unknown }) => {
+    if (!projectMoveController) return null;
+    const { root, controller } = projectMoveRoot(arg?.projectRoot);
+    return controller.status(root);
+  });
+  ipcMain.handle(IPC.projectMoveAttention, async () => projectMoveController?.attention() ?? { records: [], nextReminderAt: null });
+  ipcMain.handle(IPC.projectMoveCleanup, async (_event, arg: ProjectMoveCleanupArgs) => {
+    if (!projectMoveController) throw new Error("Moving projects isn't available here.");
+    if (!arg || typeof arg.moveId !== "string") throw new Error("A move is required.");
+    if (arg.choice === "remind" && !(typeof arg.remindInMs === "number" && Number.isFinite(arg.remindInMs))) {
+      throw new Error("Pick when to be reminded.");
+    }
+    if (arg.choice !== "delete" && arg.choice !== "remind" && arg.choice !== "keep") throw new Error("Unknown choice.");
+    return projectMoveController.cleanup(arg);
+  });
+  ipcMain.handle(IPC.projectMoveReveal, async (_event, arg: { moveId?: unknown; which?: unknown }) => {
+    if (!projectMoveController || typeof arg?.moveId !== "string") return;
+    const target = projectMoveController.revealTarget(arg.moveId, arg.which === "original" ? "original" : "moved");
+    if (target) shell.showItemInFolder(target);
+  });
+  ipcMain.handle(IPC.projectMoveChooseFolder, async (event, arg: { defaultPath?: unknown }) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options: Electron.OpenDialogOptions = {
+      title: "Choose where to move the project",
+      buttonLabel: "Choose",
+      properties: ["openDirectory", "createDirectory"],
+      ...(typeof arg?.defaultPath === "string" && path.isAbsolute(arg.defaultPath) ? { defaultPath: arg.defaultPath } : {}),
+    };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
   // With no root: the project that failed to reopen at launch. A window asks
@@ -7566,7 +7583,7 @@ export function registerIpc({
     _event,
     arg: { laneId: string },
   ): Promise<LaneReclaimRisk> => {
-    return ensureLaneContext().laneService.getReclaimRisk(arg.laneId);
+    return ensureLaneContext().laneService.getReclaimRisk({ laneId: arg.laneId });
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
@@ -9483,12 +9500,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.setCodexGoal(arg);
+    // The goal RPCs record whether a person or the harness acted, so a renderer
+    // must not be able to claim it was an agent — the same rule as the actor
+    // every other chat action follows.
+    return ctx.agentChatService.setCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.setCodexGoalStatus(arg);
+    return ctx.agentChatService.setCodexGoalStatus(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexRealtimeStart, async (_event, arg: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
@@ -9522,7 +9542,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
-    return ctx.agentChatService.clearCodexGoal(arg);
+    return ctx.agentChatService.clearCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
   ipcMain.handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {

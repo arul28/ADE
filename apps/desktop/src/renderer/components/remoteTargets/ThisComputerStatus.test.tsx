@@ -182,7 +182,7 @@ describe("ThisComputerStatus", () => {
     accountMock.startSyncHost.mockResolvedValue({ ok: true, state: "ready", message: "ok" });
 
     render(<ThisComputerStatus accountSignedIn />);
-    expect(await screen.findByText("Sync hasn't started on this computer yet")).toBeTruthy();
+    expect(await screen.findByText("Other devices can't reach this computer yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start sync" }));
 
     await waitFor(() => expect(accountMock.startSyncHost).toHaveBeenCalledTimes(1));

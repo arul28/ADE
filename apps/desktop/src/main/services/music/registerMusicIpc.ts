@@ -3,29 +3,47 @@ import path from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 
 import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
-import { MUSIC_IPC, type MusicCommand, type MusicLibraryKind, type MusicSearchScope } from "../../../shared/types/music";
+import {
+  MUSIC_IPC,
+  type MusicCommand,
+  type MusicLibraryKind,
+  type MusicProvider,
+  type MusicSearchScope,
+  type MusicState,
+} from "../../../shared/types/music";
+import { openExternalUrl } from "../shared/externalLinks";
 import { createDeveloperTokenProvider } from "./musicDeveloperToken";
 import { resolveMusicHostExecutable } from "../native/nativeHelperPaths";
 import { getNowPlayingService } from "../home/registerHomeWidgetsIpc";
 import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
-import { createMusicService, type MusicService } from "./musicService";
+import { createMusicService } from "./musicService";
 import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";
+import { createMusicRouter, createMusicSettings, type MusicRouter } from "./musicProviderRouter";
+import { createSpotifyService } from "./spotifyService";
 
 /**
- * Wires the Music service to IPC (`window.ade.music`).
+ * Wires the Music services to IPC (`window.ade.music`): Apple Music and
+ * Spotify behind one router that sends each call to the selected provider.
  *
  * Only ADE's own renderer may call it: a page in the built-in browser or an
- * agent-authored scene frame must not drive the user's Apple Music account.
+ * agent-authored scene frame must not drive the user's music accounts. Music
+ * is this computer's own, like the Browser tab, so none of it is a runtime
+ * action another machine could call.
  */
 
 const KINDS = new Set<MusicLibraryKind>(["playlists", "albums", "songs"]);
 
+type CredentialStore = {
+  get: (key: string) => Promise<string | null>;
+  set: (key: string, value: string) => Promise<void>;
+  delete: (key: string) => Promise<void>;
+};
+
 export function registerMusicIpc(args: {
-  credentials: {
-    get: (key: string) => Promise<string | null>;
-    set: (key: string, value: string) => Promise<void>;
-    delete: (key: string) => Promise<void>;
-  };
+  /** Apple Music's Music-User-Token file. */
+  credentials: CredentialStore;
+  /** Spotify's refresh-token file (a separate file from Apple's). */
+  spotifyCredentials: CredentialStore;
   directoryBaseUrl: () => string | null;
   getAccountToken: () => Promise<string | null>;
   logger?: {
@@ -33,8 +51,9 @@ export function registerMusicIpc(args: {
     warn: (event: string, data?: Record<string, unknown>) => void;
   };
   /** How a Connect ended, for product analytics (`docs/logging.md`, the dev home). */
-  onConnectOutcome?: (outcome: "completed" | "cancelled" | "failed") => void;
-}): MusicService {
+  onConnectOutcome?: (outcome: "completed" | "cancelled" | "failed", provider: MusicProvider) => void;
+}): MusicRouter {
+  const musicDir = path.join(app.getPath("userData"), "music-player");
   const tokens = createDeveloperTokenProvider({
     isPackaged: app.isPackaged,
     directoryBaseUrl: () => {
@@ -47,27 +66,43 @@ export function registerMusicIpc(args: {
   // The home page's Now Playing widget follows ADE's player while it has a track.
   const onNowPlayingState = createMusicNowPlayingBridge({
     nowPlaying: getNowPlayingService,
-    command: (command) => service.command(command),
+    command: (command) => router.command(command),
   });
-  const service: MusicService = createMusicService({
-    hostExecutable: resolveMusicHostExecutable({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      appPath: app.getAppPath(),
-    }),
+  const broadcast = (state: MusicState) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(MUSIC_IPC.stateEvent, state);
+    }
+    onNowPlayingState(state);
+  };
+  const hostExecutable = resolveMusicHostExecutable({
     isPackaged: app.isPackaged,
-    userDataDir: path.join(app.getPath("userData"), "music-player"),
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  });
+  // Both services start before the router; their broadcasts reach it once it exists.
+  let router!: MusicRouter;
+  const apple = createMusicService({
+    hostExecutable,
+    isPackaged: app.isPackaged,
+    userDataDir: musicDir,
     appVersion: app.getVersion(),
     tokens,
     credentials: args.credentials,
-    broadcast: (state) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send(MUSIC_IPC.stateEvent, state);
-      }
-      onNowPlayingState(state);
-    },
+    broadcast: (state) => router?.onAppleState(state),
     logger: args.logger,
   });
+  const settings = createMusicSettings(musicDir, args.logger);
+  const spotify = createSpotifyService({
+    // Spotify plays in the same host as Apple Music, with a profile of its own.
+    playerHost: { executable: hostExecutable, userDataDir: path.join(app.getPath("userData"), "music-player-spotify") },
+    credentials: args.spotifyCredentials,
+    clientId: () => settings.get().spotifyClientId,
+    openExternal: openExternalUrl,
+    broadcast: (state) => router?.onSpotifyState(state),
+    logger: args.logger,
+  });
+  router = createMusicRouter({ apple, spotify, settings, broadcast, logger: args.logger });
+  const service = router;
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
@@ -80,8 +115,9 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.getState, () => service.getState());
   handle(MUSIC_IPC.warm, () => service.warm());
   handle(MUSIC_IPC.connect, async () => {
+    const provider = service.provider();
     const result = await service.connect();
-    args.onConnectOutcome?.(result.ok ? "completed" : result.cancelled ? "cancelled" : "failed");
+    args.onConnectOutcome?.(result.ok ? "completed" : result.cancelled ? "cancelled" : "failed", provider);
     return result;
   });
   handle(MUSIC_IPC.disconnect, () => service.disconnect());
@@ -94,7 +130,7 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.recent, () => service.recent());
   handle(MUSIC_IPC.charts, () => service.charts());
   handle(MUSIC_IPC.account, () => service.account());
-  handle(MUSIC_IPC.unload, () => service.unloadPlayer());
+  handle(MUSIC_IPC.unload, () => service.unload());
   handle(MUSIC_IPC.showSignIn, () => service.showSignIn());
   handle(MUSIC_IPC.cancelSignIn, () => service.cancelSignIn());
   const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
@@ -110,6 +146,14 @@ export function registerMusicIpc(args: {
     service.rating({ id: str(input?.id), library: Boolean(input?.library) }));
   handle(MUSIC_IPC.setRating, (input: { id: string; library: boolean; liked: boolean | null }) =>
     service.setRating({ id: str(input?.id), library: Boolean(input?.library), liked: input?.liked === null ? null : Boolean(input?.liked) }));
+
+  handle(MUSIC_IPC.selectProvider, (provider: MusicProvider) =>
+    service.selectProvider(provider === "spotify" ? "spotify" : "apple"));
+  handle(MUSIC_IPC.configureSpotify, (input: { clientId: string | null }) =>
+    service.configureSpotify({ clientId: typeof input?.clientId === "string" ? input.clientId : null }));
+  handle(MUSIC_IPC.devices, () => service.devices());
+  handle(MUSIC_IPC.transfer, (input: { deviceId: string; play?: boolean }) =>
+    service.transfer({ deviceId: str(input?.deviceId), play: input?.play !== false }));
 
   // The player host must never outlive ADE.
   app.once("will-quit", () => {

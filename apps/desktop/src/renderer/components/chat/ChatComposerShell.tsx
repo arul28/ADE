@@ -5,6 +5,7 @@ import { cn } from "../ui/cn";
 export function ChatComposerShell({
   mode,
   glowColor,
+  voiceBar,
   pendingBanner,
   trays,
   pickerLayer,
@@ -14,6 +15,13 @@ export function ChatComposerShell({
 }: {
   mode: ChatSurfaceMode;
   glowColor?: string | null;
+  /**
+   * A live voice conversation's strip, drawn as the composer's own top row.
+   * It belongs inside the shell rather than above it: a second box the size of
+   * the composer is a second thing to read at the exact moment the user is
+   * listening instead of looking.
+   */
+  voiceBar?: ReactNode;
   pendingBanner?: ReactNode;
   trays?: ReactNode;
   pickerLayer?: ReactNode;
@@ -37,6 +45,7 @@ export function ChatComposerShell({
         <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.05)_0%,transparent_72%)] opacity-50 blur-2xl" />
         <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-50 blur-3xl" />
       </div>
+      {voiceBar ? <div className="relative min-w-0 max-w-full border-b border-[color:var(--chat-panel-border)]">{voiceBar}</div> : null}
       {pendingBanner ? <div className="relative min-w-0 max-w-full border-b border-[color:var(--chat-panel-border)]">{pendingBanner}</div> : null}
       {trays ? <div className="relative min-w-0 max-w-full border-b border-[color:var(--chat-panel-border)]">{trays}</div> : null}
       <div className="relative min-w-0 max-w-full">

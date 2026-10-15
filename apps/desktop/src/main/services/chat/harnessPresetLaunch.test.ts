@@ -30,7 +30,7 @@ import {
 } from "./harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import { defaultReadProxyConnection } from "./harnessPresetProxyConnection";
-import { CLAUDE_BUILTIN_AGENT_TEMPLATES } from "../../../shared/claudeBuiltinAgentPrompts";
+import { CLAUDE_AGENT_SDK_TOOL_PROFILE, CLAUDE_BUILTIN_AGENT_TEMPLATES } from "../../../shared/claudeBuiltinAgentPrompts";
 import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../shared/harnessCredentialProviders";
 import { buildTrackedCliLaunchCommand, buildTrackedCliResumeLaunchCommand } from "../../../shared/cliLaunch";
 import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
@@ -717,7 +717,7 @@ describe("Claude subagents and built-in pins", () => {
     expect(plan.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe("haiku");
     const explore = plan.claudeAgents?.Explore;
     expect(explore?.model).toBe("haiku");
-    expect(explore?.prompt).toBe(CLAUDE_BUILTIN_AGENT_TEMPLATES.explore.prompt);
+    expect(explore?.prompt).toBe(CLAUDE_BUILTIN_AGENT_TEMPLATES.explore.prompt(CLAUDE_AGENT_SDK_TOOL_PROFILE));
     // Pinning must not quietly turn a read-only built-in into a writing one.
     expect(explore?.disallowedTools).toContain("Write");
     expect(explore?.disallowedTools).toContain("Edit");

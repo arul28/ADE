@@ -2,11 +2,11 @@ import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Globe, MusicNotes, Pause, Play, Repeat, RepeatOnce, Shuffle, SkipBack, SkipForward } from "@phosphor-icons/react";
-import type { HomeNowPlayingCommand, HomeNowPlayingSession, HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
+import { SPOTIFY_APP_NAME, type HomeNowPlayingCommand, type HomeNowPlayingSession, type HomeNowPlayingState } from "../../../../shared/types/homeWidgets";
 import type { MusicRepeatMode } from "../../../../shared/types/music";
 import { showTabInBrowserTab } from "../../browser/browserTab";
-import { MusicSlider, PlayerIconButton, useMusicReducedMotion } from "../../music/MusicPlayer";
-import { AppleMusicBadge } from "../../music/musicParts";
+import { MusicSlider, PlayerIconButton, useMusicArtworkStill } from "../../music/MusicPlayer";
+import { MusicProviderBadge, useMusicProvider } from "../../music/musicProvider";
 import { formatMusicTime, musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "../../music/musicStore";
 import { useWidgetPreview, useWidgetSpan, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
@@ -286,7 +286,7 @@ function Cover({ model, reduced }: { model: CardModel; reduced: boolean }) {
 }
 
 function PlayerCard({ model, seek, still, top }: { model: CardModel; seek: React.ReactNode; still: boolean; top: React.ReactNode }) {
-  const reduced = useMusicReducedMotion() || still;
+  const reduced = useMusicArtworkStill() || still;
   return (
     <motion.div
       className="ade-np2-player"
@@ -361,7 +361,7 @@ function TopRow({ current, sessions, appleMusic }: { current: HomeNowPlayingSess
           </span>
         ) : null}
         {others.map((entry) => {
-          const name = entry.kind === "ade-music" ? "Apple Music" : entry.app ?? "Another app";
+          const name = entry.app ?? "Another app";
           const label = `Show ${name}${entry.title ? `: ${entry.title}` : ""}`;
           return (
             <button key={entry.id} type="button" className="ade-np2-src is-other" title={label} aria-label={label} onClick={() => select(entry.id)}>
@@ -372,8 +372,8 @@ function TopRow({ current, sessions, appleMusic }: { current: HomeNowPlayingSess
         })}
       </div>
       {appleMusic ? (
-        <button type="button" className="ade-np2-am" aria-label="Open Apple Music" title="Open Apple Music" onClick={musicActions.open}>
-          <AppleMusicBadge height={22} />
+        <button type="button" className="ade-np2-am" aria-label="Open Music" title="Open Music" onClick={musicActions.open}>
+          <MusicProviderBadge linked={false} height={22} />
         </button>
       ) : null}
     </div>
@@ -387,11 +387,11 @@ function IdleState({ onBrowser }: { onBrowser: () => void }) {
       <span className="ade-np2-idle-art" aria-hidden><MusicNotes size={26} weight="fill" /></span>
       <div className="ade-np2-idle-text">
         <span className="ade-np2-idle-title">Nothing playing</span>
-        <span className="ade-np2-idle-sub">Apple Music, a browser tab or any app on this computer shows up here.</span>
+        <span className="ade-np2-idle-sub">Apple Music, Spotify, a browser tab or any app on this computer shows up here.</span>
         <div className="ade-np2-idle-actions">
           {window.ade?.music ? (
-            <button type="button" className="ade-np2-am" aria-label="Open Apple Music" title="Open Apple Music" onClick={musicActions.open}>
-              <AppleMusicBadge height={28} />
+            <button type="button" className="ade-np2-am" aria-label="Open Music" title="Open Music" onClick={musicActions.open}>
+              <MusicProviderBadge linked={false} height={28} />
             </button>
           ) : null}
           <button type="button" className="kit-btn ade-np2-idle-btn" onClick={onBrowser}>
@@ -450,7 +450,9 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const appIcon = useImageOk(session?.appIcon);
   const shape = useArtShape(artwork);
   // A source with no cover tints the card with its own icon (YouTube red, Spotify green).
-  const backdrop = artwork ?? (own ? null : appIcon);
+  const provider = useMusicProvider();
+  const spotify = (own && provider === "spotify") || session?.app === SPOTIFY_APP_NAME;
+  const backdrop = spotify ? null : artwork ?? (own ? null : appIcon);
   const hasBridge = Boolean(window.ade?.home?.nowPlaying);
   const top = hasBridge ? <TopRow current={own ? null : session} sessions={sessions} appleMusic={own && Boolean(window.ade?.music)} /> : null;
 
@@ -489,7 +491,8 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
     body = (
       <PlayerCard
         model={model}
-        still={still}
+        // Spotify's artwork stays still wherever it comes from (its guidelines).
+        still={still || spotify}
         top={top}
         seek={<SessionSeek positionMs={session.positionMs} durationMs={session.durationMs} updatedAt={session.updatedAt} playing={playing} ticking={visible && !preview} />}
       />
@@ -500,6 +503,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
     <section
       className="kit-card ade-home-card ade-np2"
       aria-label="Now playing"
+      data-spotify={spotify || undefined}
       data-size={item.size}
       data-wide={span.w >= 2 || undefined}
       data-art={shape}

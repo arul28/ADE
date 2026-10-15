@@ -191,6 +191,20 @@ describe("settle race matrix", () => {
     expect(outcome.aborted[0]).toMatchObject({ sessionId: "session-1", reason: "attention_requested" });
   });
 
+  it("rejects lifecycle activity arriving after teardown but before the guarded commit", async () => {
+    const { db, service } = await fixture();
+    const sibling = createSessionService({ db });
+    const result = await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" }, () => {
+      // A separate service has its own in-memory revision map; the final
+      // commit must see its shared database revision, not just local state.
+      sibling.clearTurnStartMarkers("session-1");
+      return true;
+    });
+    expect(result.settled).toEqual([]);
+    expect(result.aborted).toEqual([{ sessionId: "session-1", reason: "lifecycle_changed" }]);
+    expect(service.get("session-1")?.settledAt).toBeNull();
+  });
+
   /** R3 — work drains on its own during teardown. Benign; the settle lands. */
   it("R3: background work finishing during teardown does not block the settle", async () => {
     const { service, setTeardown } = await fixture();

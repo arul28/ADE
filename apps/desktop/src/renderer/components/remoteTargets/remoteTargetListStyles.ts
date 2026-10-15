@@ -8,9 +8,9 @@ export const panelStyle: CSSProperties = {
 
 export const machineRowStyle: CSSProperties = {
   display: "grid",
-  gap: 8,
-  padding: "12px 14px",
-  borderRadius: 8,
+  gap: 10,
+  padding: "12px 12px 12px 12px",
+  borderRadius: 12,
   border: `1px solid ${COLORS.border}`,
   background: fgTint(2),
 };
@@ -70,6 +70,24 @@ export const subTextStyle: CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+
+/** The one look for Connect on every machine row. */
+export const connectButtonStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  height: 28,
+  padding: "0 11px",
+  borderRadius: 8,
+  border: `1px solid ${COLORS.accentBorder}`,
+  background: COLORS.accentSubtle,
+  color: COLORS.accent,
+  fontFamily: SANS_FONT,
+  fontSize: 11.5,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
 };
 
 export const iconActionButtonStyle: CSSProperties = {

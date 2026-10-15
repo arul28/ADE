@@ -208,6 +208,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
       return 4 * 60_000;
+    // A project move copies the whole project before it answers; a few hundred
+    // GB to a USB drive takes far more than the 30s default. Progress arrives
+    // on its own channel meanwhile.
+    case IPC.projectMoveStart:
+      return 24 * 60 * 60_000;
     // On the 30s default the renderer showed a raw IPC timeout mid-repair.
     case IPC.recoveryRepair:
     // Start fresh closes the project and waits for the background service to

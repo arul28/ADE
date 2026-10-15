@@ -3595,8 +3595,9 @@ instances. Each `ProviderAccountRow` carries the account's quota meters
 (`providerAccountWindows` / `ProviderAccountQuotaMeter`), ordered by the shared
 `adeUsageWindowRank`, and
 marks the account smart balance would give the next chat (**Next**, from
-`MobileUsageQuotaSnapshot.balanceNext`). Swipe or context menu makes an account
-the default, removes one, or opens `ProviderAccountDetailPage` (make default,
+`MobileUsageQuotaSnapshot.balanceNext`; for Claude this previews the same
+weekly-first, five-hour reserve rotation as desktop). Swipe or context menu
+makes an account the default, removes one, or opens `ProviderAccountDetailPage` (make default,
 sign in again, rename, remove); a running-chats note makes clear that switching
 the default only changes new chats. **Add account** opens
 `ProviderAccountAddSheet` (name only — there is no accent step). Sign-in runs
@@ -4584,14 +4585,15 @@ the stats and shows update guidance.
   cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
   atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
-  queue, so it no longer hides behind an accordion: one queued message is a
-  single compact card — waiting glyph, one truncated line of the message, its
-  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
-  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
-  a slim `N queued` count above the rows. While a turn is running the clock
-  glyph breathes and the disposition reads "sends at next step" on a provider
-  that takes a message mid-turn and "sends when turn ends" on one that does
-  not; on an idle session it sits still and reads "after turn". The pulse goes
+  queue, so it no longer hides behind an accordion. There is no frame or
+  header around the rows (the same list desktop draws above its composer): each
+  queued message is one glass row — waiting glyph, one truncated line of the
+  message, a small `Sends next` / `Queued` tag, and **Send now** /
+  **Interrupt** / **Edit** / **Cancel** as visible icon-only buttons with
+  44pt-tall touch areas. The disposition ("sends at next step" on a provider
+  that takes a message mid-turn, "sends when turn ends" on one that does not,
+  "after turn" on an idle session) is in the row's VoiceOver label and its
+  detail sheet. While a turn is running the clock glyph breathes. The pulse goes
   through `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full
   strength.
 - **Tapping a staged row opens its detail sheet.** A truncated line and four

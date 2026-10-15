@@ -163,6 +163,7 @@ export type CliIdentityResumeMetadataArgs = {
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean | null;
+  fastTier?: "ultrafast" | null;
   instanceId?: string | null;
   presetId?: string | null;
   credentialId?: string | null;
@@ -193,6 +194,7 @@ export function buildCliIdentityResumeMetadata(
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       fastMode: args.fastMode,
+      ...(args.fastMode === true && args.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       ...identity,
     },
     // Mirror the ids so older readers and the resume path can recover the
@@ -999,6 +1001,8 @@ export function buildTrackedCliStartupCommand(args: {
   reasoningEffort?: string | null;
   /** Optional fast-mode override for runtimes that expose a fast tier. */
   fastMode?: boolean | null;
+  /** Fast's tier for Codex: "ultrafast" asks for Ultrafast; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -1036,6 +1040,8 @@ export function buildTrackedCliLaunchCommand(args: {
   reasoningEffort?: string | null;
   /** Optional fast-mode override for runtimes that expose a fast tier. */
   fastMode?: boolean | null;
+  /** Fast's tier for Codex: "ultrafast" asks for Ultrafast; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -1147,7 +1153,7 @@ export function buildTrackedCliLaunchCommand(args: {
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
-      ...codexServiceTierFlags(args.fastMode),
+      ...codexServiceTierFlags(args.fastMode, args.fastTier),
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
@@ -1788,9 +1794,13 @@ export function codexReasoningEffortFlags(reasoningEffort: string | null | undef
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
 }
 
-export function codexServiceTierFlags(fastMode: boolean | null | undefined): string[] {
+export function codexServiceTierFlags(
+  fastMode: boolean | null | undefined,
+  fastTier?: "ultrafast" | null,
+): string[] {
   if (fastMode === true) {
-    return ["-c", "service_tier=\"fast\"", "-c", "features.fast_mode=true"];
+    const tier = fastTier === "ultrafast" ? "ultrafast" : "fast";
+    return ["-c", `service_tier="${tier}"`, "-c", "features.fast_mode=true"];
   }
   if (fastMode === false) {
     return ["-c", "service_tier=\"default\""];
@@ -2415,6 +2425,9 @@ function buildProviderResumeLaunchCommand(
   const fastMode = overrides.fastMode !== undefined
     ? overrides.fastMode
     : metadata.launch.fastMode ?? metadata.launch.codexFastMode;
+  // A resume that sets Fast itself means plain Fast; otherwise keep the tier
+  // the session launched with.
+  const fastTier = overrides.fastMode !== undefined ? null : metadata.launch.fastTier ?? null;
   const droidPermissionMode = overrides.permissionMode !== undefined
     ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
     : metadata.launch.droidPermissionMode
@@ -2459,7 +2472,7 @@ function buildProviderResumeLaunchCommand(
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(reasoningEffort),
-      ...codexServiceTierFlags(fastMode),
+      ...codexServiceTierFlags(fastMode, fastTier),
       ...codexComputerUseMcpFlags(overrides.codexComputerUse),
       ...codexResumePermissionFlags({
         permissionMode,

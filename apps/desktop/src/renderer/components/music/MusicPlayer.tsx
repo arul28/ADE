@@ -1,3 +1,4 @@
+import { MusicProviderBadge } from "./musicProvider";
 import React from "react";
 import { AnimatePresence, motion, useReducedMotion, useSpring, useTransform } from "motion/react";
 import {
@@ -20,7 +21,7 @@ import {
 import { musicArtworkUrl, type MusicArtwork, type MusicRepeatMode } from "../../../shared/types/music";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { AppleMusicBadge, MusicArt } from "./musicParts";
+import { MusicArt } from "./musicParts";
 import { formatMusicTime, musicActions, useMusicLike, useMusicPosition, useMusicState } from "./musicStore";
 
 /**
@@ -37,6 +38,15 @@ import { formatMusicTime, musicActions, useMusicLike, useMusicPosition, useMusic
 export function useMusicReducedMotion(): boolean {
   const os = useReducedMotion();
   return Boolean(os) || (typeof document !== "undefined" && document.documentElement.dataset.motion === "reduced");
+}
+
+/**
+ * Keep the artwork still: Reduce motion, or Spotify, whose design guidelines
+ * do not allow its artwork to be blurred, scaled or animated.
+ */
+export function useMusicArtworkStill(): boolean {
+  const spotify = useMusicState((s) => s?.provider === "spotify");
+  return useMusicReducedMotion() || spotify;
 }
 
 const MotionButton = motion.create(Button);
@@ -330,11 +340,13 @@ export function MusicTransport({ size = "md", disabled = false }: { size?: "md" 
 
 export function MusicVolume({ className }: { className?: string }) {
   const volume = useMusicState((s) => s?.playback.volume ?? 1);
+  const volumeSupported = useMusicState((s) => s?.provider !== "spotify" || Boolean(s.spotify?.device?.supportsVolume));
   const [draft, setDraft] = React.useState<number | null>(null);
   const shown = draft ?? volume;
   const lastAudible = React.useRef(volume > 0 ? volume : 0.6);
   if (volume > 0) lastAudible.current = volume;
   const Icon = shown === 0 ? SpeakerX : shown < 0.5 ? SpeakerLow : SpeakerHigh;
+  if (!volumeSupported) return <span className="text-xs text-muted-fg">Volume is controlled on the device</span>;
   return (
     <div className={cn("ade-music-volume", className)}>
       <PlayerIconButton
@@ -380,9 +392,11 @@ export function MusicLikeButton({ size = "md" }: { size?: "sm" | "md" }) {
  * never scrolls. Cross-fades when the song changes.
  */
 export function MusicArtBackdrop({ artwork, className }: { artwork: MusicArtwork | null | undefined; className?: string }) {
+  const spotify = useMusicState((s) => s?.provider === "spotify");
   const reduced = useMusicReducedMotion();
   const url = musicArtworkUrl(artwork, 96);
   const tint = artwork?.bgColor ? `#${artwork.bgColor}` : undefined;
+  if (spotify) return null;
   return (
     <div className={cn("ade-music-backdrop", className)} aria-hidden style={tint ? ({ "--music-tint": tint } as React.CSSProperties) : undefined}>
       <AnimatePresence initial={false}>
@@ -418,7 +432,7 @@ export function MusicPlayerCard({
   onToggleQueue: () => void;
   onCollapse: () => void;
 }) {
-  const reduced = useMusicReducedMotion();
+  const reduced = useMusicArtworkStill();
   const nowPlaying = useMusicState((s) => s?.playback.nowPlaying ?? null);
   const isPlaying = useMusicState((s) => Boolean(s?.playback.isPlaying));
   const suspended = useMusicState((s) => s?.host.status === "suspended");
@@ -486,7 +500,7 @@ export function MusicPlayerCard({
           </PlayerIconButton>
         </div>
         <div className="ade-music-player-mark">
-          <AppleMusicBadge height={24} />
+          <MusicProviderBadge height={24} />
         </div>
       </div>
     </motion.aside>

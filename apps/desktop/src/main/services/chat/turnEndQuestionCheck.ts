@@ -63,11 +63,13 @@ export type TurnEndQuestionCheckDeps = {
     message: string;
     source: SessionAttentionSource;
   }) => boolean;
+  /** Clear only an inferred marker older than this committed turn start. */
+  clearInferredAttention: (sessionId: string, startedAt: string) => void;
 };
 
 export type TurnEndQuestionCheck = {
   /** Every live chat event, so the check can keep the turn's last reply verbatim. */
-  onEvent: (sessionId: string, event: AgentChatEvent) => void;
+  onEvent: (sessionId: string, event: AgentChatEvent, turnStartedAt?: string | null) => void;
   onTurnDone: (facts: TurnEndQuestionFacts) => void;
   forget: (sessionId: string) => void;
 };
@@ -171,8 +173,19 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
   };
 
   return {
-    onEvent(sessionId, event) {
-      if ((event.type === "status" && event.turnStatus === "started") || event.type === "user_message") {
+    onEvent(sessionId, event, turnStartedAt) {
+      if (event.type === "status" && event.turnStatus === "started") {
+        pendingTurnBySession.delete(sessionId);
+        lastReplyBySession.delete(sessionId);
+        const startedAt = turnStartedAt?.trim();
+        if (startedAt) {
+          // The persisted source + timestamp fence makes duplicate and stale
+          // status events harmless without retaining per-session start state.
+          deps.clearInferredAttention(sessionId, startedAt);
+        }
+        return;
+      }
+      if (event.type === "user_message") {
         pendingTurnBySession.delete(sessionId);
         lastReplyBySession.delete(sessionId);
         return;

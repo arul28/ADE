@@ -238,6 +238,22 @@ export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undef
   return modelSupportsServiceTier(descriptor, "fast");
 }
 
+/**
+ * Which faster tier a chat with Fast on asks for. `fast` is Codex `priority`
+ * (and every other provider's Fast); `ultrafast` is Codex's tier above it,
+ * which the Codex catalog offers per account. Absent means `fast`.
+ */
+export type FastTier = "fast" | "ultrafast";
+
+export function modelSupportsUltrafast(descriptor: ModelDescriptor | null | undefined): boolean {
+  return modelSupportsServiceTier(descriptor, "ultrafast");
+}
+
+/** A stored tier, or null when it is not Ultrafast (Fast is the default). */
+export function normalizeFastTier(value: unknown): "ultrafast" | null {
+  return value === "ultrafast" ? "ultrafast" : null;
+}
+
 export type OpenCodeFastEffortSelection = {
   /** OpenCode model id to send: the row's own, or its fast sibling. Null when the row names none. */
   modelId: string | null;
@@ -488,6 +504,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
     inputPricePer1M: 2,
     outputPricePer1M: 10,
+    cacheReadPricePer1M: 0.1,
     costTier: "medium",
   },
   {

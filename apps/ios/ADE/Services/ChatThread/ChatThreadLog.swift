@@ -37,6 +37,14 @@ extension ChatThreadEngine {
 
   func applySnapshot(_ input: ChatThreadSnapshotInput) {
     hostSupportsChatLogV2 = input.hostSupportsChatLogV2
+    ingestDiagnostics.snapshotCount += 1
+    ingestDiagnostics.lastSnapshotEventCount = input.events.count + input.pinnedEvents.count
+    ingestDiagnostics.lastSnapshotResumed = input.resumed
+    ingestDiagnostics.lastSnapshotResumeKind = input.resumeKind
+    ingestDiagnostics.lastSnapshotGap = input.gap
+    ingestDiagnostics.lastSnapshotTruncated = input.truncated
+    ingestDiagnostics.lastSnapshotHostSupportsChatLogV2 = input.hostSupportsChatLogV2
+    ingestDiagnostics.liveEventsSinceSnapshot = 0
     loadFailure = nil
     if input.sessionFound == false {
       clearLog()
@@ -169,6 +177,8 @@ extension ChatThreadEngine {
 
   func applyLive(_ events: [ChatThreadLiveEvent]) {
     guard !sessionDeleted else { return }
+    ingestDiagnostics.liveEventCount += events.count
+    ingestDiagnostics.liveEventsSinceSnapshot += events.count
     var outcomes: [InsertOutcome] = []
     var appended: [AgentChatEventEnvelope] = []
     var persisted: [ChatLogStoredEvent] = []

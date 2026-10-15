@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -393,6 +394,13 @@ function resolveAuthorizedLocalRuntimeRootPath(
   if (requested) {
     const alreadyAuthorized = roots.get(localRuntimeRootKey(requested));
     if (alreadyAuthorized) return alreadyAuthorized;
+    // A window that still holds a project's folder from before a move reaches
+    // it at its new folder, when this window may use that one.
+    const moved = resolveMovedProjectRoot(requested);
+    if (moved !== requested) {
+      const movedAuthorized = roots.get(localRuntimeRootKey(moved));
+      if (movedAuthorized) return movedAuthorized;
+    }
     const additionallyAuthorized = authorizeLocalRuntimeRoot?.(session, requested);
     const normalizedAdditional = normalizeLocalRuntimeRootPath(additionallyAuthorized);
     return normalizedAdditional &&

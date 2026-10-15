@@ -2234,6 +2234,28 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.deleteDraft", { id: "stash-1" }))).resolves.toBe(true);
   });
 
+  // An update from another machine or the phone must keep Fast's tier: the
+  // parser copies known fields only, so a dropped field is a silent no-op.
+  it.each([
+    { sent: "ultrafast", received: "ultrafast" },
+    { sent: null, received: null },
+    { sent: "turbo", received: undefined },
+  ])("carries fastTier $sent on chat.updateSession as $received", async ({ sent, received }) => {
+    const updateSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const { service } = createService({ agentChatService: { updateSession } });
+
+    await service.execute(makePayload("chat.updateSession", {
+      sessionId: "session-1",
+      fastMode: true,
+      fastTier: sent,
+    }));
+
+    expect(updateSession).toHaveBeenCalledTimes(1);
+    const args = updateSession.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.fastMode).toBe(true);
+    expect(args.fastTier).toBe(received);
+  });
+
   it("routes chat.handoff with a trimmed handoff note", async () => {
     const handoffSession = vi.fn().mockResolvedValue({
       session: { id: "session-2" },
@@ -2356,6 +2378,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: " high ",
       fastMode: true,
+      fastTier: "ultrafast",
       untrustedExtraField: "must-not-pass-through",
     }))).resolves.toMatchObject({ capsuleFingerprint: "fingerprint-1" });
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith({
@@ -2365,6 +2388,7 @@ describe("createSyncRemoteCommandService", () => {
       continuationPrompt: capsule.continuationPrompt,
       reasoningEffort: "high",
       fastMode: true,
+      fastTier: "ultrafast",
     });
     await expect(service.execute(makePayload("chat.prepareCrossMachineHandoff", {
       sourceSessionId: "session-1",

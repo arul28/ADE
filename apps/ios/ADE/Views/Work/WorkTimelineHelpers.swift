@@ -2574,8 +2574,15 @@ private func workTurnFoldProseStaysVisible(_ message: WorkChatMessage) -> Bool {
     || text.range(of: workTurnFoldProseImagePattern, options: .regularExpression) != nil {
     return true
   }
-  if message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
+  let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if phase == "commentary" {
     return false
+  }
+  // A partial answer is content the terminal answer does not repeat, so it is
+  // never narration to fold away — no matter how short it is (desktop
+  // `proseStaysVisible`). The length bar governs providers that label nothing.
+  if phase == "partial_answer" {
+    return true
   }
   // UTF-16 code units, matching desktop `String.length`.
   return text.utf16.count >= workTurnFoldSubstantiveProseMinChars
@@ -4786,6 +4793,26 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
       metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
+    )
+  }
+  if existing.kind == "contextCompact", existing.isInProgress, incoming.isInProgress {
+    // A host that repeats Claude's `compacting` status while one compaction
+    // runs emits another "started" under the same card id. Last-wins would
+    // move the card's timestamp forward, restarting the "Compacting context ·
+    // 42 s" clock mid-run; keep the first start and let the incoming card win
+    // everywhere else.
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: existing.timestamp,
+      turnId: incoming.turnId,
+      body: incoming.body ?? existing.body,
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      isInProgress: incoming.isInProgress
     )
   }
   return incoming

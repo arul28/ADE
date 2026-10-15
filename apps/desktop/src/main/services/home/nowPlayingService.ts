@@ -9,7 +9,9 @@ import { appSourceName } from "./nowPlayingSources";
  * Now Playing for the home page's widget: one list of everything playing,
  * merged from three sources, best first.
  *
- * 1. ADE's own Apple Music player (the Music tab), through `setOverride`.
+ * 1. ADE's own player (the Music tab: Apple Music, or Spotify as a Connect
+ *    remote), through `setOverride`. An OS session of the same app and title
+ *    (the Spotify app ADE is driving) is left out.
  * 2. ADE's built-in browser tabs playing media (`browserMediaSessions.ts`).
  * 3. Other apps on this computer, from the OS media session:
  *    - Windows: `ade-now-playing.exe` (native/ADENowPlayingWin), a long-lived
@@ -307,7 +309,11 @@ export function createNowPlayingService(args: {
     if (browser) {
       for (const { lastPlayingAt: _ignored, ...session } of browser.sessions()) list.push(session);
     }
-    list.push(...os.sessions);
+    for (const session of os.sessions) {
+      // ADE's Spotify remote and the Spotify app's own OS session are one song.
+      if (own && own.app === session.app && own.title === session.title) continue;
+      list.push(session);
+    }
     return list;
   };
 

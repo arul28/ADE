@@ -26,7 +26,7 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatHandoffDialogs.tsx` | The **Local handoff** dialog on Radix Dialog (the local fork/brief form, or "Handoff is not available for this chat."). Cross-machine handoff opens `CrossMachineHandoffModal` for every chat, so there is no separate notice for a remote chat. Radix gives Escape, outside-click dismiss, and focus trapping. The dialog content is the `PortalContainerContext` value, so popovers inside it stay clickable; Escape closes an open lane list before it closes the dialog. |
 | `CursorRuntimeNotice.tsx` | The dismissible pill over the transcript when a Cursor chat has no Cursor runtime. It links to the Cursor provider settings. While it applies, the amber CLI runtime banner is not shown for that chat. Dismissal resets when the runtime block clears. |
 | `ChatRuntimeScope.tsx` | Which machine THIS chat is on, and what its lane looks like there — the single derivation every chat-scoped panel reads instead of a global store selector. `useChatRuntimeScope()` returns `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }` from context, `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` derives the same from a pin passed as a prop (for surfaces mounted outside a chat pane), `useChatScopeDerivation({...})` answers it from a *session* for `AgentChatPane`, and `ChatRuntimeScopeProvider` carries the resolved scope down the panel/drawer subtree. `pin === null` means, and only means, "this chat lives on the tab's binding". ESLint bans `useAppStore` / `useRootAppStore` reads of `projectBinding` / `lanes`, `project.rootPath` reads, and `selectActiveProjectRoot` imports inside `components/chat/**` so no panel can quietly go back to reading the tab's machine. It also exports `chatRunsOnThisComputer(scope)` (`!isRemote && pin == null`), the predicate a foreign chat uses to hide affordances that would open or file onto this computer — the Scene frame's **Proof** button and the Codex generated-image **Open** button. Full contract in the chat [README](README.md#source-file-map). |
-| `AgentChatMessageList.tsx` | Virtualized message list. The virtualizer is **hand-rolled**, not `@tanstack/react-virtual`: a `measuredHeights` row-key → height `Map` feeds top/bottom spacer divs around the rendered window, and each rendered row is wrapped in `MeasuredEventRow`, whose `ResizeObserver` reports its real height through `handleMeasure` → `reconcileMeasuredScrollTop` so a height correction above the viewport does not shift what the reader is looking at. Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` rows (from `SubagentActivityCards.tsx`) for real subagents and compact `BackgroundJobRunRow` rows for runs of backgrounded shell commands, and accepts stable row-key jump requests from the compact while-you-were-away card and the spawn/result jump affordances. A run of `codex_image_view` events in one turn folds into one `Viewed N images` strip — folded tool calls and narration between them do not break the run — and a local image view reads its thumbnail through the chat's machine via `readAttachmentImageDataUrl` with the runtime pin. An interim narration line (any assistant text row of a turn except its last) floats its hover actions below the row instead of reserving a strip, so a run of short progress lines reads as one passage. Keeps sticky-bottom sessions pinned across streamed row growth, late virtual-height measurements, and a shrinking transcript viewport (a growing composer must not unstick the thread). A Claude `queue_recovery: available` row renders one eight-second Undo card; later `restored`/`expired` rows settle the same recovery id so history replay cannot show a stale action. The last text block of a multi-block assistant turn exposes Copy turn, which joins only that turn's assistant text blocks with blank lines; legacy rows without a turn id and single-block turns keep only the normal block copy. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; terminal provider capacity/usage-limit errors render `ProviderFailureRecoveryCard` with same-thread retry and model-selection actions. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. A user message long enough to be a markdown document renders as formatted markdown (`userTextLooksLikeMarkdown`, `MarkdownBlock tone="bubble"`); the bubble shows only the text the reader typed, never the expanded provider prompt. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. `WorkingIndicator` is the in-flight turn's status line — `<activity> · working for <elapsed>`. The activity half comes from `resolveWorkingIndicatorLabel`: `ACTIVITY_LABELS` is keyed against the `activity` union in `shared/types/chat.ts` so a new runtime value is a compile error rather than a raw `web_searching` on screen, and an `editing_file` activity is named with its target (`Editing laneService.ts`) by walking back to the most recent unfinished write entry in the turn — `activity` events carry the tool name, not the file. A `tool_calling` / `running_command` wait is named from the newest still-running entry (`Running pnpm test`, `Search agentChatService`) instead of a bare "Calling tool". Its elapsed is written imperatively (`textContent` on a ref) rather than through state, so the once-per-second tick never commits a render on the message list. The line swaps a bare `<span>` for an expander `<button>` the instant the turn's first tool entry arrives, which remounts the timer node, so the ref is a **callback** ref: it repaints the counter in the same commit it attaches, and the ticker re-reads the ref every tick. An element captured once when the ticker started would be detached by that swap and the display would sit frozen at `0s` while the turn kept running. `ChatInfoHostContext` also lives here — a boolean context reporting whether the *owning host* listens for `ade:chat:open-info`. `AgentChatPane` provides `true` (it owns the chat actions pane); `PersonalChatsPage` mounts the same transcript without it, so the background-job `open` button is absent there rather than dispatching into nothing. It must stay a context rather than a module-level registry: `App` renders every `ProjectSurface` and only toggles `active`, so each `AgentChatPane` stays mounted while Personal Chats is open, and a global "is any host alive" flag would read true on exactly the surface that has no pane. |
+| `AgentChatMessageList.tsx` | Virtualized message list. The virtualizer is **hand-rolled**, not `@tanstack/react-virtual`: a `measuredHeights` row-key → height `Map` feeds top/bottom spacer divs around the rendered window, and each rendered row is wrapped in `MeasuredEventRow`, whose `ResizeObserver` reports its real height through `handleMeasure` → `reconcileMeasuredScrollTop` so a height correction above the viewport does not shift what the reader is looking at. Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` rows (from `SubagentActivityCards.tsx`) for real subagents and compact `BackgroundJobRunRow` rows for runs of backgrounded shell commands, and accepts stable row-key jump requests from the compact while-you-were-away card and the spawn/result jump affordances. A run of `codex_image_view` events in one turn folds into one `Viewed N images` strip — folded tool calls and narration between them do not break the run — and a local image view reads its thumbnail through the chat's machine via `readAttachmentImageDataUrl` with the runtime pin. An interim narration line (any assistant text row of a turn except its last) floats its hover actions below the row instead of reserving a strip; its row clips horizontally but leaves that footer visible, so a run of short progress lines reads as one passage. Keeps sticky-bottom sessions pinned across streamed row growth, late virtual-height measurements, and a shrinking transcript viewport (a growing composer must not unstick the thread). A Claude `queue_recovery: available` row renders one eight-second Undo card; later `restored`/`expired` rows settle the same recovery id so history replay cannot show a stale action. Assistant text blocks expose a compact icon-only Copy action; the turn-end row exposes Copy turn, which joins only that turn's assistant text blocks with blank lines, excluding the user prompt and folded work. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; terminal provider capacity/usage-limit errors render `ProviderFailureRecoveryCard` with same-thread retry and model-selection actions. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. A user message long enough to be a markdown document renders as formatted markdown (`userTextLooksLikeMarkdown`, `MarkdownBlock tone="bubble"`); the bubble shows only the text the reader typed, never the expanded provider prompt. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. `WorkingIndicator` is the in-flight turn's status line — `<activity> · working for <elapsed>`. The activity half comes from `resolveWorkingIndicatorLabel`: `ACTIVITY_LABELS` is keyed against the `activity` union in `shared/types/chat.ts` so a new runtime value is a compile error rather than a raw `web_searching` on screen, and an `editing_file` activity is named with its target (`Editing laneService.ts`) by walking back to the most recent unfinished write entry in the turn — `activity` events carry the tool name, not the file. A `tool_calling` / `running_command` wait is named from the newest still-running entry (`Running pnpm test`, `Search agentChatService`) instead of a bare "Calling tool". Its elapsed is written imperatively (`textContent` on a ref) rather than through state, so the once-per-second tick never commits a render on the message list. The line swaps a bare `<span>` for an expander `<button>` the instant the turn's first tool entry arrives, which remounts the timer node, so the ref is a **callback** ref: it repaints the counter in the same commit it attaches, and the ticker re-reads the ref every tick. An element captured once when the ticker started would be detached by that swap and the display would sit frozen at `0s` while the turn kept running. `ChatInfoHostContext` also lives here — a boolean context reporting whether the *owning host* listens for `ade:chat:open-info`. `AgentChatPane` provides `true` (it owns the chat actions pane); `PersonalChatsPage` mounts the same transcript without it, so the background-job `open` button is absent there rather than dispatching into nothing. It must stay a context rather than a module-level registry: `App` renders every `ProjectSurface` and only toggles `active`, so each `AgentChatPane` stays mounted while Personal Chats is open, and a global "is any host alive" flag would read true on exactly the surface that has no pane. |
 | `AgentChatComposer.tsx`, `ComposerDrafts.tsx`, `DraftSchedulePopover.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | Text input, attachments, model selector, compact title-only permission controls (per-provider `PermissionModePickerOption` tables fed into the shared `components/shared/PermissionModePicker`, which the composer owns the option data for but not the control), slash commands, the desktop drafts control and its scheduled-send form, smart-link chips (`smartLinkChipMark.ts` returns the inline `currentColor` SVG brand mark each chip renders), **chat-context chips** (select assistant output → Add to chat; the composer chip shows the first words of the quote (the full quote stays on it for the copy/remove menu), serializes an `<ade-chat-context>` block whose preamble tells the agent the user quoted the passage and that the text after the block is their reply, and the sent message reads back as a quote card; click/backspace copy or remove it like a smart-link chip), pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. A running chat's toolbar also shows a read-only amber tower plus the owning machine name beside the model and thinking controls; it identifies where the chat executes and directs moves to a session-card right-click: **Hand off… → Another machine**. A draft omits that label because its launch shelf owns the machine choice. `ComposerDrafts` keeps its command surface mounted when the Appearance preference hides the bookmark, so Cmd/Ctrl+S remains available, but the visible bookmark stays out of the toolbar while both the composer and the drafts list are empty. Its menu is rendered in a viewport-clamped body portal with a bounded, scrolling list so composer overflow and short windows cannot crop it. A save first copies up to ten attached images into the owning project runtime, commits the text plus image references, then clears only the unchanged composer snapshot; attaching a draft claims it (the delete is the claim) before its text and images are reapplied, so a machine that loses the race never receives the text. The list renders an image thumbnail when the active runtime owns the bytes. On another synced runtime, the row retains its text and image count, labels the images as living on another machine, and refuses to attach them. Machine-bound context and non-image files are not carried in a draft. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. Every chip also carries a kind-naming `data-composer-chip` attribute, and a scoped `selectionchange` effect marks intersecting chips with `data-composer-chip-selected` so the native selection paints continuously across them (overlay styling lives in `apps/desktop/src/renderer/index.css`). During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. A separate Claude split Stop control selects among the four-mode matrix — **Turn only**, **Turn + queue** (the default), **Turn + background (N jobs)**, and **Turn + queue + background (N jobs)** — persists that choice per chat, and dismisses its custom popover immediately after selection. Default Stop stops the turn and clears the queue but leaves background jobs running; per-task square stops on Chat Info and spawn cards kill one job. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. It holds the last `@`/`/` popover dismissal in a ref (it gates the next open, never a render) and has **three** distinct close semantics: `closeCommandMenu()` closes and forgets the dismissal, for a trigger that is resolved (a selection was made, the trigger is gone, the composer locked or reset); `dismissCommandMenu(trigger)` closes and keeps it closed while the user extends this query, used for Escape (an explicit dismissal — typing the rest of the token must not bring the menu back), for Enter/Tab with no matching row, and for the menu's own dead-query report; and `closeCommandMenuKeepingDismissal()` is the third and the one that is easy to write by accident — this trigger cannot open a menu right now (it is already a confirmed token, or still covered by an earlier dismissal), but nothing is resolved and nothing new was dismissed, so clearing the dismissal here would reopen the menu the user just escaped and recording one would suppress the menu for a trigger the user never dismissed. |
 | `apps/desktop/src/main/services/chat/draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts` | Runtime-backed drafts and scheduled sends. Exact prompt text, up to ten image references, their origin sync-site id, the captured provider/model/permission/thinking config, and — for an armed send — its fire time, target, and if-late policy are stored in the PK-only, CRR-compatible `prompt_stashes` table (the name is kept because cr-sqlite cannot rename a CRR wholesale and every paired machine holds it). Plain drafts are capped at 20 newest-first; armed sends are exempt from that prune and capped separately at 50, and are delivered by the machine that owns the target chat through an exactly-once `scheduled`→`sending` claim. Text and metadata converge across runtimes; HTTP(S) image references stay portable while local-image bytes stay on the originating runtime, so an off-origin reader receives the image count but no paths and cannot attach them. Origin-owned image files referenced by live drafts are protected from the normal seven-day temporary-attachment cleanup. |
 | `ProviderFailureRecoveryCard.tsx` | Friendly recovery surface for terminal provider capacity and usage-limit failures. Shows human-readable error identity and guidance, then offers **Retry turn** and **Choose model** only after the failed turn has released the composer. `classifyProviderFailure` delegates its `rate_limit` branch to the shared `isUsageLimitChatError`, so the card recognises exactly the shapes the host arms an auto-resume for. The usage-limit card remains the newest transcript evidence and fork entry point; `ChatUsageLimitResumePill` owns the live schedule, countdown, and auto-resume actions above the composer, so the old **Continue automatically** / **Don't continue** block is not duplicated in every historical failure. |
@@ -37,7 +37,7 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The chat progress drawer (one scroll, no tab strip, no placeholder areas: progress, proof, Droid mission and sources each appear only once they have content) plus the Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
 | `VoiceDictationButton.tsx`, `microphonePermissionGuidance.ts`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*`, `apps/desktop/src/main/services/transcription/microphoneAccess.ts` | Desktop dictation UI, platform permission boundary, and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. Main asks Electron for the platform microphone status; Windows denied/restricted states return explicit Privacy & security > Microphone guidance, while unknown/not-determined states are left to Chromium's origin permission flow. The header indicator and composer pill render the same recording state. |
 | `apps/desktop/src/main/services/transcription/*` | Electron main-process transcription service. Writes captured 16 kHz mono PCM to WAV, runs the bundled transcribe.cpp `transcribe-cli` against the downloaded Parakeet Ultra model (which punctuates and capitalizes itself), reads the transcript file, and applies deterministic glossary cleanup. Threads are capped at about the physical core count, because transcribe.cpp slows sharply when oversubscribed. The model download is single-flight: any later `downloadModel` call joins the in-flight install, including the renderer installer rejoining after its own call failed while main kept going. After the model verifies, the install runs one silent half-second transcription (`stage: "warmup"` on the progress event, shown as "Finishing setup") so the first real dictation is not the cold one (about 28 s cold against under 2 s warm on an M3 Pro); a failed warm-up is logged and still leaves the model installed. |
-| `CodexVoice.tsx` (`useCodexVoice`, `CodexVoiceButton`, `CodexVoiceBar`), `apps/desktop/src/main/services/chat/codexVoiceSession.ts` (session service: transports, hand-off routing, captions, summary), `apps/desktop/src/main/services/chat/codexVoiceHost.ts`, `apps/desktop/src/shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations: a spoken conversation with any chat, carried by the Codex app server's realtime API on the user's ChatGPT sign-in. See [Voice conversations](#voice-conversations). |
+| `CodexVoice.tsx` (`useCodexVoice`, `CodexVoiceButton`, `CodexVoiceBar`), `VoiceSessionCard.tsx` (the card a finished call leaves in the chat), `apps/desktop/src/main/services/chat/codexVoiceSession.ts` (the call: transports, hand-off routing, turn adoption, captions, summary), `apps/desktop/src/main/services/chat/codexVoiceNarration.ts` (what the voice says and when: the turn stream, milestones, barge-in, the end-request matcher), `apps/desktop/src/main/services/chat/codexVoiceHost.ts`, `apps/desktop/src/shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations: a spoken conversation with any chat, carried by the Codex app server's realtime API on the user's ChatGPT sign-in. See [Voice conversations](#voice-conversations). |
 | `apps/desktop/resources/voice/voice-glossary.json`, `apps/desktop/resources/whisper/README.md` | Shared dictation glossary and release notes for the materialized speech-to-text binary. `materialize-whisper-resources.mjs` builds `transcribe-cli` from a pinned transcribe.cpp commit; the binary is ignored by git and the model is downloaded at runtime. |
 | `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` | `useSessionLifecycleSnapshot(sessionId)`, the lifecycle read behind `ChatLifecyclePill` (settled and snoozed, one chip above the composer). It reads the row from the local per-project session cache the Work tab already mirrors into the app store, then falls back to the root cross-machine lane snapshot for a foreign chat; a bounded render-only deadline timer repaints an open snoozed row when it expires, with no extra IPC or lifecycle write. The pill's Wake now calls `wakeSessionNow` from `renderer/components/terminals/sessionLifecycleActions.ts`. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. Optional `canvasFill` overrides `--chat-canvas-bg`; the Work new-chat draft passes `transparent` so `WorkViewArea`'s mesh shows through. On the Work surface only, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` (32 px title + 1 px hairline), the same token as `.ade-tool-header`. Other hosts keep their own header height. |
@@ -103,8 +103,8 @@ subagents, computer use). The pane derives all visible state from the
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). It also single-sources two pieces of user copy so emitter and renderer cannot drift: `spawnCompletedNoticeMessage(childTitle)` → `Chat "<title>" finished its turn`, and `waitingOnYouDescription(count?)` → `Waiting on your answer.` / `Waiting on your answers.` — the fallback line when a chat is blocked on the user and there is no question text to show. That second one is not local to the chat pane: it becomes the ADE Notch card's subtitle, the phone's push body, and the lock-screen preview, so the old per-provider `"<Provider> needs input before it can continue."` variants (a sentence about the agent where the user wanted a sentence about them) are gone from every runtime path. The `approval_request` event additionally carries an optional `requestKind: PendingInputKind` — see [Approval vs question](#approval-vs-question). |
-| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, `sharedCatalogFetch.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `useReasoningByFamily` / `useRuntimeCatalogForFamily` hooks. |
-| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the popover rows, where there is room. |
+| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (the segmented effort track with its signal-bar meter; stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, `sharedCatalogFetch.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `useReasoningByFamily` / `useRuntimeCatalogForFamily` hooks. |
+| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the open menu. That menu is a vertical track of modes: a header naming the current mode in its tone, one highlight that slides by `transform` to the row under the pointer or keyboard focus and takes that mode's tone, a `detail` line describing whichever mode is highlighted, and a check on the selected one. Arrow keys, Home, and End move focus (wrapping), and focus lands on the current mode when the menu opens. `permissionModeToneRgb` exports a tone as RGB for the highlight fill; the compact `ModelChipSegmentMenu` reuses the same look. |
 | `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` | The blocked-action primitive: `BlockedActionReason` (id, title, detail, and the optional fix that clears it), `BlockedReasons` to render them inline, `describeBlockedReasons` for tooltip/a11y text, and `BlockedActionButton`, which takes the reasons themselves rather than a `disabled` boolean so a caller cannot disable a control without handing over the explanation. Exists because ADE keeps regrowing the same bug — a surface computes blockers, disables the primary button, and renders none of them. |
 
 Cross-machine Work drafts do not rebind the project tab. `AgentChatPane` freezes
@@ -926,13 +926,18 @@ chat pane mount, which happens either way.
   same lane/status/time groups as real sessions.
 - **Reasoning effort.** A standalone `ReasoningEffortPicker` (extracted
   from the model row) is rendered next to the model trigger when the
-  active descriptor exposes `reasoningTiers`. The picker remembers the
-  last-used effort per model family via the `useReasoningByFamily`
-  hook. The control is a real pointer slider: click or drag previews the
-  position and release snaps to the nearest model-supported tick; arrows,
-  Home, and End provide the same keyboard path. The filled portion uses a
-  progressive low-to-high gradient and the active tier keeps the existing
-  pulse/colour treatment. A tier choice does **not** close the popover — the
+  active descriptor exposes `reasoningTiers`. Its collapsed trigger wears a
+  signal-bar `EffortMeter` — one rising bar per tier, lit up to the current
+  effort in that tier's tone — so the level reads before the label does. The
+  picker remembers the last-used effort per model family via the
+  `useReasoningByFamily` hook. The open control is a segmented track: one
+  segment per tier, with a single tinted indicator that slides between them by
+  `transform` (never `left`, which would lay the popover out on every frame).
+  Click or drag moves the indicator; the segment under the pointer wins and
+  release commits it; arrows, Home, and End provide the same keyboard path. On
+  a track with more than four levels each segment shows a short label
+  (`Min` / `Med` / `XHigh` / `Ultra`) while the accessible name and the header
+  keep the full tier name. A tier choice does **not** close the popover — the
   user can compare levels until clicking outside or pressing Escape.
   The collapsed trigger uses the full tier label on normal-width composers
   (for example, `Medium` rather than `MED`) and removes the nested label
@@ -960,36 +965,63 @@ chat pane mount, which happens either way.
 - **Voice conversation.** The waveform button beside the dictation mic
   starts a spoken conversation with the chat. See
   [Voice conversations](#voice-conversations).
-- **Fast mode.** Toggles the legacy-named `codexFastMode` bit for the
-  selected session. Fast mode is a property of a *model*, so the toggle
-  lives on the model row inside the shared `ModelPicker` rather than as a
-  separate composer chip — every surface that mounts the picker gets it,
-  and the composer toolbar keeps one control where it used to spend two.
-  The row chip renders whenever that descriptor advertises
-  `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows, GPT-5.6, and
-  older fast-capable Codex entries) *and* the caller supplied
-  `onFastModeChange`. Fast is one bit per surface but it belongs to the
-  model it was enabled for, so a chip reads as on only on the *selected*
-  row (`fastModeOn={fastMode && isActive}`) — never on every fast-capable
-  row at once. Clicking the selected row's chip is a plain on/off toggle
-  that neither closes the picker nor re-fires selection; clicking a
-  non-selected row's chip means "use this model, fast" — one press
-  commits the model selection and turns fast on. A plain row click onto a
-  different model clears the previous model's fast bit rather than
-  inheriting it. The chip's states are rest (muted outline, outline
-  lightning) → hover (darker fill, still off) → on (violet fill, filled
-  lightning). A press does not change the chip's size: ADE buttons give
-  press feedback with color, not with a scale transform, so a release near
-  the edge of a button still lands on it. The collapsed trigger names the state rather than showing a
-  separate indicator — `composeModelPickerTriggerLabel()` in
-  `ModelPicker.tsx` renders "GPT-5.6 Terra Fast", with a filled lightning
-  glyph rendered before the model name (`aria-hidden`, so the accessible
-  name stays text-only). Codex state flows into
-  the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
-  SDK state flows through the discovered model-parameter selection, and
-  Work CLI launches resolve fast Cursor rows to the matching `*-fast`
-  alias. Parallel mode passes the per-slot setter through the slot's own
-  picker (`onParallelSlotCodexFastModeChange`).
+- **Fast mode.** Toggles the `fastMode` bit for the selected session. Fast
+  mode is a property of a *model*, so the toggle lives on the model row inside
+  the shared `ModelPicker` rather than as a separate composer chip — every
+  surface that mounts the picker gets it, and the composer toolbar keeps one
+  control where it used to spend two. The row chip renders whenever that
+  descriptor advertises `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows,
+  GPT-5.6, and older fast-capable Codex entries) *and* the caller supplied
+  `onFastModeChange`. Fast is one bit per surface but it belongs to the model
+  it was enabled for, so a chip reads as on only on the *selected* row
+  (`fastModeOn={fastMode && isActive}`) — never on every fast-capable row at
+  once. Clicking the selected row's chip cycles the tier; clicking a
+  non-selected row's chip means "use this model, fast" — one press commits the
+  model selection and turns fast on. A plain row click onto a different model
+  keeps Fast when the new model has a fast tier and clears it when it does not;
+  Ultrafast carries over only to a model whose catalog offers it. The chip's
+  states are rest (muted outline, outline lightning) → hover (darker fill,
+  still off) → on (violet fill, filled lightning). A press does not change the
+  chip's size: ADE buttons give press feedback with color, not with a scale
+  transform, so a release near the edge of a button still lands on it. The
+  collapsed trigger names the state rather than showing a separate indicator —
+  `composeModelPickerTriggerLabel()` in `ModelPicker.tsx` renders "GPT-5.6
+  Terra Fast", with a filled lightning glyph rendered before the model name
+  (`aria-hidden`, so the accessible name stays text-only). Codex state flows
+  into the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
+  SDK state flows through the discovered model-parameter selection, and Work
+  CLI launches resolve fast Cursor rows to the matching `*-fast` alias.
+  Parallel mode passes the per-slot setter through the slot's own picker
+  (`onParallelSlotCodexFastModeChange`).
+
+  **Codex Ultrafast.** On a Codex model whose catalog lists the `ultrafast`
+  service tier, and only where the surface passes `fastTier`, the chip cycles
+  Off → Fast → Ultrafast (the chip reads `Ultra` and shows a double lightning).
+  A surface that omits `fastTier` (the TUI, the phone, older clients) keeps the
+  plain two-state Fast chip. The tier arrives as `onFastModeChange`'s second
+  argument; the trigger says "Ultrafast" only when the model offers the tier.
+  Ultrafast is granted per account — the Codex model/list is the only thing
+  that can say a model has it — so the runtime keeps a stored Ultrafast choice
+  until a catalog says the model lacks it, and sends `serviceTier:
+  "ultrafast"` only when that model is not known to be without it. An update
+  changes the tier only when it names `fastTier` (Fast-only clients resend
+  `fastMode: true` with every model or effort change, and that must not drop an
+  Ultrafast choice made elsewhere); Fast off clears it, and a model switch
+  keeps it only when the update names it or the new model is known to offer it.
+  It is never stored for a non-Codex provider. See
+  [Provider service tiers](agent-routing.md#provider-service-tiers-fast-mode).
+  **Fast is a request, and the picker now says what came back.** Codex can
+  answer a thread with a different tier than ADE asked for, and the session
+  records it as `codexServiceTier` — which the picker used to ignore, so a
+  tier the server declined or downgraded stayed invisible behind a chip still
+  reading `Ultra`. Pass `effectiveFastTier` (the session's `codexServiceTier`)
+  and the selected row draws a badge beside the Fast chip naming the tier the
+  server actually reported: quiet when it matches the ask, amber when it does
+  not. Only the selected row carries it, because the report belongs to the
+  chat rather than to the model, and an unfamiliar word is shown as-is rather
+  than dropped — the server also answers `default` and `priority` when it
+  inherits the user's own `config.toml`. Surfaces that pass no
+  `effectiveFastTier` draw nothing.
 
   Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
@@ -1325,7 +1357,8 @@ chat pane mount, which happens either way.
   input is live; ADE already compacts Claude at 97% of `compactAtTokens` at a
   turn boundary.
 - **Compact first after the cache expires.** For a Claude chat whose prompt
-  cache has expired and whose last measured context is 100,000 tokens or more, a
+  cache has expired and whose last measured context is 200,000 tokens or more
+  (Claude Code's own idle-compaction floor), a
   `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
   one action, **Compact first**. The tooltip gives the trade: the next message
   re-sends all 412k tokens, or about 8k after compacting (the last `postTokens`
@@ -1333,16 +1366,40 @@ chat pane mount, which happens either way.
   5k). The action turns it on for the next
   send only; the chip then reads `Compacts on next send · 412k` in the accent
   tone with **Cancel** to undo. The × hides the chip until the next turn
-  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true` and the brain runs
-  `/compact` as its own turn (90 s limit) before the message. If that compaction
-  does not complete, the message stays unsent and the user sees "Compaction did
-  not finish. Your message was not sent." The Claude provider setting "After
+  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true`. The brain starts
+  `/compact` as its own turn and, once that turn is running, queues the message
+  behind it like any message sent during a turn, so the send returns at once
+  and the thread shows the message as queued, not sent. It is delivered when
+  the compaction ends. If the compaction fails or does not shrink the chat, the
+  messages queued behind it are kept and sent with the full chat, with the notice "Compaction did
+  not finish, so your message was sent with the full chat." Stop during the
+  compaction cancels it like any queued message. There is no ADE time limit;
+  Stop ends the compaction, as for a typed `/compact`. A send whose call times
+  out (`isRuntimeTransportTimeoutError`) does not go back in the composer
+  unless it never appears in the chat within two minutes (if another chat is
+  open by then, or a new draft fills the composer, a toast says so instead). The Claude provider setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
-  `never` (no chip). Only a send that carries `compactFirst: true` compacts
+  `never` (no chip). With `always`, ADE also does what Claude Code does by
+  itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
+  cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and
+  the compaction reads the chat at the cached price (`warmIdleCompactAtMs`,
+  `warmIdleCompactionScheduler.ts`). Claude's own timer cannot fire in ADE, which
+  closes an idle Claude process after five minutes. A turn cancels the timer, a
+  timer that fires more than a minute late (a machine that slept) is dropped,
+  and a chat it misses compacts on the next send as before. Claude's
+  `idleCompaction` setting is left alone. Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
   `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
-  Desktop, web, and iOS share the rule. To try it on a small chat, start the
+  The brain sends the floor to every client on the session summary
+  (`compactFirstMinTokens`), so a client built with an older floor uses it.
+  The idle clock starts at the cache's `since`, except that a `since` older than
+  the start of the last finished turn (`lastFinishedTurnMs`) is from an earlier
+  turn whose summary has not caught up, so that turn's end is used instead; and
+  the chip stays hidden while a message is queued, since it sends on its own.
+  Desktop, web, iOS and `ade code` (`/compact-first`, see the ade-code README)
+  share the rule. iOS fetches the summary for a Claude chat in another project
+  too, since only the summary says whether its cache expired. To try it on a small chat, start the
   brain with `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`: the brain uses that limit and
   sends it to the clients on the session summary (`compactFirstMinTokens`).
 - **The real cache lifetime.** Claude Code picks the prompt cache lifetime of
@@ -1401,7 +1458,8 @@ chat pane mount, which happens either way.
 
 ### Launch memory
 
-What you last launched with — model, reasoning effort, fast mode, permission
+What you last launched with — model, reasoning effort, fast mode (with its
+Codex tier), permission
 level — is remembered **per machine**, under
 `ade.chat.lastLaunchConfig.v1:<surfaceProfile>:<kind>` in renderer
 `localStorage`. The key deliberately carries no project root and no lane id.
@@ -1435,11 +1493,11 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 
 | Module | Role |
 |---|---|
-| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading through `sharedCatalogFetch` (which owns the cache claim and the request key), fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Surfaces that pass neither render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Props include `hidePermissionRail` (hook for surfaces that pin the permission tier and suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list), and `runtimePin` (the prompt-box / chat machine, forwarded into auth and OpenCode-installed probes). When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the static registry even if the last discovered model-id list is incomplete. The left rail always includes those ACP families (plus Cursor / OpenCode / local runtimes) so they stay reachable before catalog refresh; Favorites only lists starred models. Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
-| `ModelPickerRail.tsx` | Left-rail tabs (Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio). The desktop, hosted renderer, TUI, and iOS catalog keep this provider order (Cursor is omitted on unsupported Windows ARM); reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
-| `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). Also renders the muted Fast chip when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; toggling it changes neither the selection nor the popover's open state. |
-| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. It also exports `resolveDisplayedReasoningEffort`, the pure function behind what the trigger shows: when nothing explicit is set the control falls back to the effort last used for the model's family, so a launch that reads the unset state instead sends the model default while the trigger says "High". `AgentChatPane` resolves the same function at the owner of the value, which keeps the two in step without a presentational component writing its parent's state on mount. |
+| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading through `sharedCatalogFetch` (which owns the cache claim and the request key), fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Pass `effectiveFastTier` as well and the selected row shows a badge beside that chip naming the tier the server reported back, amber when it differs from the ask. Pass `fastTier` (null included) too and the surface accepts Codex Ultrafast: a model whose catalog offers the `ultrafast` tier cycles Off → Fast → Ultrafast, the second `onFastModeChange` argument carries the tier, and the trigger reads `Ultrafast`. A surface that omits `fastTier` keeps the two-state Fast chip. Surfaces that pass neither render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Layout: the rail and search bar share one recessed L, and the list sits on a raised panel cut into it, led by a section label naming what the list shows (the provider, `Favorites`, `Recents`, `Custom`, or `N results`) so the icon-only rail never leaves the current provider a guess. Sub-provider tabs (e.g. `Anthropic (via Cursor)`) carry the maker's logo; a catch-all group of mixed makers gets none. Rows are a fixed 50 px (`MODEL_ROW_HEIGHT` = a 48 px row plus its gap), so the list never measures a row and `overscan` is 4; before the scroller has a height the list paints one screen (10 rows). The search field is focused after the first paint, not in a layout effect, so opening does not run a second layout pass before the panel is placed. Props include `hidePermissionRail` (hook for surfaces that pin the permission tier and suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list), `fastTier` + `ultrafastEnabled` (carry Fast's tier and let offering rows cycle to Ultrafast), and `runtimePin` (the prompt-box / chat machine, forwarded into auth and OpenCode-installed probes). Inside a provider's own rail the row detail line drops that provider's name (`omitProviderInDetail`), keeping only the route and context size; mixed lists (Search / Favorites / Recents) keep it. When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the static registry even if the last discovered model-id list is incomplete. The left rail always includes those ACP families (plus Cursor / OpenCode / local runtimes) so they stay reachable before catalog refresh; Favorites only lists starred models. |
+| `ModelPickerRail.tsx` | Left-rail tabs (Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio). The desktop, hosted renderer, TUI, and iOS catalog keep this provider order (Cursor is omitted on unsupported Windows ARM); reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. Tabs are icon-only; the selected one is raised onto the same surface as the list panel, and its rail has no scrollbar. |
+| `ModelListRow.tsx` | A single model row: fixed 48 px and two lines — the maker logo, the display name, a check on the selected row, an optional local/`Sign in` mark, a fixed two-slot capability pill (reasoning, then image input, shown faint when absent so the columns line up), a fixed-width Fast/Ultrafast slot (a blank spacer on rows without the chip, when the surface offers the control), and the favorite star at the end (revealed on hover/focus, always shown when starred). The Fast chip renders when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; a row whose catalog offers Ultrafast and whose surface enabled it cycles Off → Fast → Ultrafast, and toggling it changes neither the selection nor the popover's open state. Its context menu is stacked through `Z_LAYERS.contextMenu`. |
+| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. The trigger carries an `EffortMeter` signal-bar glyph (one rising bar per tier, lit to the current effort in its tone); the open control is a segmented track with one tinted indicator that slides between segments by `transform`, driven by click, drag, or arrows/Home/End, with short segment labels when the ladder has more than four levels (`reasoningEffortTrackLabel`). It also exports `resolveDisplayedReasoningEffort`, the pure function behind what the trigger shows: when nothing explicit is set the control falls back to the effort last used for the model's family, so a launch that reads the unset state instead sends the model default while the trigger says "High". `AgentChatPane` resolves the same function at the owner of the value, which keeps the two in step without a presentational component writing its parent's state on mount. |
 | `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. All four take the same optional catalog scope key as `runtimeCatalogCache.ts`: descriptors are remembered per machine because a catalog's `reasoningEfforts` (the thinking-level ladder) and context window are machine-reported. There is deliberately **no fallback to another machine's bucket** — answering a miss from the bound machine is the same cross-machine leak the bucketing exists to prevent. A miss falls through to the static registry and then to `createUnknownModelPlaceholder`: correct-but-generic beats confident-and-wrong. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
 | `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
@@ -1631,7 +1689,11 @@ same brain. Audio still flows from the computer the user is sitting at.
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
 | native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread. ADE adopts that turn (normally ADE ignores a turn it did not start) and shows the spoken request as its user message. Adoption also runs on the resumed-turn path, because starting voice resumes the thread. |
-| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | `clientManagedHandoffs: true`. Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, relays short `[STATUS]` progress lines, and speaks the chat's final answer back with `thread/realtime/appendSpeech`. |
+| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
+
+Both modes set `clientManagedHandoffs: true`, so Codex never speaks an agent's
+output on its own and ADE is the single place that decides what voice says and
+when. That is what makes a Codex chat behave the same as every other provider.
 
 In both modes a spoken request is a normal `user_message` with
 `metadata.voiceInput`; `describeUserMessageStatus` shows it as "Spoken" with a
@@ -1639,14 +1701,85 @@ mic glyph. Subagent start and finish events reach the voice session as
 context, and a finish is also spoken, so voice does not report a subagent as
 done while it still runs.
 
-**Live UI.** While voice is live, `CodexVoiceBar` sits above the composer:
-a level meter from the real audio tracks, a status (Connecting, Listening,
-Speaking, Working on it, Muted), the newest caption, a timer, Mute, and End.
-Captions and the working flag come from `chat.getCodexRealtimeState`, polled
-every 300 ms only while a session is live. The chat gets one line when the
-session ends ("Voice conversation · 2:26 · 8 requests · 5 handed to the
-agent"); its detail holds the full transcript. Small talk that voice answers
-itself stays out of the thread.
+**Narration.** Voice talks about the work while it happens instead of reading
+the finished answer once. ADE follows the turn a hand-off produced (host) or
+that Codex ran on the chat's thread (native), and streams its prose into speech
+as it is written:
+
+- Prose is taken a sentence at a time, and a stream that pauses is flushed
+  after `SPEECH_FLUSH_MS`. A turn with no line breaks still starts speaking
+  while it is being written.
+- Fenced code is dropped whole, opening fence to closing one, and markdown is
+  stripped. An agent writes far more code than prose, and reading it aloud is
+  the fastest way to make voice worse than silence. `speakableText` does the
+  same job for a turn that was never streamed.
+- Milestones are spoken too: an announced plan, a long command starting
+  (`chatty` only), an error, a subagent finishing. They are gated by
+  `NARRATION_MIN_GAP_MS` and said once per turn.
+- A long quiet stretch gets a progress line — what the agent is running, what
+  tool it is using — once the voice has said nothing for `NARRATION_IDLE_MS`.
+  Left silent, the realtime model fills that gap with "still on it"; handing it
+  the real progress is what makes the pause informative. The idle clock counts
+  the model's own speech, because `thread/realtime/outputAudio/delta` updates
+  `lastSpokeAt`, so a progress line is never read over the model talking.
+- The turn's end says only what was not already streamed, so nothing is read
+  twice.
+
+The user always wins. The realtime protocol has no cancel call — the only
+speech controls are `appendText`, `appendSpeech`, `appendAudio`, `start` and
+`stop` — so barge-in is restraint rather than interruption: `speakNow` refuses
+while the user's words were transcribed within `BARGE_IN_HOLD_MS`, and dropped
+narration is *not* queued, because describing a step that already finished is
+worse than saying nothing. A result is the exception: `speakResult` defers it
+until the user stops rather than losing it.
+
+The `updates` preference finally does something. `balanced` (the default) and
+`chatty` narrate; `chatty` adds long-command starts. `quiet` is what voice did
+before narration existed — ack, then the answer once at the end.
+
+**Instructing it.** The developer item tells voice it is the narrator rather
+than a log reader, and that work in progress has not concluded: it says what
+the agent looks like it is doing, and states a result flatly only when the
+agent's own finished message says it. It is also told the user can cut in at
+any time.
+
+**Ending it.** End is not the only way out. When the user's own transcribed
+words ask for it — "end the call", "hang up", or a bare farewell — `asksToEnd`
+marks the session and it closes `END_GRACE_MS` later, which leaves the voice
+room to say goodbye. The matcher is deliberately narrow: a negation ("don't end
+the call") and a question that is not a request ("does this end the call?") both
+back out, because hanging up on someone who did not ask is the one mistake here
+that cannot be taken back. `speakNow` refuses once the call is on its way out, so
+narration never talks over the farewell.
+
+A request to end is also *not* routed to the agent. Voice hands it over like any
+other request, and routing it bought a chat turn explaining that the agent could
+not end a call it never had control over. `handleHandoff` checks `asksToEnd`
+first and ends the call instead — which also decides the race, since either the
+hand-off or the user's own transcript may arrive first.
+
+**The bar.** `CodexVoiceBar` is the composer's **own top row** — a `voiceBar`
+slot on `ChatComposerShell`, drawn inside the glass above the input rather than
+as a second box above the composer. It is one line: a waveform, the newest
+caption taking the width, then the state word, the timer, and two quiet round
+buttons (mute, end). The waveform is the only thing that moves, so it carries
+the state — dim and still while connecting or muted, reactive to whoever is
+talking otherwise. Colour is the accent on the waveform and the state word only.
+
+The status reads Connecting, Listening, Speaking, Working or Muted. Captions and
+the working flag come from `chat.getCodexRealtimeState`, polled every 300 ms
+only while a session is live. Small talk that voice answers itself stays out of
+the thread.
+
+**The card.** A session that ends leaves a `system_notice` with
+`status: "voice_session"`: a one-line `message` every surface reads ("Voice
+conversation · 2:26 · 8 requests · 5 handed to the agent"), the readable
+transcript in `detail`, and the numbers the card needs in a `voiceSession` field
+beside them. `VoiceSessionCard` draws that field as a `ChatCard` — a head with
+the duration and what the call produced, the transcript opening underneath.
+The numbers ride **beside** `detail` rather than inside it because iOS prints an
+object `detail` as pretty-printed JSON, which would have replaced the readable
+transcript on the phone with a blob.
 
 **Context and style.** At start, voice gets Codex's own startup context plus an
 ADE developer item: the chat, lane, worktree, and model, the rules above, the
@@ -1734,6 +1867,11 @@ spelling out the model id and the flags.
   starts with `model` lists every model. A name hit puts the section first, so
   `@deep` + Tab picks the model. The list is every model a new chat could start
   on (`mentionModelIds`), not the narrower list the running chat can switch to.
+  Among models that match the query **equally well**, the ones picked recently
+  lead, newest first (`rankComposerModelMatches` `recentModelIds`) — the same
+  synced recents the picker's Recents rail uses, and a pick from the `@` menu
+  now records one too (desktop and TUI). A better match always wins: `@de`
+  still puts DeepSeek above a recent model that only contains "de".
 - **Editing.** The chip has a fixed name part and two editable parts
   (`composerModelChip.ts`). After insertion the thinking part opens with the
   model's default level. Tab moves thinking → permission → out of the chip,
@@ -2785,6 +2923,10 @@ CTO and resolver surfaces set `profile: "persistent_identity"` and
 override the chips.
 
 ### Resolving the accent for the chat on screen
+
+Codex/OpenAI user-message bubbles blend the near-white provider accent into
+muted violet at each gradient stop, keeping the highlight soft and the white
+message text readable. Provider icons and other chrome retain their accent.
 
 `chatAccentForRenderedChat()` in `chatSurfaceTheme.ts` is the single
 derivation, and it is synchronous — the accent must be right on the frame a

@@ -2395,7 +2395,7 @@ export function TopBar({
             {musicTabOpen ? (
               <ShellNavTab
                 active={musicRouteActive}
-                label="Apple Music"
+                label="Music"
                 className="relative max-w-[220px]"
                 onActivate={() => {
                   if (!musicRouteActive) onNavigate?.("/music");
@@ -2408,7 +2408,7 @@ export function TopBar({
                     onNavigate?.("/work", { replace: true });
                   }
                 }}
-                closeTitle="Close Apple Music (stops playback)"
+                closeTitle="Close Music"
               >
                 <MusicTabContent active={musicRouteActive} />
               </ShellNavTab>

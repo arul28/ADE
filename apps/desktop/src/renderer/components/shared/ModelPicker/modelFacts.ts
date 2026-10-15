@@ -128,26 +128,42 @@ const REASONING_LABELS: Record<string, string> = {
   ultracode: "Ultracode",
 };
 
+/**
+ * A bare lowercase token as a word: `fast` -> `Fast`. Every tier and effort
+ * label in the picker spells an unrecognised value this one way, so a word ADE
+ * does not enumerate reads the same wherever it surfaces.
+ */
+export function capitalizeWord(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 /** The effort tier as a word. "Off" is a real answer, not a missing one. */
 export function reasoningEffortLabel(effort: string | null, model?: ModelDescriptor): string {
   if (!effort) return "Off";
   if (effort === "low" && usesCodexNamedEffortLabels(model?.providerModelId)) return "Light";
-  return REASONING_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
+  return REASONING_LABELS[effort] ?? capitalizeWord(effort);
 }
 
 /**
  * The one line of detail under every model name in a picker row.
  *
- * Always present, always one line. The sub-provider used to be its own
- * optional line, which gave rows in the same list two different heights.
+ * One line. Reasoning and image input are shown by the row's capability pill,
+ * not spelled out here. Inside a provider's own rail the provider is already
+ * the panel's title, so `omitProvider` drops it and keeps only what tells the
+ * rows apart (the route, e.g. "Anthropic (via Cursor)", and the context size).
+ * The line can then be empty; the row keeps its height either way.
  */
-export function modelDetailLine(model: ModelDescriptor): string {
+export function modelDetailLine(model: ModelDescriptor, options?: { omitProvider?: boolean }): string {
   const parts: string[] = [];
   const family = providerLabel(model.family);
   const sub = subProviderLabel(model);
-  parts.push(sub && sub.toLowerCase() !== family.toLowerCase() ? `${family} · ${sub}` : family);
+  const distinctSub = sub && sub.toLowerCase() !== family.toLowerCase() ? sub : null;
+  if (options?.omitProvider) {
+    if (distinctSub) parts.push(distinctSub);
+  } else {
+    parts.push(distinctSub ? `${family} · ${distinctSub}` : family);
+  }
   const context = formatContextWindow(model.contextWindow);
   if (context) parts.push(context);
-  if (model.reasoningTiers && model.reasoningTiers.length > 0) parts.push("reasoning");
   return parts.join(" · ");
 }

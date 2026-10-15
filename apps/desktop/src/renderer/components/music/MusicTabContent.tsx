@@ -1,6 +1,6 @@
 import React from "react";
 import { CircleNotch, Pause, Play } from "@phosphor-icons/react";
-import { AppleMusicAppIcon } from "./musicParts";
+import { MusicProviderIcon, useMusicProviderName } from "./musicProvider";
 
 import { musicArtworkUrl } from "../../../shared/types/music";
 import { musicActions, useMusicNowPlaying, useMusicPosition, useMusicState } from "./musicStore";
@@ -17,12 +17,13 @@ import "./music.css";
  * resume where it stopped.
  */
 export function MusicTabContent({ active }: { active: boolean }) {
+  const providerName = useMusicProviderName();
   const { nowPlaying, isPlaying, busy } = useMusicNowPlaying();
   if (!nowPlaying) {
     return (
       <>
-        <AppleMusicAppIcon size={15} className="shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-center text-[12px]">Apple Music</span>
+        <MusicProviderIcon size={15} className="shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-center text-[12px]">{providerName}</span>
       </>
     );
   }
@@ -30,7 +31,7 @@ export function MusicTabContent({ active }: { active: boolean }) {
   return (
     <>
       <span className="ade-music-tab-art" aria-hidden>
-        {art ? <img src={art} alt="" draggable={false} /> : <AppleMusicAppIcon size={18} />}
+        {art ? <img src={art} alt="" draggable={false} /> : <MusicProviderIcon size={18} />}
       </span>
       <span className="ade-music-tab-text" title={`${nowPlaying.title} — ${nowPlaying.artist}`}>
         {nowPlaying.title}

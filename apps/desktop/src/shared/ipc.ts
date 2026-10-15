@@ -131,6 +131,24 @@ export const IPC = {
   recoveryProjectDataMissing: "ade.recovery.projectDataMissing",
   /** Whether a project's ADE data is missing or swapped (no root: the project that failed to reopen at launch). */
   recoveryProjectDataStatus: "ade.recovery.projectDataStatus",
+  /** Drives that could take a moved project (macOS). */
+  projectMoveListVolumes: "ade.projectMove.listVolumes",
+  /** Read-only checks before moving a project to a new folder. */
+  projectMovePreflight: "ade.projectMove.preflight",
+  /** Copy, rewrite, verify and switch a project to its new folder. */
+  projectMoveStart: "ade.projectMove.start",
+  /** Main → renderer: one line of move progress. */
+  projectMoveProgress: "ade.projectMove.progress",
+  /** The latest finished move into a project, with its cleanup choice. */
+  projectMoveStatus: "ade.projectMove.status",
+  /** Kept originals that want a decision now, and when the next reminder is due. */
+  projectMoveAttention: "ade.projectMove.attention",
+  /** Delete the kept original, remind later, or keep it. */
+  projectMoveCleanup: "ade.projectMove.cleanup",
+  /** Show a move's kept original (or the moved project) in Finder. */
+  projectMoveReveal: "ade.projectMove.reveal",
+  /** Pick a folder to move a project into. */
+  projectMoveChooseFolder: "ade.projectMove.chooseFolder",
   /** The hard reset's plan: every project, lane and machine item it would remove. */
   machineResetPlan: "ade.machineReset.plan",
   /** Hand the hard reset to a detached engine process, then quit. */
