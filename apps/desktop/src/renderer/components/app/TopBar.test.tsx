@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
+import { IssueLaunchHost } from "./BatchLaunchModal";
 import { rememberExplicitRemotePick } from "./usePreferLocalCheckout";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
@@ -1878,7 +1879,8 @@ describe("TopBar", () => {
     } as any;
     globalThis.window.ade.lanes.create = createLane as any;
 
-    render(<TopBar />);
+    // The launch modal is app-wide (mounted once in AppShell), so mount it beside the bar.
+    render(<><TopBar /><IssueLaunchHost /></>);
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
