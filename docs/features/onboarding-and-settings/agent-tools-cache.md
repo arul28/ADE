@@ -176,7 +176,7 @@ profile — 650 MB must never roam.
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.287/
-  @opencode/cli-darwin-arm64/2.0.18/
+  @opencode/cli-darwin-arm64/2.0.29/
   .staging/
   .locks/
 ```
@@ -508,7 +508,7 @@ Verified spawns from the cache:
 |---|---|---|
 | `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
 | `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `2.0.18` | Developer ID, Anomaly Innovations, Inc., hardened runtime (`spctl` rejects only the exec assessment of a bare CLI, which is not an app) |
+| `opencode` | `2.0.29` | Developer ID, Anomaly Innovations, Inc., hardened runtime (`spctl` rejects only the exec assessment of a bare CLI, which is not an app) |
 
 OpenCode 1.x was ad-hoc signed and depended on the no-quarantine property above.
 2.0 carries a Developer ID signature. `probeOpenCodeBinaryQuarantine` in
