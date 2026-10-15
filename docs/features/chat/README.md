@@ -1048,6 +1048,17 @@ Provider-neutral schedules become due at their exact `fireAt`, but their actual
 delivery can be late when a foreground turn or tracked-CLI readiness boundary
 defers them.
 
+Every brain that opens the project (the machine brain, dev runtimes from other
+lanes, a second `ade serve`) loads the same rows and arms its own timer, and the
+in-process in-flight guard only covers one process. So before delivering, a
+brain claims the occurrence with an `insert or ignore` of
+`agent-chat:scheduled-work:claim:<id>@<fireAt>` into the project's `kv` table.
+Only the brain whose insert lands delivers. The others settle the row the way
+that delivery will (a one-shot as `done`, a cron moved to its next occurrence)
+and log `agent_chat.scheduled_work_claimed_elsewhere`. A retried delivery
+deletes its claim so the retry can claim it again; claims older than eight days
+are pruned on the next claim.
+
 Session teardown distinguishes deliberate end from runtime lifecycle. Deleting
 or archiving a chat cancels every durable schedule owned by that chat.
 Claude-owned jobs are not hidden first: ADE pauses the mirror, sends the owning chat an exact-id

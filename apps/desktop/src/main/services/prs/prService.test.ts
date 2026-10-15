@@ -286,6 +286,7 @@ function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
     getLaneBaseAndBranch: vi.fn(),
+    updateBranchRef: vi.fn(),
     delete: vi.fn(async () => undefined),
   } as any;
 }
@@ -330,6 +331,11 @@ interface BuildServiceOpts {
    * against.
    */
   remoteTrackingRefs?: string[] | "unavailable";
+  /**
+   * The branch a lane's worktree reports from `git rev-parse --abbrev-ref
+   * HEAD`. Default: the branch ADE's lane record names.
+   */
+  checkedOutBranch?: string;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -338,8 +344,13 @@ function buildService(opts: BuildServiceOpts = {}) {
   const laneService = opts.laneService ?? makeLaneService();
   const logger = makeLogger();
 
-  mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+  mockGit.runGit.mockImplementation(async (args: unknown[], options?: { cwd?: string }) => {
     const command = Array.isArray(args) ? args[0] : null;
+    if (command === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+      const lanes: Array<{ worktreePath?: string; branchRef?: string }> = await laneService.list();
+      const recorded = lanes.find((lane) => lane.worktreePath === options?.cwd)?.branchRef ?? "";
+      return { exitCode: 0, stdout: `${opts.checkedOutBranch ?? recorded.replace(/^refs\/heads\//, "")}\n`, stderr: "" };
+    }
     if (command === "rev-list") {
       return { exitCode: 0, stdout: "0\t1\n", stderr: "" };
     }
@@ -7171,6 +7182,33 @@ describe("prService.createFromLane", () => {
     );
   });
 
+  it("opens the PR for the branch the worktree is on when the lane record is stale", async () => {
+    // `git switch -c` inside the worktree; ADE's record still names my-feature.
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after the request")),
+    });
+    const laneService = makeLaneService();
+    const { service } = buildService({ githubService: ghService, laneService, checkedOutBranch: "my-feature-v2" });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('"my-feature-v2" \u2192 "main"');
+
+    const createRequest = ghService.apiRequest.mock.calls.find(([request]: any[]) => request?.method === "POST")?.[0];
+    expect(createRequest?.body).toMatchObject({ head: "my-feature-v2", base: "main" });
+    expect(laneService.updateBranchRef).toHaveBeenCalledWith(LANE_ID, "my-feature-v2");
+    expect(mockGit.runGit).not.toHaveBeenCalledWith(
+      expect.arrayContaining(["my-feature"]),
+      expect.anything(),
+    );
+  });
+
   it("preserves non-Error throwables in the wrapped message", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue("string error"),
@@ -7711,6 +7749,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
@@ -7729,7 +7768,7 @@ describe("prService.createFromLane", () => {
 
     expect(ghService.apiRequest).not.toHaveBeenCalled();
     expect(mockGit.runGit).toHaveBeenNthCalledWith(
-      2,
+      3,
       ["fetch", "--prune", "origin", "+refs/heads/my-feature:refs/remotes/origin/my-feature"],
       expect.objectContaining({ cwd: "/tmp/lane-wt" }),
     );
@@ -7767,6 +7806,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })

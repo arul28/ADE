@@ -45,6 +45,22 @@ function createFireMock() {
   ) => undefined);
 }
 
+/** One claim store shared by several brains, like the project database's kv table. */
+function sharedClaims() {
+  const held = new Set<string>();
+  const key = (schedule: ChatScheduledWorkRecord) => `${schedule.id}@${schedule.fireAt}`;
+  return {
+    claimFire: (schedule: ChatScheduledWorkRecord) => {
+      if (held.has(key(schedule))) return false;
+      held.add(key(schedule));
+      return true;
+    },
+    releaseFire: (schedule: ChatScheduledWorkRecord) => {
+      held.delete(key(schedule));
+    },
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -996,6 +1012,42 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it.each([
+    { kind: "wakeup" as const, cron: undefined, settled: { status: "done" } },
+    { kind: "cron" as const, cron: "*/20 * * * *", settled: { status: "scheduled", fireAt: START + 20 * 60_000 } },
+  ])("delivers a due $kind once when several brains load the same rows", async ({ kind, cron, settled }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const persisted = storedState([wakeup({ kind, cron, fireAt: START + 1_000 })]);
+    const claims = sharedClaims();
+    const brains = [createFireMock(), createFireMock(), createFireMock()].map((fire) => {
+      let state: ChatScheduledWorkState | null = cloneState(persisted);
+      const scheduler = createChatScheduledWorkScheduler({
+        loadState: () => cloneState(state),
+        saveState: (next) => { state = structuredClone(next); },
+        isGlobalPaused: () => false,
+        sessionState: () => "active",
+        ...claims,
+        fire,
+      });
+      return { fire, scheduler };
+    });
+    await Promise.all(brains.map(({ scheduler }) => scheduler.start()));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(brains.reduce((total, { fire }) => total + fire.mock.calls.length, 0)).toBe(1);
+    const losers = brains.filter(({ fire }) => fire.mock.calls.length === 0);
+    expect(losers).toHaveLength(2);
+    for (const { scheduler } of losers) {
+      expect(scheduler.list()[0]).toEqual(expect.objectContaining({ ...settled, lastFiredAt: START + 1_000 }));
+    }
+    // Nothing re-fires the claimed occurrence later on the brains that lost it.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(brains.reduce((total, { fire }) => total + fire.mock.calls.length, 0)).toBe(1);
+    brains.forEach(({ scheduler }) => scheduler.dispose());
+  });
+
   it("completes a one-shot immediately when its delivery owns no tracked turn", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -1031,6 +1083,8 @@ describe("createChatScheduledWorkScheduler", () => {
       saveState: (next) => { state = structuredClone(next); },
       isGlobalPaused: () => false,
       sessionState: () => "active",
+      // The retry gives the occurrence's claim back, so it can be claimed again.
+      ...sharedClaims(),
       fire,
     });
     await scheduler.upsert(wakeup({
