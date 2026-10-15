@@ -20,7 +20,7 @@ function tempDir(prefix) {
 }
 
 // A `gh` on PATH that answers from files: `ci/<sha>` holds the ci-pass check
-// run for a commit, `attest/<basename>` the `gh attestation verify --format
+// run for a commit, `docs/<sha>` the validate-docs conclusion, `attest/<basename>` the `gh attestation verify --format
 // json` output for a file (absent = verification fails).
 function stubGh(dir) {
   const bin = path.join(dir, "bin");
@@ -31,7 +31,10 @@ function stubGh(dir) {
 data="${dir}"
 if [ "$1" = api ]; then
   sha="$(printf '%s' "$2" | sed -E 's#.*/commits/([^/]+)/check-runs#\\1#')"
-  [ -f "$data/ci/$sha" ] && cat "$data/ci/$sha"
+  case "$*" in
+    *validate-docs*) [ -f "$data/docs/$sha" ] && cat "$data/docs/$sha" ;;
+    *) [ -f "$data/ci/$sha" ] && cat "$data/ci/$sha" ;;
+  esac
   exit 0
 fi
 if [ "$1" = attestation ]; then
@@ -68,11 +71,13 @@ const CI = {
 
 test("a tag builds only on green CI, borrowed across release-notes-only commits at most five deep", () => {
   const cases = [
-    // [label, commits above a green code commit as [file, ci-state|null], expected pass]
+    // [label, commits above a green code commit as [file, ci-state|null, validate-docs conclusion?], expected pass]
     ["own green ci-pass", [["src/app.ts", "green"]], true],
     ["notes commit still running, parent green", [["CHANGELOG.md", "running"]], true],
     ["notes commit whose CI was cancelled walks on", [["changelog/v1.mdx", "cancelled"], ["docs.json", null]], true],
-    ["notes commit whose CI failed", [["CHANGELOG.md", "failed"]], false],
+    ["notes commit whose validate-docs failed", [["CHANGELOG.md", "failed", "failure"]], false],
+    ["notes commit whose CI failed elsewhere walks on", [["CHANGELOG.md", "failed", "success"]], true],
+    ["code commit whose CI failed", [["src/app.ts", "failed", "success"]], false],
     ["code commit still running", [["src/app.ts", "running"]], false],
     ["code commit with no CI at all", [["src/app.ts", null]], false],
     ["notes commit above an unfinished code commit", [["src/app.ts", "running"], ["CHANGELOG.md", null]], false],
@@ -85,12 +90,14 @@ test("a tag builds only on green CI, borrowed across release-notes-only commits 
     fs.mkdirSync(repo);
     git(repo, "init", "-q");
     fs.mkdirSync(path.join(dir, "ci"));
+    fs.mkdirSync(path.join(dir, "docs"));
     const base = commit(repo, "src/app.ts", "base");
     fs.writeFileSync(path.join(dir, "ci", base), JSON.stringify(CI.green));
     let head = base;
-    for (const [file, state] of commits) {
+    for (const [file, state, docs] of commits) {
       head = commit(repo, file, `${label} ${file}`);
       if (state) fs.writeFileSync(path.join(dir, "ci", head), JSON.stringify(CI[state]));
+      if (docs) fs.writeFileSync(path.join(dir, "docs", head), docs);
     }
     const result = spawnSync("bash", [path.join(repoRoot, "scripts/require-release-ci-pass.sh"), head], {
       cwd: repo,

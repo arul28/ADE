@@ -18,6 +18,17 @@ ci_pass_for() {
     --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
 }
 
+validate_docs_failed() {
+  local conclusion
+  conclusion="$(gh api "repos/$GH_REPO/commits/$1/check-runs" \
+    --method GET \
+    -H "Accept: application/vnd.github+json" \
+    -f per_page=100 \
+    --paginate \
+    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // ""')"
+  [ -n "$conclusion" ] && [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ] && [ "$conclusion" != "skipped" ]
+}
+
 # A release commit that only adds release notes cannot change the
 # code that ships: these files reach the app only as data, the
 # version's notes embedded as a string by bundle-release-notes.mjs.
@@ -25,9 +36,11 @@ ci_pass_for() {
 # for CI on it is what used to hold every tag, so a commit whose CI
 # has not finished may borrow the green ci-pass of the nearest
 # ancestor, provided every commit in between touches only these
-# paths. A failed ci-pass is never overridden: if CI already failed on
-# the release commit (validate-docs, say), it blocks. A cancelled one
-# (superseded by the next notes commit) counts as unfinished.
+# paths. On such a commit only validate-docs can catch anything the
+# parent's CI did not, so a failed ci-pass blocks only when its
+# validate-docs failed. Any other failure (a cancelled run, which
+# ci-pass reports as failure, or a flaky code test) counts as
+# unfinished. A failed ci-pass on any other commit always blocks.
 release_notes_only() {
   local files
   files="$(git diff-tree --no-commit-id --name-only -r --root "$1")"
@@ -53,8 +66,10 @@ for _ in 1 2 3 4 5 6; do
     exit 0
   fi
   if [ "$status" = "completed" ] && [ "$conclusion" != "cancelled" ]; then
-    echo "::error::ci-pass for $candidate is $status/$conclusion. Release packaging requires green CI. $url"
-    exit 1
+    if ! release_notes_only "$candidate" || validate_docs_failed "$candidate"; then
+      echo "::error::ci-pass for $candidate is $status/$conclusion. Release packaging requires green CI. $url"
+      exit 1
+    fi
   fi
   if ! release_notes_only "$candidate"; then
     if [ -z "$ci_pass_json" ]; then
