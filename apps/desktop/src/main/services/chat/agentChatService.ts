@@ -63631,6 +63631,15 @@ export function createAgentChatService(args: {
         || managed.session.model !== nextModel;
       modelSwitched = modelChanged;
       if (providerChanged) {
+        // What the Codex server last *reported* describes this session's Codex
+        // thread, so leaving it behind a move to another provider draws a badge
+        // — possibly an amber "declined" — for a chat no Codex server will
+        // report on again. Scoped to a provider change rather than any model
+        // change on purpose: a Codex-to-Codex switch keeps the thread and
+        // re-reports on the next request, and the usage ledger prices a
+        // settling turn from this field on the live session
+        // (`turnUsageSpeed`), so clearing it mid-turn would misprice that turn.
+        delete managed.session.codexServiceTier;
         // An account belongs to one provider. The new provider starts on its
         // own default rather than resolving the old provider's account id.
         const nextInstanceId = currentDefaultInstanceId(nextProvider);
@@ -63677,11 +63686,6 @@ export function createAgentChatService(args: {
         // Service tiers are model-specific. A model switch is a hard reset of
         // the cloud speed choice; the next request must opt in again.
         delete managed.session.cursorCloudServiceTier;
-        // The same applies to what the Codex server *reported*: it describes
-        // the tier the previous model was last granted. Left in place it would
-        // outlive its model, drawing a badge — possibly an amber "declined" —
-        // for a tier no request in this chat can still produce.
-        delete managed.session.codexServiceTier;
       }
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;

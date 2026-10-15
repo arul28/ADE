@@ -118,6 +118,11 @@ describe("createAgentChatService", () => {
       it.each([
         ["an agent relaying into the chat", { agentRelay: { fromSessionId: "agent-1" } }],
         ["a parent-dispatched child turn", { spawnDispatch: { parentSessionId: "parent-1", dispatchedAt: "t" } }],
+        // Host-authored deliveries ADE writes itself. A `/goal` prompt carried
+        // by one of these is not the user asking for anything, and a list of
+        // "agent keys" kept by hand would miss them.
+        ["a durable scheduled wake", { scheduledWake: { scheduleId: "s1", kind: "cron" as const, firedAt: "t" } }],
+        ["a prompt ADE composed to continue the chat", { hostContinuation: { reason: "plan_followup" as const } }],
       ])("does not let %s claim the user's authorization for a /goal", async (_name, metadata) => {
         // `/goal` arrives as message text, and an agent can send that text into
         // its own chat (`ade chat send …`). The provenance stamps above are the

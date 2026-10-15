@@ -12,6 +12,7 @@
  */
 import { codexServerSupportsGoalMutationOrigin, type CodexAppServerVersion } from "./codexAppServerFeatures";
 import type { AgentChatEventMetadata, AgentChatRuntimeActor } from "../../../shared/types/chat";
+import { messageClearsAttentionMarkers } from "./spawnMissionOwnership";
 
 /**
  * `"user"` means a person acted: the composer's `/goal` command, the goal
@@ -53,8 +54,15 @@ export function codexGoalOrigin(args: { runtimeActor?: AgentChatRuntimeActor }):
 export function codexGoalOriginFromMessage(
   metadata: AgentChatEventMetadata | null | undefined,
 ): CodexGoalMutationOrigin {
+  // Two of ADE's host-authored sets are relevant and neither is enough alone.
+  // `messageClearsAttentionMarkers` knows the deliveries ADE writes into a chat
+  // — a durable wake, a subagent reporting in, a composed continuation, another
+  // bound agent relaying, PR Watch — and also knows the one host-authored
+  // message that *is* a human act, a board move. It does not know a
+  // parent-dispatched child turn, which lives in the dispatch-provenance set
+  // instead. A message a person typed carries neither.
   const dispatched = Boolean(metadata?.spawnDispatch?.parentSessionId?.trim());
-  return metadata?.agentRelay || dispatched ? "automatic" : "user";
+  return messageClearsAttentionMarkers(metadata) && !dispatched ? "user" : "automatic";
 }
 
 /** `origin` on the goal RPCs. Omitted entirely on servers that predate it. */
