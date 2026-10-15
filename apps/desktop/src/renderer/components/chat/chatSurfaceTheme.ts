@@ -170,22 +170,21 @@ export function effectiveChatAccent(accentColor: string, chromeTint: ChatChromeT
 }
 
 /**
- * The original bubble fills. Claude and Codex shipped looking right, so they
- * keep these byte for byte — see `ACCENTS_KEEPING_ORIGINAL_BUBBLE`.
+ * The original bubble fill, retained for Claude and neutral chrome.
  */
 const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
 
-/** Codex/OpenAI and other very light accents — pull the highlight stop down slightly. */
+/** Codex/OpenAI — temper the near-white accent with muted violet at every stop. */
 const CHAT_USER_BUBBLE_GRADIENT_LIGHT =
-  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #78716c 10%) 0%, color-mix(in srgb, var(--chat-accent) 58%, #7c3aed 42%) 50%, color-mix(in srgb, var(--chat-accent) 56%, #4c1d95 44%) 100%)";
+  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 24%, #575065 76%) 0%, color-mix(in srgb, var(--chat-accent) 18%, #6d4c9a 82%) 50%, color-mix(in srgb, var(--chat-accent) 16%, #493560 84%) 100%)";
 
 /**
- * Accents that keep the original gradient exactly.
+ * Accents that retain the established violet gradient family.
  *
  * Those stops mix toward a fixed violet, which is why a newly-coloured
- * provider could not read as its own colour. But Claude and Codex were already
- * correct, and changing how they look was not part of re-colouring the others.
+ * provider could not read as its own colour. Claude keeps the original fill;
+ * Codex uses its softer variant above.
  */
 const ACCENTS_KEEPING_ORIGINAL_BUBBLE = new Set(
   [PROVIDER_CHAT_ACCENTS.claude, PROVIDER_CHAT_ACCENTS.codex].map((hex) => hex!.toLowerCase()),

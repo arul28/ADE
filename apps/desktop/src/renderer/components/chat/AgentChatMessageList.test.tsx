@@ -1103,14 +1103,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  it("copies a multi-block assistant turn from the last text row", async () => {
+  it("copies a multi-block assistant turn from its end row", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
 
-    renderMessageList([
+    const events: AgentChatEventEnvelope[] = [
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -1121,12 +1121,27 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-03-17T10:00:01.000Z",
         event: { type: "text", text: "Second block.", itemId: "text-2", turnId: "turn-1" },
       },
-    ]);
+    ];
+    const view = renderMessageList(events);
 
     expect(screen.getAllByRole("button", { name: "Copy message" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+    const completedEvents: AgentChatEventEnvelope[] = [
+      ...events,
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:02.000Z", event: { type: "done", turnId: "turn-1", status: "completed" } },
+    ];
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatMessageList events={completedEvents} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole("button", { name: "Copy message" })).toHaveLength(1);
     const turnButton = screen.getByRole("button", { name: "Copy whole turn" });
+    expect(turnButton.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(
+      buildTranscriptEventRowKeys(completedEvents)[2],
+    );
     fireEvent.click(turnButton);
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Second block."));
   });
 
   it("puts the text row's hover footer on its own line under the prose, live or folded", () => {
@@ -1159,7 +1174,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(footerOf("ADE is a workspace.").className).not.toMatch(/(^|\s)absolute(\s|$)/);
     expect(footerOf("I'll pull the description.").className).toMatch(/(^|\s)absolute(\s|$)/);
 
-    // The folded turn's answer keeps the same footer, now with Copy turn.
+    // Copy turn belongs on the turn-end row, not beside the answer block.
     view.rerender(
       <MemoryRouter>
         <AgentChatMessageList
@@ -1169,7 +1184,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
     const answerFooter = footerOf("ADE is a workspace.");
     expect(answerFooter.className).not.toMatch(/(^|\s)absolute(\s|$)/);
-    expect(within(answerFooter).getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
+    expect(within(answerFooter).queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
   });
 
   it("adds selected assistant text to the composer as chat context", async () => {
@@ -6819,13 +6835,14 @@ describe("AgentChatMessageList turn fold", () => {
     expect(text.indexOf("Turn details")).toBeLessThan(text.indexOf("93 days."));
   });
 
-  it("copies the whole turn, folded narration included, from the answer", async () => {
+  it("copies only text outside the turn fold", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     renderMessageList([...turnEvents(), doneEvent()]);
+    fireEvent.click(foldButton());
     fireEvent.click(screen.getByRole("button", { name: "Copy whole turn" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(
-      "Checking the config first.\n\nThe build is green again.",
+      "The build is green again.",
     ));
   });
 
@@ -7247,7 +7264,7 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
   });
 
   describe("Copy turn", () => {
-    it("sits on the last text row, visible, when a final answer is followed by more text", async () => {
+    it("sits on the turn-end row and copies assistant text outside the fold", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const turn: AgentChatEventEnvelope[] = [
@@ -7263,14 +7280,16 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       expect(text).not.toContain("Looking into it.");
       expect(text.indexOf("Worked for")).toBeLessThan(text.indexOf("Here is the answer."));
       const copy = screen.getByRole("button", { name: "Copy whole turn" });
-      expect(copy.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKeyOf(turn, 4));
+      expect(copy.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKeyOf(turn, 5));
       fireEvent.click(copy);
       await waitFor(() => expect(writeText).toHaveBeenCalledWith(
-        "Looking into it.\n\nHere is the answer.\n\nP.S. one caveat.",
+        "Here is the answer.\n\nP.S. one caveat.",
       ));
     });
 
-    it("offers no whole-turn copy when the answer is the turn's only text", () => {
+    it("offers whole-turn copy for a one-block completed turn", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const view = renderMessageList([
         env(0, { type: "user_message", text: "Explain", turnId: "turn-1" }),
         env(1, { type: "reasoning", text: "Thinking.", turnId: "turn-1" }),
@@ -7279,7 +7298,9 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       ], { sessionId: SESSION });
       expect(foldButton()).toBeTruthy();
       expect(view.container.textContent).toContain("Only answer.");
-      expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+      const copy = screen.getByRole("button", { name: "Copy whole turn" });
+      fireEvent.click(copy);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("Only answer."));
     });
   });
 });
