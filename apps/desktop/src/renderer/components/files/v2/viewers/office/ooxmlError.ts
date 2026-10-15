@@ -27,12 +27,17 @@ export class OoxmlError extends Error {
 /**
  * A short, honest line for a viewer's failure card.
  *
- * A parser authors its `OoxmlError` messages as user-facing copy, and the one
- * error from outside the parsers (`streamFileBytes` refusing an oversized read)
- * is a plain sentence too, so a thrown `Error`'s message is the line. Anything
- * that is not an `Error` gets the generic one rather than a stringified value.
+ * Only a parser's own `OoxmlError` message is authored as user-facing copy, so
+ * only that is shown verbatim. The one error from outside the parsers that can
+ * reach here is `streamFileBytes` refusing a read past the byte cap, which gets
+ * its own sentence rather than the helper's byte-limit string; anything else
+ * (an IPC rejection, a DOM exception) falls back to the generic line, because
+ * raw error text is not a thing to put in front of a reader.
  */
 export function ooxmlFailureMessage(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof OoxmlError && err.message) return err.message;
+  if (err instanceof Error && /too large to stream/i.test(err.message)) {
+    return "This file is too large to preview. Open it externally.";
+  }
   return "The file could not be parsed.";
 }

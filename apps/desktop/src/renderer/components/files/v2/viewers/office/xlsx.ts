@@ -502,6 +502,11 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
   const rows: RawCell[][] = [];
   const rowNumbers: number[] = [];
   let rowCount = 0;
+  // Rows that HAD cells but were past the window. Truncation is about these,
+  // not about `rowCount`: Excel writes self-closing rows for a row that only
+  // carries formatting (`<row r="2" ht="30" customHeight="1"/>`), and counting
+  // those as missing would claim a fully-shown sheet was cut off.
+  let rowsSkippedByCap = 0;
   let observedFirstCol = -1;
   let observedMaxCol = -1;
   let lastRowNumber = dimension?.firstRow ?? 1;
@@ -539,6 +544,8 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
           sinceYield = 0;
           await yieldToEventLoop();
         }
+      } else {
+        rowsSkippedByCap += 1;
       }
     } else if (observedFirstCol < 0) {
       // A self-closing row carries no cells; keep at least column A addressable.
@@ -570,7 +577,7 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
     colCount,
     firstCol: firstCol + 1,
     colWidthsPx,
-    truncatedRows: rowCount > rows.length,
+    truncatedRows: rowsSkippedByCap > 0,
     truncatedCols: colCount > visibleColCount,
     sharedWanted,
   };
