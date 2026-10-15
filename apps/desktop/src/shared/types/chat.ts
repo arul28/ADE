@@ -4318,8 +4318,10 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
  * local set rather than restated, so adding a provider to one list cannot
  * silently leave the other behind.
  */
-export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid" && provider !== "muse" && !providerForkReplaysTranscript(provider));
+// Cross-machine fork now covers every handoff-capable provider: providers
+// without a native (portable) session use the ADE-side full-transcript replay
+// onto a fresh destination thread, which is machine-independent.
+export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS;
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
