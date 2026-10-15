@@ -221,7 +221,7 @@ export function createPrMergeAutoSettlementService(args: {
         ? "and (origin.created_at, origin.lane_id) > (?, ?)"
         : "";
       const params = after ? [projectId, after.createdAt, after.laneId] : [projectId];
-      return all(
+      return all<PendingOriginFollowup & { created_at: string }>(
         `select origin.pr_id, origin.lane_id, origin.claimed_session_id as session_id,
                 origin.created_at as created_at
            from pull_request_lane_chat_origins origin

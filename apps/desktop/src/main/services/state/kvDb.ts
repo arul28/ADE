@@ -3211,7 +3211,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_pull_request_lane_chat_origins_pr on pull_request_lane_chat_origins(project_id, pr_id)");
-  db.run("create index if not exists idx_pull_request_lane_chat_origins_pending on pull_request_lane_chat_origins(project_id, merge_followup_pending, pr_id)");
   db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_page on pull_request_lane_chat_origins(project_id, merge_followup_pending, created_at, lane_id)");
   db.run("create index if not exists idx_pull_request_lane_chat_origins_pending_session on pull_request_lane_chat_origins(project_id, claimed_session_id, merge_followup_pending)");
 
