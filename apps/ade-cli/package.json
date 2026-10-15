@@ -34,7 +34,7 @@
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.162.1",
-    "@opencode/cli": "2.0.24",
+    "@opencode/cli": "2.0.29",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
@@ -56,7 +56,7 @@
   },
   "devDependencies": {
     "@muse-code/sdk": "1.4.7",
-    "@opencode/client": "2.0.24",
+    "@opencode/client": "2.0.29",
     "@sentry/node": "11.7.0",
     "@types/node": "^20.11.30",
     "@types/pngjs": "^6.0.5",

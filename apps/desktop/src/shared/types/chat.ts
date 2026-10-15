@@ -117,6 +117,8 @@ export type AgentChatUsageAccount = {
   email?: string | null;
   /** Provider-side account or org id (ChatGPT account id, Factory org id). */
   accountId?: string | null;
+  /** The name the user gave this login (an OpenCode account's label). */
+  label?: string | null;
   /** Base URL for a local model server (LM Studio, Ollama). */
   endpoint?: string | null;
   plan?: string | null;

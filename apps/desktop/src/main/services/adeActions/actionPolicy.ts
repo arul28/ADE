@@ -99,7 +99,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier as the updater beside it.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -813,6 +813,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "opencodeOAuthCancel",
     "setOpencodeProviderKey",
     "clearOpencodeProviderKey",
+    "opencodeAccounts",
+    "opencodeAccountActivate",
+    "opencodeAccountRename",
+    "opencodeAccountRemove",
+    "opencodeCloudConnect",
     "refreshModelsDev",
     "listHarnessRoutes",
     "testHarnessRoute",

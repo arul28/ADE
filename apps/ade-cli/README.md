@@ -540,6 +540,10 @@ ade tools status --text                           # pinned agent CLIs: installed
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
 ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
+ade providers opencode accounts list --text       # OpenCode logins saved on this machine
+ade providers opencode accounts activate --id <id> --text
+ade providers opencode accounts rename --id <id> --label Work --text
+ade providers opencode accounts remove --id <id> --text
 ade scene preview /tmp/chart.html --text         # render a scene the way a chat will: screenshot path, timings, problems
 cat draft.md | ade scene preview - --theme light  # a fence or a bare body on stdin; --width sets the frame width (default 720)
 

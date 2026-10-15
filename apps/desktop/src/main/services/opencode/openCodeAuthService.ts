@@ -28,7 +28,8 @@ import {
   openCodeMethodFormAnswer,
 } from "./openCodeAuthMethods";
 import { buildOpenCodeConfig, sharedOpenCodeProfileFor } from "./openCodeConfig";
-import { readOpenCodeCredentials } from "./openCodeCredentials";
+import { bumpOpenCodeCredentialsGeneration, readOpenCodeCredentials } from "./openCodeCredentials";
+import { forgetSyncedCloudLoginsFor } from "./openCodeCloudLoginSync";
 import { forgetRouteSecretsForSource } from "../chat/harnessPresetConfigHomes";
 import {
   clearOpenCodeInventoryCache,
@@ -45,10 +46,21 @@ const POLL_REQUEST_TIMEOUT_MS = 10_000;
 /** Used only when OpenCode does not say when its attempt expires. */
 const DEFAULT_OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * The ADE account's settings, as the brain holds them. Only the brain has
+ * this; without it cloud logins stay on this machine and are not synced.
+ */
+export type OpenCodeAccountSettingsAccess = {
+  isSignedIn: () => boolean;
+  get: (scope: string, key: string) => unknown;
+  set: (scope: string, key: string, value: unknown) => boolean;
+};
+
 export type OpenCodeAuthDeps = {
   projectRoot: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   logger: Logger;
+  accountSettings?: OpenCodeAccountSettingsAccess | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -64,7 +76,7 @@ function errorMessage(error: unknown): string {
  * A lease on the shared server. By default its config only seeds a server that
  * is starting, so taking it never rewrites the config a running chat uses.
  */
-async function acquireAuthLease(
+export async function acquireAuthLease(
   deps: OpenCodeAuthDeps,
   configMode: "if-starting" | "providers" = "if-starting",
 ): Promise<OpenCodeServerLease> {
@@ -193,6 +205,8 @@ async function pollStatus(
     if (activeFlows.get(providerId) !== flow) return;
     const state = status.data;
     if (state.status === "complete") {
+      // The new login is now the provider's login in use.
+      bumpOpenCodeCredentialsGeneration();
       finishFlow(providerId, "connected");
       void probeOpenCodeProviderInventory({
         projectRoot: deps.projectRoot,
@@ -346,12 +360,26 @@ export async function clearProviderKey(
 ): Promise<{ ok: boolean; error?: string }> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
+  // Its cloud logins leave the ADE account too, or the next sync would set
+  // them up again. The account goes first and the local key second: a failed
+  // account write changes nothing, and a failed key delete puts the account's
+  // list back. Only that non-secret list is ever restored, never a key.
+  const forgotten = forgetSyncedCloudLoginsFor(deps, providerId);
+  if (!forgotten.ok) {
+    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Nothing was disconnected; try again.` };
+  }
   try {
     deleteStoredApiKey(providerId);
   } catch (err) {
     const error = errorMessage(err);
     deps.logger.warn("opencode.provider_key_delete_failed", { providerId, error });
-    return { ok: false, error: `ADE could not delete its stored key: ${error}` };
+    const restored = forgotten.undo();
+    return {
+      ok: false,
+      error: restored
+        ? `ADE could not delete its stored key: ${error}`
+        : `ADE could not delete its stored key (${error}), and the ${providerId} cloud logins could not be put back in your ADE account. Disconnect again to finish.`,
+    };
   }
   clearOpenCodeInventoryCache();
   // Routes into other harnesses copied this sign-in's token into ADE's proxy
@@ -370,6 +398,7 @@ export async function clearProviderKey(
       } finally {
         lease.release();
       }
+      bumpOpenCodeCredentialsGeneration();
     }
     // The deleted ADE key must also leave a running server's config.
     await refreshRunningServerConfig(deps);

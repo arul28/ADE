@@ -423,6 +423,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
@@ -1620,6 +1623,19 @@ declare global {
         clearOpencodeProviderKey: (args: {
           providerId: string;
         }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
+        /** OpenCode logins on the pinned machine, one provider's or all; never a secret. */
+        opencodeAccounts: (args: { providerId?: string | null }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountsResult>;
+        /** Make one login the one every chat on that machine uses for its provider. */
+        opencodeAccountActivate: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        opencodeAccountRename: (args: { id: string; label: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        opencodeAccountRemove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<OpenCodeAccountActionResult>;
+        /** Add a cloud login (gcloud, an AWS profile) and save it to the ADE account. */
+        opencodeCloudConnect: (args: {
+          providerId: string;
+          methodIndex: number;
+          inputs?: Record<string, string>;
+          label?: string;
+        }, pin?: OpenProjectBinding | null) => Promise<OpenCodeCloudConnectResult>;
         refreshModelsDev: (pin?: OpenProjectBinding | null) => Promise<{ lastFetchedAt: number | null }>;
         /** Every model a harness can reach outside its own sign-in (Custom providers). */
         listHarnessRoutes: (pin?: OpenProjectBinding | null) => Promise<import("../shared/harnessRoutes").HarnessRouteCatalog>;

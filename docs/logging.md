@@ -346,6 +346,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | feature | action | outcome | provider property |
 | --- | --- | --- | --- |
 | `provider_accounts` | `account_created`, `account_removed`, `account_signed_out`, `default_selected` | `completed` | Claude/Codex family |
+| `provider_accounts` | `account_created` (a cloud login), `account_signed_out`, `default_selected` (the login in use) | `completed` | `opencode` only, never the upstream provider; at most one per action per hour by the shared dedupe |
 | `provider_accounts` | `balance_changed`, `auto_start_changed` | `enabled`, `disabled` | Claude/Codex family |
 | `provider_accounts` | `subagent_cache_changed` | `enabled` (1 hour), `disabled` (the Claude default) | Claude only |
 | `provider_accounts` | `main_cache_changed` | `enabled` (5 minutes or 1 hour chosen), `disabled` (Automatic) | Claude only |

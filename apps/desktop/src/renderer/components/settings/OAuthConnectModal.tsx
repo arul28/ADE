@@ -80,7 +80,7 @@ function promptVisible(
 function buildPromptDefaults(prompts: OpenCodeProviderAuthPrompt[]): Record<string, string> {
   const defaults: Record<string, string> = {};
   for (const prompt of prompts) {
-    defaults[prompt.key] = prompt.type === "select" ? prompt.options?.[0]?.value ?? "" : "";
+    defaults[prompt.key] = prompt.defaultValue ?? (prompt.type === "select" ? prompt.options?.[0]?.value ?? "" : "");
   }
   return defaults;
 }
@@ -112,6 +112,7 @@ export function OAuthConnectModal({
   providerId,
   providerName,
   methods,
+  initialMethodIndex,
   onClose,
   onConnected,
 }: {
@@ -119,6 +120,8 @@ export function OAuthConnectModal({
   providerName: string;
   /** The provider's full auth-method list (index is meaningful to the backend). */
   methods: OpenCodeProviderAuthMethod[];
+  /** The OAuth method to open on, when the user already picked one. */
+  initialMethodIndex?: number;
   onClose: () => void;
   onConnected: () => void;
 }) {
@@ -137,7 +140,9 @@ export function OAuthConnectModal({
     () => methods.map((method, index) => ({ method, index })).filter((entry) => entry.method.type === "oauth"),
     [methods],
   );
-  const [methodIndex, setMethodIndex] = useState(() => oauthMethods[0]?.index ?? 0);
+  const [methodIndex, setMethodIndex] = useState(() =>
+    oauthMethods.find((entry) => entry.index === initialMethodIndex)?.index ?? oauthMethods[0]?.index ?? 0,
+  );
   const method = methods[methodIndex];
   const prompts = method?.prompts ?? [];
 

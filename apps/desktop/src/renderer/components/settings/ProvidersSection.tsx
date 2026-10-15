@@ -722,7 +722,7 @@ export function ProvidersSection({
   const popularOpenCodeProviders = useMemo(() => {
     const popularIds = [
       ...API_KEY_PROVIDERS.map((p) => p.provider),
-      ...Object.keys(authMethods ?? {}).filter((id) => authMethods?.[id]?.some((m) => m.type === "oauth")),
+      ...Object.keys(authMethods ?? {}).filter((id) => authMethods?.[id]?.some((m) => m.type !== "api")),
       KIMI_PROVIDER_ID,
     ];
     const connectedIds = new Set(

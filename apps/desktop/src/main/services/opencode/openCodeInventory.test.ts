@@ -72,7 +72,7 @@ describe("OpenCode provider inventory", () => {
     try {
       __setOpenCodeInventoryPersistencePathForTests(cachePath);
       fs.writeFileSync(cachePath, JSON.stringify({
-        version: 2,
+        version: 3,
         entries: {
           [projectRoot]: {
             savedAt: Date.now(),

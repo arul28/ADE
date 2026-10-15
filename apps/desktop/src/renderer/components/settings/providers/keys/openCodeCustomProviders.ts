@@ -80,11 +80,15 @@ export async function persistOpenCodeProviderBlock(
 ): Promise<void> {
   const id = draft.providerId.trim();
   if (!id) return;
+  // The sheet does not show the request options; an edit keeps them.
+  const previous = entries.find((entry) => entry.id === id);
   await saveCustomProviders(withCustomProvider(entries, {
     id,
     name: draft.label.trim() || id,
     baseURL: draft.baseUrl.trim(),
     npm: npmForProtocol(draft.protocol),
     models: draft.models,
+    ...(previous?.encoding ? { encoding: previous.encoding } : {}),
+    ...(previous?.cacheFormat ? { cacheFormat: previous.cacheFormat } : {}),
   }), pin);
 }

@@ -63,21 +63,35 @@ export function openCodeFormPrompt(field: OpenCodeFormField): OpenCodeProviderAu
   const whenEntry = field.when?.[0];
   const when = whenEntry ? { key: whenEntry.key, op: whenEntry.op, value: String(whenEntry.value) } : undefined;
   const message = trimmedOrNull(field.title) ?? field.key;
-  const shared = { key: field.key, message, ...(when ? { when } : {}) };
-  if (field.type === "string" && field.options?.length && !field.custom) {
-    return {
-      type: "select",
-      ...shared,
-      options: field.options.map((option) => ({
+  const description = trimmedOrNull(field.description);
+  const shared = {
+    key: field.key,
+    message,
+    ...(description ? { description } : {}),
+    ...(field.required ? { required: true } : {}),
+    ...(when ? { when } : {}),
+  };
+  const options = field.type === "string"
+    ? (field.options ?? []).map((option) => ({
         label: option.label,
         value: option.value,
         ...(option.description ? { hint: option.description } : {}),
-      })),
-    };
+      }))
+    : [];
+  const defaultValue = field.type === "string" ? trimmedOrNull(field.default) : null;
+  if (field.type === "string" && options.length && !field.custom) {
+    return { type: "select", ...shared, options, ...(defaultValue ? { defaultValue } : {}) };
   }
   if (field.type === "boolean") return { type: "select", ...shared, options: [...BOOLEAN_OPTIONS] };
-  if (field.type === "string" && field.placeholder) return { type: "text", ...shared, placeholder: field.placeholder };
-  return { type: "text", ...shared };
+  // A string that also takes a typed value keeps its choices as suggestions:
+  // a cloud sign-in lists the projects and profiles it found on the machine.
+  return {
+    type: "text",
+    ...shared,
+    ...(field.type === "string" && field.placeholder ? { placeholder: field.placeholder } : {}),
+    ...(defaultValue ? { defaultValue } : {}),
+    ...(options.length ? { options } : {}),
+  };
 }
 
 /**

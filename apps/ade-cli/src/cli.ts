@@ -3503,13 +3503,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Provider accounts on this machine
 
   Claude and Codex each keep a whole signed-in identity inside one config
-  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE provider account is one
-  of those directories plus a label, so several logins can live side by side on
-  one machine. Other providers have a single identity per machine and are not
-  listed here.
+  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE account for either is
+  one of those directories plus a label, so several logins can live side by side
+  on one machine. OpenCode keeps provider logins in its own credential store;
+  use \`ade providers opencode accounts\` to inspect and manage those logins.
 
-  ADE never drives a provider's sign-in: \`add\` prints the exact command and env
-  var to run so the login lands in the new directory. \`remove\` signs a
+  ADE never drives Claude or Codex sign-in: \`add\` prints the exact command
+  and env var to run so the login lands in the new directory. \`remove\` signs a
   signed-in account out with the provider CLI's own logout, then forgets it; the
   directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
@@ -3529,6 +3529,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
+
+  OpenCode logins (on this machine):
+    $ ade providers opencode accounts list --text
+    $ ade providers opencode accounts activate --id <id> --text
+    $ ade providers opencode accounts rename --id <id> --label Work --text
+    $ ade providers opencode accounts remove --id <id> --text
+    For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
+    \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
   Use an account for one session:
     $ ade chat create --lane <lane> --provider claude --instance work
@@ -17423,6 +17431,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
+  if (group === "opencode") return buildOpenCodeProvidersPlan(args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -17514,6 +17523,44 @@ function buildProvidersPlan(args: string[]): CliPlan {
   throw new CliUsageError(
     "providers accounts supports list, add, remove, rename, default, login, or refresh.",
   );
+}
+
+const OPENCODE_ACCOUNT_ACTIONS: Record<string, string> = {
+  list: "opencodeAccounts",
+  ls: "opencodeAccounts",
+  activate: "opencodeAccountActivate",
+  use: "opencodeAccountActivate",
+  default: "opencodeAccountActivate",
+  rename: "opencodeAccountRename",
+  remove: "opencodeAccountRemove",
+  rm: "opencodeAccountRemove",
+  delete: "opencodeAccountRemove",
+};
+
+/** OpenCode credentials live in OpenCode's own machine-local store. */
+function buildOpenCodeProvidersPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
+  const group = firstPositional(args);
+  if (group !== "accounts" && group !== "account") {
+    throw new CliUsageError("providers opencode supports `accounts <list|activate|rename|remove>`.");
+  }
+  const sub = firstPositional(args) ?? "list";
+  const action = OPENCODE_ACCOUNT_ACTIONS[sub];
+  if (!action) {
+    throw new CliUsageError("OpenCode accounts supports list, activate, rename, or remove.");
+  }
+  let input: JsonObject = {};
+  if (action !== "opencodeAccounts") {
+    input.id = requireValue(readValue(args, ["--id", "--account-id"]) ?? firstPositional(args), "account id");
+  }
+  if (action === "opencodeAccountRename") {
+    input.label = requireValue(readValue(args, ["--label", "--name"]) ?? firstPositional(args), "account label");
+  }
+  return {
+    kind: "execute",
+    label: `providers opencode accounts ${sub}`,
+    steps: [actionStep("result", "ai", action, input)],
+  };
 }
 
 function buildActionsPlan(args: string[]): CliPlan {

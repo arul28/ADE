@@ -1,0 +1,245 @@
+/* OpenCode accounts: the list in a provider's dialog, and the add-account
+   dialog. Built from the surface kit's tokens so it reads on every theme. */
+
+.ade-oc-acct {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ade-oc-acct-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.ade-oc-acct-count {
+  font-size: 10px;
+  color: var(--kit-text-3);
+}
+
+.ade-oc-acct-spin {
+  color: var(--kit-text-3);
+}
+
+.ade-oc-acct-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--kit-panel-edge, var(--kit-card-edge));
+  border-radius: var(--radius-md);
+  background: var(--kit-panel-bg, transparent);
+  overflow: hidden;
+}
+
+.ade-oc-acct-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  transition: background-color 100ms ease;
+}
+
+.ade-oc-acct-row + .ade-oc-acct-row {
+  border-top: 1px solid var(--kit-rule);
+}
+
+.ade-oc-acct-row:hover {
+  background: var(--kit-hover);
+}
+
+.ade-oc-acct-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--kit-hover);
+  color: var(--kit-text-2);
+}
+
+.ade-oc-acct-row[data-active="true"] .ade-oc-acct-icon {
+  background: color-mix(in srgb, var(--kit-ok) 14%, transparent);
+  color: var(--kit-ok);
+}
+
+.ade-oc-acct-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ade-oc-acct-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-oc-acct-detail {
+  font-size: 11px;
+  color: var(--kit-text-3);
+  overflow-wrap: anywhere;
+}
+
+.ade-oc-acct-sync {
+  color: var(--kit-text-3);
+}
+
+.ade-oc-acct-readiness {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--kit-text-2);
+}
+
+.ade-oc-acct-readiness[data-state="warn"] {
+  color: var(--kit-warn);
+}
+
+.ade-oc-acct-command {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--kit-hover);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  user-select: all;
+}
+
+.ade-oc-acct-copy {
+  width: 20px;
+  height: 20px;
+}
+
+.ade-oc-acct-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  min-height: 24px;
+}
+
+.ade-oc-acct-actions .kit-tag {
+  margin-right: 4px;
+}
+
+.ade-oc-acct-actions .kit-icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.ade-oc-acct-signout:hover:not(:disabled) {
+  color: var(--kit-crit);
+}
+
+.ade-oc-acct-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+}
+
+.ade-oc-acct-hint {
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+
+/* Add-account dialog. */
+
+.ade-oc-add-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ade-oc-add-row {
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.ade-oc-add-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ade-oc-add-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+
+.ade-oc-add-sub {
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+
+.ade-oc-cloud-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ade-oc-cloud-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ade-oc-cloud-field .kit-input {
+  width: 100%;
+}
+
+.ade-oc-cloud-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+
+.ade-oc-cloud-optional {
+  margin-left: 4px;
+  font-weight: 400;
+  color: var(--kit-text-3);
+}
+
+.ade-oc-cloud-hint {
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+
+.ade-oc-cloud-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--kit-text-2);
+}
+
+.ade-oc-cloud-note svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.ade-oc-cloud-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
