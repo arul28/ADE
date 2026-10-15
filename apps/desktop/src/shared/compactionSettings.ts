@@ -12,6 +12,17 @@ export type ProviderCompactionSettings = {
   idleMode?: "ask" | "always" | "never";
 };
 
+/**
+ * The Compact first mode a provider runs with when nothing is stored. Claude
+ * has shown the offer since it shipped; every other provider starts at `never`,
+ * so nobody who never opened the setting meets one. One definition, read by the
+ * brain and by the Settings select, so the shown default and the effective
+ * default cannot drift.
+ */
+export function compactionIdleModeDefault(provider: string | null | undefined): "ask" | "never" {
+  return provider === "claude" ? "ask" : "never";
+}
+
 export function normalizeCompactionSettings(value: unknown): ProviderCompactionSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;

@@ -1,7 +1,7 @@
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
-import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { claudeCompactionSettings, claudeCompactWindow, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
 import { claudeToolProfileOrNull, noteClaudeCodeInit } from "../ai/claudeCodeInit";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
@@ -21454,8 +21454,9 @@ export function createAgentChatService(args: {
     }
     if (event.type === "context_compact" || event.type === "codex_context_compaction") {
       // A compaction that ended releases any Compact first hold on this chat
-      // before the rest of the event is bookkept.
-      if (event.state !== "started") settleCompactionWaiters(managed.session.id);
+      // before the rest of the event is bookkept. Terminal states only: an
+      // event with no state is not evidence that the compaction finished.
+      if (event.state === "completed" || event.state === "failed") settleCompactionWaiters(managed.session.id);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -40848,11 +40849,13 @@ export function createAgentChatService(args: {
    * turning it on in Settings → Providers is what shows it.
    */
   const compactionIdleModeFor = (session: { provider?: string; instanceId?: string | null }): "ask" | "always" | "never" => {
-    const stored = compactionSettingsForSession(session).idleMode;
-    if (stored) return stored;
-    return session.provider === "claude" ? "ask" : "never";
+    return compactionSettingsForSession(session).idleMode ?? compactionIdleModeDefault(session.provider);
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
+  /** OpenCode runs `/compact` only when its server lists the command. */
+  const openCodeCompactListed = (sessionId: string): boolean =>
+    getSlashCommands({ sessionId, provider: "opencode" })
+      .some((command) => command.name.replace(/^\//, "") === "compact");
   const compactionSignatureFor = (managed: ManagedChatSession) =>
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
   /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
@@ -55274,7 +55277,11 @@ export function createAgentChatService(args: {
       // Pending input includes Claude's native resume_return, which owns its
       // send; never combine it with ADE's pill.
       if (args.compactFirst === true && compactFirstSupportedProvider(managed.session.provider) && !isManualCompactCommand(args.text) && isIdleForCompactFirst(managed)) {
-        const offer = compactFirstOffer(await compactFirstArgs(managed));
+        // OpenCode answers `/compact` only when its server lists the command;
+        // without it the text would reach the model as a literal prompt, so the
+        // brain refuses the same way the client hides the offer.
+        const runnable = managed.session.provider !== "opencode" || openCodeCompactListed(managed.session.id);
+        const offer = runnable ? compactFirstOffer(await compactFirstArgs(managed)) : null;
         // Checked again: a turn may have started while the history loaded.
         if (offer && isIdleForCompactFirst(managed)) {
           if (managed.session.provider === "claude") {
@@ -55310,7 +55317,8 @@ export function createAgentChatService(args: {
       reviewed.restore();
       // The compaction still runs; report how it ends.
       if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, false);
-      if (compactFirstInline === "failed") emitCompactFirstFallbackNotice(managed);
+      // No fallback notice here: the message was refused, so "your message was
+      // sent with the full chat" would be untrue.
       throw error;
     }
   }
@@ -59632,7 +59640,7 @@ export function createAgentChatService(args: {
       laneId: row.laneId,
       provider,
       model,
-      ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
+      ...(provider === "opencode" ? { manualCompactAvailable: openCodeCompactListed(row.id) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }),

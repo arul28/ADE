@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { claudeSubagentWindowIneffective, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
+import { claudeSubagentWindowIneffective, compactionIdleModeDefault, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
 import { providerSupportsManualCompact } from "../../../../shared/contextCompaction";
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { showToast } from "../../app/toast/toastStore";
@@ -11,14 +11,6 @@ const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_0
 
 /** Providers whose `/compact` ADE can run, so the idle offer can exist for them. */
 const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode"]);
-
-/**
- * Claude's offer is on by default (it has been since the pill shipped); every
- * other provider starts at Never, so nothing changes until someone turns it on.
- */
-function defaultIdleMode(provider: string): "ask" | "never" {
-  return provider === "claude" ? "ask" : "never";
-}
 
 /**
  * The window the pill waits out, named per provider from each vendor's own
@@ -104,7 +96,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       </>}
       {COMPACT_FIRST_PROVIDERS.has(provider) ? <ModernRow title="After the cache expires"
         hint={compactFirstIdleHint(provider)}
-        control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? defaultIdleMode(provider)}
+        control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? compactionIdleModeDefault(provider)}
           className={FIELD_CLASS}
           onChange={(event) => void save({ ...settings, idleMode: event.target.value as "ask" | "always" | "never" })}>
           <option value="ask">Ask (pill)</option>
