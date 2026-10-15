@@ -10,6 +10,8 @@ import { ImageViewer } from "./viewers/ImageViewer";
 import { MarkdownViewer } from "./viewers/MarkdownViewer";
 import { HtmlViewer } from "./viewers/HtmlViewer";
 import { CsvViewer } from "./viewers/CsvViewer";
+import { SpreadsheetViewer } from "./viewers/SpreadsheetViewer";
+import { PresentationViewer } from "./viewers/PresentationViewer";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { MediaViewer } from "./viewers/MediaViewer";
 import { DocumentViewer } from "./viewers/DocumentViewer";
@@ -77,6 +79,10 @@ export function ViewerHost(props: ViewerHostProps) {
       return <HtmlViewer key={tab.id} {...viewerProps} />;
     case "csv":
       return <CsvViewer key={tab.id} {...viewerProps} />;
+    case "spreadsheet":
+      return <SpreadsheetViewer key={tab.id} {...viewerProps} />;
+    case "presentation":
+      return <PresentationViewer key={tab.id} {...viewerProps} />;
     case "pdf":
       return <PdfViewer key={tab.id} {...viewerProps} />;
     case "audio":

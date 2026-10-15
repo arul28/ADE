@@ -162,6 +162,7 @@
     "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^7.0.1",
+    "fflate": "^0.8.3",
     "framer-motion": "^12.34.2",
     "geist": "^1.7.0",
     "jpeg-js": "^0.4.4",

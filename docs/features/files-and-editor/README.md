@@ -228,14 +228,33 @@ Renderer:
   the search panel, the create prompt (`overlays.tsx`, which now holds
   `CreatePromptModal` and the shared modal chrome only), and
   viewers for code, markdown, sandboxed HTML, image, audio/video playback, CSV/TSV,
-  PDF, Office-document fallback, large text, binary, and diffs.
+  PDF, spreadsheets (`.xlsx`), presentations (`.pptx`), the Office-document
+  fallback, large text, binary, and diffs.
   `v2/viewerRegistry.ts` decides both which viewer renders a file and
   whether a tab is editable (`tabIsTextEditable` = editable viewer kind
   AND a full, non-binary text payload). The markdown Preview↔Source and
   HTML Preview↔Source and CSV Table↔Source viewers share
   `viewers/ViewerModeToggle.tsx` for the
   toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
-  last mode across viewer remounts (e.g. the reload after a save).
+  last mode across viewer remounts (e.g. the reload after a save). The
+  presentation viewer uses both for its Slides↔Outline toggle, so a
+  `.pptx` remembers its mode the same way a `.csv` does.
+- `apps/desktop/src/renderer/components/files/v2/viewers/office/` — the
+  OOXML readers behind those two viewers: `ooxmlZip.ts` (lazy fflate,
+  entry-scoped reads, a streaming byte cap), `ooxmlXml.ts` (namespace-aware
+  lookups, entity decoding, event-loop yields), `xlsx.ts` and `pptx.ts`
+  (the display models), and `ooxmlError.ts` (a typed failure reason each
+  viewer turns into copy). See [Office previews](#office-previews).
+- `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
+  — the shell both office viewers share: size pre-check, capped byte stream,
+  parse through a dynamic import, cancellation, and the one failure card (with
+  a retry only where retrying can help). `load` is held in a ref, so a caller
+  passing an inline arrow cannot restart the read on a re-render.
+- `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
+  — the one "no in-app preview" card (icon, name, mime · size, an honest
+  notice, Copy full path, Open externally). `DocumentViewer` renders it for
+  documents with no renderer, and the spreadsheet/presentation viewers reuse it
+  when the bytes turn out to be something their parser refuses.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers, and an
@@ -708,6 +727,10 @@ reported missing forever. Such a path is opened anyway and a real read error is
 allowed to speak for itself. Only a bare name, where the index is the only thing
 that can turn it into a path, gets the "can't find that file" toast.
 
+Whichever surface receives the click, the viewer is chosen by extension: a
+spreadsheet or a presentation path an agent writes into a reply opens on the
+native preview rather than a metadata card (see [Office previews](#office-previews)).
+
 See [../chat/README.md](../chat/README.md#source-file-map) for the parsing and
 resolution contract.
 
@@ -810,6 +833,53 @@ can be concatenated without corrupting text. Binary/image/PDF range
 responses, plus audio/video and Office-document ranges, are base64-encoded
 per range; consumers must treat each range as independently decodable bytes
 and advance only by `nextOffset`.
+
+## Office previews
+
+A `.xlsx` opened from the Files tab, the Work tools-pane Files panel, or a chat
+attachment previews natively: a virtualized grid with the sheet's own column
+letters, row numbers, column widths, and date/number formats, with sheet tabs
+and a row × column count. A `.pptx` gets a slide rail and a canvas drawn from the
+deck's real geometry, pictures and tables, plus an Outline view and arrow-key
+navigation scoped to the viewer itself.
+
+The readers are ADE's own (`viewers/office/`) on top of a bounded zip reader,
+which is what keeps "native preview" from costing anything until someone asks
+for one:
+
+- **Nothing loads until a file is opened.** `fflate` is imported dynamically
+  from `ooxmlZip.ts` and is the only zip dependency; `openXlsx` / `openPptx`
+  load the same way. Neither the parser nor the zip library is on the Files
+  route's startup path.
+- **Reads are scoped and capped.** Only the archive's central directory is held;
+  each part is inflated on demand, and the cap is enforced on the bytes as they
+  arrive (a declared-size check rejects the obvious case first, but the arriving
+  bytes are the guarantee — a deflate stream can expand past any header). One
+  budget spans the whole package, so 300 slide parts cannot add up to gigabytes.
+  A file over 25 MB, an entry over 24 MB, 64 MB of parts, or an embedded image
+  over 12 MB reports "too large" and falls back to the open-externally card.
+- **The model is bounded, not the file.** A sheet materializes at most
+  2,000 rows × 64 columns and says "showing the first 2,000 of 5,000 rows"
+  instead of growing; a deck parses at most 300 slides, 120 shapes per slide,
+  50 table rows × 20 columns per table, and 200 outline lines per slide.
+  The grid virtualizes rows (`@tanstack/react-virtual`), so the DOM stays one
+  screenful however long the sheet is.
+- **Parsing yields.** A worksheet body is scanned in row chunks that yield to
+  the event loop, so a very long sheet cannot freeze a frame, and the
+  decompression runs in fflate's worker wherever the runtime has one.
+
+Legacy binary formats are a different format, not a different extension: `.xls`
+and `.ppt` are OLE2 compound files, so they stay on the fallback card, which
+says so plainly. The same OLE2 signature is also how an encrypted
+(password-protected) OOXML package is recognized. `.xlsm` and `.pptm` are not
+routed to the previews yet. What a preview deliberately does not draw is counted
+rather than dropped — a slide reads "Not shown in this preview: 2 charts, 1
+picture" — and a formula with no cached result shows the formula text instead of
+a blank cell.
+
+This is a desktop and hosted-web decision: the classification lives in the
+renderer (`v2/viewerRegistry.ts`), so iOS keeps its own handling of these
+formats and is unaffected.
 
 ## Trust boundary
 

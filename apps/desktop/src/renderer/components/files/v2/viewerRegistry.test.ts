@@ -14,8 +14,12 @@ describe("resolveViewerKind", () => {
     ["csv", { path: "data/rows.csv" }, "csv"],
     ["tsv", { path: "data/rows.tsv" }, "csv"],
     ["word document", { path: "docs/spec.docx", isBinary: true }, "document"],
-    ["powerpoint document", { path: "deck.pptx", isBinary: true }, "document"],
-    ["excel document", { path: "budget.xlsx", isBinary: true }, "document"],
+    // The OOXML formats preview natively; the legacy OLE2 ones stay on the
+    // open-externally card (see viewerRegistry's extension sets).
+    ["powerpoint presentation", { path: "deck.pptx", isBinary: true }, "presentation"],
+    ["excel workbook", { path: "budget.xlsx", isBinary: true }, "spreadsheet"],
+    ["legacy powerpoint", { path: "deck.ppt", isBinary: true }, "document"],
+    ["legacy excel", { path: "budget.xls", isBinary: true }, "document"],
     ["html", { path: "public/index.html" }, "html"],
     ["htm", { path: "legacy/index.htm" }, "html"],
     ["markdown", { path: "README.md" }, "markdown"],
@@ -53,7 +57,7 @@ describe("resolveViewerKind", () => {
     for (const kind of ["code", "markdown", "html", "csv"] as const) {
       expect(viewerIsEditable(kind)).toBe(true);
     }
-    for (const kind of ["image", "pdf", "audio", "video", "document", "largeText", "binary", "diff", "conflict"] as const) {
+    for (const kind of ["image", "pdf", "audio", "video", "document", "spreadsheet", "presentation", "largeText", "binary", "diff", "conflict"] as const) {
       expect(viewerIsEditable(kind)).toBe(false);
     }
   });
