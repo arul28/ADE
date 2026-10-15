@@ -484,16 +484,22 @@ export function createChatScheduledWorkScheduler(
    */
   const followClaimOwner = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
     clearTimer(schedule.id);
-    const persisted = normalizeState(await options.loadState()).schedules
-      .find((candidate) => candidate.id === schedule.id);
+    let persisted: ChatScheduledWorkRecord | undefined;
+    try {
+      persisted = normalizeState(await options.loadState()).schedules
+        .find((candidate) => candidate.id === schedule.id);
+    } catch {
+      // Unreadable shared state: look again at the next check.
+    }
     // A cron stays armed here for its later occurrences, so wait for the owner
-    // to move it on; a one-shot the owner started is settled by the owner.
+    // to move it on; a one-shot the owner started is settled by the owner. An
+    // older fireAt is a stale write, not the owner's outcome.
     const ownerMoved = persisted != null && (
       isTerminal(persisted)
-      || persisted.fireAt !== schedule.fireAt
+      || (persisted.fireAt != null && schedule.fireAt != null && persisted.fireAt > schedule.fireAt)
       || (persisted.status === "fired" && schedule.kind !== "cron")
     );
-    if (!ownerMoved || schedules.get(schedule.id) !== schedule) {
+    if (!ownerMoved || !persisted || schedules.get(schedule.id) !== schedule) {
       armBusyDeferRetry(schedule);
       return;
     }
