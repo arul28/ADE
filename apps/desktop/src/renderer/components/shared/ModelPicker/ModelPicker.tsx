@@ -113,6 +113,12 @@ export type ModelPickerProps = {
    * Omit it on a surface that cannot carry the tier, so the chip stays Fast.
    */
   fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast. Passing it puts a
+   * badge on the selected row so a tier the server declined or downgraded is
+   * visible instead of the chip silently claiming the request.
+   */
+  effectiveFastTier?: string | null;
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** @deprecated Older alias for {@link ModelPickerProps.fastMode}. */
   fastModeActive?: boolean;
@@ -181,6 +187,7 @@ export const ModelPicker = memo(function ModelPicker({
   constrainToAvailableModelIds = false,
   fastMode,
   fastTier,
+  effectiveFastTier = null,
   onFastModeChange,
   fastModeActive,
   onFastModeToggle,
@@ -543,6 +550,7 @@ export const ModelPicker = memo(function ModelPicker({
                 fastMode={fastModeOn}
                 fastTier={fastTier ?? null}
                 ultrafastEnabled={fastTier !== undefined}
+                {...(effectiveFastTier ? { effectiveFastTier } : {})}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}

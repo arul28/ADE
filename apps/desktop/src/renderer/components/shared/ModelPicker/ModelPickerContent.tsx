@@ -212,6 +212,11 @@ export type ModelPickerContentProps = {
   fastTier?: FastTier | null;
   /** The surface can carry Fast's tier; only then do rows offer Ultrafast. */
   ultrafastEnabled?: boolean;
+  /**
+   * The tier the server last reported for this chat's Fast. Shown on the
+   * selected row so a request the server declined or downgraded is visible.
+   */
+  effectiveFastTier?: string | null;
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** Why Fast cannot run with the selected model's other picks; shown on its chip. */
   fastModeUnavailableReason?: string | null;
@@ -247,6 +252,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onFastModeChange,
   fastTier = null,
   ultrafastEnabled = false,
+  effectiveFastTier = null,
   fastModeUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
@@ -1169,6 +1175,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         fastModeOn={!serviceTierMode && fastMode && isActive}
                         fastTier={isActive ? fastTier : null}
                         ultrafastEnabled={ultrafastEnabled}
+                        {...(isActive && !serviceTierMode && effectiveFastTier ? { effectiveFastTier } : {})}
                         {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {

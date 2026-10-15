@@ -843,6 +843,77 @@ describe("ModelPicker", () => {
     expect(otherChip.getAttribute("aria-pressed")).toBe("false");
   });
 
+  describe("the tier the server reported", () => {
+    // Fast is a request. Codex can answer with a different tier than ADE asked
+    // for, and the session records what came back as `codexServiceTier`. The
+    // picker used to ignore it, so a declined tier hid behind a chip still
+    // reading `Ultra`.
+    const ULTRA_GPT: ModelDescriptor = {
+      ...GPT,
+      id: "openai/gpt-5.6-ultra",
+      shortId: "gpt-5.6-ultra",
+      displayName: "GPT-5.6 Ultra",
+      providerModelId: "gpt-5.6-ultra",
+      serviceTiers: ["fast", "ultrafast"],
+    };
+    const effectiveBadge = (row: HTMLElement) =>
+      row.querySelector<HTMLElement>("[data-model-picker-effective-tier]");
+
+    const renderUltrafastChat = async (effectiveFastTier?: string) => {
+      const user = userEvent.setup();
+      render(
+        <ModelPicker
+          value={ULTRA_GPT.id}
+          onChange={vi.fn()}
+          models={[ULTRA_GPT, FAST_GPT_ALT]}
+          fastMode
+          fastTier="ultrafast"
+          onFastModeChange={vi.fn()}
+          {...(effectiveFastTier === undefined ? {} : { effectiveFastTier })}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      return await findModelRow(ULTRA_GPT.id);
+    };
+
+    it("draws nothing until the server has reported one", async () => {
+      const row = await renderUltrafastChat();
+      expect(effectiveBadge(row)).toBeNull();
+    });
+
+    it("names the tier that matches the ask, unmarked", async () => {
+      const row = await renderUltrafastChat("ultrafast");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Ultrafast");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("matched");
+    });
+
+    it("marks a tier the server gave instead of the one ADE asked for", async () => {
+      const row = await renderUltrafastChat("fast");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Fast");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("declined");
+    });
+
+    it("shows an inherited tier it has no name for rather than dropping it", async () => {
+      // The server also answers `default` and `priority` when it inherits the
+      // user's own config.toml — the same declined case under another word.
+      const row = await renderUltrafastChat("priority");
+      const badge = effectiveBadge(row);
+      expect(badge?.textContent).toBe("Priority");
+      expect(badge?.getAttribute("data-model-picker-effective-tier")).toBe("declined");
+    });
+
+    it("stays off a row that is not the chat's own", async () => {
+      // The report belongs to the session. Drawing it on every row would claim
+      // every model runs what this one does.
+      const selected = await renderUltrafastChat("fast");
+      const other = await findModelRow(FAST_GPT_ALT.id);
+      expect(effectiveBadge(selected)).not.toBeNull();
+      expect(effectiveBadge(other)).toBeNull();
+    });
+  });
+
   it("selects the model and enables fast when the chip is clicked on a non-selected row", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

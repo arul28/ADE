@@ -16395,6 +16395,11 @@ export function AgentChatPane({
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}
             fastTier={subagentComposerModel ? null : fastTier}
+            // What Codex last reported for this chat's Fast. Codex is the only
+            // provider that answers with a service tier, so it is absent
+            // everywhere else. A subagent composer runs its own model, so it
+            // does not inherit the chat's report.
+            effectiveFastTier={subagentComposerModel ? null : (selectedSession?.codexServiceTier ?? null)}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}

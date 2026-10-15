@@ -19,6 +19,19 @@ import { cn } from "../../ui/cn";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 
+/**
+ * A reported service tier, spelled the way a person reads it. The server
+ * answers with a bare lowercase word — `fast`, `ultrafast`, and also `default`
+ * or `priority` when it inherits the user's own config — and ADE does not
+ * enumerate the set, so an unfamiliar word keeps its own spelling rather than
+ * being dropped.
+ */
+function fastTierLabel(tier: string | null | undefined): string | null {
+  const trimmed = tier?.trim();
+  if (!trimmed) return null;
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
 export type ModelListRowProps = {
   model: ModelDescriptor;
   isFavorite: boolean;
@@ -49,6 +62,14 @@ export type ModelListRowProps = {
   /** The surface carries Fast's tier, so a model that offers Ultrafast cycles to it. */
   ultrafastEnabled?: boolean;
   /**
+   * The tier the server last reported for this chat's Fast, when it has
+   * reported one. Fast is a *request*: Codex can answer `thread/start` with a
+   * different tier than ADE asked for, and until ADE says so the picker claims
+   * a tier the chat is not running. Only the chat's own row carries this —
+   * the report belongs to the session, not to every model in the list.
+   */
+  effectiveFastTier?: string | null;
+  /**
    * Why Fast cannot run with this row's other picks (an OpenCode effort with
    * no Fast route). The chip dims, shows the reason, and cannot turn Fast on.
    * It can still turn Fast off.
@@ -77,6 +98,7 @@ export const ModelListRow = memo(function ModelListRow({
   fastModeOn = false,
   onFastModeChange,
   fastTier = null,
+  effectiveFastTier = null,
   ultrafastEnabled = false,
   fastUnavailableReason = null,
   serviceTierMode = false,
@@ -96,6 +118,17 @@ export const ModelListRow = memo(function ModelListRow({
   const offersUltrafast = ultrafastEnabled && showFastChip && modelSupportsUltrafast(model);
   const ultrafastOn = offersUltrafast && fastModeOn && fastTier === "ultrafast";
   const activeTier = serviceTierMode ? serviceTier : (fastModeOn ? "fast" : null);
+  // Fast is what ADE *asked* for; `effectiveFastTier` is what the server
+  // reported. When they disagree the chip used to keep claiming the request,
+  // so a tier the server declined or downgraded was invisible. The badge says
+  // what the chat is really running, and is marked when that is not the ask.
+  const requestedFastTier = showFastChip && fastModeOn ? (ultrafastOn ? "ultrafast" : "fast") : null;
+  const effectiveFastLabel = fastTierLabel(effectiveFastTier);
+  const fastTierDeclined = Boolean(
+    effectiveFastLabel
+    && requestedFastTier
+    && effectiveFastLabel.toLowerCase() !== requestedFastTier,
+  );
   const reducedMotion = usePrefersReducedMotion();
   const thinks = Boolean(model.capabilities?.reasoning) || (model.reasoningTiers?.length ?? 0) > 0;
   const seesImages = Boolean(model.capabilities?.vision);
@@ -384,6 +417,27 @@ export const ModelListRow = memo(function ModelListRow({
             </button>
           ) : reservesSpeedSlot ? (
             <span aria-hidden className={cn("shrink-0", serviceTierMode ? "w-[78px]" : "w-[58px]")} />
+          ) : null}
+
+          {/* What the server reported for this chat's Fast, next to the chip
+              that asked for it. Only the chat's own row carries it: the report
+              is the session's, not the model's, and reading it on every row
+              would claim every model runs what this one does. */}
+          {showFastChip && isActive && effectiveFastLabel ? (
+            <span
+              data-model-picker-effective-tier={fastTierDeclined ? "declined" : "matched"}
+              title={fastTierDeclined
+                ? `The server is running ${effectiveFastLabel}, not the ${fastTierLabel(requestedFastTier)} this chat asked for.`
+                : `The server is running ${effectiveFastLabel}, as asked.`}
+              className={cn(
+                "inline-flex h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9px] font-semibold uppercase leading-none tracking-wide",
+                fastTierDeclined
+                  ? "border-amber-400/40 bg-amber-400/[0.10] text-amber-200/90"
+                  : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55",
+              )}
+            >
+              {effectiveFastLabel}
+            </span>
           ) : null}
 
           <button
