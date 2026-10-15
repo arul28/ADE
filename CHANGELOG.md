@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.107] - 2026-10-15
+
+### Desktop and web
+
+- Fork a chat to another provider on another machine (#1641).
+- The primary lane stops showing old pull requests once back on main (#1639).
+- The Focus grid stays live with the sidebar collapsed (#1640).
+- Project move fixes: check agent model, banner scope, Codex trust (#1638).
+- Simulator cleanup stays on its original project (#1596).
+- Quiet provider checks and restored model controls (#1623).
+
+### iOS
+
+- The primary lane stops showing old pull requests once back on main (#1639).
+
 ## [1.2.106] - 2026-10-15
 
 ### Desktop and web
@@ -2512,7 +2527,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.106...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.107...HEAD
+[1.2.107]: https://github.com/arul28/ADE/compare/v1.2.106...v1.2.107
 [1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
 [1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
 [1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
