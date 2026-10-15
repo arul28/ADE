@@ -40,7 +40,9 @@ export function parseJiraError(error: unknown): ParsedJiraError | null {
       : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
         ? error.message
         : "";
-  const match = /^\[jira:([a-z-]+)\]\s*(.*)$/s.exec(message);
+  // Electron wraps errors from the runtime ("Error invoking remote method …:
+  // Error: [jira:…] …"), so the tag can sit anywhere in the message.
+  const match = /\[jira:([a-z-]+)\]\s*(.*)$/s.exec(message);
   if (!match || !JIRA_ERROR_REASONS.includes(match[1] as JiraErrorReason)) return null;
   const retryAt = typeof error === "object" && error !== null && "retryAt" in error
     && typeof error.retryAt === "string"
@@ -51,4 +53,11 @@ export function parseJiraError(error: unknown): ParsedJiraError | null {
     message: match[2] ?? "",
     ...(retryAt ? { retryAt } : {}),
   };
+}
+
+/** The text to show a person for a failed Jira call: the tagged message without wrappers. */
+export function jiraErrorMessage(error: unknown, fallback: string): string {
+  const parsed = parseJiraError(error);
+  if (parsed?.message) return parsed.message;
+  return error instanceof Error && error.message ? error.message : fallback;
 }

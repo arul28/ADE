@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CalendarBlank, CaretDown, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import type { JiraComment, JiraCreateMeta, JiraIssueDetail, JiraTransition, JiraUser } from "../../../shared/types/jira";
 import type { IssueRef } from "../../../shared/issueRefs";
-import { parseJiraError } from "../../../shared/jiraErrors";
+import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { PickerMenu, type PickerOption } from "./IssuePickerMenu";
 import { JiraStatusIcon } from "../lanes/jiraBrand";
@@ -279,7 +279,7 @@ function Activity({
       });
       setNextCursor(page.nextCursor);
     } catch (error) {
-      setCommentError(error instanceof Error ? error.message : "Couldn't load older comments.");
+      setCommentError(jiraErrorMessage(error, "Couldn't load older comments."));
     } finally {
       setLoadingOlder(false);
     }
@@ -293,7 +293,7 @@ function Activity({
       setComments(page.comments);
       setNextCursor(page.nextCursor);
     } catch (error) {
-      setInitialError(error instanceof Error ? error.message : "Couldn't load comments.");
+      setInitialError(jiraErrorMessage(error, "Couldn't load comments."));
     } finally {
       setInitialLoading(false);
     }

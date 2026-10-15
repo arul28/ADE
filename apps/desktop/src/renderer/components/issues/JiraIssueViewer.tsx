@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { Hash, LinkSimple, MarkdownLogo, TreeStructure } from "@phosphor-icons/react";
 import type { JiraCreateMeta, JiraIssueDetail, JiraTransition, JiraUser } from "../../../shared/types/jira";
-import { parseJiraError } from "../../../shared/jiraErrors";
+import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import type { IssueRef } from "../../../shared/issueRefs";
@@ -63,7 +63,7 @@ export function JiraIssueViewer({
     try {
       setTransitions(await window.ade.jira.listTransitions({ key: issue.key }));
     } catch (error) {
-      showToast({ tone: "error", title: `Couldn't load ${issue.key} statuses`, message: error instanceof Error ? error.message : "Jira request failed." });
+      showToast({ tone: "error", title: `Couldn't load ${issue.key} statuses`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
   }, [issue]);
   const loadAssignees = useCallback(async () => {
@@ -71,7 +71,7 @@ export function JiraIssueViewer({
     try {
       setAssignees(await loadJiraAssignableUsers(entry.projectRoot, { projectKey: issue.projectKey, key: issue.key }));
     } catch (error) {
-      showToast({ tone: "error", title: `Couldn't load assignees for ${issue.key}`, message: error instanceof Error ? error.message : "Jira request failed." });
+      showToast({ tone: "error", title: `Couldn't load assignees for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
   }, [entry.projectRoot, issue]);
   const loadLabels = useCallback(async () => {
@@ -79,7 +79,7 @@ export function JiraIssueViewer({
     try {
       setLabels(await loadJiraLabels(entry.projectRoot));
     } catch (error) {
-      showToast({ tone: "error", title: `Couldn't load labels for ${issue.key}`, message: error instanceof Error ? error.message : "Jira request failed." });
+      showToast({ tone: "error", title: `Couldn't load labels for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
   }, [entry.projectRoot, issue]);
   const loadCreateMeta = useCallback(async () => {
@@ -87,7 +87,7 @@ export function JiraIssueViewer({
     try {
       setCreateMeta(await loadJiraCreateMeta(entry.projectRoot, issue.projectKey));
     } catch (error) {
-      showToast({ tone: "error", title: `Couldn't load priorities for ${issue.key}`, message: error instanceof Error ? error.message : "Jira request failed." });
+      showToast({ tone: "error", title: `Couldn't load priorities for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
   }, [entry.projectRoot, issue]);
 
@@ -96,7 +96,7 @@ export function JiraIssueViewer({
     const fail = (error: unknown) => showToast({
       tone: "error",
       title: `Couldn't update ${issue.key}`,
-      message: error instanceof Error ? error.message : "Jira rejected the change.",
+      message: jiraErrorMessage(error, "Jira rejected the change."),
     });
     const edit = (patch: Parameters<typeof editJiraIssue>[3], optimistic: Partial<JiraIssueDetail>) => {
       void editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, patch, optimistic).catch(fail);

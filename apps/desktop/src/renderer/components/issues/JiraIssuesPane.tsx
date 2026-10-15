@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import type { JiraIssueListState, JiraIssueSummary } from "../../../shared/types/jira";
-import { parseJiraError } from "../../../shared/jiraErrors";
+import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import { useJiraIssueList, useJiraProjects } from "./jiraIssueStore";
 import { relativeWhen } from "../../lib/format";
@@ -80,7 +80,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
     ...availableProjects.map((entry) => ({ id: entry.key, label: `${entry.key} · ${entry.name}`, keywords: entry.name })),
   ], [availableProjects, boundProjectKeys.length]);
   const selectedProject = availableProjects.find((entry) => entry.key === selectedProjectKey);
-  const projectDisplay = selectedProject?.key ?? selectedProjectKey ?? (boundProjectKeys.length ? "Bound projects" : "All projects");
+  const projectDisplay = selectedProject?.key || selectedProjectKey || (boundProjectKeys.length ? "Bound projects" : "All projects");
   const projectKeys = selectedProjectKey ? [selectedProjectKey] : boundProjectKeys;
   const filters = useMemo(() => ({
     projectKeys,
@@ -103,7 +103,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setProjectConfigError(error instanceof Error ? error.message : "Couldn't load this project's Jira settings.");
+        setProjectConfigError(jiraErrorMessage(error, "Couldn't load this project's Jira settings."));
         setProjectConfigLoaded(true);
       });
     return () => { cancelled = true; };

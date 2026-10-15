@@ -1,3 +1,4 @@
+import { jiraErrorMessage } from "../../../shared/jiraErrors";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, CircleNotch, LinkBreak } from "@phosphor-icons/react";
 import type { JiraConnectionStatus, JiraProject } from "../../../shared/types/jira";
@@ -47,7 +48,7 @@ export function JiraSection() {
       if (status.email) setEmail(status.email);
       rememberJiraConnectionStatus(projectRoot, status, pinRef.current);
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "Couldn't load Jira connection status.");
+      setConnectionError(jiraErrorMessage(error, "Couldn't load Jira connection status."));
     } finally {
       setLoading(false);
     }
@@ -60,7 +61,7 @@ export function JiraSection() {
       setProjects(await window.ade.jira.listProjects({}, pinRef.current));
     } catch (error) {
       setProjects([]);
-      setProjectError(error instanceof Error ? error.message : "Couldn't load Jira projects.");
+      setProjectError(jiraErrorMessage(error, "Couldn't load Jira projects."));
     } finally {
       setProjectLoading(false);
     }
@@ -72,7 +73,7 @@ export function JiraSection() {
       const snapshot = await window.ade.projectConfig.get(pinRef.current);
       setProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : "Couldn't load this project's Jira project bindings.");
+      setProjectError(jiraErrorMessage(error, "Couldn't load this project's Jira project bindings."));
     }
   }, []);
 
@@ -108,7 +109,7 @@ export function JiraSection() {
       window.dispatchEvent(new Event(JIRA_CONNECTION_CHANGED_EVENT));
       if (!status.connected) setConnectionError(status.error?.message ?? "Jira did not accept these credentials.");
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "Couldn't connect Jira.");
+      setConnectionError(jiraErrorMessage(error, "Couldn't connect Jira."));
     } finally {
       setBusy(false);
     }
@@ -124,7 +125,7 @@ export function JiraSection() {
       rememberJiraConnectionStatus(projectRoot, status, pinRef.current);
       window.dispatchEvent(new Event(JIRA_CONNECTION_CHANGED_EVENT));
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "Couldn't disconnect Jira.");
+      setConnectionError(jiraErrorMessage(error, "Couldn't disconnect Jira."));
     } finally {
       setBusy(false);
     }
@@ -151,7 +152,7 @@ export function JiraSection() {
       setProjectKeys(nextKeys);
       window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT));
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : "Couldn't save Jira project bindings.");
+      setProjectError(jiraErrorMessage(error, "Couldn't save Jira project bindings."));
       await loadProjectBinding();
     } finally {
       setProjectBusy(false);
