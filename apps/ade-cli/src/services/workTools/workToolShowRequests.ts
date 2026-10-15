@@ -188,6 +188,12 @@ export function createWorkToolShowRequests(args: {
     status: WorkToolShowStatus,
     desktopLabel: string | null,
     opened = false,
+    /**
+     * The surface that is actually on screen, when the ack named a different
+     * one than the request did (see `WorkToolShowAck.shownAs`). The answer the
+     * agent reads names what it can find, not what it asked for.
+     */
+    shownAs: WorkToolShowSurface | null = null,
   ): boolean => {
     const entry = pending.get(requestId);
     if (!entry) return false;
@@ -196,19 +202,21 @@ export function createWorkToolShowRequests(args: {
     if (entry.heldTimer) clearTimeout(entry.heldTimer);
     if (entry.retargetTimer) clearTimeout(entry.retargetTimer);
     const { request } = entry;
+    const surface = shownAs ?? request.surface;
     args.logger?.info("work_tools.show_settled", {
       requestId,
-      surface: request.surface,
+      surface,
+      requestedSurface: request.surface,
       chatSessionId: request.chatSessionId,
       status,
     });
     entry.resolve({
       status,
-      surface: request.surface,
+      surface,
       chatSessionId: request.chatSessionId,
       requestId,
       desktopLabel,
-      message: describeWorkToolShowResult(status, request.surface, desktopLabel, opened),
+      message: describeWorkToolShowResult(status, surface, desktopLabel, opened),
     });
     return true;
   };
@@ -281,7 +289,8 @@ export function createWorkToolShowRequests(args: {
       const entry = pending.get(requestId);
       if (!entry) return { ok: false };
       const desktopLabel = trimmedOrNull(record.desktopLabel);
-      if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel) };
+      const shownAs = isWorkToolShowSurface(record.shownAs) ? record.shownAs : null;
+      if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel, false, shownAs) };
       if (record.status !== "held") return { ok: false };
       const opened = record.opened === true;
       if (!entry.held) {

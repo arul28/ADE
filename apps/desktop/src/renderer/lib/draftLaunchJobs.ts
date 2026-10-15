@@ -74,6 +74,8 @@ export type DraftLaunchSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast was set to Codex's Ultrafast tier; absent is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   interactionMode: AgentChatInteractionMode;

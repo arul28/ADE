@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.104] - 2026-10-14
+
+### Desktop and web
+
+- Meta Muse Code as a first-class provider, chat and CLI (#1614).
+- The resume after an install waits for the install to finish (#1618).
+- Windows: live model lists, browser timeouts and chat reopening; Sentry on every surface (#1612).
+- Apple Inspect selects the element you click (#1619).
+
 ## [1.2.103] - 2026-10-13
 
 ### Desktop and web
@@ -2476,7 +2485,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.103...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.104...HEAD
+[1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
 [1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
 [1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
 [1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101

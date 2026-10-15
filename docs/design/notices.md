@@ -161,8 +161,8 @@ Pick a named layer and never type a z-index:
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
+| `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
-| `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
 | `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |
 | `nestedDialog` | 210 | A confirm or prompt raised from inside another dialog |

@@ -1005,7 +1005,7 @@ describe("storageMaintenanceJournal", () => {
     };
     insertLock("lane-locked", lockedPath, "lock-before-scan");
     const archive = vi.fn(async () => {});
-    const getReclaimRisk = vi.fn(async (laneId: string) => {
+    const getReclaimRisk = vi.fn(async ({ laneId }: { laneId: string }) => {
       if (laneId === "lane-raced") insertLock(laneId, racedPath, "lock-during-scan");
       return {
         laneId,
@@ -1055,7 +1055,7 @@ describe("storageMaintenanceJournal", () => {
     await service.runLifecycleScanNow();
 
     expect(getReclaimRisk).toHaveBeenCalledTimes(1);
-    expect(getReclaimRisk).toHaveBeenCalledWith("lane-raced");
+    expect(getReclaimRisk).toHaveBeenCalledWith({ laneId: "lane-raced" });
     expect(archive).not.toHaveBeenCalled();
     service.dispose();
     fixture.cleanup();
@@ -1184,7 +1184,7 @@ describe("storageMaintenanceJournal", () => {
         isEditProtected: row.is_edit_protected === 1,
         status: { dirty: false },
       }))),
-      getReclaimRisk: vi.fn(async (laneId: string) => ({
+      getReclaimRisk: vi.fn(async ({ laneId }: { laneId: string }) => ({
         laneId,
         dirty: false,
         activeChatCount: 0,

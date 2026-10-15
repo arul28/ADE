@@ -578,7 +578,7 @@ export function describeUnpublishedAccountDirectory(
       // its sync host is failing and retrying, and telling someone sync is off
       // sends them looking for a switch that is already on.
       return {
-        summary: "sync hasn't started on this computer yet",
+        summary: "other devices can't reach this computer yet",
         nextAction: "Start sync",
       };
     case "missing_pairing_connect_info":
@@ -2332,6 +2332,8 @@ export type SyncStartCliSessionArgs = {
   modelId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast";
   /** @deprecated Use fastMode. Accepted for older callers. */
   codexFastMode?: boolean | null;
   /**

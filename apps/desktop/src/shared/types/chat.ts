@@ -2899,6 +2899,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   /** Cursor Cloud service tier; absent/null means let Cursor choose. */
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
@@ -3118,6 +3124,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
@@ -3968,6 +3980,12 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
@@ -4174,6 +4192,8 @@ export type AgentChatCliLaunchProvider =
  * launch. Provider/model/permission build the startup command server-side.
  */
 export type AgentChatLaunchCliArgs = {
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast" | null;
   laneId: string;
   provider: AgentChatCliLaunchProvider;
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
@@ -4300,6 +4320,8 @@ export type AgentChatHandoffArgs = {
    */
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -4338,6 +4360,8 @@ export type AgentChatCrossMachineTargetConfig = {
   targetModelId: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -5704,6 +5728,12 @@ export type AgentChatUpdateSessionArgs = {
   modelId?: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;

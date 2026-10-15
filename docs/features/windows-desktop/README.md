@@ -299,9 +299,8 @@ Policy lives at the service and action boundaries, never in prompts:
   `macDesktop.stop`), and so is a lane with no Windows screen. The older
   `macDesktop.stopPrivate` (private screen only) stays for phones that predate
   `stopSeat`; a host that advertises neither shows no **Stop**.
-- Proof, recording, streaming and the turn time-lapse are the Mac Desktop
-  contract, unchanged, so a phone or browser can watch a Windows lane with the
-  same viewers.
+- Proof, recording and streaming are the Mac Desktop contract, unchanged, so a
+  phone or browser can watch a Windows lane with the same viewers.
 - A recording's raw file is the driver's H.264 MP4. At the stop the desktop
   app's Chromium demo engine makes the demo from it (cuts, speed-ups, zoom,
   pointer, step captions, chapters), as `ade-media` does on macOS; see
@@ -312,8 +311,6 @@ Policy lives at the service and action boundaries, never in prompts:
   with the reason (text and JSON). A movie whose sample tables claim more
   entries than the file holds is refused the same way, before anything is
   allocated for it.
-- A turn's time-lapse clip is deleted when a newer one replaces it, unless a
-  proof artifact points at the file.
 - An ADE desktop app started as administrator cannot be reached by the
   background service (Windows refuses the medium-integrity brain access to the
   elevated app's pipe), so agents get no built-in browser, App Control

@@ -89,6 +89,30 @@ streaming in the background, perf runs off.
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 
+### Composer pickers
+
+`SCREENCAST=1 interaction.mjs pickers 8`, warm rounds, two runs, on the Work
+composer of a new chat (dev build, 2026-10-14, on `e3bf1ff82` plus the picker
+redesign). "Before" is the same app session with the pre-redesign pickers.
+`SCREENCAST=1` keeps a covered dev window drawing; without it a hidden window
+draws no frames and every row waits out its cap.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---|---|---|
+| Model picker: open to first frame | `interaction.mjs pickers` | 83–88 ms | 80–82 ms | 110 ms |
+| Model picker: long frames while opening | same | 57–67 ms | 65–66 ms | 85 ms |
+| Model picker: switch provider rail (Cursor, 5 sub-tabs) | same | 59–63 ms | 42 ms | 80 ms |
+| Model picker: switch provider rail (Anthropic) | same | 22–24 ms | 22 ms | 40 ms |
+| Effort picker: open to first frame | same | 25–26 ms | 23 ms | 40 ms |
+| Permission picker: open to first frame | same | 12–15 ms | 13 ms | 30 ms |
+
+Opening the model picker is mostly React mounting the panel in the dev build
+and Radix placing it (two forced layouts). Its rows are a fixed 50 px so the
+virtual list never measures them; rendered rows are kept to one screen plus
+four. A popover's open/close animation applies to the popper wrapper's child
+only: a descendant selector made every nested Radix part with `data-state`
+(each row's context-menu trigger) fade out and back on each open.
+
 ### Brain and services
 
 Run without the app (`scripts/perf/service/`).
@@ -186,7 +210,7 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
-| `interaction.mjs tabs\|chats\|projects [rounds]` | Per tab, chat or project switch: time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
+| `interaction.mjs tabs\|chats\|projects\|pickers [rounds]` | Per tab, chat or project switch, or composer picker open (`pickers`; `SCREENCAST=1` for a covered window): time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |

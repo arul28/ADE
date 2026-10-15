@@ -240,6 +240,12 @@ export type RecentlyInstalledUpdate = {
    * predates the field.
    */
   resumedChats?: UpdateInterruptedChat[];
+  /**
+   * When the installed notice was dismissed while `resumedChats` were still
+   * un-armed. The record outlives the notice for that alone: the next launch
+   * still owes these chats a continue row. Absent while the notice is up.
+   */
+  noticeDismissedAt?: string;
 };
 
 /**

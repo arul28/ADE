@@ -158,8 +158,6 @@ export type MacDesktopInputDeps = {
   leases: MacDesktopLeaseRegistry;
   /** `streamServer.noteActivity`: a driven display is a watched display. */
   noteStreamActivity: (laneId: string) => void;
-  /** `recording.noteTurnActivity`: the turn clip only runs while acts arrive. */
-  noteTurnActivity: (laneId: string, chatSessionId: string | null | undefined) => void;
   /** Maps a driver/ownership/observation error onto the service's error type. */
   toServiceError: (error: unknown) => Error;
   /** Mints the service's own error, so this module owns no error class. */
@@ -539,7 +537,6 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
-    deps.noteTurnActivity(laneId, args.chatSessionId);
     if (failure) {
       const refused = macDesktopRefusedNextStep({
         action: args.action,
@@ -696,7 +693,6 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
-    deps.noteTurnActivity(laneId, args.chatSessionId);
     // A person's own clicks on the live view count for the demo too; their
     // pointer moves do not (sixty a second, and the drawn pointer follows
     // actions, not motion).

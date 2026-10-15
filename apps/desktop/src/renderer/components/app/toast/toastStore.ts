@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { captureProblem } from "../../../../shared/sentry/capture";
+import { forwardLogToSentry } from "../../../../shared/sentry/logBridge";
 import type { NoticeTone } from "../../ui/notice/noticeTones";
 import type { ToastCardAction, ToastCardModel, ToastChip } from "../../ui/notice/ToastCard";
 
@@ -153,20 +153,18 @@ function toastGroupKey(title: string): string {
  */
 export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
-  // An error the user is shown is an error ADE should hear about. The message
-  // rides along only when it is plain text (a rendered node can hold anything).
+  // An error the user is shown is an error ADE should hear about, as a Sentry
+  // Log and a breadcrumb on the next issue. Not an issue of its own: the
+  // failure behind it (an IPC call, a render crash) already opened one, with a
+  // stack; a toast only repeats it under its title. The message rides along
+  // only when it is plain text (a rendered node can hold anything).
   if (input.tone === "error") {
     const group = toastGroupKey(input.title);
-    captureProblem(`Toast: ${group}`, {
-      tags: { surface: "toast" },
-      // Toast text is UI copy plus an error message, but an error message can
-      // quote what it failed on; a short prefix is enough to recognise it.
-      extra: {
-        title: input.title.slice(0, TOAST_TEXT_LIMIT),
-        ...(typeof input.message === "string" ? { message: input.message.slice(0, TOAST_TEXT_LIMIT) } : {}),
-      },
-      fingerprint: ["toast", group],
-      level: "warning",
+    // Toast text is UI copy plus an error message, but an error message can
+    // quote what it failed on; a short prefix is enough to recognise it.
+    forwardLogToSentry("warn", `toast.${group}`, {
+      title: input.title.slice(0, TOAST_TEXT_LIMIT),
+      ...(typeof input.message === "string" ? { message: input.message.slice(0, TOAST_TEXT_LIMIT) } : {}),
     });
   }
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;

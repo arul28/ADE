@@ -588,12 +588,11 @@ final class ProductAnalytics {
     !Self.isOptedOut(defaults: defaults)
   }
 
-  /// An explicit opt-out an earlier build stored, or `DO_NOT_TRACK=1` in the
-  /// environment (as on desktop). Nothing in the app can change either, so both
-  /// are honored silently: default on, unless one of these is set.
-  static func isOptedOut(defaults: UserDefaults) -> Bool {
-    defaults.object(forKey: enabledDefaultsKey) as? Bool == false
-      || isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"])
+  /// Analytics (and Sentry, which follows it) is always on in shipped builds.
+  /// Only `DO_NOT_TRACK=1` in the launch environment, a developer run from
+  /// Xcode, turns it off. An opt-out stored by an earlier build is ignored.
+  static func isOptedOut(defaults _: UserDefaults) -> Bool {
+    isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"])
   }
 
   /// `1`, `true` or `yes`, in any case: the same reading as desktop's `doNotTrack.ts`.

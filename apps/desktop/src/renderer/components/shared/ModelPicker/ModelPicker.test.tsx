@@ -616,32 +616,48 @@ describe("ModelPicker", () => {
     expect(favoriteStore.has(OPUS.id)).toBe(true);
   });
 
-  it("gives every row one line of detail under the name", async () => {
+  // The detail line says what the panel does not: inside a provider's own rail
+  // that provider is the panel title, so rows drop it and keep the route and
+  // the context size; a mixed list (Recents) names the provider on each row.
+  it.each([
+    {
+      name: "a provider's own rail",
+      models: () => [SONNET, OPUS],
+      value: SONNET.id,
+      recent: null as string | null,
+      rowId: SONNET.id,
+      shows: "200K context",
+      hides: "Anthropic",
+    },
+    {
+      name: "a routed provider's rail, which keeps the route",
+      models: () => [OPENCODE_MODEL],
+      value: OPENCODE_MODEL.id,
+      recent: null as string | null,
+      rowId: OPENCODE_MODEL.id,
+      shows: "Anthropic · 200K context",
+      hides: "OpenCode ·",
+    },
+    {
+      name: "Recents, which mixes providers",
+      models: () => [SONNET, OPUS],
+      value: SONNET.id,
+      recent: OPUS.id as string | null,
+      rowId: OPUS.id,
+      shows: "Anthropic · 1M context",
+      hides: null as string | null,
+    },
+  ])("names only what the panel does not in $name", async ({ models, value, recent, rowId, shows, hides }) => {
+    if (recent) recentStore.unshift(recent);
     const user = userEvent.setup();
-    render(
-      <ModelPicker value={SONNET.id} onChange={vi.fn()} models={[SONNET, OPUS]} />,
-    );
+    render(<ModelPicker value={value} onChange={vi.fn()} models={models()} />);
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
-    // The complaint this answers: rows were a name and nothing else, so two
-    // models that differ only in what they can hold looked identical.
-    expect((await findModelRow(SONNET.id)).textContent).toContain("Anthropic · 200K context · reasoning");
-    expect((await findModelRow(OPUS.id)).textContent).toContain("Anthropic · 1M context · reasoning");
-  });
-
-  it("names the route a model actually takes on its detail line", async () => {
-    const user = userEvent.setup();
-    render(
-      <ModelPicker
-        value={OPENCODE_MODEL.id}
-        onChange={vi.fn()}
-        models={[OPENCODE_MODEL]}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /Select model/i }));
-
-    expect((await findModelRow(OPENCODE_MODEL.id)).textContent)
-      .toContain("OpenCode · Anthropic · 200K context · reasoning");
+    const row = await findModelRow(rowId);
+    expect(row.textContent).toContain(shows);
+    if (hides) expect(row.textContent).not.toContain(hides);
+    // Reasoning and image input are the capability pill's job, not the line's.
+    expect(row.textContent).not.toContain("reasoning");
   });
 
   it("names the Pi provider on a pi/ row whose descriptor carries no pi-sdk route", async () => {
@@ -663,11 +679,6 @@ describe("ModelPicker", () => {
     expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
   });
 
-  // Reference act/fireEvent to satisfy "no-unused" linters in the future.
-  it("imports act and fireEvent without using them at runtime", () => {
-    expect(typeof act).toBe("function");
-    expect(typeof fireEvent.click).toBe("function");
-  });
 
   it("shows the model name on the trigger even when compact", () => {
     renderPicker({ compact: true });

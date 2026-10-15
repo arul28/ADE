@@ -530,9 +530,11 @@ Renderer — onboarding:
   to Repair the stored sign-in then Reconnect; active/signed_out names both
   causes and offers both actions. No machine-repair copy says "Sign in again":
   the person is signed in, and the browser step is called "Confirm it's you".
-  Rows show the install beside the name (`accountMachineRowLabel`, "MacBook Pro
-  · ADE Alpha", with the ADE home on hover), so two installs on one Mac do not
-  look like a duplicate. The Remove sheet starts with a warning for a machine
+  Rows show the name alone (`accountMachineRowName`) and name the install
+  separately beside it only when it is not the regular app
+  (`accountMachineInstallLabel`, "MacBook Pro" then "ADE Alpha"), with the ADE
+  home on hover, so two installs on one Mac do not look like a duplicate. The
+  Remove sheet starts with a warning for a machine
   seen in the last five minutes ("It was active 2 minutes ago. Removing it
   disconnects it from your account until someone confirms it on that
   computer.") from `accountMachineRemovalConfirmBody`, the same body the web
