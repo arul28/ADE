@@ -1063,6 +1063,23 @@ export function createSessionService({
   };
 
   /**
+   * PR links are live routing metadata for one chat: an edge or a tombstone for
+   * a session that no longer exists only misroutes later reads. Worse, the edge
+   * keeps counting as a chat claim, which pins the PR to its lane after the chat
+   * that opened it is gone — the primary lane can never shed those, because it
+   * cannot be deleted. The purge rides this cascade so it can never fail the
+   * delete: the row is already gone by the time it runs.
+   */
+  const clearSessionPrChatLinks = (sessionId: string): void => {
+    try {
+      db.run("delete from pull_request_chat_sessions where session_id = ?", [sessionId]);
+      db.run("delete from pull_request_chat_session_dismissals where session_id = ?", [sessionId]);
+    } catch {
+      // An older database may predate the PR link tables.
+    }
+  };
+
+  /**
    * Record what teardown could not confirm it stopped (§3d option 3).
    *
    * Keyed by session so a re-settle REPLACES the previous record rather than
@@ -2617,6 +2634,9 @@ export function createSessionService({
       // already cascaded here.
       settleLifecycle.forget(trimmed);
       clearSettleResidue(trimmed);
+      // Same reason as the lifecycle token: a PR link outliving its chat is
+      // routing metadata aimed at nobody, and it pins the lane's PR badge.
+      clearSessionPrChatLinks(trimmed);
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

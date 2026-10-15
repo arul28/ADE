@@ -2999,9 +2999,10 @@ agent-reply entity chips, and copy behave the same on both devices:
   the pasteboard, not the display labels, so a chip pasted anywhere else is
   still a re-parseable pointer.
 - **N PRs per chat.** `LaneHelpers.swift` mirrors `selectLanePrs` (strictly
-  lane-owned) and `selectChatPrs` (the union with this chat's cross-lane links),
-  and `workChatPrTag` feeds the chat's PR switcher the same badge and sheet the
-  Lanes tab draws. See
+  lane-owned; a primary lane parked on its base branch yields no PRs, chat link
+  included) and `selectChatPrs` (the union with this chat's own links, even when
+  the lane surface dropped the PR), and `workChatPrTag` feeds the chat's PR
+  switcher the same badge and sheet the Lanes tab draws. See
   [Multi-PR lane ownership and chat edges](../pull-requests/README.md#multi-pr-lane-ownership-and-chat-edges).
 - **Attachments while a question is open.** The paperclip stays live during a
   structured question; files staged while answering ride the turn the answer

@@ -334,11 +334,20 @@ func lanePrMatchesCurrentBranch(lane: LaneSummary, pr: PullRequestListItem) -> B
   let laneBranch = normalizedPrBranchName(lane.branchRef)
   let prHeadBranch = normalizedPrBranchName(pr.headBranch)
   guard !laneBranch.isEmpty, !prHeadBranch.isEmpty, laneBranch == prHeadBranch else { return false }
-  if lane.laneType == "primary" {
-    let baseBranch = normalizedPrBranchName(lane.baseRef)
-    if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }
-  }
+  if laneIsOnBaseBranch(lane: lane) { return false }
   return true
+}
+
+/// A primary lane parked on its base branch. The checkout is the project's own
+/// and cannot be deleted, so no PR may stay attached to it — the renderer and
+/// the host's `selectLanePrDisplayCandidate`/`getForLane` gate on the same
+/// state. iOS carries no `branchDrift`, so this reads the recorded branch,
+/// matching `lanePrMatchesCurrentBranch` above.
+func laneIsOnBaseBranch(lane: LaneSummary) -> Bool {
+  guard lane.laneType == "primary" else { return false }
+  let laneBranch = normalizedPrBranchName(lane.branchRef)
+  let baseBranch = normalizedPrBranchName(lane.baseRef)
+  return !laneBranch.isEmpty && !baseBranch.isEmpty && laneBranch == baseBranch
 }
 
 /// Branch-only match for raw GitHub PRs — does NOT require the PR to be linked to
@@ -366,10 +375,7 @@ func lanePrMatchesCurrentBranch(lane: LaneSummary, githubPr: GitHubPrListItem) -
   {
     return false
   }
-  if lane.laneType == "primary" {
-    let baseBranch = normalizedPrBranchName(lane.baseRef)
-    if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }
-  }
+  if laneIsOnBaseBranch(lane: lane) { return false }
   return true
 }
 
@@ -523,8 +529,13 @@ private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String
 /// Only the BRANCH half is relaxed — a PR this lane owns and a chat deliberately
 /// linked stays visible even once the lane moves to another branch, which is
 /// what lifts a lane's cap of one visible PR.
+///
+/// A primary lane parked on its base branch is the exception: it shows no PR at
+/// all, chat link or not, because its row cannot be deleted and history would
+/// otherwise stay pinned to `main` forever.
 func selectLanePrs(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> [PullRequestListItem] {
-  pullRequests
+  if laneIsOnBaseBranch(lane: lane) { return [] }
+  return pullRequests
     .filter { pr in
       if pr.detached != nil { return false }
       guard pr.laneId == lane.id else { return false }
@@ -535,7 +546,9 @@ func selectLanePrs(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> [P
 }
 
 /// Every PR a CHAT should show: what the lane owns, plus any PR this chat
-/// explicitly linked even though another lane owns it. Mirrors desktop
+/// explicitly linked — whether another lane owns it, or the lane surface dropped
+/// it (a primary lane back on its base branch sheds its PR tags, but the chat
+/// that opened the PR still shows the thread that did the work). Mirrors desktop
 /// `selectChatPrs`.
 ///
 /// The two rules have to live apart. Lane surfaces stay strictly lane-owned;
@@ -549,18 +562,17 @@ func selectChatPrs(
   let owned = selectLanePrs(lane: lane, pullRequests: pullRequests)
   let seen = Set(owned.map(\.id))
   let trimmedSession = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  let linkedElsewhere: [PullRequestListItem]
+  let linkedToSession: [PullRequestListItem]
   if trimmedSession.isEmpty {
-    linkedElsewhere = []
+    linkedToSession = []
   } else {
-    linkedElsewhere = pullRequests.filter { pr in
+    linkedToSession = pullRequests.filter { pr in
       pr.detached == nil
-        && pr.laneId != lane.id
         && !seen.contains(pr.id)
         && lanePrChatSessionIds(pr).contains(trimmedSession)
     }
   }
-  return (owned + linkedElsewhere).sorted(by: lanePrTagPrecedes)
+  return (owned + linkedToSession).sorted(by: lanePrTagPrecedes)
 }
 
 /// Scope a set of lane-owned PRs to one chat, lane-first. A row with no link at

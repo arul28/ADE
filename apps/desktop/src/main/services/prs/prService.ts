@@ -2276,6 +2276,19 @@ export function createPrService({
       [projectId],
     );
 
+  /**
+   * A primary lane on its base branch shows no PR anywhere. The checkout is
+   * the project's own and cannot be deleted, so nothing may pin history to it:
+   * not the current-branch match, and not the single-value history fallback in
+   * `getForLane`. The renderer's `selectLanePrs` applies the same gate.
+   */
+  const isPrimaryLaneOnBaseBranch = (lane: LanePrLookupRow): boolean => {
+    if (lane.lane_type !== "primary") return false;
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    const laneBaseBranch = normalizeBranchName(branchNameFromRef(lane.base_ref ?? ""));
+    return Boolean(laneBranch && laneBaseBranch && laneBranch === laneBaseBranch);
+  };
+
   const selectLanePrDisplayCandidate = (args: {
     laneId: string;
     lane: LanePrLookupRow;
@@ -2285,11 +2298,7 @@ export function createPrService({
     if (args.lane.archived_at) return null;
     const laneBranch = normalizeBranchName(branchNameFromRef(args.lane.branch_ref ?? ""));
     if (!laneBranch) return null;
-
-    if (args.lane.lane_type === "primary") {
-      const laneBaseBranch = normalizeBranchName(branchNameFromRef(args.lane.base_ref ?? ""));
-      if (laneBaseBranch && laneBranch === laneBaseBranch) return null;
-    }
+    if (isPrimaryLaneOnBaseBranch(args.lane)) return null;
 
     const mappedCandidates: LanePrDisplayCandidate[] = args.mappedRows
       .filter((row) => row.lane_id === args.laneId && rowMatchesLaneBranchForDisplay(row, args.lane))
@@ -12303,6 +12312,11 @@ export function createPrService({
       if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
         return null;
       }
+      // ...but a primary lane back on its base branch has no PR to hand out —
+      // not even as history. It cannot be deleted, so returning "the newest
+      // retained row" here is what pinned an old merged PR to `main` on every
+      // consumer of this bridge (lane links, Linear cards, proof owners).
+      if (isPrimaryLaneOnBaseBranch(lane)) return null;
       const previous = getRowForLane(laneId);
       const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
       const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));

@@ -307,6 +307,15 @@ export function selectLanePrs(
   // This is the renderer-facing selector used by lane tags, counters, hover
   // lists, Work cards, and chat badges. Historical rows remain in the source
   // list and PR workspace, but never leak into those visible lane surfaces.
+  //
+  // A primary lane parked on its base branch has no lane PR work at all — chat
+  // link or not. The primary lane is the project's own checkout: it cannot be
+  // deleted or archived, so anything still attached when it returns to `main`
+  // (a merged PR a chat once linked, above all) would otherwise stay pinned to
+  // it forever. The main-process single-PR selector
+  // (`selectLanePrDisplayCandidate`) already answers null for this state, and
+  // the Work/tab badges should not disagree with it.
+  if (laneIsOnBaseBranch({ ...lane, branchRef: effectiveLanePrBranchRef(lane) })) return [];
   return prs
     .filter((pr) => {
       if (pr.detached) return false;
@@ -332,7 +341,10 @@ export function selectLanePrs(
 
 /**
  * What a CHAT should show: everything `selectLanePrs` gives the lane, plus any
- * pull request this chat explicitly linked even though another lane owns it.
+ * pull request this chat explicitly linked — whether another lane owns it, or
+ * the lane surface dropped it (a primary lane back on its base branch sheds its
+ * PR tags, but the chat that opened the PR still shows the thread that did the
+ * work).
  *
  * The two rules have to live apart. Lane surfaces (tags, badges, Work cards)
  * must stay strictly lane-owned — relaxing that put one lane's PR on every lane
@@ -347,15 +359,14 @@ export function selectChatPrs(
 ): PrSummary[] {
   const owned = selectLanePrs(lane, prs);
   const seen = new Set(owned.map((pr) => pr.id));
-  const linkedElsewhere = sessionId
+  const linkedToSession = sessionId
     ? prs.filter((pr) => (
       !pr.detached
-      && pr.laneId !== lane.id
       && !seen.has(pr.id)
       && Boolean(pr.chatSessionIds?.includes(sessionId))
     ))
     : [];
-  return [...owned, ...linkedElsewhere].sort(comparePrTags);
+  return [...owned, ...linkedToSession].sort(comparePrTags);
 }
 
 export function selectLanePrTag(
