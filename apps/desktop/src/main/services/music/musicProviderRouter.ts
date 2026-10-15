@@ -12,7 +12,9 @@ import type {
   MusicState,
 } from "../../../shared/types/music";
 import { MUSIC_SPOTIFY_REDIRECT_URI } from "../../../shared/types/music";
+import { writeTextAtomic } from "../shared/utils";
 import type { MusicService } from "./musicService";
+import { clampVolume, type MusicVolumeMemory } from "./musicVolume";
 import { normalizeSpotifyClientId } from "./spotifyAuth";
 import type { SpotifyService } from "./spotifyService";
 
@@ -23,38 +25,105 @@ import type { SpotifyService } from "./spotifyService";
  *
  * The choice and the Spotify Client ID are plain settings in
  * `<userData>/music-player/music-settings.json`: neither is a secret (a PKCE
- * client has no secret). Switching pauses the provider that is playing, so
- * two never play at once.
+ * client has no secret). The volume each player was left at lives there too,
+ * so a launch starts where the slider was instead of at full volume. Switching
+ * pauses the provider that is playing, so two never play at once.
  */
 
-type Settings = { provider: MusicProvider; spotifyClientId: string | null };
+type Settings = {
+  provider: MusicProvider;
+  spotifyClientId: string | null;
+  /** The volume each player was left at (0–1), or null before it was ever set. */
+  volume: Record<MusicProvider, number | null>;
+};
 
 const SETTINGS_FILE = "music-settings.json";
+/**
+ * A slider drag sends a move per percent — each one reaches the store — so the
+ * file is written once the drag settles instead of once per step. A failed
+ * write (a scanner holding the file, a full disk) is retried once, then the
+ * next move tries again; the value itself is in memory either way.
+ */
+const VOLUME_SAVE_MS = 250;
+const VOLUME_SAVE_RETRY_MS = 2_000;
 
 function createMusicSettings(dir: string, logger?: { warn: (event: string, data?: Record<string, unknown>) => void }) {
   const file = path.join(dir, SETTINGS_FILE);
-  let value: Settings = { provider: "apple", spotifyClientId: null };
+  let value: Settings = { provider: "apple", spotifyClientId: null, volume: { apple: null, spotify: null } };
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Settings>;
     value = {
       provider: parsed.provider === "spotify" ? "spotify" : "apple",
       spotifyClientId: normalizeSpotifyClientId(parsed.spotifyClientId),
+      volume: {
+        apple: clampVolume(parsed.volume?.apple),
+        spotify: clampVolume(parsed.volume?.spotify),
+      },
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
       logger?.warn("music.settings_unreadable", { error: error instanceof Error ? error.message : String(error) });
     }
   }
+  /** The slider positions the file does not have yet (a pending write, or one that failed). */
+  let volumeDirty = false;
+  const writeCurrent = () => {
+    writeTextAtomic(file, JSON.stringify(value, null, 2));
+    volumeDirty = false;
+  };
+  let volumeTimer: NodeJS.Timeout | null = null;
+
+  const set = (next: Partial<Settings>) => {
+    const merged = { ...value, ...next };
+    writeTextAtomic(file, JSON.stringify(merged, null, 2));
+    value = merged;
+    // The file has the slider positions too: whatever was pending is on disk.
+    volumeDirty = false;
+  };
+
+  /** Write the slider positions as they stand, once; `again` retries a failure once. */
+  const saveVolumes = (delayMs: number, again: boolean) => {
+    if (volumeTimer) clearTimeout(volumeTimer);
+    volumeTimer = setTimeout(() => {
+      volumeTimer = null;
+      try {
+        writeCurrent();
+      } catch (error) {
+        logger?.warn("music.volume_save_failed", { error: error instanceof Error ? error.message : String(error) });
+        if (again) saveVolumes(VOLUME_SAVE_RETRY_MS, false);
+      }
+    }, delayMs);
+    volumeTimer.unref?.();
+  };
+
   return {
     get: (): Settings => value,
     /** Persist, then remember: a write that fails leaves the old value in force. */
-    set: (next: Partial<Settings>) => {
-      const merged = { ...value, ...next };
-      fs.mkdirSync(dir, { recursive: true });
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
-      fs.renameSync(tmp, file);
-      value = merged;
+    set,
+    /** One provider's remembered volume, in the shape both music services take. */
+    volumeFor: (provider: MusicProvider): MusicVolumeMemory => ({
+      get: () => value.volume[provider],
+      // What arrives here is already clamped and deduped (`createVolumeMemory`).
+      set: (volume) => {
+        const clamped = clampVolume(volume);
+        if (clamped == null) return;
+        value = { ...value, volume: { ...value.volume, [provider]: clamped } };
+        volumeDirty = true;
+        saveVolumes(VOLUME_SAVE_MS, true);
+      },
+    }),
+    /** Write a slider position the file is still missing (ADE is quitting). */
+    flush: (): void => {
+      if (volumeTimer) {
+        clearTimeout(volumeTimer);
+        volumeTimer = null;
+      }
+      if (!volumeDirty) return;
+      try {
+        writeCurrent();
+      } catch (error) {
+        logger?.warn("music.volume_save_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }

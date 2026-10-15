@@ -5,6 +5,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MusicVolumeMemory } from "./musicVolume";
 
 /**
  * The Music service against a fake player host: the child process is faked at
@@ -77,6 +78,9 @@ vi.mock("node:child_process", async (importOriginal) => {
           }
           case "pause":
             return reply(command.rid, { state: "paused", isPlaying: false });
+          case "volume":
+            // The page answers with its snapshot, the applied volume included.
+            return reply(command.rid, { ready: true, volume: command.value });
           case "seek":
             return reply(command.rid, { time: command.position });
           case "authorize":
@@ -132,7 +136,7 @@ const fetchImpl = vi.fn(async (url: string | URL) => {
   return new Response("{}", { status: 404 });
 }) as unknown as typeof fetch;
 
-function service(broadcast: (state: MusicState) => void = () => {}) {
+function service(broadcast: (state: MusicState) => void = () => {}, volume?: MusicVolumeMemory) {
   const dir = tempDir();
   const executable = path.join(dir, "ade-music-host.exe");
   fs.writeFileSync(executable, "");
@@ -148,6 +152,7 @@ function service(broadcast: (state: MusicState) => void = () => {}) {
       set: async (key, value) => { stored.set(key, value); },
       delete: async (key) => { stored.delete(key); },
     },
+    ...(volume ? { volume } : {}),
     broadcast,
     idleUnloadMs: 1_000,
     fetchImpl,
@@ -174,6 +179,31 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("music service: the volume the slider was left at", () => {
+  it("starts the host there and remembers what the user picks", async () => {
+    let saved: number | null = 0.35;
+    const written: Array<number | null> = [0.35];
+    const volume: MusicVolumeMemory = { get: () => saved, set: (value) => { saved = value; written.push(value); } };
+    const { music } = service(() => {}, volume);
+
+    // The slider shows where it was left, and the host is configured with it.
+    expect((await music.getState()).playback.volume).toBe(0.35);
+    await music.warm();
+    expect(commandsOf(0, "configure")).toEqual([expect.objectContaining({ volume: 0.35 })]);
+
+    // What the user picks is the position the next launch starts from.
+    expect(await music.command({ type: "volume", value: 0.5 })).toEqual({ ok: true });
+    expect(saved).toBe(0.5);
+    await music.dispose();
+  });
+
+  it("keeps the full volume when the slider was never set", async () => {
+    const { music } = service();
+    expect((await music.getState()).playback.volume).toBe(1);
+    await music.dispose();
+  });
 });
 
 describe("music service: the player host's lifetime", () => {

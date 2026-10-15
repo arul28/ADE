@@ -81,6 +81,7 @@ export function registerMusicIpc(args: {
   });
   // Both services start before the router; their broadcasts reach it once it exists.
   let router!: MusicRouter;
+  const settings = createMusicSettings(musicDir, args.logger);
   const apple = createMusicService({
     hostExecutable,
     isPackaged: app.isPackaged,
@@ -88,15 +89,16 @@ export function registerMusicIpc(args: {
     appVersion: app.getVersion(),
     tokens,
     credentials: args.credentials,
+    volume: settings.volumeFor("apple"),
     broadcast: (state) => router?.onAppleState(state),
     logger: args.logger,
   });
-  const settings = createMusicSettings(musicDir, args.logger);
   const spotify = createSpotifyService({
     // Spotify plays in the same host as Apple Music, with a profile of its own.
     playerHost: { executable: hostExecutable, userDataDir: path.join(app.getPath("userData"), "music-player-spotify") },
     credentials: args.spotifyCredentials,
     clientId: () => settings.get().spotifyClientId,
+    volume: settings.volumeFor("spotify"),
     openExternal: openExternalUrl,
     broadcast: (state) => router?.onSpotifyState(state),
     logger: args.logger,
@@ -155,9 +157,14 @@ export function registerMusicIpc(args: {
   handle(MUSIC_IPC.transfer, (input: { deviceId: string; play?: boolean }) =>
     service.transfer({ deviceId: str(input?.deviceId), play: input?.play !== false }));
 
-  // The player host must never outlive ADE.
+  // The player host must never outlive ADE, and a slider move made in the last
+  // moment still reaches the settings file. `will-quit` covers the update
+  // install; ADE's own quit path ends at `app.exit()`, which skips it, so the
+  // exit hook is the one that always runs (`flush` writes synchronously).
   app.once("will-quit", () => {
+    settings.flush();
     void service.dispose();
   });
+  process.once("exit", () => settings.flush());
   return service;
 }

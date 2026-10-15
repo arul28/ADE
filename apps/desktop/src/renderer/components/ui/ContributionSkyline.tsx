@@ -83,17 +83,15 @@ export function ContributionSkylineToggle({ view, onChange, className }: { view:
 
 type StatBlock = { label: string; short: string; value: string; unit: string; sub: string };
 
-function CornerStat({ block, size, align }: { block: StatBlock; size: number; align: "start" | "end" }) {
+function CornerStat({ block, size }: { block: StatBlock; size: number }) {
   return (
-    <div className="ade-skyline-corner-stat" data-align={align}>
+    <div className="ade-skyline-corner-stat">
       <span className="ade-skyline-corner-label">{block.label}</span>
       <span className="ade-skyline-corner-value">
         <b className="kit-num" style={{ fontSize: size }}>{block.value}</b>
-        <span>
-          <span className="ade-skyline-corner-unit">{block.unit}</span>
-          <span className="ade-skyline-corner-sub">{block.sub}</span>
-        </span>
+        <span className="ade-skyline-corner-unit">{block.unit}</span>
       </span>
+      <span className="ade-skyline-corner-sub">{block.sub}</span>
     </div>
   );
 }
@@ -331,7 +329,7 @@ export default function ContributionSkyline({
           <>
             <div ref={cornerRef} className="ade-skyline-corner" data-at="side" aria-hidden={!is3d} data-shown={is3d || undefined} style={{ transitionDelay: is3d ? `${Math.round(duration * 0.55)}ms` : "0ms" }}>
               {(stageBox.height >= 300 ? [0, 2, 3, 1] : [0, 1, 2]).map((index) => (
-                <CornerStat key={statBlocks[index]!.label} block={statBlocks[index]!} size={sideSize} align="start" />
+                <CornerStat key={statBlocks[index]!.label} block={statBlocks[index]!} size={sideSize} />
               ))}
             </div>
           </>

@@ -735,7 +735,8 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
   shared welcome surface, adapted for web rather than replaced by a parallel UI.
   It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
-  hero, Working now, Activity & usage, Limits & machines, Pull requests) with the
+  the hero and the widget grid — projects with working now, pull requests with
+  contributions, the clock and weather) with the
   recents side panel. In hosted mode its recents come from `webRecentProjects`
   instead of `project.listRecent`, and the existing `groupRecentProjects` still
   collapses one card per repository, with its machines behind one quiet

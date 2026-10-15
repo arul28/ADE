@@ -15,7 +15,7 @@ import type {
   MusicSearchResult,
   MusicState,
 } from "../../../shared/types/music";
-import { isAdeSpotifyDevice as isAdeDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
+import { isAdeSpotifyDevice as isAdeDevice, MUSIC_SPOTIFY_ADE_DEVICE, MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_DEFAULT_VOLUME, MUSIC_SPOTIFY_NOT_CONFIGURED, musicPositionNow } from "../../../shared/types/music";
 import {
   createSpotifyApi,
   SPOTIFY_NO_DEVICE_MESSAGE,
@@ -33,6 +33,7 @@ import {
   type SpotifySignIn,
   type SpotifyTokens,
 } from "./spotifyAuth";
+import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 import { createSpotifyLocalPlayer, sdkTrack, type SpotifyLocalState } from "./spotifyLocalPlayer";
 
 /**
@@ -127,6 +128,12 @@ export function createSpotifyService(args: {
   broadcast: (state: MusicState) => void;
   /** Where ADE's own Spotify player runs: the music host and a profile folder. Null executable: no local player. */
   playerHost?: { executable: string | null; userDataDir: string };
+  /**
+   * Where the volume slider's position is kept between launches
+   * (`musicProviderRouter`). Absent in tests: the volume then lives as long as
+   * this service does.
+   */
+  volume?: MusicVolumeMemory;
   logger?: Logger;
   fetchImpl?: typeof fetch;
 }) {
@@ -148,6 +155,8 @@ export function createSpotifyService(args: {
   let sessionGen = 0;
   let watchGen = 0;
   let persisting: Promise<unknown> = Promise.resolve();
+  /** The slider was left somewhere: ADE's player starts there, and this keeps it. */
+  const volume = createVolumeMemory(args.volume);
   /** Credential writes and deletes, strictly in the order they were asked for. */
   const persist = (write: () => Promise<void>): Promise<void> => {
     const next = persisting.then(write, write);
@@ -172,7 +181,7 @@ export function createSpotifyService(args: {
       queueLength: 0,
       shuffle: false,
       repeat: 0,
-      volume: 1,
+      volume: volume.saved ?? MUSIC_SPOTIFY_DEFAULT_VOLUME,
     },
     queueRevision: 0,
   };
@@ -337,6 +346,8 @@ export function createSpotifyService(args: {
     hostExecutable: args.playerHost?.executable ?? null,
     userDataDir: args.playerHost?.userDataDir ?? "",
     accessToken: streamingToken,
+    // ADE's player starts at the slider's position, whichever device played last.
+    volume: () => state.playback.volume,
     onState: (localState) => applyLocal(localState),
     onLost: (message) => {
       state.message = message;
@@ -668,9 +679,11 @@ export function createSpotifyService(args: {
           break;
         case "volume": {
           if (device && !device.supportsVolume) throw new Error("This Spotify device doesn't allow volume control from ADE.");
-          const value = Math.max(0, Math.min(1, cmd.value));
+          const value = clampVolume(cmd.value) ?? p.volume;
           if (!(localIsActive() && await local.setVolume(value))) await api.volume(value);
           p.volume = value;
+          // The slider's position is what the next launch starts from.
+          volume.remember(value);
           break;
         }
         case "shuffle":

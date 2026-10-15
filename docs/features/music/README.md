@@ -109,7 +109,8 @@ retry. Missing devices and Premium failures have their own messages.
 | `apps/desktop/src/main/services/music/spotifyLocalPlayer.ts` | ADE's own Spotify player in the music host. |
 | `apps/desktop/native/ADEMusicHostWin/page-spotify/` | The Web Playback SDK page the host runs. |
 | `apps/desktop/src/renderer/components/music/musicApps.tsx` | The Apple Music and Spotify home-page apps. |
-| `apps/desktop/src/main/services/music/musicProviderRouter.ts` | Selected provider routing and persistence. |
+| `apps/desktop/src/main/services/music/musicProviderRouter.ts` | Selected provider routing and persistence (the settings file, and each provider's remembered volume). |
+| `apps/desktop/src/main/services/music/musicVolume.ts` | A provider's remembered volume: the 0–1 clamp, the session copy, and the dedupe both services share. |
 | `apps/desktop/src/renderer/components/music/MusicProviderControls.tsx` | Spotify setup guide and the Playing on menu. |
 | `apps/desktop/src/renderer/components/music/musicProvider.tsx` | Selected provider labels and attribution. |
 
@@ -137,7 +138,12 @@ One visual language in three sizes (`MusicPlayer.tsx`):
 
 The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
 is captured, so a drag may leave the track), or use the arrow, Page, Home and
-End keys. Only `MusicSeek` and the tab's progress line re-render on the position
+End keys. The slider's position is remembered per provider, so the next launch
+starts where it was left instead of at full volume: it lives in
+`<userData>/music-player/music-settings.json` under `volume`, keyed by
+provider, and ADE's own player gets it when it starts. Before it has ever been
+set, Apple Music starts at full volume and Spotify at 80%. Only `MusicSeek` and
+the tab's progress line re-render on the position
 tick (twice and once a second), from the renderer's own interpolation: the main
 process pushes state only when it changes (a steady song pushes nothing; see
 "Position pushes" below), and the store keeps `nowPlaying` and `host` objects

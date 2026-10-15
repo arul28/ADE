@@ -413,9 +413,15 @@ Renderer — onboarding:
   a size class for each and an order; `homeGridPack.ts` fits them to the window
   with no scrolling and no gaps (smaller classes before hiding), and
   `homeLayout.ts` keeps named layouts per computer in localStorage (a second
-  window follows the first's saves). `HomeWidgetPicker.tsx` is the Add widget
-  gallery (live, inert previews that read nothing), `HomeEditTools.tsx` the
-  edit chrome, `homeFeed.ts` the feed and "while you were away", and
+  window follows the first's saves). The shipped stack is Pull requests with
+  Contributions under it, then Projects with Working now under it, and Clock &
+  weather beside them; a build that changes it carries a new
+  `HOME_DEFAULT_STACK_VERSION`, and the next launch puts the new stack in as
+  the "Default" layout and shows it once, for every computer, keeping the
+  layouts the user saved themselves in the switcher (the version is written
+  down then, so it never happens twice). `HomeWidgetPicker.tsx` is the Add
+  widget gallery (live, inert previews that read nothing), `HomeEditTools.tsx`
+  the edit chrome, `homeFeed.ts` the feed and "while you were away", and
   `widgets/` one file per widget. The main-process half is
   `apps/desktop/src/main/services/home/` (clipboard history, machine health and
   ports, weather, Now Playing, share images) behind `ade.home.*`. Design and

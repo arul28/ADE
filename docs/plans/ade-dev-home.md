@@ -360,9 +360,21 @@ want it).**
   card look, headline, widgets) and `main/services/home/` (clipboard, machine
   health, weather, Now Playing, share images).
 - **Layout:** per computer, in localStorage, like Appearance. Named presets
-  live in `ade.home.layouts.v2`; a v1 layout (`ade.home.layout.v1`) loads as
-  "Default", and the active preset is still mirrored there for older builds.
+  live in `ade.home.layouts.v2`, and the active preset is still mirrored to
+  `ade.home.layout.v1`: older builds read it, and this build falls back to it
+  when version 2 is missing or unusable, keeping that layout as a "Previous
+  layout" preset beside the shipped stack.
   `home.layout.next` (Mod+Shift+L, rebindable) cycles presets.
+- **The shipped stack (2026-10-15):** Projects with Working now stacked under
+  it, Pull requests (Compact) with Contributions under it and Clock & weather
+  beside them, three columns. `HOME_DEFAULT_STACK_VERSION` marks the store:
+  a store that has not seen the current version gets the shipped stack as its
+  "Default" preset, active, on the next launch, and the version is written then
+  — once, for every computer, whatever the user had (the layouts they saved
+  themselves stay in the switcher; everything is editable again from there).
+  A store holds `HOME_LAYOUT_PRESETS_STORED_MAX` presets — one more than the
+  user may save — so putting the shipped stack in never drops one of theirs.
+  Bump the version when the stack changes and every user should see it.
 - **Auto-layout, no scrolling, compact cards:** the user picks widgets, a
   size class for each (Compact, Regular, Large; each widget declares the
   shape of each class it offers, its content's minimum, ideal and maximum
@@ -466,8 +478,9 @@ want it).**
   in-memory history (and the file, when kept); Clear empties it.
 
 - **Grid:** the current cards (Projects, Activity & usage, Limits & machines,
-  Pull requests, Working now) become widgets in a grid. The current layout is
-  the default preset, so nothing the user likes moves unless they move it.
+  Pull requests, Working now) become widgets in a grid. The shipped stack is
+  the default preset (see the Layout bullet above); a build that changes it
+  puts the new one in once, and layouts the user saved themselves stay.
 - **Editing:** drag to reorder, small, medium, large and wide sizes, remove,
   and an "Add widget" gallery. Saved layouts can be switched by hotkey.
 - **Appearance controls** (no theme or wallpaper changes): sliders for card

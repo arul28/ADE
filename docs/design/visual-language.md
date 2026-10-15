@@ -143,8 +143,9 @@ is not honoured everywhere).
   `modernpage` and stacks rows under 520px.
 - **Home grid.** A hero line, a row of actions, then a grid of widgets
   (`components/home/`). The default preset is the shipped page: projects with
-  what is working now, activity and usage, limits and machines, pull requests.
-  Users pick widgets, a size class (Compact, Regular, Large) and an order;
+  what is working now, pull requests with contributions, the clock and
+  weather. Users pick widgets, a size class (Compact, Regular, Large) and an
+  order;
   the layout engine fills the page with even rows and no gaps, and hides what
   does not fit behind "N hidden" (in edit mode that note names each hidden
   widget with its own remove). Nothing scrolls: lists show the rows that

@@ -4,7 +4,7 @@ import { confirmDialog, promptDialog } from "../ui/dialog";
 import { Z_LAYERS } from "../ui/zLayers";
 import { useAppStore } from "../../state/appStore";
 import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
-import { HOME_APPS, HOME_LAYOUT_KEYBINDING, HOME_LAYOUT_PRESETS_MAX, useHomeLayoutStore } from "./homeLayout";
+import { HOME_APPS, HOME_LAYOUT_KEYBINDING, HOME_LAYOUT_PRESETS_MAX, savedPresetCount, useHomeLayoutStore } from "./homeLayout";
 import { HomeAppIcon, HOME_APP_LABELS } from "../music/musicApps";
 import { useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
@@ -151,7 +151,7 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
   // A prompt is a dialog over the page; the popover stays put under it.
   const [prompting, setPrompting] = useState(false);
   useDismiss(ref, prompting ? () => {} : onClose);
-  const full = presets.length >= HOME_LAYOUT_PRESETS_MAX;
+  const full = savedPresetCount(presets) >= HOME_LAYOUT_PRESETS_MAX;
   const nameTaken = (value: string, exceptId?: string) =>
     presets.some((preset) => preset.id !== exceptId && preset.name.toLowerCase() === value.trim().toLowerCase())
       ? "A layout already has that name."
@@ -217,7 +217,7 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
       <div className="ade-home-look-foot">
         <span>
           {full
-            ? `${HOME_LAYOUT_PRESETS_MAX} layouts is the most ADE keeps. Delete one to save another.`
+            ? `${HOME_LAYOUT_PRESETS_MAX} saved layouts is the most ADE keeps. Delete one to save another.`
             : shortcut && presets.length > 1 ? `${shortcut} switches layouts.` : "Every change saves to the layout that is showing."}
         </span>
         <button

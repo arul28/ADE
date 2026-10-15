@@ -1,4 +1,5 @@
-import { MUSIC_SPOTIFY_ADE_DEVICE_NAME } from "../../../shared/types/music";
+import { MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_DEFAULT_VOLUME } from "../../../shared/types/music";
+import { clampVolume } from "./musicVolume";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
 import type { SpotifyTrack } from "./spotifyApi";
 
@@ -60,6 +61,8 @@ export function createSpotifyLocalPlayer(args: {
   userDataDir: string;
   /** A current access token with the `streaming` scope, or null when signed out. */
   accessToken: () => Promise<string | null>;
+  /** The volume ADE's player starts at (the slider's position). */
+  volume: () => number;
   onState: (state: SpotifyLocalState | null) => void;
   /** The player stopped on its own (a crash, a lost device). */
   onLost: (reason: string) => void;
@@ -73,7 +76,6 @@ export function createSpotifyLocalPlayer(args: {
   let generation = 0;
   /** The generation the start in flight belongs to. */
   let startingGen = -1;
-  let volume = 0.8;
 
   const available = () => Boolean(args.hostExecutable);
 
@@ -159,7 +161,7 @@ export function createSpotifyLocalPlayer(args: {
         // `ready` carries the timeout; a host that never says it is ready must not hang every play.
         await Promise.race([h.ready, ready.then(() => undefined)]);
         await Promise.race([loaded, ready.then(() => undefined)]);
-        await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume }, READY_TIMEOUT_MS);
+        await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume: clampVolume(args.volume()) ?? MUSIC_SPOTIFY_DEFAULT_VOLUME }, READY_TIMEOUT_MS);
         const id = await ready;
         // Stopped (tab closed, sign-out, switch) while this start was in flight.
         if (gen !== generation) throw new Error("Spotify's player was stopped while it started.");
@@ -219,7 +221,6 @@ export function createSpotifyLocalPlayer(args: {
       return true;
     },
     setVolume: async (value: number): Promise<boolean> => {
-      volume = value;
       if (!host) return false;
       await host.request("volume", { value }, 10_000);
       return true;

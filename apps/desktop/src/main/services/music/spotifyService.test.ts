@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicState } from "../../../shared/types/music";
 import type { MusicHost, MusicHostEvent } from "./musicHostProcess";
 import { startSpotifySignIn } from "./spotifyAuth";
+import type { MusicVolumeMemory } from "./musicVolume";
 import { createSpotifyService, SPOTIFY_CREDENTIAL_KEY } from "./spotifyService";
 
 /**
@@ -40,7 +41,7 @@ const playing = (progressMs: number) => ({
   item: { uri: "spotify:track:abc", name: "Song", duration_ms: 200_000, artists: [{ name: "Artist" }], album: { name: "Album", images: [] } },
 });
 
-function harness(options: { stored?: boolean; playerHost?: boolean; routes: (url: string, init?: RequestInit) => Promise<Response> | Response }) {
+function harness(options: { stored?: boolean; playerHost?: boolean; volume?: MusicVolumeMemory; routes: (url: string, init?: RequestInit) => Promise<Response> | Response }) {
   const files = new Map<string, string>();
   if (options.stored) files.set(SPOTIFY_CREDENTIAL_KEY, JSON.stringify({ clientId: CLIENT_ID, refreshToken: "refresh" }));
   const credentials = {
@@ -58,6 +59,7 @@ function harness(options: { stored?: boolean; playerHost?: boolean; routes: (url
     credentials,
     clientId: () => CLIENT_ID,
     openExternal: async () => {},
+    ...(options.volume ? { volume: options.volume } : {}),
     broadcast: (state) => states.push(state),
     ...(options.playerHost ? { playerHost: { executable: "/fake/ade-music-host", userDataDir: "/fake/profile" } } : {}),
     fetchImpl,
@@ -74,6 +76,8 @@ function harness(options: { stored?: boolean; playerHost?: boolean; routes: (url
 type FakeHost = MusicHost & {
   emit: (event: MusicHostEvent) => void;
   requests: string[];
+  /** Every command with the parameters it carried (`configure`'s volume, for one). */
+  commands: Array<{ cmd: string; params?: Record<string, unknown> }>;
   stopped: boolean;
   /** Runs before a request's reply, as the SDK's own state event does on a pause. */
   beforeReply: Partial<Record<string, () => void>>;
@@ -90,10 +94,12 @@ vi.mock("./musicHostProcess", async (importOriginal) => ({
       pid: 4242,
       ready: Promise.resolve({ browserPid: null, origin: "https://music.ade.local" }),
       requests: [],
+      commands: [],
       stopped: false,
       beforeReply: {},
-      request: async <T,>(cmd: string) => {
+      request: async <T,>(cmd: string, params?: Record<string, unknown>) => {
         host.requests.push(cmd);
+        host.commands.push({ cmd, params });
         // The page answers on a later turn, after the caller has moved on.
         await Promise.resolve();
         host.beforeReply[cmd]?.();
@@ -330,6 +336,31 @@ describe("ADE's own Spotify player", () => {
     album: { name: "Album", uri: "spotify:album:a", images: [] },
     artists: [{ name: "Artist", uri: "spotify:artist:a" }],
   };
+
+  it("starts ADE's own player at the slider's position, or at 80% when it was never set", async () => {
+    let saved: number | null = 0.35;
+    const written: Array<number | null> = [0.35];
+    const volume: MusicVolumeMemory = { get: () => saved, set: (value) => { saved = value; written.push(value); } };
+    const { service } = harness({ stored: true, playerHost: true, volume, routes });
+    // The slider shows the stored position before anything plays.
+    expect((await service.getState()).playback.volume).toBe(0.35);
+
+    await service.warm();
+    const host = await hostStarted.promise;
+    await vi.waitFor(() => expect(host.requests).toContain("configure"));
+    expect(host.commands.find((command) => command.cmd === "configure")?.params?.volume).toBe(0.35);
+
+    // What the user picks is the position the next launch starts from.
+    await service.command({ type: "volume", value: 0.5 });
+    expect(saved).toBe(0.5);
+    await service.disconnect();
+  });
+
+  it("keeps Spotify's 80% when the slider was never set", async () => {
+    const { service } = harness({ stored: true, routes });
+    expect((await service.getState()).playback.volume).toBe(0.8);
+    await service.disconnect();
+  });
 
   it("closing the tab while the player starts stops it, instead of leaving one running", async () => {
     const { service } = harness({ stored: true, playerHost: true, routes });

@@ -20,6 +20,7 @@ import { musicPositionNow } from "../../../shared/types/music";
 import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
+import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 
 /**
  * The Music feature in the main process.
@@ -143,12 +144,20 @@ export function createMusicService(args: {
   appVersion: string;
   tokens: DeveloperTokenProvider;
   credentials: AsyncCredentialStore;
+  /**
+   * Where the volume slider's position is kept between launches
+   * (`musicProviderRouter`). Absent in tests: the volume then lives as long as
+   * this service does.
+   */
+  volume?: MusicVolumeMemory;
   broadcast: (state: MusicState) => void;
   logger?: Logger;
   idleUnloadMs?: number;
   fetchImpl?: typeof fetch;
 }) {
   const idleUnloadMs = args.idleUnloadMs ?? IDLE_UNLOAD_MS;
+  /** The slider's position: the host starts there (see `configure`). */
+  const volume = createVolumeMemory(args.volume);
   let userToken: string | null = null;
   let userTokenLoaded: Promise<void> | null = null;
   let host: MusicHost | null = null;
@@ -178,7 +187,7 @@ export function createMusicService(args: {
       queueLength: 0,
       shuffle: false,
       repeat: 0,
-      volume: 1,
+      volume: volume.saved ?? 1,
     },
     queueRevision: 0,
   };
@@ -550,7 +559,8 @@ export function createMusicService(args: {
         const fresh = cmd.type === "playItems" || cmd.type === "playCollection";
         if (cmd.type === "pause" && !host) return { ok: true } as const;
         if (cmd.type === "volume" && !host) {
-          state.playback.volume = Math.max(0, Math.min(1, cmd.value));
+          state.playback.volume = clampVolume(cmd.value) ?? state.playback.volume;
+          volume.remember(state.playback.volume);
           emit();
           return { ok: true } as const;
         }
@@ -621,6 +631,9 @@ export function createMusicService(args: {
         if (state.message?.startsWith("Playback failed")) state.message = null;
         // A seek's reply is the new position even when it is a small step.
         applyHostState(result, { positionIsNews: cmd.type === "seek" });
+        // The host's reply carries the volume it now plays at; that is the
+        // position to start from next time.
+        if (cmd.type === "volume") volume.remember(state.playback.volume);
         return { ok: true } as const;
       });
     } catch (error) {
