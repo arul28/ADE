@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { MusicState } from "../../../shared/types/music";
+import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicState } from "../../../shared/types/music";
+import type { MusicHost, MusicHostEvent } from "./musicHostProcess";
 import { startSpotifySignIn } from "./spotifyAuth";
 import { createSpotifyService, SPOTIFY_CREDENTIAL_KEY } from "./spotifyService";
 
@@ -39,7 +40,7 @@ const playing = (progressMs: number) => ({
   item: { uri: "spotify:track:abc", name: "Song", duration_ms: 200_000, artists: [{ name: "Artist" }], album: { name: "Album", images: [] } },
 });
 
-function harness(options: { stored?: boolean; routes: (url: string, init?: RequestInit) => Promise<Response> | Response }) {
+function harness(options: { stored?: boolean; playerHost?: boolean; routes: (url: string, init?: RequestInit) => Promise<Response> | Response }) {
   const files = new Map<string, string>();
   if (options.stored) files.set(SPOTIFY_CREDENTIAL_KEY, JSON.stringify({ clientId: CLIENT_ID, refreshToken: "refresh" }));
   const credentials = {
@@ -58,14 +59,77 @@ function harness(options: { stored?: boolean; routes: (url: string, init?: Reque
     clientId: () => CLIENT_ID,
     openExternal: async () => {},
     broadcast: (state) => states.push(state),
+    ...(options.playerHost ? { playerHost: { executable: "/fake/ade-music-host", userDataDir: "/fake/profile" } } : {}),
     fetchImpl,
   });
   return { service, files, credentials, fetchImpl, states };
 }
 
 
+/**
+ * The music host is a child process; ADE's own Spotify player is faked at that
+ * boundary. Each test drives the page's events (`loaded`, `ready`, `state`)
+ * and sees which requests ADE sent and whether it stopped the process.
+ */
+type FakeHost = MusicHost & {
+  emit: (event: MusicHostEvent) => void;
+  requests: string[];
+  stopped: boolean;
+  /** Runs before a request's reply, as the SDK's own state event does on a pause. */
+  beforeReply: Partial<Record<string, () => void>>;
+};
+const hosts: FakeHost[] = [];
+let hostStarted = deferred<FakeHost>();
+
+vi.mock("./musicHostProcess", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./musicHostProcess")>()),
+  startMusicHost: () => {
+    const events = new Set<(event: MusicHostEvent) => void>();
+    const exits = new Set<(info: { code: number | null; signal: string | null }) => void>();
+    const host: FakeHost = {
+      pid: 4242,
+      ready: Promise.resolve({ browserPid: null, origin: "https://music.ade.local" }),
+      requests: [],
+      stopped: false,
+      beforeReply: {},
+      request: async <T,>(cmd: string) => {
+        host.requests.push(cmd);
+        // The page answers on a later turn, after the caller has moved on.
+        await Promise.resolve();
+        host.beforeReply[cmd]?.();
+        return (cmd === "configure" ? { connected: true } : null) as T;
+      },
+      send: () => {},
+      onEvent: (cb) => {
+        events.add(cb);
+        return () => events.delete(cb);
+      },
+      onExit: (cb) => {
+        exits.add(cb);
+        return () => exits.delete(cb);
+      },
+      stop: async () => {
+        host.stopped = true;
+        for (const cb of exits) cb({ code: 0, signal: null });
+      },
+      emit: (event) => {
+        for (const cb of events) cb(event);
+      },
+    };
+    hosts.push(host);
+    // The page says it listens once ADE has subscribed to its events.
+    queueMicrotask(() => {
+      host.emit({ event: "loaded" });
+      hostStarted.resolve(host);
+    });
+    return host;
+  },
+}));
+
 afterEach(() => {
   vi.useRealTimers();
+  hosts.length = 0;
+  hostStarted = deferred<FakeHost>();
 });
 
 describe("spotify service races", () => {
@@ -171,7 +235,8 @@ describe("spotify sign-in callback", () => {
     const consent = new URL(signIn.authorizeUrl);
     expect(consent.searchParams.get("code_challenge_method")).toBe("S256");
     const callback = new URL(consent.searchParams.get("redirect_uri")!);
-    expect(callback.hostname).toBe("127.0.0.1");
+    // Exactly the URI the setup guide has the user register: Spotify refuses any other.
+    expect(callback.toString()).toBe(MUSIC_SPOTIFY_REDIRECT_URI);
 
     const stale = new URL(callback);
     stale.searchParams.set("code", "x");
@@ -250,5 +315,51 @@ describe("spotify tokens and polling budget", () => {
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(playerReads).toBe(afterClose);
     service.dispose();
+  });
+});
+
+describe("ADE's own Spotify player", () => {
+  const streaming = { ...tokenBody, scope: "streaming user-read-email user-read-private" };
+  const routes = (url: string) =>
+    url.includes("/api/token") ? json(streaming) : url.includes("/me/player") ? new Response(null, { status: 204 }) : json({});
+  const track = {
+    uri: "spotify:track:abc",
+    id: "abc",
+    name: "Song",
+    duration_ms: 200_000,
+    album: { name: "Album", uri: "spotify:album:a", images: [] },
+    artists: [{ name: "Artist", uri: "spotify:artist:a" }],
+  };
+
+  it("closing the tab while the player starts stops it, instead of leaving one running", async () => {
+    const { service } = harness({ stored: true, playerHost: true, routes });
+    await service.warm();
+    const host = await hostStarted.promise;
+    await service.unloadPlayer();
+    // The SDK registers the device only now, after the tab closed.
+    host.emit({ event: "ready", deviceId: "ade-device" });
+    await vi.waitFor(() => expect(host.stopped).toBe(true));
+    expect(host.requests).toContain("configure");
+    expect(hosts).toHaveLength(1);
+    expect((await service.getState()).playback.nowPlaying).toBeNull();
+  });
+
+  it("a song the player reports while the tab closes does not come back", async () => {
+    const { service } = harness({ stored: true, playerHost: true, routes });
+    await service.warm();
+    const host = await hostStarted.promise;
+    host.emit({ event: "ready", deviceId: "ade-device" });
+    await vi.waitFor(() => expect(host.requests).toContain("activate"));
+    host.emit({ event: "state", state: { paused: false, position: 5_000, duration: 200_000, shuffle: false, repeat: 0, loading: false, track } });
+    expect((await service.getState()).playback.nowPlaying?.title).toBe("Song");
+    // Pausing makes the SDK report the paused song before the pause returns.
+    host.beforeReply.pause = () =>
+      host.emit({ event: "state", state: { paused: true, position: 5_100, duration: 200_000, shuffle: false, repeat: 0, loading: false, track } });
+    await service.unloadPlayer();
+    await vi.waitFor(() => expect(host.stopped).toBe(true));
+    expect(host.requests).toContain("pause");
+    const state = await service.getState();
+    expect(state.playback.nowPlaying).toBeNull();
+    expect(state.playback.isPlaying).toBe(false);
   });
 });

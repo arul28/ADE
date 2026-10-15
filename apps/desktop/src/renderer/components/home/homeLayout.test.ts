@@ -46,7 +46,7 @@ describe("stored home layouts", () => {
     expect(active.layout.items.map((item) => item.type)).toEqual(activeTypes);
   });
 
-  it("drops unknown widgets and repeated ids inside a layout, and reads old free-resize cells as size classes", () => {
+  it("drops unknown widgets, repeated ids and unknown app buttons inside a layout, and reads old free-resize cells as size classes", () => {
     const layouts = normalizeHomeLayouts(null, {
       items: [
         { id: "a", type: "clock", w: 2, h: 2 },
@@ -55,12 +55,17 @@ describe("stored home layouts", () => {
         { id: "c", type: "machine", w: 2, h: 1, stacked: true },
         { id: "d", type: "pomodoro", w: 1, h: 1 },
       ],
+      hiddenApps: ["spotify", "spotify", "tidal"],
     });
     expect(layouts.presets[0]!.layout.items).toEqual([
       { id: "a", type: "clock", size: "l" },
       { id: "c", type: "machine", size: "w", stacked: true },
       { id: "d", type: "pomodoro", size: "s" },
     ]);
+    // A removed app button stays removed; an unknown app name is dropped.
+    expect(layouts.presets[0]!.layout.hiddenApps).toEqual(["spotify"]);
+    // A layout saved before app buttons existed shows both.
+    expect(normalizeHomeLayouts(null, { items: [] }).presets[0]!.layout.hiddenApps).toEqual([]);
   });
 
   it("follows another window's save instead of keeping its own older copy", () => {

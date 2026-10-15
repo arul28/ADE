@@ -152,8 +152,6 @@ export async function startSpotifySignIn(args: {
   clientId: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  /** The loopback port; the registered one unless a caller needs another. */
-  port?: number;
 }): Promise<SpotifySignIn> {
   const verifier = base64url(randomBytes(64));
   const challenge = base64url(createHash("sha256").update(verifier).digest());
@@ -233,7 +231,7 @@ export async function startSpotifySignIn(args: {
   });
 
   await new Promise<void>((resolve, reject) => {
-    const port = args.port ?? MUSIC_SPOTIFY_CALLBACK_PORT;
+    const port = MUSIC_SPOTIFY_CALLBACK_PORT;
     const onError = (error: NodeJS.ErrnoException) => {
       reject(error.code === "EADDRINUSE"
         ? new SpotifyAuthError(`Another app is using port ${port}, which Spotify sign-in needs. Close it and try again.`, "network")

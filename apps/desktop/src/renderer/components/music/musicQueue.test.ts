@@ -2,7 +2,9 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MusicCommand, MusicItem } from "../../../shared/types/music";
+import type { MusicConnectResult, MusicState } from "../../../shared/types/music";
 import { isNowPlayingItem, queueActions, queueFromList } from "./musicQueue";
+import { currentMusicProvider, musicActions, readMusicLastError } from "./musicStore";
 
 /**
  * What the Music page hands the player for a list of songs, through the
@@ -72,5 +74,56 @@ describe("queueing songs from a list", () => {
     ["nothing playing", song("202"), null, false],
   ])("marks %s as now playing: %s", (_label, item, nowPlayingId, expected) => {
     expect(isNowPlayingItem(item, nowPlayingId)).toBe(expected);
+  });
+});
+
+describe("Music store actions through the bridge", () => {
+  const stateFor = (provider: "apple" | "spotify") => ({ provider, availability: "ready", message: null } as unknown as MusicState);
+  const bridge = (overrides: Record<string, unknown>) => {
+    const music = {
+      command: vi.fn(async () => ({ ok: true })),
+      getState: vi.fn(async () => stateFor("apple")),
+      connect: vi.fn(async (): Promise<MusicConnectResult> => ({ ok: true })),
+      warm: vi.fn(async () => undefined),
+      ...overrides,
+    };
+    Object.defineProperty(window, "ade", { configurable: true, writable: true, value: { music } });
+    return music;
+  };
+
+  it("Try again after a failed Connect connects again; after any other error it re-reads the state", async () => {
+    const music = bridge({
+      connect: vi.fn(async (): Promise<MusicConnectResult> => ({ ok: false, error: "Spotify sign-in timed out.", cancelled: false })),
+      warm: vi.fn(async () => { throw new Error("The music player closed."); }),
+    });
+    await musicActions.connect();
+    expect(readMusicLastError()).toBeTruthy();
+    musicActions.retry();
+    await vi.waitFor(() => expect(music.connect).toHaveBeenCalledTimes(2));
+    expect(music.getState).not.toHaveBeenCalled();
+
+    musicActions.clearError();
+    musicActions.warm();
+    await vi.waitFor(() => expect(readMusicLastError()).toBeTruthy());
+    musicActions.retry();
+    await vi.waitFor(() => expect(music.getState).toHaveBeenCalledTimes(1));
+    expect(music.connect).toHaveBeenCalledTimes(2);
+    expect(readMusicLastError()).toBeNull();
+  });
+
+  it("of two quick service picks, the later one wins even when the earlier one answers last", async () => {
+    let answerApple!: (state: MusicState) => void;
+    const music = bridge({
+      selectProvider: vi.fn((provider: "apple" | "spotify") =>
+        provider === "apple" ? new Promise<MusicState>((resolve) => { answerApple = resolve; }) : Promise.resolve(stateFor("spotify"))),
+      getState: vi.fn(async () => stateFor("spotify")),
+    });
+    const apple = musicActions.selectProvider("apple");
+    await musicActions.selectProvider("spotify");
+    expect(currentMusicProvider()).toBe("spotify");
+    answerApple(stateFor("apple"));
+    await apple;
+    expect(music.selectProvider).toHaveBeenCalledTimes(2);
+    expect(currentMusicProvider()).toBe("spotify");
   });
 });
