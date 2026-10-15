@@ -721,6 +721,31 @@ describe("Codex voice ending on request", () => {
     }
   });
 
+  it("lets a handed-off farewell be called off like a spoken one", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // The model hands a farewell over instead of saying goodbye itself, and
+      // it never reaches the agent. How it was asked has to survive that path:
+      // armed as a plain end, the "wait" below could not call it off and the
+      // call would hang up on someone still talking.
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+        item: { type: "handoff_request", input_transcript: "bye" },
+      });
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: "wait, one more thing",
+      });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("live");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
   it("leaves the readable transcript in detail and the card's numbers beside it", async () => {
     vi.useFakeTimers();
     const harness = hostedVoiceHarness();
