@@ -219,6 +219,8 @@ export function resolveTool(name: string, context: ToolsContext = {}): ToolResol
   };
 }
 
+const unreadablePackageDirs = new Set<string>();
+
 /**
  * A package's version directories other than `pinnedVersions`: finished
  * installs first, then newest first. One order for `gcTools` (which keeps the
@@ -233,10 +235,16 @@ function supersededVersionDirs(
   try {
     entries = fs.readdirSync(packageDir, { withFileTypes: true });
   } catch (error) {
-    // Never installed is the ordinary miss; an unreadable cache is not.
+    // Never installed is the ordinary miss. Anything else (permissions, an
+    // antivirus or another process holding the folder) is a miss too, so a
+    // launch falls through to its next copy and collection tries again
+    // later, but a reported one, once per folder: this runs on every launch.
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return [];
-    throw error;
+    if (code !== "ENOENT" && code !== "ENOTDIR" && !unreadablePackageDirs.has(packageDir)) {
+      unreadablePackageDirs.add(packageDir);
+      captureError(error, { tags: { area: "tools-cache" }, extra: { packageDir } });
+    }
+    return [];
   }
   const superseded: { dir: string; version: string; installed: boolean; mtimeMs: number }[] = [];
   for (const entry of entries) {
@@ -634,17 +642,7 @@ export async function gcTools(options: GcToolsOptions = {}): Promise<GcToolsResu
       const versionDir = toolVersionDir(resolved.toolsRoot, packageName, version);
       if (fs.existsSync(versionDir)) kept.push(versionDir);
     }
-    let superseded: ReturnType<typeof supersededVersionDirs>;
-    try {
-      superseded = supersededVersionDirs(packageDir, pinnedVersions);
-    } catch (error) {
-      // A package directory that cannot be read now (permissions, an antivirus
-      // or another process holding it) is left for a later pass.
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EACCES" && code !== "EPERM" && code !== "EBUSY") throw error;
-      captureError(error, { tags: { area: "tools-gc", package: packageName } });
-      continue;
-    }
+    const superseded = supersededVersionDirs(packageDir, pinnedVersions);
     const doomed = keepPrevious ? superseded.slice(1) : superseded;
     if (keepPrevious && superseded[0]) kept.push(superseded[0].dir);
     for (const candidate of doomed) {

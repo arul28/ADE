@@ -1,4 +1,3 @@
-import { captureError } from "../../../../desktop/src/shared/sentry/capture";
 import { isToolError } from "./errors";
 import { type ToolResolution, type ToolsContext, resolveTool, tryResolvePreviousTool, tryResolveTool } from "./install";
 
@@ -44,20 +43,8 @@ export function cachedToolEntryPath(name: string, context: ToolsContext = {}): s
  * copy while the new one downloads, instead of whatever is on the PATH.
  */
 export function previousCachedToolEntryPath(name: string, context: ToolsContext = {}): string | null {
-  try {
-    return missOnToolError(() => tryResolvePreviousTool(name, context))?.entryPath ?? null;
-  } catch (error) {
-    // An unreadable cache (EACCES, a folder mid-delete) is a miss here, but a
-    // reported one, once per process: this runs on every launch and status read.
-    if (!reportedPreviousLookupFailure) {
-      reportedPreviousLookupFailure = true;
-      captureError(error, { tags: { area: "tools-cache", tool: name } });
-    }
-    return null;
-  }
+  return missOnToolError(() => tryResolvePreviousTool(name, context))?.entryPath ?? null;
 }
-
-let reportedPreviousLookupFailure = false;
 
 /**
  * True when this build pins `name` for the current host target and the tool is
