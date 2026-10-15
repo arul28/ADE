@@ -27,17 +27,31 @@ export function ensureCursorSdkWorkerCommandsAreWindowless(): void {
   commandsPatched = true;
   const originalExecFile = childProcess.execFile;
   const windowlessArgs = (args: unknown[]): unknown[] => {
-    const optionsIndex = Array.isArray(args[1]) ? 2 : 1;
-    const options = args[optionsIndex];
-    if (options && typeof options === "object") {
-      const record = options as Record<string, unknown>;
-      args[optionsIndex] = { ...record, windowsHide: record.windowsHide ?? true };
-    } else if (typeof options === "function") {
-      args.splice(optionsIndex, 0, { windowsHide: true });
+    // Drop a trailing callback first so the options slot cannot be mistaken for
+    // it. This is what keeps execFile(command, args, callback) from losing
+    // its callback when the options object is synthesized below.
+    const input = [...args];
+    const last = input[input.length - 1];
+    const hasCallback = typeof last === "function";
+    const core = hasCallback ? input.slice(0, -1) : input;
+    const callback = hasCallback ? last : undefined;
+
+    // The first argument after the executable is an args array only for
+    // execFile(file, args, ...) calls. Anything else occupies the options
+    // slot directly.
+    const hasCliArgs = Array.isArray(core[1]);
+    const optionsIndex = hasCliArgs ? 2 : 1;
+    const existing = core[optionsIndex];
+    if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+      const record = existing as Record<string, unknown>;
+      core[optionsIndex] = { ...record, windowsHide: record.windowsHide ?? true };
     } else {
-      args[optionsIndex] = { windowsHide: true };
+      // Synthesize the options object whether the slot is empty or holds a
+      // callback: the original callback has already been removed from `core`.
+      core[optionsIndex] = { windowsHide: true };
     }
-    return args;
+    if (callback !== undefined) core.push(callback);
+    return core;
   };
   const patchedExecFile = ((...args: unknown[]) => {
     return Reflect.apply(originalExecFile, childProcess, windowlessArgs(args));
