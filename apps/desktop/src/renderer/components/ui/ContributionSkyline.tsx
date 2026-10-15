@@ -89,11 +89,9 @@ function CornerStat({ block, size, align }: { block: StatBlock; size: number; al
       <span className="ade-skyline-corner-label">{block.label}</span>
       <span className="ade-skyline-corner-value">
         <b className="kit-num" style={{ fontSize: size }}>{block.value}</b>
-        <span>
-          <span className="ade-skyline-corner-unit">{block.unit}</span>
-          <span className="ade-skyline-corner-sub">{block.sub}</span>
-        </span>
+        <span className="ade-skyline-corner-unit">{block.unit}</span>
       </span>
+      <span className="ade-skyline-corner-sub">{block.sub}</span>
     </div>
   );
 }

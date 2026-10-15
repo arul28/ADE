@@ -82,6 +82,9 @@
 .ade-skyline[data-side] .ade-skyline-stats[data-count="2"] { grid-template-columns: 1fr; }
 .ade-skyline[data-side] .ade-skyline-stat[data-lead] { grid-column: 1 / -1; }
 .ade-skyline[data-side] .ade-skyline-stat[data-lead] .ade-skyline-stat-value { font-size: 26px; }
+/* Two stats share a narrow column: a unit too long for the line ("97
+   contributions") drops under the number instead of being cut off. */
+.ade-skyline[data-side] .ade-skyline-stat dd { flex-wrap: wrap; row-gap: 1px; }
 
 .ade-skyline-stage { position: relative; flex: 1 1 auto; min-height: 60px; min-width: 0; overflow: hidden; border-radius: var(--radius-md); }
 .ade-skyline-canvas { position: absolute; top: 0; left: 0; display: block; outline: none; max-width: none; }
@@ -110,11 +113,13 @@
 .ade-skyline-corner-stat { display: flex; flex-direction: column; gap: 2px; }
 .ade-skyline-corner-stat[data-align="end"] { align-items: flex-end; text-align: right; }
 .ade-skyline-corner-label { font-size: 11px; color: var(--kit-text-3); }
-.ade-skyline-corner-value { display: flex; align-items: flex-end; gap: 7px; }
-.ade-skyline-corner-value > b { font-weight: 600; line-height: 0.95; letter-spacing: -0.02em; color: var(--sky-lead); }
-.ade-skyline-corner-value > span { display: flex; flex-direction: column; padding-bottom: 2px; text-align: left; }
+/* The number and its unit share a line, baseline-aligned; the date sits on the
+   line under them, so a long range wraps in the column instead of running
+   into the digits. */
+.ade-skyline-corner-value { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 7px; min-width: 0; }
+.ade-skyline-corner-value > b { font-weight: 600; line-height: 1; letter-spacing: -0.02em; color: var(--sky-lead); }
 .ade-skyline-corner-unit { font-size: 12.5px; color: var(--color-fg); }
-.ade-skyline-corner-sub { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
+.ade-skyline-corner-sub { font-size: 11px; color: var(--kit-text-3); }
 
 .ade-skyline-tip {
   position: absolute;
