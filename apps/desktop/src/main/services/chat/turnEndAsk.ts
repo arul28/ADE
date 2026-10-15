@@ -55,6 +55,8 @@ const OPTIONAL_OFFER = new RegExp(
   "i",
 );
 
+const OFFER_QUESTION = /\b(?:would you (?:like|prefer)|do you want) me to\b/i;
+
 /** The shapes of "work continues, I'll be back": no answer wanted. */
 const PROGRESS_NOTE = new RegExp(
   [
@@ -163,6 +165,10 @@ export function classifyTurnEndAsk(replyText: string | null | undefined): TurnEn
   const closingAsk = askStrength(closing);
   const beforeAsk = askStrength(before);
 
+  // These can offer additional work or ask permission to take an action.
+  // A question mark alone cannot distinguish them; let the contextual check
+  // decide rather than raising attention before it can run.
+  if (beforeAsk === "none" && OFFER_QUESTION.test(closing)) return UNSURE;
   if (closingAsk === "strong") return { verdict: "ask", question: questionFrom(closing) };
   if (closingAsk === "weak") return UNSURE;
   // A conditional offer is optional unless the sentence explicitly asks a
@@ -200,6 +206,7 @@ export const TURN_END_ASK_SYSTEM_PROMPT = [
   "A progress update (work is running, the agent will report back later) is not an ask, even if it mentions what comes next.",
   "An optional offer (\"I can do X if you want\", \"say the word if you'd rather I do X\") is not an ask when work can continue without the user's answer.",
   "A genuine blocking choice is an ask when the agent cannot continue until the user decides.",
+  "A request for permission to take a consequential action is blocking even when phrased as 'would you like me to'.",
   'Answer with JSON only: {"asksUser": true} or {"asksUser": false}.',
 ].join(" ");
 

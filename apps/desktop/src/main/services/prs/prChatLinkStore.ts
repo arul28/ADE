@@ -17,7 +17,7 @@ const PENDING_STACK_ATTACH_CAP = 200;
 export type PrChatLinkStore = ReturnType<typeof createPrChatLinkStore>;
 export type LanePrChatOriginClaimResult =
   | { status: "linked" }
-  | { status: "no_origin" | "already_linked" | "suppressed" | "ambiguous" | "stale" }
+  | { status: "ignored" }
   | { status: "retry"; message: string };
 
 /**
@@ -400,7 +400,7 @@ export function createPrChatLinkStore(args: {
         );
         if (!origin) {
           db.run("commit");
-          return { status: "no_origin" };
+          return { status: "ignored" };
         }
         sessionId = resolveCanonicalChatSessionId(requestedSessionId) ?? "";
         if (!sessionId) {
@@ -440,7 +440,7 @@ export function createPrChatLinkStore(args: {
         );
         if (dismissed) {
           db.run("commit");
-          return { status: "suppressed" };
+          return { status: "ignored" };
         }
 
         if (!pr || pr.lane_id !== claim.laneId || pr.detached_at != null) {
@@ -450,7 +450,7 @@ export function createPrChatLinkStore(args: {
             [projectId, claim.laneId, origin.pr_id],
           );
           db.run("commit");
-          return { status: "stale" };
+          return { status: "ignored" };
         }
 
         const existing = db.all<{ pr_id: string }>(
@@ -465,9 +465,7 @@ export function createPrChatLinkStore(args: {
             [projectId, claim.laneId, origin.pr_id],
           );
           db.run("commit");
-          return existing.some((edge) => edge.pr_id === origin.pr_id)
-            ? { status: "already_linked" }
-            : { status: "ambiguous" };
+          return { status: "ignored" };
         }
 
         const now = nowIso();
@@ -479,9 +477,9 @@ export function createPrChatLinkStore(args: {
         );
         db.run(
           `update pull_request_lane_chat_origins
-              set claimed_session_id = ?, claimed_at = ?, merge_followup_pending = ?
+              set claimed_session_id = ?, claimed_at = ?, merge_followup_pending = 1
             where project_id = ? and lane_id = ? and pr_id = ? and claimed_session_id is null`,
-          [sessionId, now, String(pr.state ?? "").toLowerCase() === "merged" ? 1 : 0, projectId, claim.laneId, origin.pr_id],
+          [sessionId, now, projectId, claim.laneId, origin.pr_id],
         );
         db.run("commit");
         return { status: "linked" };

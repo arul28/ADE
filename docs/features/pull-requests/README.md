@@ -884,8 +884,12 @@ sessions; failed creates and calls scoped to another project or lane do not
 consume it. A chat already linked to another PR is treated as ambiguous and
 does not get another automatic edge. If the PR merges before its first chat
 claims the origin, that exact new edge gets one bounded settlement follow-up
-after the normal merge handling finishes. Explicit unlink cancels that
-follow-up, and later reopened chats do not rearm it. A manual link remains the
+after the normal merge handling finishes. Origin chats wait for their first
+turn to finish before either merge path can settle them. The final write
+atomically checks the live PR links and session lifecycle before consuming the
+follow-up, so an unlink, another open linked PR, or new user activity wins over
+an obsolete merge result. Explicit unlink cancels that follow-up, and later
+reopened chats do not rearm it. A manual link remains the
 way to associate any later chat. No runtime action is added; chat creation
 calls the PR service already injected into it.
 
