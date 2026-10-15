@@ -1199,9 +1199,8 @@ implements a two-layer transform:
      (`countVisibleRowsAppendedSince`). A turn folding the anchor row away
      therefore neither zeroes the count nor counts hidden rows. Inline proof
      anchors on the unfolded rows and draws on the fold row while its row is
-     hidden. "Copy turn" copies the whole turn, folded narration included; its
-     button sits on the turn's last text row, which is the answer or comes
-     after it and so is never folded.
+     hidden. "Copy turn" sits on the turn-end row and copies assistant text
+     outside the fold, leaving folded narration out of the clipboard.
 
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.
@@ -1221,14 +1220,13 @@ that route into the in-app browser.
 
 ## Assistant text hover actions (desktop and hosted web)
 
-Every assistant text row has a hover footer: the row's time, `Copy`, and on
-the turn's last text row `Copy turn`. It sits on its own line under the prose
-(`assistant-text-hover-footer`) and keeps that line's height while hidden, so
-it never covers text. It used to be pinned over the top-right corner of the
-prose. That covered the end of a short line, such as interim narration in a
-live turn, and the first line of a long one. The line is there in live turns
-and after the fold alike. Copy always copies the stored text, never a paced
-prefix.
+Every assistant text row has a compact icon-only `Copy` action beside its
+timestamp. On hover-capable displays, interim rows float this footer below the
+prose without reserving another line; their row clips horizontally while
+leaving the footer visible. The turn-end row has one compact `Copy turn` action
+that joins the assistant text outside the fold with blank lines. It excludes
+the user prompt, reasoning, tool output, and narration hidden by the turn fold.
+Message Copy always copies that row's stored text, never a paced prefix.
 
 ## Text merging
 

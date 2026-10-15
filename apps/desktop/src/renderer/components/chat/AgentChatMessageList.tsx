@@ -733,21 +733,40 @@ export type AssistantTurnCopyInfo = {
   textEventCount: number;
 };
 
+function appendAssistantTurnCopyRow(
+  result: Map<string, AssistantTurnCopyInfo>,
+  row: TranscriptRenderEnvelope,
+): void {
+  if (row.event.type !== "text") return;
+  const turnId = getEventTurnId(row.event);
+  if (!turnId) return;
+  const existing = result.get(turnId);
+  result.set(turnId, {
+    text: existing ? `${existing.text}\n\n${row.event.text}` : row.event.text,
+    lastTextEventKey: row.key,
+    textEventCount: (existing?.textEventCount ?? 0) + 1,
+  });
+}
+
+function deriveAssistantTurnCopyMaps(
+  rows: readonly TranscriptRenderEnvelope[],
+  excludedRowKeys: ReadonlySet<string>,
+): { allText: Map<string, AssistantTurnCopyInfo>; visibleText: Map<string, AssistantTurnCopyInfo> } {
+  const allText = new Map<string, AssistantTurnCopyInfo>();
+  const visibleText = new Map<string, AssistantTurnCopyInfo>();
+  for (const row of rows) {
+    if (row.event.type !== "text") continue;
+    appendAssistantTurnCopyRow(allText, row);
+    if (!excludedRowKeys.has(row.key)) appendAssistantTurnCopyRow(visibleText, row);
+  }
+  return { allText, visibleText };
+}
+
 export function deriveAssistantTurnCopyMap(
   rows: readonly TranscriptRenderEnvelope[],
 ): Map<string, AssistantTurnCopyInfo> {
   const result = new Map<string, AssistantTurnCopyInfo>();
-  for (const row of rows) {
-    if (row.event.type !== "text") continue;
-    const turnId = getEventTurnId(row.event);
-    if (!turnId) continue;
-    const existing = result.get(turnId);
-    result.set(turnId, {
-      text: existing ? `${existing.text}\n\n${row.event.text}` : row.event.text,
-      lastTextEventKey: row.key,
-      textEventCount: (existing?.textEventCount ?? 0) + 1,
-    });
-  }
+  for (const row of rows) appendAssistantTurnCopyRow(result, row);
   return result;
 }
 
@@ -1214,11 +1233,13 @@ function MessageCopyButton({
   className,
   label = "Copy",
   title = "Copy message",
+  iconOnly = false,
 }: {
   value: string;
   className?: string;
   label?: string;
   title?: string;
+  iconOnly?: boolean;
 }) {
   const { copy, copied } = useCopyToClipboard();
 
@@ -1226,7 +1247,9 @@ function MessageCopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
+        iconOnly
+          ? "inline-flex h-5 w-5 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.03] text-fg/40 transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70"
+          : "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
       onClick={() => void copy(value)}
@@ -1234,7 +1257,7 @@ function MessageCopyButton({
       aria-label={copied ? "Copied" : title}
     >
       {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
-      <span>{copied ? "Copied" : label}</span>
+      {!iconOnly ? <span>{copied ? "Copied" : label}</span> : null}
     </button>
   );
 }
@@ -2529,7 +2552,6 @@ function renderEvent(
     turnDiffSummaries?: TurnDiffSummary[];
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
-    assistantTurnCopy?: { text: string } | null;
     /**
      * A narration line that is not its turn's last reply. Its hover actions
      * float below it instead of reserving a strip, so a run of short progress
@@ -2928,14 +2950,7 @@ function renderEvent(
             {event.originTimestamp || envelope.timestampSynthetic !== true
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
               : null}
-            <MessageCopyButton value={event.text} />
-            {options?.assistantTurnCopy ? (
-              <MessageCopyButton
-                value={options.assistantTurnCopy.text}
-                label="Copy turn"
-                title="Copy whole turn"
-              />
-            ) : null}
+            <MessageCopyButton value={event.text} iconOnly />
           </div>
         </div>
       </motion.div>
@@ -4341,6 +4356,7 @@ export function deriveTurnEndDurations(
 function DoneTurnDivider({
   event,
   timestamp,
+  assistantTurnCopyText,
   durationMs,
   toolEntries,
   proofArtifacts,
@@ -4365,6 +4381,8 @@ function DoneTurnDivider({
   onForkFromTurn,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
+  /** Assistant prose from this turn, excluding the user prompt and folded work. */
+  assistantTurnCopyText?: string | null;
   /** "Fork from here": a new chat holding the conversation through this turn. */
   onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
   /**
@@ -4525,6 +4543,15 @@ function DoneTurnDivider({
       {proofChip}
       {turnSources?.length && event.turnId ? (
         <TurnSourcesChip turnId={event.turnId} sources={turnSources} onOpen={onOpenTurnSources} />
+      ) : null}
+      {assistantTurnCopyText?.trim() ? (
+        <MessageCopyButton
+          value={assistantTurnCopyText}
+          label="Copy turn"
+          title="Copy whole turn"
+          iconOnly
+          className="[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100 focus-visible:opacity-100"
+        />
       ) : null}
       {onForkFromTurn && event.turnId ? (
         <button
@@ -4807,7 +4834,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   runtimeName?: string | null;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
-  assistantTurnCopy?: { text: string } | null;
+  assistantTurnCopyText?: string | null;
   interimText?: boolean;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
@@ -4890,7 +4917,7 @@ const EventRow = React.memo(function EventRow({
   runtimePin,
   anchored,
   onScrollToRowKey,
-  assistantTurnCopy,
+  assistantTurnCopyText,
   interimText,
   staleInterruptReceipts,
   onCancelQueuedMessage,
@@ -4920,7 +4947,10 @@ const EventRow = React.memo(function EventRow({
       data-chat-row-key={envelope.key}
       data-chat-anchored-row={anchored ? "true" : undefined}
       className={cn(
-        "min-w-0 max-w-full space-y-3 overflow-hidden transition-colors duration-700",
+        "min-w-0 max-w-full space-y-3 transition-colors duration-700",
+        // Interim assistant hover actions extend below their text row; keep
+        // horizontal overflow contained without clipping that vertical footer.
+        interimText ? "overflow-x-clip" : "overflow-hidden",
         anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
       )}
     >
@@ -5008,7 +5038,6 @@ const EventRow = React.memo(function EventRow({
             onRewindFiles,
             turnDiffSummaries,
             onScrollToRowKey,
-            assistantTurnCopy,
             interimText,
             staleInterruptReceipts,
             onCancelQueuedMessage,
@@ -5022,6 +5051,7 @@ const EventRow = React.memo(function EventRow({
         <DoneTurnDivider
           event={envelope.event}
           timestamp={envelope.timestamp}
+          assistantTurnCopyText={assistantTurnCopyText}
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
           proofArtifacts={turnProof}
@@ -6059,32 +6089,6 @@ function AgentChatMessageListMain({
     writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
   }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
-  // Rebuilt on every event; a turn whose copy text did not change keeps its
-  // previous info object, so its memoized last text row is not re-rendered.
-  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
-  const { assistantTurnCopyByRowKey, interimTextRowKeys } = useMemo(() => {
-    const previous = previousAssistantTurnCopyRef.current;
-    const byRowKey = new Map<string, AssistantTurnCopyInfo>();
-    const turnCopy = deriveAssistantTurnCopyMap(rows);
-    for (const info of turnCopy.values()) {
-      if (info.textEventCount < 2) continue;
-      const prior = previous.get(info.lastTextEventKey);
-      byRowKey.set(
-        info.lastTextEventKey,
-        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
-      );
-    }
-    previousAssistantTurnCopyRef.current = byRowKey;
-    // Every text row of a turn except its last one is interim narration.
-    const interim = new Set<string>();
-    for (const row of rows) {
-      if (row.event.type !== "text") continue;
-      const turnId = getEventTurnId(row.event);
-      const last = turnId ? turnCopy.get(turnId)?.lastTextEventKey : null;
-      if (last && last !== row.key) interim.add(row.key);
-    }
-    return { assistantTurnCopyByRowKey: byRowKey, interimTextRowKeys: interim };
-  }, [rows]);
   const previousAllGroupedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
   const allGroupedRows = useMemo(
     // Drop automatic context-usage snapshots and same-provider "handoffs"
@@ -6260,6 +6264,36 @@ function AgentChatMessageListMain({
     ),
     sameTurnFolds,
   );
+  // Copy turn follows the readable transcript: prose hidden inside a closed
+  // turn fold is omitted. Per-message copy remains available on any text row
+  // that the reader reveals by opening the fold.
+  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
+  const { assistantTurnCopyByTurnId, interimTextRowKeys } = useMemo(() => {
+    const previous = previousAssistantTurnCopyRef.current;
+    const hiddenTextRowKeys = new Set<string>();
+    for (const fold of turnFolds) {
+      for (const key of fold.hiddenKeys) hiddenTextRowKeys.add(key);
+    }
+    const byTurnId = new Map<string, AssistantTurnCopyInfo>();
+    const { allText, visibleText: turnCopy } = deriveAssistantTurnCopyMaps(rows, hiddenTextRowKeys);
+    for (const [turnId, info] of turnCopy) {
+      const prior = previous.get(turnId);
+      byTurnId.set(
+        turnId,
+        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
+      );
+    }
+    previousAssistantTurnCopyRef.current = byTurnId;
+    // Every text row of a turn except its last visible one is interim narration.
+    const interim = new Set<string>();
+    for (const row of rows) {
+      if (row.event.type !== "text") continue;
+      const turnId = getEventTurnId(row.event);
+      const last = turnId ? allText.get(turnId)?.lastTextEventKey : null;
+      if (last && last !== row.key) interim.add(row.key);
+    }
+    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim };
+  }, [rows, turnFolds]);
   // Unfolded row keys: the logical order jumps, the fork divider, the "N new"
   // count, and the measured-height cache work in. Stable across pure content
   // deltas, like `groupedRowKeys` below.
@@ -8123,7 +8157,9 @@ function AgentChatMessageListMain({
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
-    const assistantTurnCopy = assistantTurnCopyByRowKey.get(envelope.key) ?? null;
+    const assistantTurnCopyText = envelope.event.type === "done" && envelope.event.turnId
+      ? assistantTurnCopyByTurnId.get(envelope.event.turnId)?.text ?? null
+      : null;
     const interimText = interimTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
@@ -8188,7 +8224,7 @@ function AgentChatMessageListMain({
           runtimePin={runtimePin}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
-          assistantTurnCopy={assistantTurnCopy}
+          assistantTurnCopyText={assistantTurnCopyText}
           interimText={interimText}
           staleInterruptReceipts={staleInterruptReceipts}
           onCancelQueuedMessage={onCancelQueuedMessage}
@@ -8263,7 +8299,7 @@ function AgentChatMessageListMain({
           runtimePin={runtimePin}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
-        assistantTurnCopy={assistantTurnCopy}
+        assistantTurnCopyText={assistantTurnCopyText}
         interimText={interimText}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
@@ -8278,7 +8314,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
