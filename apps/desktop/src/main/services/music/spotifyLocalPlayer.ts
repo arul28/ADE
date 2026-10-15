@@ -147,10 +147,10 @@ export function createSpotifyLocalPlayer(args: {
       });
       h.onExit(({ code }) => {
         readyReject(new Error("The Spotify player closed before it was ready."));
+        offEvent();
         if (host !== h) return;
         host = null;
         deviceId = null;
-        offEvent();
         args.onState(null);
         if (code !== 0) args.onLost("The Spotify player closed unexpectedly. Press play to start it again.");
       });
