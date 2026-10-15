@@ -38,6 +38,7 @@ import {
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
 import { resolveAcpExecutable } from "./acpExecutables";
+import { prepareAcpProbeSpawnPlan } from "./acpProbeSpawnPlan";
 import {
   getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
@@ -234,19 +235,20 @@ export async function probeAcpProviderAuth(
     const dialect = acpDialectFor(provider);
     const baseEnv = args.env ?? process.env;
     const executable = resolveAcpExecutable(provider, { env: baseEnv });
-    const spawnPlan = dialect.buildSpawnPlan({
-      binaryPath: executable.path,
-      cwd,
-      baseEnv,
-      configHome: acpProbeConfigHome(provider, baseEnv),
-    });
-
-    const connection = createAcpConnection({
-      dialect,
-      spawnPlan,
-      ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
-    });
+    let connection: ReturnType<typeof createAcpConnection> | null = null;
     try {
+      const spawnPlan = await prepareAcpProbeSpawnPlan(provider, dialect.buildSpawnPlan({
+        binaryPath: executable.path,
+        cwd,
+        baseEnv,
+        configHome: acpProbeConfigHome(provider, baseEnv),
+      }));
+
+      connection = createAcpConnection({
+        dialect,
+        spawnPlan,
+        ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
+      });
       const response = await initializeAcpConnection({
         connection,
         dialect,
@@ -316,7 +318,7 @@ export async function probeAcpProviderAuth(
           : `${dialect.displayName} was detected at ${executable.path}, but ADE could not start it: ${detail}`,
       };
     } finally {
-      connection.dispose("auth probe finished");
+      connection?.dispose("auth probe finished");
     }
   })().then((result) => {
     probeCache.set(key, { checkedAtMs: Date.now(), result });

@@ -60,6 +60,7 @@ import {
   CURSOR_SDK_OWNER_POLL_MS,
   createCursorSdkWorkerExit,
   cursorSdkOwnerStillOwns,
+  ensureCursorSdkWorkerCommandsAreWindowless,
   ignoreCursorSdkWorkerPipeErrors,
   readCursorSdkOwnerPid,
   sendToCursorSdkParent,
@@ -68,6 +69,8 @@ import {
   processIsAlive,
   startParentDeathWatchdog,
 } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
+
+ensureCursorSdkWorkerCommandsAreWindowless();
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;

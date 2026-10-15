@@ -106,6 +106,7 @@ class ByteRingBuffer {
 export function spawnRemoteRpcProcess(attempt: RemoteRpcAttempt): ChildProcessWithoutNullStreams {
   return spawn("ssh", attempt.sshArgs, {
     stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
   });
 }
 

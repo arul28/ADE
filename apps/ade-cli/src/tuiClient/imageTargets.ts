@@ -97,7 +97,7 @@ export function readClipboardImageAttachment(cacheRoot: string): AgentChatFileRe
       "$image = [System.Windows.Forms.Clipboard]::GetImage();",
       `if ($image -ne $null) { $image.Save(${powershellQuoted(target)}, [System.Drawing.Imaging.ImageFormat]::Png) }`,
     ].join(" ");
-    const result = spawnSync(resolveTrustedWindowsTool("powershell"), ["-NoProfile", "-Command", command], { stdio: "ignore" });
+    const result = spawnSync(resolveTrustedWindowsTool("powershell"), ["-NoProfile", "-Command", command], { stdio: "ignore", windowsHide: true });
     if (result.status === 0 && nonEmptyFile(target)) return { path: target, type: "image" };
   }
 
@@ -159,6 +159,7 @@ function commandAvailable(command: string): boolean {
   const result = spawnSync(process.platform === "win32" ? "where" : "command", process.platform === "win32" ? [command] : ["-v", command], {
     shell: process.platform !== "win32",
     stdio: "ignore",
+    windowsHide: true,
   });
   return result.status === 0;
 }
@@ -216,7 +217,7 @@ function readClipboardText(): string | null {
       : [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]];
   for (const [command, ...args] of candidates) {
     if (process.platform !== "win32" && !commandAvailable(command)) continue;
-    const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024, windowsHide: true });
     if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
   }
   return null;

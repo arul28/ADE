@@ -21289,7 +21289,24 @@ export function createAgentChatService(args: {
     // A running recording outranks the guess: it is a fact ADE knows.
     const recording = demoTrackRegistry.isChatRecording(managed.session.id);
     const detected = recording ? "recording" : observed;
-    if (!detected) return;
+    if (!detected) {
+      // A compaction that ends on a quiet chat restores "no activity" — null.
+      // The row must drop its chip then: nothing else clears it, so leaving it
+      // would read "Compacting…" (or "Compaction failed") on a chat that is
+      // demonstrably done. Only a compaction can null the detector here; every
+      // other path carries a value.
+      if (before !== "compacting" && before !== "compaction_failed") return;
+      try {
+        sessionService.clearSessionActivity(managed.session.id);
+        managed.activityRowNeedsWrite = false;
+      } catch (error) {
+        logger.warn("agent_chat.activity_detect_clear_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     const changed = detected !== (recording ? "recording" : before) || managed.activityRowNeedsWrite === true;
     // An unchanged detection only refills an empty row (an agent ran
     // `ade chat activity clear`): rewriting it would override an agent report
@@ -22223,6 +22240,16 @@ export function createAgentChatService(args: {
       });
       return;
     }
+    // The SDK repeats its `compacting` status every ~30 s while one compaction
+    // runs, and each repeat would look like a new compaction: an extra open
+    // row, and — because a client counts a running compaction's elapsed from
+    // the newest "started" it has — an elapsed clock that restarts mid-run.
+    // Only the first frame of THIS compaction opens the row (the same key
+    // `emitChatEvent` files it under); a completed/failed event deletes that
+    // key, so the next compaction still starts fresh, and an entry left behind
+    // by a torn-down runtime cannot suppress a different turn's compaction.
+    const key = turnId ?? "native";
+    if (openNativeCompactions.get(managed.session.id)?.has(key)) return;
     // The real trigger arrives with the boundary (completed) event, so this
     // defaults to "auto".
     emitChatEvent(managed, {
@@ -46226,8 +46253,8 @@ export function createAgentChatService(args: {
     if (capsule.forkTransport !== undefined && capsule.mode !== "fork") {
       throw new Error("The handoff capsule includes fork history without fork mode.");
     }
-    if (capsule.mode === "fork" && capsule.forkTransport === undefined) {
-      throw new Error("The handoff capsule is missing its fork transport.");
+    if (capsule.mode === "fork" && capsule.forkTransport === undefined && !capsule.transcriptEnvelopes) {
+      throw new Error("The handoff capsule is missing its fork history.");
     }
     if (capsule.transcriptEnvelopes !== undefined && capsule.mode !== "fork") {
       throw new Error("The handoff capsule includes transcript history without fork mode.");
@@ -46569,25 +46596,13 @@ export function createAgentChatService(args: {
       throw new Error("Select an available destination model before sending this chat.");
     }
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
-    if (mode === "fork") {
-      if (!providerSupportsCrossMachineHandoffFork(managed.session.provider)) {
-        if (managed.session.provider === "droid") {
-          throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
-        }
-        if (managed.session.provider === "muse") {
-          throw new Error("Muse keeps its sessions on this machine, so a full-history fork cannot move to another machine yet. Use a brief handoff instead.");
-        }
-        // Cursor forks locally, so "can't fork history" would contradict the
-        // Fork tab the user just used.
-        if (providerForkReplaysTranscript(managed.session.provider)) {
-          throw new Error("Cursor forks can't move between machines. Use a brief handoff instead.");
-        }
-        throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
-      }
-      if (targetProvider !== managed.session.provider) {
-        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
-      }
-    }
+    // Cross-machine fork supports every provider now: when the destination
+    // resolves to the same provider group a native transport is packaged (see
+    // below); otherwise the handoff falls through to the ADE-side full-
+    // transcript replay onto a fresh destination thread -- the same primitive
+    // local model rotations already use when a provider has no native fork. So
+    // no provider (or provider change) is refused here.
+    void targetProvider;
     const portableText = (value: string): string => {
       let next = redactSecrets(value);
       for (const [needle, replacement] of [
@@ -46624,8 +46639,19 @@ export function createAgentChatService(args: {
           artifacts,
         })
       : { brief: CROSS_MACHINE_FORK_BRIEF_STUB, usedFallbackSummary: false };
-    const forkTransport = mode === "fork"
-      ? await packageCrossMachineForkTransport(managed, lane.worktreePath)
+    // Only package a native transport when the destination resolves to the
+    // same provider group (otherwise the replay-fork path runs: transcript
+    // envelopes only, materialized onto a fresh destination thread).
+    const forkTransport = mode === "fork" && targetProvider === managed.session.provider
+      ? await packageCrossMachineForkTransport(managed, lane.worktreePath).catch((error) => {
+          // Fall back to the replay-fork path if a native session turns out
+          // not to exist on disk (same as the legacy error, but non-fatal).
+          logger.warn("agent_chat.cross_machine_fork_native_transport_unavailable", {
+            sessionId: sourceSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return undefined;
+        })
       : undefined;
     const transcriptEnvelopes = mode === "fork"
       ? packageCrossMachineTranscriptEnvelopes(managed)
@@ -47319,7 +47345,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession;
   }): Promise<void> => {
     const transport = args.capsule.forkTransport;
-    if (!transport) throw new Error("The handoff capsule is missing its fork transport.");
+    // Replay forks (cross-provider or providers without a native transport)
+    // carry transcript envelopes only; there is nothing to materialize on
+    // disk, the history is imported directly from the envelopes below.
+    if (!transport) return;
     const mainContent = decodeCrossMachineForkFile(
       transport.mainFile,
       CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
@@ -47589,8 +47618,8 @@ export function createAgentChatService(args: {
       }
       const targetProvider = resolveProviderGroupForModel(targetDescriptor);
       const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
-      const isFork = capsule.mode === "fork" && !!capsule.forkTransport;
-      if (isFork && targetProvider !== capsule.source.provider) {
+      const isFork = capsule.mode === "fork";
+      if (isFork && !!capsule.forkTransport && targetProvider !== capsule.source.provider) {
         throw new Error(FORK_SAME_PROVIDER_MESSAGE);
       }
       const deterministicSessionId = deterministicChatSessionId(`cross-machine-handoff:${handoffId}`);
@@ -48158,26 +48187,51 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const claudeConfigRoots = (): string[] => {
+    const roots = new Set<string>();
+    roots.add(claudeConfigDir());
+    // ADE runs Claude under per-account provider homes (CLAUDE_CONFIG_DIR
+    // pointing at ~/.ade/provider-homes/claude/<instance>), so transcripts live
+    // there too — not just the default ~/.claude. Search all of them; otherwise
+    // cross-machine forks and external imports can never find a transcript that
+    // clearly exists on disk.
+    const providerHomesRoot = path.join(os.homedir(), ".ade", "provider-homes", "claude");
+    try {
+      for (const entry of fs.readdirSync(providerHomesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        roots.add(path.resolve(path.join(providerHomesRoot, entry.name)));
+      }
+    } catch {
+      // No provider homes on this machine; the default root above still applies.
+    }
+    return [...roots];
+  };
+
   const findClaudeSessionTranscript = (
     sessionId: string,
     sourceCwd: string | null,
   ): { transcriptPath: string; sourceCwd: string | null } | null => {
-    const configDir = claudeConfigDir();
-    const projectsDir = path.join(configDir, "projects");
     const fileName = `${sessionId}.jsonl`;
-    if (sourceCwd?.trim()) {
-      const candidate = path.join(projectsDir, claudeProjectSlugForCwd(sourceCwd.trim()), fileName);
-      if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: sourceCwd.trim() };
-    }
-    try {
-      const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const candidate = path.join(projectsDir, entry.name, fileName);
-        if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: sourceCwd?.trim() || null };
+    const sluggedSourceCwd = sourceCwd?.trim() ? claudeProjectSlugForCwd(sourceCwd.trim()) : null;
+    const reportedSourceCwd = sourceCwd?.trim() || null;
+    // Search each candidate root (default home + every provider home). Within a
+    // root, prefer the slug matching the source cwd, then scan the projects dir.
+    for (const root of claudeConfigRoots()) {
+      const projectsDir = path.join(root, "projects");
+      if (sluggedSourceCwd) {
+        const candidate = path.join(projectsDir, sluggedSourceCwd, fileName);
+        if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd };
       }
-    } catch {
-      return null;
+      try {
+        const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const candidate = path.join(projectsDir, entry.name, fileName);
+          if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd };
+        }
+      } catch {
+        // This root has no projects dir (or is unreadable); try the next one.
+      }
     }
     return null;
   };

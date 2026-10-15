@@ -73,4 +73,3 @@ export function codexServerSupportsGoalMutationOrigin(version: CodexAppServerVer
 }
 
 export type { ContextCompactFailReason as CodexCompactionFailReason } from "../../../shared/contextCompaction";
-export { compactionFailLabel } from "../../../shared/contextCompaction";

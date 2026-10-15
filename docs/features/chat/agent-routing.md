@@ -268,7 +268,12 @@ host-advertised model metadata over their static compatibility catalogs.
   credential). The Cursor CLI is still not the chat credential source,
   but ADE now probes `cursor-agent` for CLI-launch model inventory and
   merges those rows with the SDK registry so the picker can distinguish
-  SDK chat models from Cursor CLI-only models.
+  SDK chat models from Cursor CLI-only models. On Windows, CLI auth and model
+  probes use the expanded installation PATH, including cached registry entries.
+  Model discovery accepts plain or terminal-decorated JSON arrays and
+  `{ models: [...] }` responses, as well as the CLI table. Cursor SDK workers
+  hide helper-command consoles on Windows; user-launched terminals retain their
+  normal behavior.
 - API-key providers check encrypted machine storage via `apiKeyStore.ts` and
   then the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc. env vars. ADE-managed
   keys can be account-owned (`provider_api_key` in the account vault) or

@@ -486,10 +486,14 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
 }> {
   const probes = CLI_AUTH_PROBES.cursor ?? [];
   let sawUnsupported = false;
+  const env = { ...process.env };
+  if (process.platform === "win32") {
+    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
+  }
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      const result = await spawnAsync(command, args, { timeout: 8_000, env });
       if (result.notFound) break;
       const stdout = result.stdout ?? "";
       const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();

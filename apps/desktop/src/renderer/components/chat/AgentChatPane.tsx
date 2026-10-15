@@ -15060,7 +15060,7 @@ export function AgentChatPane({
    * one `""` bucket and let a tab switch poison the list with Electron's
    * static OpenCode inventory (or the previous tab's leftover).
    *
-   * Tools / git / iOS / App Control still collapse to null when they match
+   * Tools / git / App Control still collapse to null when they match
    * the tab so they keep the bound IPC path (transition guard + local
    * fallback). Model pickers do not use this pin.
    */
@@ -15813,7 +15813,9 @@ export function AgentChatPane({
             onInsertDraft={insertComposerDraft}
             onAddContext={addIosElementContext}
             drawerModeRequest={iosSimulatorDrawerModeRequest}
-            runtimePin={composerRuntimePin}
+            // Cleanup must retain the simulator's project even after this
+            // drawer unmounts during a project switch.
+            runtimePin={activeComposerRuntimeBinding}
           />
         )}
       </div>

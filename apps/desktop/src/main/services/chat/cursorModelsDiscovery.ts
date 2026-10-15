@@ -15,6 +15,8 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
+import { stripVTControlCharacters } from "node:util";
 
 export type CursorModelParameterValue = { id: string; value: string };
 export type CursorModelParameterDefinition = {
@@ -103,7 +105,7 @@ function describeCursorCliProbeFailure(args: string[], result: SpawnAsyncResult)
 }
 
 function stripAnsi(text: string): string {
-  return text.replace(/\u001b\[[0-9;]*m/g, "");
+  return stripVTControlCharacters(text);
 }
 
 function cursorModelDisplayName(id: string): string {
@@ -1220,6 +1222,13 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
   let cliReportedNoModels = false;
   const failures: Array<Record<string, unknown>> = [];
+  const env = { ...process.env };
+  if (process.platform === "win32") {
+    // Discovery can find the shim in a newly installed directory even while
+    // the brain's inherited PATH is stale. Its node/agent children need the
+    // same expanded PATH, with Windows' original Path/PATH casing preserved.
+    setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env }));
+  }
   for (const args of probes) {
     try {
       // `agent models` lists every model and variant: ~13 KB on a current
@@ -1228,6 +1237,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
       const result = await spawnAsync(agentPath, args, {
         timeout: 12_000,
         maxOutputBytes: CURSOR_CLI_MODELS_MAX_OUTPUT_BYTES,
+        env,
       });
       if (result.notFound) {
         failures.push(describeCursorCliProbeFailure(args, result));
@@ -1237,7 +1247,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
         failures.push(describeCursorCliProbeFailure(args, result));
         continue;
       }
-      const stdout = (result.stdout ?? "").trim();
+      const stdout = stripAnsi(result.stdout ?? "").trim();
       if (!stdout) {
         failures.push(describeCursorCliProbeFailure(args, result));
         continue;
@@ -1249,8 +1259,10 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 
       try {
         const parsed = JSON.parse(stdout) as unknown;
-        if (Array.isArray(parsed)) {
-          const models = normalizeCursorModelRows(parsed, { foldCliVariants: true });
+        const rows = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object"
+          ? (parsed as { models?: unknown }).models : null;
+        if (Array.isArray(rows)) {
+          const models = normalizeCursorModelRows(rows, { foldCliVariants: true });
           if (models.length) {
             cached = { at: now, models };
             return models;

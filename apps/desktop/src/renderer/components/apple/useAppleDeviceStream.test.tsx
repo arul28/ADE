@@ -75,14 +75,17 @@ function Harness({
   enabled = true,
   machineName = null,
   deviceUdid = "UDID-1",
+  runtimePin = null,
 }: {
   onStream: (stream: AppleDeviceStream) => void;
   deviceUdid?: string;
   hidden?: boolean;
   enabled?: boolean;
   machineName?: string | null;
+  runtimePin?: OpenProjectBinding | null;
 }) {
-  const pinRef = useRef<OpenProjectBinding | null>(null);
+  const pinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  pinRef.current = runtimePin;
   const stream = useAppleDeviceStream({
     deviceUdid,
     laneId: "lane-1",
@@ -189,6 +192,18 @@ describe("useAppleDeviceStream", () => {
     render(<Harness onStream={(next) => { box.current = next; }} />);
     await waitFor(() => expect(box.current?.state).toBe("error"));
     expect(box.current?.error).toBe("No route to the Mac.");
+  });
+
+  it("stops the original project's stream when the viewer moves to another runtime", async () => {
+    const original: OpenProjectBinding = { kind: "local", key: "local:/original", rootPath: "/original", displayName: "Original" };
+    const next: OpenProjectBinding = { kind: "local", key: "local:/next", rootPath: "/next", displayName: "Next" };
+    const box: { current: AppleDeviceStream | null } = { current: null };
+    const onStream = (stream: AppleDeviceStream) => { box.current = stream; };
+    const viewer = render(<Harness onStream={onStream} runtimePin={original} />);
+    await waitFor(() => expect(box.current?.url).toBeTruthy());
+    viewer.rerender(<Harness onStream={onStream} runtimePin={next} enabled={false} />);
+    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS); });
+    expect(api.stopStream.mock.calls.map(([pin]) => pin?.rootPath)).toEqual(["/original"]);
   });
 
   /*
