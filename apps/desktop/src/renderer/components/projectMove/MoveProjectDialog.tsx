@@ -295,7 +295,8 @@ export function MoveProjectDialog({
         <button type="button" className="kit-btn kit-btn-primary" onClick={() => { moveStarted.current = false; setStage("setup"); runChecks(); }}>Try again</button>
       </>
     ),
-    done: <button type="button" className="kit-btn kit-btn-primary" onClick={onClose}>Done</button>,
+    // While the check agent is being set up, Start agent is the one primary action.
+    done: <button type="button" className={checkOpen ? "kit-btn kit-btn-ghost" : "kit-btn kit-btn-primary"} onClick={onClose}>Done</button>,
   };
 
   return (

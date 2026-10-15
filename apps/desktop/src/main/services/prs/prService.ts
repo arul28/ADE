@@ -7550,27 +7550,40 @@ export function createPrService({
     });
   };
 
+  /**
+   * A plain `git switch` inside a lane's worktree leaves ADE's record on the
+   * old branch. Opening a PR from that record pushes the new branch (a bare
+   * `git push`) but asks GitHub for the old one. Adopt the branch the worktree
+   * is actually on before using the record.
+   */
+  const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
+    const head = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+    const checkedOut = head.exitCode === 0 ? head.stdout.trim() : "";
+    if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;
+    laneService.updateBranchRef(lane.id, checkedOut);
+    return { ...lane, branchRef: checkedOut };
+  };
+
   const createFromLane = async (args: CreatePrFromLaneInternalArgs): Promise<PrSummary> => {
     const allLanes = await laneService.list({ includeArchived: true });
-    const lane = allLanes.find((entry) => entry.id === args.laneId);
-    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+    const recorded = allLanes.find((entry) => entry.id === args.laneId);
+    if (!recorded) throw new Error(`Lane not found: ${args.laneId}`);
     assertDirtyWorktreesAllowed({
       lanes: allLanes,
-      laneIds: [lane.id],
+      laneIds: [recorded.id],
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const headBranch = branchNameFromRef(lane.branchRef);
-    if (!headBranch) {
-      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
+    if (!branchNameFromRef(recorded.branchRef)) {
+      throw new Error(`Lane "${recorded.name}" has no branch checked out. Check out a branch before creating a PR.`);
     }
-    const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+    const parentLane = recorded.parentLaneId ? allLanes.find((entry) => entry.id === recorded.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
     const parentPr = parentLane ? getRowForLane(parentLane.id) : null;
     const defaultBaseBranch = parentPr?.state === "merged" && parentPr.base_branch
       ? parentPr.base_branch
       : resolveStableLaneBaseBranch({
-          lane,
+          lane: recorded,
           parent: parentLane,
           primaryBranchRef: primaryLane?.branchRef ?? null,
         });
@@ -7578,7 +7591,9 @@ export function createPrService({
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
     }
-    const title = args.title?.trim() || defaultPrTitleForLane(lane, baseBranch, allLanes);
+    const title = args.title?.trim() || defaultPrTitleForLane(recorded, baseBranch, allLanes);
+    const lane = await adoptWorktreeBranch(recorded);
+    const headBranch = branchNameFromRef(lane.branchRef);
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
     }

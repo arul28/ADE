@@ -100,6 +100,15 @@ export type ChatScheduledWorkSchedulerOptions = {
   isGlobalPaused(): boolean;
   sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
   shouldDefer?(schedule: ChatScheduledWorkRecord): boolean;
+  /**
+   * Claims one occurrence (`id` + `fireAt`) across processes. Every brain that
+   * opens the project loads the same rows and arms its own timer, and
+   * `inFlight` only guards this process, so without a shared claim each brain
+   * delivered the same wake. Returns false when another process holds it.
+   */
+  claimFire?(schedule: ChatScheduledWorkRecord): boolean;
+  /** Gives up a claim whose delivery is being retried at a later boundary. */
+  releaseFire?(schedule: ChatScheduledWorkRecord): void;
   fire(
     schedule: ChatScheduledWorkRecord,
     context: { late: boolean },
@@ -380,6 +389,28 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
+    if (options.claimFire && !options.claimFire(cloneSchedule(schedule))) {
+      // Another brain is delivering this occurrence. Settle it here the way
+      // that delivery will, so this brain neither re-fires it nor keeps a
+      // stale "scheduled" row.
+      clearTimer(schedule.id);
+      schedule.lastFiredAt = currentTime;
+      if (schedule.kind === "cron") {
+        schedule.fireAt = schedule.cron
+          ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
+          : undefined;
+        await persist();
+        await emitTransition(schedule, schedule.status);
+        arm(schedule);
+        return;
+      }
+      markTerminal(schedule, "done");
+      pruneTerminalHistory();
+      await persist();
+      await emitTransition(schedule, "done");
+      return;
+    }
+
     inFlight.add(scheduleId);
     const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
     const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
@@ -418,6 +449,7 @@ export function createChatScheduledWorkScheduler(
     const current = schedules.get(scheduleId);
     if (!current || current.status === "cancelled" || current.status === "done") return;
     if (retry) {
+      options.releaseFire?.(cloneSchedule(current));
       current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
       if (previousLastFiredAt == null) delete current.lastFiredAt;
       else current.lastFiredAt = previousLastFiredAt;
