@@ -613,7 +613,15 @@ export function createSpotifyService(args: {
 
   /** Start playing on ADE's player (or the device the user picked), moving playback there. */
   const playOn = async (body: { uris?: string[]; contextUri?: string; offset?: number }) => {
-    const target = await playDevice();
+    let target: string | undefined;
+    try {
+      target = await playDevice();
+    } catch (error) {
+      // Signed out (a sign-in without the streaming scope): nothing else can play either.
+      if (!state.authorized) throw error;
+      // ADE's player could not start: play on the active device, or the one `pickDevice` finds.
+      args.logger?.warn("music.spotify.local_unavailable", { error: errorMessage(error) });
+    }
     await withDevice((deviceId) => api.play({ ...body, deviceId: deviceId ?? target }), true);
   };
 

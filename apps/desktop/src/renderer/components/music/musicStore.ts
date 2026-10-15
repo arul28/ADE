@@ -241,11 +241,19 @@ async function updateMusic(action: () => Promise<unknown>, returnsState = false)
   }
 }
 
+/** Counts provider picks, so a slower earlier one cannot overwrite a later one. */
+let selectSeq = 0;
+
 export const musicActions = {
-  selectProvider: (provider: "apple" | "spotify") => updateMusic(async () => {
-    if (devPreview) { devPreview = null; try { window.localStorage.removeItem(DEV_PREVIEW_KEY); } catch { /* Optional storage. */ } }
-    return musicBridge()!.selectProvider(provider);
-  }, true),
+  selectProvider: (provider: "apple" | "spotify") => {
+    // Two quick picks: only the last one's answer may set the state.
+    const seq = ++selectSeq;
+    return updateMusic(async () => {
+      if (devPreview) { devPreview = null; try { window.localStorage.removeItem(DEV_PREVIEW_KEY); } catch { /* Optional storage. */ } }
+      const next = await musicBridge()!.selectProvider(provider);
+      return seq === selectSeq ? next : musicBridge()!.getState();
+    }, true);
+  },
   configureSpotify: (clientId: string) => updateMusic(async () => {
     const result = await musicBridge()!.configureSpotify({ clientId: clientId || null });
     if (!result.ok) throw new Error(result.error);

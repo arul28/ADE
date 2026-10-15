@@ -156,7 +156,8 @@ export function createSpotifyLocalPlayer(args: {
       });
       const timer = setTimeout(() => readyReject(new Error("Spotify's player didn't start in time.")), READY_TIMEOUT_MS);
       try {
-        await h.ready;
+        // `ready` carries the timeout; a host that never says it is ready must not hang every play.
+        await Promise.race([h.ready, ready.then(() => undefined)]);
         await Promise.race([loaded, ready.then(() => undefined)]);
         await h.request("configure", { name: MUSIC_SPOTIFY_ADE_DEVICE_NAME, volume }, READY_TIMEOUT_MS);
         const id = await ready;
