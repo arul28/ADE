@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.106] - 2026-10-15
+
+### Desktop and web
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+### iOS
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
 ## [1.2.105] - 2026-10-15
 
 ### Desktop and web
@@ -2502,7 +2512,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.105...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.106...HEAD
+[1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
 [1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
 [1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
 [1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
