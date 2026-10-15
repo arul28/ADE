@@ -402,7 +402,35 @@ function useElapsed(startedAt: number | null): string {
   return formatCodexVoiceDuration(startedAt == null ? 0 : now - startedAt);
 }
 
-const METER_WEIGHTS = [0.55, 0.85, 1, 0.8, 0.5];
+/** The waveform's resting shape, so it still reads as a waveform when nothing is happening. */
+const WAVE_WEIGHTS = [0.4, 0.7, 1, 0.76, 0.48, 0.84];
+const WAVE_WIDTH = 24;
+
+/**
+ * The live level, drawn as a waveform rather than a meter. It is the one thing
+ * on the strip that moves, so it carries the state: dim and barely moving while
+ * connecting or muted, reactive to whoever is talking otherwise.
+ */
+function VoiceWaveform({ level, still }: { level: number; still: boolean }) {
+  return (
+    <span
+      aria-hidden
+      style={{ width: WAVE_WIDTH }}
+      className={cn("flex h-4 shrink-0 items-center justify-between", still && "animate-pulse")}
+    >
+      {WAVE_WEIGHTS.map((weight, index) => (
+        <span
+          key={index}
+          className="w-[2px] rounded-full bg-[var(--chat-accent)] transition-[height,opacity] duration-100"
+          style={{
+            height: `${Math.max(2, Math.round(2 + level * weight * 12))}px`,
+            opacity: 0.4 + level * 0.6,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
 
 /** Docked above the composer while voice is connecting or live. */
 export function CodexVoiceBar({ voice }: { voice: CodexVoiceController }) {
@@ -411,60 +439,56 @@ export function CodexVoiceBar({ voice }: { voice: CodexVoiceController }) {
 
   const connecting = voice.phase === "connecting";
   const status = connecting
-    ? "Connecting…"
+    ? "Connecting"
     : voice.speaking
       ? "Speaking"
       : voice.working
-        ? "Working on it…"
+        ? "Working"
         : voice.muted
           ? "Muted"
           : "Listening";
-  // The model's voice drives the meter while it talks; otherwise the user's.
-  const level = connecting ? 0 : voice.speaking ? 0.7 : voice.muted ? 0 : voice.micLevel;
+  // The model's voice drives the waveform while it talks; otherwise the user's.
+  const level = connecting ? 0.12 : voice.speaking ? 0.66 : voice.muted ? 0 : voice.micLevel;
   const newest = voice.captions[voice.captions.length - 1];
+  const caption = newest?.text.trim() ?? "";
 
+  // One line, drawn as the composer's own top row: the words take the space,
+  // and everything the user does not need while listening is small and to the
+  // right of them.
   return (
     <div
       role="region"
       aria-label="Voice conversation"
-      className="mx-auto mb-1.5 flex w-full max-w-[var(--chat-column,52rem)] items-center gap-3 rounded-2xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_6%,transparent)] px-3 py-2 font-sans"
       data-codex-voice-bar={voice.phase}
+      className="flex items-center gap-2.5 px-3.5 py-2 font-sans"
     >
-      <div className="flex h-6 w-7 shrink-0 items-center justify-center gap-[3px]" aria-hidden>
-        {METER_WEIGHTS.map((weight, index) => (
-          <span
-            key={index}
-            className={cn(
-              "w-[3px] rounded-full bg-[var(--chat-accent)] transition-[height,opacity] duration-100",
-              connecting ? "animate-pulse" : "",
-              voice.working && !voice.speaking ? "opacity-60" : "",
-            )}
-            style={{ height: `${Math.max(3, Math.round(4 + level * weight * 18))}px` }}
-          />
-        ))}
+      <VoiceWaveform level={level} still={connecting || voice.muted} />
+
+      <div
+        className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*11.5/14)] leading-snug"
+        title={caption || undefined}
+      >
+        {caption ? (
+          <>
+            {newest?.role === "user" ? <span className="text-muted-fg/50">You: </span> : null}
+            <span className="text-fg/78">{caption}</span>
+          </>
+        ) : (
+          <span className="text-muted-fg/40">
+            {connecting ? "Opening the microphone…" : "Say something to start."}
+          </span>
+        )}
       </div>
 
-      <div className="min-w-0 flex-1 text-[length:calc(var(--chat-font-size)*11/14)] leading-snug">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn("font-medium text-[var(--chat-accent)]", voice.working && !voice.speaking ? "animate-pulse" : "")}
-            aria-live="polite"
-          >
-            {status}
-          </span>
-          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-muted-fg/45">{elapsed}</span>
-        </div>
-        {newest ? (
-          <div className="mt-0.5 truncate text-fg/70" title={newest.text.trim()}>
-            <span className={newest.role === "user" ? "text-muted-fg/60" : undefined}>
-              {newest.role === "user" ? "You: " : ""}
-              {newest.text.trim() || "…"}
-            </span>
-          </div>
-        ) : !connecting ? (
-          <div className="mt-0.5 truncate text-muted-fg/45">Say something to start.</div>
-        ) : null}
-      </div>
+      <span
+        aria-live="polite"
+        className="shrink-0 text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-[var(--chat-accent)]"
+      >
+        {status}
+      </span>
+      <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-muted-fg/45">
+        {elapsed}
+      </span>
 
       <SmartTooltip
         forceEnabled
@@ -478,27 +502,29 @@ export function CodexVoiceBar({ voice }: { voice: CodexVoiceController }) {
           onClick={voice.toggleMute}
           disabled={connecting}
           className={cn(
-            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
+            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors",
             voice.muted
               ? "bg-amber-400/15 text-amber-300"
-              : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/80",
+              : "text-muted-fg/50 hover:bg-fg/[0.06] hover:text-fg/80",
             connecting ? "cursor-not-allowed opacity-40" : "",
           )}
           aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}
           aria-pressed={voice.muted}
         >
-          {voice.muted ? <MicrophoneSlash size={14} /> : <Microphone size={14} />}
+          {voice.muted ? <MicrophoneSlash size={13} /> : <Microphone size={13} />}
         </button>
       </SmartTooltip>
-      <button
-        type="button"
-        onClick={voice.stop}
-        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-red-300 transition-colors hover:bg-red-500/25"
-        aria-label="End voice"
-      >
-        <PhoneDisconnect size={13} weight="fill" />
-        End
-      </button>
+
+      <SmartTooltip forceEnabled content={{ label: "End voice", description: "End the voice conversation." }}>
+        <button
+          type="button"
+          onClick={voice.stop}
+          aria-label="End voice"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-red-300/75 transition-colors hover:bg-red-500/15 hover:text-red-200"
+        >
+          <PhoneDisconnect size={13} weight="fill" />
+        </button>
+      </SmartTooltip>
     </div>
   );
 }

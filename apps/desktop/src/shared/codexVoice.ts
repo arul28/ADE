@@ -83,8 +83,8 @@ const PERSONALITY_INSTRUCTIONS: Record<Exclude<CodexVoicePersonality, "playful" 
 };
 
 const UPDATE_INSTRUCTIONS: Record<CodexVoiceUpdateLevel, string> = {
-  chatty: "While the agent works, give frequent short progress updates as you learn what it is doing.",
-  balanced: "While the agent works, give a short acknowledgement when you hand work off and an occasional brief update.",
+  chatty: "While the agent works, narrate it: what it is doing and why it seems to be doing it, including the long steps as they start. A sentence each time, not a running commentary.",
+  balanced: "While the agent works, say the notable things as they happen — what it is working on, what it found, where it seems to be going. Skip the routine steps; the agent's own words reach you as it writes them.",
   quiet: "While the agent works, stay quiet after a one-word acknowledgement. Speak again when there is a result or a question.",
 };
 

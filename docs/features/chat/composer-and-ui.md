@@ -1631,13 +1631,87 @@ same brain. Audio still flows from the computer the user is sitting at.
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
 | native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread. ADE adopts that turn (normally ADE ignores a turn it did not start) and shows the spoken request as its user message. Adoption also runs on the resumed-turn path, because starting voice resumes the thread. |
-| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | `clientManagedHandoffs: true`. Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, relays short `[STATUS]` progress lines, and speaks the chat's final answer back with `thread/realtime/appendSpeech`. |
+| host | every other provider | A private `codex -c mcp_servers={} app-server` with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
+
+Both modes set `clientManagedHandoffs: true`, so Codex never speaks an agent's
+output on its own and ADE is the single place that decides what voice says and
+when. That is what makes a Codex chat behave the same as every other provider.
 
 In both modes a spoken request is a normal `user_message` with
 `metadata.voiceInput`; `describeUserMessageStatus` shows it as "Spoken" with a
 mic glyph. Subagent start and finish events reach the voice session as
 context, and a finish is also spoken, so voice does not report a subagent as
 done while it still runs.
+
+**Narration.** Voice talks about the work while it happens instead of reading
+the finished answer once. ADE follows the turn a hand-off produced (host) or
+that Codex ran on the chat's thread (native), and streams its prose into speech
+as it is written:
+
+- Prose is taken a sentence at a time, and a stream that pauses is flushed
+  after `SPEECH_FLUSH_MS`. A turn with no line breaks still starts speaking
+  while it is being written.
+- Fenced code is dropped whole, opening fence to closing one, and markdown is
+  stripped. An agent writes far more code than prose, and reading it aloud is
+  the fastest way to make voice worse than silence. `speakableText` does the
+  same job for a turn that was never streamed.
+- Milestones are spoken too: an announced plan, a long command starting
+  (`chatty` only), an error, a subagent finishing. They are gated by
+  `NARRATION_MIN_GAP_MS` and said once per turn.
+- A long quiet stretch gets a progress line — what the agent is running, what
+  tool it is using — once the voice has said nothing for `NARRATION_IDLE_MS`.
+  Left silent, the realtime model fills that gap with "still on it"; handing it
+  the real progress is what makes the pause informative. The idle clock counts
+  the model's own speech, because `thread/realtime/outputAudio/delta` updates
+  `lastSpokeAt`, so a progress line is never read over the model talking.
+- The turn's end says only what was not already streamed, so nothing is read
+  twice.
+
+The user always wins. The realtime protocol has no cancel call — the only
+speech controls are `appendText`, `appendSpeech`, `appendAudio`, `start` and
+`stop` — so barge-in is restraint rather than interruption: `speakNow` refuses
+while the user's words were transcribed within `BARGE_IN_HOLD_MS`, and dropped
+narration is *not* queued, because describing a step that already finished is
+worse than saying nothing. A result is the exception: `speakResult` defers it
+until the user stops rather than losing it.
+
+The `updates` preference finally does something. `balanced` (the default) and
+`chatty` narrate; `chatty` adds long-command starts. `quiet` is what voice did
+before narration existed — ack, then the answer once at the end.
+
+**Instructing it.** The developer item tells voice it is the narrator rather
+than a log reader, and that work in progress has not concluded: it says what
+the agent looks like it is doing, and states a result flatly only when the
+agent's own finished message says it. It is also told the user can cut in at
+any time.
+
+**Ending it.** End is not the only way out. When the user's own transcribed
+words ask for it — "end the call", "hang up", or a bare farewell — `asksToEnd`
+marks the session and it closes `END_GRACE_MS` later, which leaves the voice
+room to say goodbye. The matcher is deliberately narrow: a negation ("don't end
+the call") and a question that is not a request ("does this end the call?") both
+back out, because hanging up on someone who did not ask is the one mistake here
+that cannot be taken back. `speakNow` refuses once the call is on its way out, so
+narration never talks over the farewell.
+
+A request to end is also *not* routed to the agent. Voice hands it over like any
+other request, and routing it bought a chat turn explaining that the agent could
+not end a call it never had control over. `handleHandoff` checks `asksToEnd`
+first and ends the call instead — which also decides the race, since either the
+hand-off or the user's own transcript may arrive first.
+
+**The bar.** `CodexVoiceBar` is a waveform, the state word, the timer, and two
+quiet round buttons (mute, end); the newest caption takes its own line beneath
+them. The waveform is the only thing that moves, so it carries the state — dim
+and still while connecting or muted, reactive to whoever is talking otherwise.
+Colour is the accent on the waveform and the state word only.
+
+**The card.** A session that ends leaves a `system_notice` with
+`status: "voice_session"` and its numbers in `detail.voiceSession` (duration,
+requests, handoffs, whether the user asked it to end, and the transcript).
+`VoiceSessionCard` draws it: a head with the duration and what the call
+produced, the transcript underneath. `message` stays the one-line summary every
+other surface reads, so nothing has to parse it back apart.
 
 **Live UI.** While voice is live, `CodexVoiceBar` sits above the composer:
 a level meter from the real audio tracks, a status (Connecting, Listening,

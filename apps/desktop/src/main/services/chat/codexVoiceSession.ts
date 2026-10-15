@@ -16,6 +16,12 @@
 //   a message, the chat's progress is relayed as context, and its final answer
 //   is spoken back.
 //
+// Voice narrates. Both transports set `clientManagedHandoffs`, so Codex never
+// speaks an agent's output on its own: ADE streams the followed turn's prose
+// into speech as it is written (code stripped out), says the milestones worth
+// hearing, and holds the floor only until the user takes it. A `quiet` update
+// preference opts out of all of it and speaks the answer once, as voice used to.
+//
 // The service keeps live captions for the renderer's voice bar (read through
 // `getState`) and writes one summary line to the chat when a session ends.
 // ---------------------------------------------------------------------------
@@ -40,6 +46,7 @@ import {
   formatCodexVoiceDuration,
   normalizeCodexVoicePreferences,
   type CodexVoicePreferences,
+  type CodexVoiceUpdateLevel,
 } from "../../../shared/codexVoice";
 import { activeTurnDispatchModes } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -59,6 +66,46 @@ const ORPHAN_AFTER_MS = 15_000;
 const ORPHAN_CHECK_MS = 5_000;
 const HISTORY_ENTRIES = 12;
 const HISTORY_ENTRY_CHARS = 1_500;
+/**
+ * Narration. Voice is metered by the minute, not by the word, so the throttle
+ * below is set by what is pleasant to listen to: a narrator that talks
+ * continuously is worse than one that stays quiet.
+ */
+/** Milestones are said at most this far apart, however many the agent produces. */
+const NARRATION_MIN_GAP_MS = 12_000;
+/**
+ * Silence longer than this invites a progress line. Left to itself the realtime
+ * model fills a quiet stretch with "still on it"; handing it what the agent is
+ * actually doing is what turns that pause into something worth hearing.
+ */
+const NARRATION_IDLE_MS = 20_000;
+/** Prose held for a sentence ending waits at most this long before being said anyway. */
+const SPEECH_FLUSH_MS = 2_500;
+/** Shorter than this, a fragment joins the next sentence instead of being said alone. */
+const SPEECH_MIN_CHARS = 24;
+/** The user always wins: speech stops for this long after their last transcribed words. */
+const BARGE_IN_HOLD_MS = 1_800;
+/** A fence that never closes cannot grow past this before its contents are dropped. */
+const FENCE_LIMIT_CHARS = 4_000;
+/** Opening or closing line of a markdown code fence. */
+const FENCE_LINE = /^\s*(?:```|~~~)/;
+/** Commands worth hearing about as they start, rather than when they finish. */
+const LONG_COMMAND = /\b(?:test|tests|build|lint|typecheck|type-check|compile|e2e|install|migrate|deploy)\b/i;
+/**
+ * Asking to hang up. Deliberately explicit: "is this going to end the call?"
+ * must not hang up on the user, so a bare farewell counts only when it is the
+ * whole utterance and short.
+ */
+const END_REQUEST_PHRASE = /\b(?:end|stop|close|finish|leave)\b[^.?!]{0,24}\b(?:call|conversation|voice|session)\b/i;
+/** "Hang up" names the act on its own; it needs no object to be unambiguous. */
+const END_REQUEST_HANGUP = /\bhang\s*up\b/i;
+const END_REQUEST_FAREWELL = /^(?:(?:ok(?:ay)?|alright|all right)[,\s]+)?(?:bye|bye[ -]?bye|goodbye|good[ -]?bye|see (?:ya|you)|that'?s (?:all|it)|we'?re done|i'?m done|nothing else)(?:[,\s]+(?:for now|for today|thanks|thank you|then))?[.!,\s]*$/i;
+/** "Don't end the call", "no need to hang up" — the same words, the opposite meaning. */
+const END_REQUEST_VETO = /\b(?:don'?t|doesn'?t|won'?t|wouldn'?t|not|never|no)\b[^.]{0,14}\b(?:end|stop|hang|close|finish|leave)\b/i;
+/** A question is a request only when it is actually asking for one. */
+const END_REQUEST_ASK = /^(?:please\s+)?(?:can|could|would|will|go ahead|just)\b/i;
+/** How long the voice gets to say goodbye before the call actually closes. */
+const END_GRACE_MS = 3_500;
 /** The agent gets this frame so "you" and "this" read right; the thread shows only the spoken words. */
 const VOICE_REQUEST_FRAME = "[The user said this aloud in an ADE voice conversation with this chat. Answer as you would a typed message; a voice assistant reads your reply to them, so lead with the answer.]";
 
@@ -109,9 +156,32 @@ type Transport<TRuntime> = {
   release: (userInitiated: boolean, immediate?: boolean) => void;
 };
 
+/**
+ * The chat turn the voice is following. Its prose is streamed into speech as it
+ * is written, in both modes, so the voice talks about the work while it happens
+ * instead of reading the finished answer once.
+ */
+type VoiceTurnStream = {
+  /** Everything the turn has written, so its end can tell what was already said. */
+  text: string;
+  /** Raw stream waiting for a line or a sentence ending. */
+  pending: string;
+  /** Prose that has ended but is not yet worth a sentence of its own. */
+  carry: string;
+  /** Inside a fenced code block. Code is dropped, never spoken. */
+  inFence: boolean;
+  /** Whether this turn has been spoken from at all. */
+  spoke: boolean;
+  /** host: a queued request is answered by the turn after the running one. */
+  waitForNextTurn: boolean;
+  flushTimer: NodeJS.Timeout | null;
+};
+
 type VoiceSession<TRuntime> = {
   token: string;
   mode: "native" | "host";
+  /** How much the user asked to hear; `quiet` is what voice did before a narrator existed. */
+  updates: CodexVoiceUpdateLevel;
   /** Null while the session is still starting. */
   transport: Transport<TRuntime> | null;
   startedAt: number;
@@ -124,9 +194,20 @@ type VoiceSession<TRuntime> = {
   realtimeSessionId: string | null;
   /** native: spoken requests waiting for the turn they start (or shown in the running one). */
   voiceRequests: Array<{ text: string; shownInTurnId: string | null; at: number }>;
-  /** host: the chat's answer to the latest routed request, while it is awaited. */
-  pendingAnswer: { waitForNextTurn: boolean; text: string } | null;
+  /** The turn the voice is following, or null when the voice is not following one. */
+  turn: VoiceTurnStream | null;
   lastStatusAt: number;
+  /** When the voice last spoke, for the milestone gap. */
+  lastSpokeAt: number;
+  /** When the user's words were last transcribed, for barge-in. */
+  lastUserAt: number;
+  /** Milestones already said for the current turn, so none is said twice. */
+  said: Set<string>;
+  /** One line held back because the user was talking; said as soon as they stop. */
+  deferred: string | null;
+  deferTimer: NodeJS.Timeout | null;
+  /** The user asked, out loud, for the call to be over. */
+  endRequested: boolean;
   /**
    * Set just before this session's `thread/realtime/start` goes out. On a Codex
    * chat the thread is shared, so an earlier call's late `closed` or `error`
@@ -197,6 +278,9 @@ export function createCodexVoiceSessions<
     if (session.finished) return;
     session.finished = true;
     if (session.orphanTimer) clearInterval(session.orphanTimer);
+    if (session.turn?.flushTimer) clearTimeout(session.turn.flushTimer);
+    if (session.deferTimer) clearTimeout(session.deferTimer);
+    session.deferred = null;
     if (session.answer) {
       clearTimeout(session.answer.timer);
       session.answer.reject(new Error(error ?? "Voice was stopped."));
@@ -226,14 +310,24 @@ export function createCodexVoiceSessions<
     const parts = [`Voice conversation · ${formatCodexVoiceDuration(now - session.startedAt)}`];
     if (requests) parts.push(`${requests} ${requests === 1 ? "request" : "requests"}`);
     if (session.handoffs) parts.push(`${session.handoffs} handed to the agent`);
-    const transcript = session.transcript
-      .map((line) => `${line.role === "user" ? "You" : "Voice"}: ${line.text}`)
-      .join("\n");
     deps.emitChatEvent(chat, {
       type: "system_notice",
       noticeKind: error ? "warning" : "info",
+      status: "voice_session",
+      // `message` stays the one-line summary every other surface reads; the
+      // chat draws its own card from the structured copy, so it never has to
+      // parse the duration and counts back out of this sentence.
       message: error ? `${parts.join(" · ")} · ended: ${error}` : parts.join(" · "),
-      ...(transcript ? { detail: transcript } : {}),
+      detail: {
+        voiceSession: {
+          durationMs: now - session.startedAt,
+          requests,
+          handoffs: session.handoffs,
+          endedByVoice: session.endRequested,
+          error,
+          transcript: session.transcript.map((line) => ({ role: line.role, text: line.text })),
+        },
+      },
     });
   };
 
@@ -264,20 +358,227 @@ export function createCodexVoiceSessions<
     deps.emitChatEvent(chat, { type: "user_message", text, turnId, metadata: voiceInputMetadata(session) });
   };
 
-  /** Gives the live voice session one line: context for later, or something to say now. */
-  const tell = (chat: TChat, mode: "context" | "speak", text: string): void => {
-    const session = sessions.get(chat.session.id);
-    if (!session?.live || !session.transport) return;
-    const method = mode === "speak" ? "thread/realtime/appendSpeech" : "thread/realtime/appendText";
-    const threadId = session.transport.threadId;
-    const params = mode === "speak" ? { threadId, text } : { threadId, text, role: "developer" };
-    void session.transport.request(method, params).catch((error: unknown) => {
-      logger.warn("agent_chat.codex_realtime_tell_failed", {
+  // ---------------------------------------------------------------------------
+  // Saying things. The voice model phrases whatever it is handed, so all this
+  // decides is when it speaks and what it is told. Two rules live here in one
+  // place, and they are what keep a narrator pleasant rather than maddening:
+  // the user always wins, and the voice never talks faster than it has
+  // something worth saying.
+  // ---------------------------------------------------------------------------
+
+  /** Prose the voice should not read aloud. Fenced code is removed before this runs. */
+  const stripMarkdown = (text: string): string => text
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|\s)[*_](\S[^*_]*)[*_]/g, "$1$2")
+    .replace(/^\s*#{1,6}\s*/g, "")
+    .replace(/^\s*[-*+]\s+/g, "")
+    .replace(/^\s*>\s?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  /** How much of the buffered prose reads as a sentence now; `force` takes all of it. */
+  const takeSentences = (carry: string, force: boolean): { spoken: string; rest: string } => {
+    if (force) return { spoken: carry, rest: "" };
+    const match = /[\s\S]*[.!?…]["')\]]?(?=\s|$)/.exec(carry);
+    if (match) return { spoken: match[0], rest: carry.slice(match[0].length) };
+    // No sentence ending yet. A long unpunctuated line (a heading, a bullet) is
+    // the one case where waiting for one would mean never speaking at all.
+    return carry.trim().length >= SPEECH_MIN_CHARS ? { spoken: carry, rest: "" } : { spoken: "", rest: carry };
+  };
+
+  /** The user has the floor: their words cancel whatever the voice was about to say. */
+  const userHoldsFloor = (session: VoiceSession<TRuntime>): boolean =>
+    Date.now() - session.lastUserAt < BARGE_IN_HOLD_MS;
+
+  /** Hands the voice one line to phrase and say now. False when it stayed quiet. */
+  const speakNow = (chat: TChat, session: VoiceSession<TRuntime>, text: string): boolean => {
+    const line = text.trim();
+    // Nothing new is narrated once the call is on its way out; the goodbye is
+    // the model's own and must not be talked over.
+    if (!line || !session.live || !session.transport || session.endRequested || userHoldsFloor(session)) return false;
+    session.lastSpokeAt = Date.now();
+    void session.transport.request("thread/realtime/appendSpeech", {
+      threadId: session.transport.threadId,
+      text: line,
+    }).catch((error: unknown) => {
+      logger.warn("agent_chat.codex_realtime_speak_failed", {
         sessionId: chat.session.id,
-        method,
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    return true;
+  };
+
+  /** Holds a line for the moment the user stops talking, and says it then. */
+  const deferSpeech = (chat: TChat, session: VoiceSession<TRuntime>, text: string): void => {
+    session.deferred = text;
+    if (session.deferTimer) return;
+    session.deferTimer = setTimeout(() => {
+      session.deferTimer = null;
+      const line = session.deferred;
+      if (session.finished || !line) return;
+      if (userHoldsFloor(session)) {
+        deferSpeech(chat, session, line);
+        return;
+      }
+      session.deferred = null;
+      speakNow(chat, session, line);
+    }, BARGE_IN_HOLD_MS);
+    session.deferTimer.unref?.();
+  };
+
+  /**
+   * A result, which is never dropped for the sake of barge-in: it waits for the
+   * user instead. Losing "the tests failed" because they were talking would be
+   * a worse failure than the interruption it avoided.
+   */
+  const speakResult = (chat: TChat, session: VoiceSession<TRuntime>, text: string): void => {
+    if (speakNow(chat, session, text)) return;
+    if (session.live) deferSpeech(chat, session, text);
+  };
+
+  /** Context for the voice to use if the user asks. It is never said on its own. */
+  const tellContext = (chat: TChat, session: VoiceSession<TRuntime>, text: string): void => {
+    if (!session.live || !session.transport) return;
+    void session.transport.request("thread/realtime/appendText", {
+      threadId: session.transport.threadId,
+      text,
+      role: "developer",
+    }).catch((error: unknown) => {
+      logger.warn("agent_chat.codex_realtime_tell_failed", {
+        sessionId: chat.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /** Only `quiet` opts out of narration; it is what voice did before a narrator existed. */
+  const narrationEnabled = (session: VoiceSession<TRuntime>): boolean => session.updates !== "quiet";
+
+  /** A milestone worth hearing: said once, never in a burst, never over the user. */
+  const narrate = (chat: TChat, session: VoiceSession<TRuntime>, key: string, text: string): void => {
+    if (!narrationEnabled(session) || session.said.has(key)) return;
+    if (Date.now() - session.lastSpokeAt < NARRATION_MIN_GAP_MS) return;
+    session.said.add(key);
+    speakNow(chat, session, text);
+  };
+
+  const newTurnStream = (waitForNextTurn: boolean): VoiceTurnStream => ({
+    text: "",
+    pending: "",
+    carry: "",
+    inFence: false,
+    spoke: false,
+    waitForNextTurn,
+    flushTimer: null,
+  });
+
+  /** Follows a new turn. `said` is per turn so a milestone can be repeated in the next one. */
+  const beginTurn = (session: VoiceSession<TRuntime>, waitForNextTurn: boolean): void => {
+    if (session.turn?.flushTimer) clearTimeout(session.turn.flushTimer);
+    session.said.clear();
+    session.turn = newTurnStream(waitForNextTurn);
+  };
+
+  const endTurn = (session: VoiceSession<TRuntime>): void => {
+    if (session.turn?.flushTimer) clearTimeout(session.turn.flushTimer);
+    session.turn = null;
+  };
+
+  /**
+   * Moves finished prose out of the raw stream. A fenced block is dropped whole,
+   * opening fence to closing one: an agent writes far more code than prose, and
+   * reading it aloud is the fastest way to make voice feel worse than silence.
+   * Outside a fence, text is taken a sentence at a time, so an answer with no
+   * line breaks in it still starts speaking while it is being written.
+   */
+  const drainStream = (turn: VoiceTurnStream): void => {
+    let index = 0;
+    while (index < turn.pending.length) {
+      const newline = turn.pending.indexOf("\n", index);
+      const wholeLine = newline >= 0;
+      const line = wholeLine ? turn.pending.slice(index, newline) : turn.pending.slice(index);
+      if (FENCE_LINE.test(line)) {
+        turn.inFence = !turn.inFence;
+      } else if (turn.inFence) {
+        // Code. Dropped along with the rest of the block.
+      } else if (wholeLine) {
+        turn.carry += `${line} `;
+      } else {
+        const match = /[\s\S]*[.!?…]["')\]]?(?=\s|$)/.exec(line);
+        if (!match) break; // Still being written; wait for the sentence to end.
+        turn.carry += `${match[0]} `;
+        turn.pending = turn.pending.slice(index + match[0].length);
+        return;
+      }
+      index = wholeLine ? newline + 1 : turn.pending.length;
+    }
+    turn.pending = turn.pending.slice(index);
+    // A fence that never closes is a stream that was cut off mid-code. It is
+    // still code, so it is dropped rather than saved up forever.
+    if (turn.inFence && turn.pending.length > FENCE_LIMIT_CHARS) turn.pending = "";
+  };
+
+  /** Says as much of the buffered prose as reads as a sentence. */
+  const flushStream = (chat: TChat, session: VoiceSession<TRuntime>, force: boolean): void => {
+    const turn = session.turn;
+    if (!turn) return;
+    if (force && turn.pending) {
+      if (!turn.inFence) turn.carry += `${turn.pending} `;
+      turn.pending = "";
+    }
+    const { spoken, rest } = takeSentences(turn.carry, force);
+    turn.carry = rest;
+    const line = stripMarkdown(spoken);
+    if (!line || !narrationEnabled(session)) return;
+    // Dropped, not queued: narration of a step that already finished is worse
+    // than saying nothing about it.
+    if (speakNow(chat, session, line)) turn.spoke = true;
+  };
+
+  /** Says what is buffered once the stream pauses, so prose without endings is not stuck. */
+  const scheduleFlush = (chat: TChat, session: VoiceSession<TRuntime>): void => {
+    const turn = session.turn;
+    if (!turn || turn.flushTimer) return;
+    turn.flushTimer = setTimeout(() => {
+      turn.flushTimer = null;
+      flushStream(chat, session, false);
+    }, SPEECH_FLUSH_MS);
+    turn.flushTimer.unref?.();
+  };
+
+  /** The agent's prose, spoken as it is written. */
+  const addStreamText = (chat: TChat, session: VoiceSession<TRuntime>, delta: string): void => {
+    const turn = session.turn;
+    if (!turn) return;
+    turn.text += delta;
+    if (!narrationEnabled(session) || !delta) return;
+    turn.pending += delta;
+    drainStream(turn);
+    flushStream(chat, session, false);
+    if (turn.carry.trim() || turn.pending.trim()) scheduleFlush(chat, session);
+  };
+
+  /** An answer with its code removed, for a turn that was never streamed. */
+  const speakableText = (text: string): string => {
+    const kept: string[] = [];
+    let inFence = false;
+    for (const line of text.split("\n")) {
+      if (FENCE_LINE.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (!inFence) kept.push(line);
+    }
+    return stripMarkdown(kept.join(" "));
+  };
+
+  /** The first line of a command, short enough to say out loud. */
+  const summarizeCommand = (command: string): string => {
+    const first = command.trim().split("\n")[0]?.trim() ?? "";
+    return first.length > 60 ? `${first.slice(0, 60)}…` : first;
   };
 
   /** A short, speakable description of what the agent is doing, or null. */
@@ -311,13 +612,14 @@ export function createCodexVoiceSessions<
     const inline = running && activeTurnDispatchModes(chat.session.provider).includes("inline");
     // A queued request is answered by the turn after the running one, so the
     // running turn's end must not be spoken as its answer.
-    session.pendingAnswer = { waitForNextTurn: running && !inline, text: "" };
+    beginTurn(session, running && !inline);
     try {
       if (inline) {
         await deps.steer({ sessionId, text: framed, displayText: text, metadata, dispatchMode: "inline" });
       } else {
         await deps.sendMessage({ sessionId, text: framed, displayText: text, metadata });
       }
+      session.handoffs += 1;
       logger.info("agent_chat.codex_realtime_routed", {
         sessionId,
         provider: chat.session.provider,
@@ -326,14 +628,18 @@ export function createCodexVoiceSessions<
         chars: text.length,
       });
     } catch (error) {
-      session.pendingAnswer = null;
+      endTurn(session);
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("agent_chat.codex_realtime_route_failed", { sessionId, error: message });
-      tell(chat, "speak", `That did not reach the chat: ${message}`);
+      speakResult(chat, session, `That did not reach the chat: ${message}`);
     }
   };
 
-  /** Relays the chat's own events into its live voice session. Called for every chat event. */
+  /**
+   * Relays the chat's own events into its live voice session. Called for every
+   * chat event, in both modes: a Codex chat is narrated by ADE exactly the way
+   * any other chat is, so voice behaves the same whichever agent is behind it.
+   */
   const observeChatEvent = (chat: TChat, event: AgentChatEvent): void => {
     const session = sessions.get(chat.session.id);
     if (!session?.live) return;
@@ -342,32 +648,41 @@ export function createCodexVoiceSessions<
         || (event.type === "subagent_started" ? event.description?.trim() : undefined)
         || "The subagent";
       if (event.type === "subagent_started") {
-        tell(
+        tellContext(
           chat,
-          "context",
+          session,
           `[ADE] Subagent "${name}" started. It keeps running after the agent's turn ends; it is not done until ADE says it finished.`,
         );
         return;
       }
       const outcome = event.status === "completed" ? "finished" : event.status === "failed" ? "failed" : "was stopped";
-      tell(chat, "speak", `${name} ${outcome}.`);
+      speakResult(chat, session, `${name} ${outcome}.`);
       const summary = (event.finalSummary ?? event.summary ?? "").trim();
       if (summary) {
-        tell(chat, "context", `[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${summary.slice(0, 1_500)}`);
+        tellContext(chat, session, `[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${summary.slice(0, 1_500)}`);
       }
       return;
     }
-    // The rest relays a non-Codex chat's work; a Codex chat's voice gets it from Codex.
-    const pending = session.pendingAnswer;
-    if (session.mode !== "host" || !pending) return;
+    // Everything below follows the turn the voice handed off.
+    const turn = session.turn;
+    if (!turn) return;
     if (event.type === "status" && event.turnStatus === "started") {
-      pending.waitForNextTurn = false;
-      pending.text = "";
+      // A turn starting while this request is still queued is the turn it was
+      // queued behind, so this one began: follow it from the top.
+      if (turn.waitForNextTurn) beginTurn(session, false);
       return;
     }
-    if (pending.waitForNextTurn) return;
+    if (turn.waitForNextTurn) return;
     if (event.type === "text") {
-      pending.text += event.text;
+      addStreamText(chat, session, event.text);
+      return;
+    }
+    // An announced plan is the clearest signal of where the work is going, so
+    // it is the one milestone worth interrupting for. A plan arrives in pieces,
+    // and `narrate` says each key once per turn, so only the first lands.
+    if (event.type === "plan") {
+      const explanation = (event.explanation ?? "").trim();
+      if (explanation && event.steps.length > 1) narrate(chat, session, "plan", explanation);
       return;
     }
     const progress = describeProgress(event);
@@ -375,24 +690,41 @@ export function createCodexVoiceSessions<
       const now = Date.now();
       if (now - session.lastStatusAt >= STATUS_INTERVAL_MS) {
         session.lastStatusAt = now;
-        tell(chat, "context", `[STATUS] The agent is ${progress}.`);
+        tellContext(chat, session, `[STATUS] The agent is ${progress}.`);
+        // A long quiet stretch is where the realtime model starts padding. Say
+        // what is actually happening instead — but only once the voice has been
+        // silent long enough that the user is listening to nothing.
+        if (narrationEnabled(session) && now - session.lastSpokeAt >= NARRATION_IDLE_MS) {
+          narrate(chat, session, `progress:${progress}`, `It's ${progress}.`);
+        }
+      }
+      // A long command is the one tool event worth hearing as it starts; the
+      // rest are noise, which is what makes a narrator tiring.
+      if (session.updates === "chatty" && event.type === "command" && event.status === "running" && LONG_COMMAND.test(event.command)) {
+        const command = summarizeCommand(event.command);
+        if (command) narrate(chat, session, "command", `It's running ${command} now — that one takes a bit.`);
       }
       return;
     }
     if (event.type === "error") {
-      session.pendingAnswer = null;
+      endTurn(session);
       const message = event.message.trim();
-      tell(chat, "speak", `The agent hit an error${message ? `: ${message.slice(0, 200)}` : "."}`);
+      speakResult(chat, session, `The agent hit an error${message ? `: ${message.slice(0, 200)}` : "."}`);
       return;
     }
     if (event.type === "done") {
-      session.pendingAnswer = null;
-      const answer = pending.text.trim();
-      // Codex prefixes this as a [BACKEND] message; voice presents it briefly
-      // under its own instructions instead of reading it word for word.
-      tell(
+      // Whatever is still buffered is the tail of the answer; saying it here is
+      // what replaces reading the whole thing out at once.
+      flushStream(chat, session, true);
+      const spoke = turn.spoke;
+      const answer = speakableText(turn.text);
+      endTurn(session);
+      if (spoke) return;
+      // Nothing was streamed — the user had the floor, or the preference is
+      // `quiet` — so the answer is spoken whole, as voice always did.
+      speakResult(
         chat,
-        "speak",
+        session,
         answer
           ? answer.length > SPOKEN_ANSWER_CHARS ? `${answer.slice(0, SPOKEN_ANSWER_CHARS)}…` : answer
           : "The agent finished without a written answer.",
@@ -408,6 +740,9 @@ export function createCodexVoiceSessions<
   const adoptTurn = (chat: TChat, runtime: TRuntime, turnId: string): boolean => {
     const session = sessions.get(chat.session.id);
     if (!session || session.transport?.kind !== "native" || session.transport.runtime !== runtime) return false;
+    // A turn nobody routed — Codex's own follow-up to a hand-off — is still the
+    // voice's to narrate, so follow it when no hand-off already did.
+    if (!session.turn) beginTurn(session, false);
     const now = Date.now();
     const request = session.voiceRequests.find(
       (entry) => entry.shownInTurnId === null && now - entry.at <= REQUEST_CLAIM_MS,
@@ -425,10 +760,22 @@ export function createCodexVoiceSessions<
   };
 
   const handleHandoff = (chat: TChat, session: VoiceSession<TRuntime>, text: string): void => {
+    // Asking to hang up is not work for the agent. The voice hands it over like
+    // any other request, and routing it produced a chat turn explaining that
+    // the agent could not end a call it was never able to end. The call ends
+    // instead, whichever of the two notices arrives first.
+    if (asksToEnd(text)) {
+      requestEnd(chat, session);
+      return;
+    }
     if (session.mode === "host") {
       void routeRequest(chat, session, text);
       return;
     }
+    // Codex runs the hand-off as a turn on the chat's own thread. ADE follows
+    // it exactly as it follows a routed turn on any other provider.
+    session.handoffs += 1;
+    beginTurn(session, false);
     const runtime = session.transport?.runtime ?? null;
     const runningTurnId = runtime?.activeTurnId ?? null;
     if (runningTurnId && chat.runtime === runtime) {
@@ -487,9 +834,18 @@ export function createCodexVoiceSessions<
       case "thread/realtime/started":
         if (typeof params.realtimeSessionId === "string") session.realtimeSessionId = params.realtimeSessionId;
         return;
+      case "thread/realtime/outputAudio/delta":
+        // The model is talking. That counts as speaking, so the silence the
+        // progress narration waits for is real silence and never the model's
+        // own words being talked over.
+        session.lastSpokeAt = Date.now();
+        return;
       case "thread/realtime/item/started": {
         if (session.mode === "host") return;
         if (item?.type !== "transcriptSegment" || typeof item.id !== "string") return;
+        // The user's own words are the barge-in signal: from here the voice
+        // stays quiet until they have finished.
+        if (item.role === "user") session.lastUserAt = Date.now();
         upsertCaption(session, item.id, {
           role: item.role === "user" ? "user" : "assistant",
           text: typeof item.text === "string" ? item.text : "",
@@ -510,6 +866,7 @@ export function createCodexVoiceSessions<
         const text = typeof item.text === "string" ? item.text.trim() : "";
         upsertCaption(session, item.id, { role, text, final: true });
         if (text) session.transcript.push({ role, text });
+        if (role === "user" && asksToEnd(text)) requestEnd(chat, session);
         return;
       }
       // With client-managed hand-offs Codex sends only this flat pair; native
@@ -519,6 +876,7 @@ export function createCodexVoiceSessions<
         const role = params.role === "user" ? "user" : "assistant";
         const delta = typeof params.delta === "string" ? params.delta : "";
         if (!delta) return;
+        if (role === "user") session.lastUserAt = Date.now();
         const id = `flat-${role}-${session.flatCaptionSeq}`;
         const open = session.captions.some((caption) => caption.id === id && !caption.final);
         upsertCaption(session, id, open ? { delta } : { role, delta });
@@ -533,6 +891,7 @@ export function createCodexVoiceSessions<
         if (!text) return;
         upsertCaption(session, id, { role, text, final: true });
         session.transcript.push({ role, text });
+        if (role === "user" && asksToEnd(text)) requestEnd(chat, session);
         return;
       }
       case "thread/realtime/itemAdded": {
@@ -541,7 +900,9 @@ export function createCodexVoiceSessions<
           ? (() => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })()
           : item;
         if (added?.type !== "handoff_request") return;
-        session.handoffs += 1;
+        // Counted where the request actually reaches a chat: a hand-off the
+        // route refuses was never handed to the agent, and the summary line
+        // must not claim it was.
         const text = typeof added.input_transcript === "string" ? added.input_transcript.trim() : "";
         if (text) handleHandoff(chat, session, text);
         return;
@@ -569,10 +930,14 @@ export function createCodexVoiceSessions<
       `Worktree: ${chat.laneWorktreePath}`,
       `Model doing the work: ${chat.session.model}`,
       "The messages that follow are this chat's most recent turns. For anything about the code, files, lane, or tasks, pass the request to the agent instead of answering from memory.",
-      "Do not read file paths, IDs, code, or long output aloud unless asked; the chat shows them.",
+      "Do not read file paths, IDs, code, or long output aloud unless asked; the chat shows them. Never read code aloud.",
+      "You are the narrator of this chat, not a log reader. You are told what the agent is doing while it works: say the parts worth hearing, in your own words — what it is doing, what it found, where it seems to be going.",
+      "Work in progress has not concluded. While the agent is still going, say what it looks like it is doing or leaning toward, never what it has decided. State a result flatly only when the agent's own finished message says it.",
+      "The user can cut in at any time. When they speak, stop and answer them; whatever you were about to say about the work can wait.",
       "Everything you hand to the agent appears in the chat as the user's message, followed by the agent's work. Only say work is done when the agent's result says so.",
       "A subagent the agent starts keeps running after the agent's turn ends. Say it is running; say it finished only when a message from ADE reports that. Never make up a subagent's result.",
       "Questions about you (the voice) are yours to answer, not the agent's. Your settings (personality, voice, progress updates, what you call the user, language) are in ADE under Settings, Chat, Voice conversations. The waveform button in the prompt box starts and ends a conversation.",
+      "So is the call itself: the user's controls are yours, not the agent's. When they ask to end the call, say a short goodbye — never hand it to the agent, which has no control over it. The call then closes on its own.",
       buildCodexVoiceStyleInstructions(preferences),
     ].join("\n");
     const history = chat.recentConversationEntries
@@ -683,8 +1048,15 @@ export function createCodexVoiceSessions<
       handoffs: 0,
       realtimeSessionId: null,
       voiceRequests: [],
-      pendingAnswer: null,
+      turn: null,
       lastStatusAt: 0,
+      lastSpokeAt: 0,
+      lastUserAt: 0,
+      said: new Set(),
+      deferred: null,
+      deferTimer: null,
+      endRequested: false,
+      updates: preferences.updates,
       startSent: false,
       lastReadAt: 0,
       orphanTimer: null,
@@ -726,8 +1098,13 @@ export function createCodexVoiceSessions<
       // Based on the Codex TUI's voice start. WebRTC defaults to realtime v1,
       // which OpenAI's call endpoint now rejects (it wants the v3 "quicksilver
       // v2" protocol). Unlike the TUI, ADE keeps Codex's startup context and
-      // seeds its own. A Codex chat leaves hand-offs to the app server; any
-      // other chat manages them itself (routeRequest).
+      // seeds its own.
+      //
+      // `clientManagedHandoffs` is set in both modes. It stops Codex forwarding
+      // its own responses straight into the voice; ADE decides what the voice
+      // says and when, which is the only way a Codex chat can be narrated the
+      // same way every other provider is. A Codex chat still runs each hand-off
+      // as a turn on its own thread — that is the chat, not the forwarding.
       session.startSent = true;
       await transport.request("thread/realtime/start", {
         threadId: transport.threadId,
@@ -736,7 +1113,7 @@ export function createCodexVoiceSessions<
         initialItems,
         delegationAckFiller: true,
         backendReasoningStatus: session.mode === "native",
-        ...(session.mode === "host" ? { clientManagedHandoffs: true } : {}),
+        clientManagedHandoffs: true,
         voice: preferences.voice,
         version: "v3",
         transport: { type: "webrtc", sdp: offer },
@@ -744,6 +1121,9 @@ export function createCodexVoiceSessions<
       const answerSdp = await answer;
       session.live = true;
       session.lastReadAt = Date.now();
+      // Anchor the silence clock here rather than at zero, so the first
+      // progress line waits a real pause instead of firing on the greeting.
+      session.lastSpokeAt = Date.now();
       session.orphanTimer = setInterval(() => {
         if (Date.now() - session.lastReadAt > ORPHAN_AFTER_MS) {
           logger.info("agent_chat.codex_realtime_orphaned", { sessionId: chat.session.id });
@@ -777,6 +1157,33 @@ export function createCodexVoiceSessions<
     }
   };
 
+  /** True when the user's own words asked for the call to be over. */
+  const asksToEnd = (text: string): boolean => {
+    const line = text.trim();
+    if (!line) return false;
+    // Hanging up on the user is the one mistake here that cannot be undone, so
+    // the two ways to say these words without meaning them both back out first:
+    // a negation ("don't end the call") and a question that is not a request
+    // ("does this end the call?").
+    if (END_REQUEST_VETO.test(line)) return false;
+    if (line.endsWith("?") && !END_REQUEST_ASK.test(line)) return false;
+    if (END_REQUEST_HANGUP.test(line) || END_REQUEST_PHRASE.test(line)) return true;
+    return line.split(/\s+/).length <= 6 && END_REQUEST_FAREWELL.test(line);
+  };
+
+  /**
+   * The user asked, out loud, to hang up. The voice gets a moment to say
+   * goodbye — the call stays open for `END_GRACE_MS` so that farewell is heard —
+   * and the session then ends the way the End button ends it.
+   */
+  const requestEnd = (chat: TChat, session: VoiceSession<TRuntime>): void => {
+    if (session.endRequested || session.finished) return;
+    session.endRequested = true;
+    logger.info("agent_chat.codex_realtime_end_requested", { sessionId: chat.session.id });
+    const timer = setTimeout(() => finish(chat, session, null, true), END_GRACE_MS);
+    timer.unref?.();
+  };
+
   /** Read-only: what the renderer's voice bar shows. */
   const getState = ({ sessionId, token }: AgentChatCodexRealtimeStateArgs): AgentChatCodexRealtimeState => {
     const chat = deps.ensureChat(sessionId.trim());
@@ -789,7 +1196,7 @@ export function createCodexVoiceSessions<
     const runtime = session.transport?.runtime ?? null;
     const working = session.mode === "native"
       ? Boolean(runtime?.activeTurnId || runtime?.awaitingTurnStart)
-      : deps.chatIsRunning(chat) || Boolean(session.pendingAnswer);
+      : deps.chatIsRunning(chat) || Boolean(session.turn);
     return {
       status: "live",
       working,

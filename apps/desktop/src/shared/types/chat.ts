@@ -558,6 +558,24 @@ export type AgentChatNoticeDetailSection = {
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
   /**
+   * A voice conversation that has ended. The chat draws it as its own card —
+   * head: the duration and what was handed over, body: the transcript — so the
+   * numbers arrive structured instead of being parsed back out of `message`.
+   * `message` stays the one-line summary every other surface reads.
+   */
+  voiceSession?: {
+    durationMs: number;
+    /** Spoken turns the user took. */
+    requests: number;
+    /** Requests that actually reached the agent; a refused route is not one. */
+    handoffs: number;
+    /** True when the user asked for the call to end instead of pressing End. */
+    endedByVoice: boolean;
+    /** Why the call ended, when it was not the user ending it. */
+    error?: string | null;
+    transcript: Array<{ role: "user" | "assistant"; text: string }>;
+  };
+  /**
    * An ACP provider CLI older than the range ADE has tested. The notice row
    * offers an Update button when `canUpdate` is true and the host can run it.
    */

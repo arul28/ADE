@@ -200,6 +200,7 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
+import { VoiceSessionCard } from "./VoiceSessionCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
 import {
   isUsageLimitTurn,
@@ -3550,6 +3551,13 @@ function renderEvent(
           onRecoverContinuity={options?.onRecoverContinuity}
         />
       );
+    }
+
+    // A finished voice conversation draws its own card — a head with the
+    // duration and what the call produced, the transcript under it. It is not
+    // a system event with a fold, so it never reaches the generic notice row.
+    if (event.detail && typeof event.detail === "object" && event.detail.voiceSession) {
+      return <VoiceSessionCard session={event.detail.voiceSession} />;
     }
 
     const inferredSeverity = event.severity

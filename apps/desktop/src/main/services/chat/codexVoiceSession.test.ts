@@ -525,3 +525,130 @@ describe("createCodexVoiceSessions", () => {
     }
   });
 });
+
+/**
+ * The prose streamer. This is the part of narration no running app can show
+ * without a live Codex call and a microphone, so the test is the only way to
+ * see it work.
+ */
+describe("Codex voice narration", () => {
+  const spokenLines = (harness: ReturnType<typeof hostedVoiceHarness>): string[] =>
+    harness.hostProcess.requests
+      .filter((request) => request.method === "thread/realtime/appendSpeech")
+      .map((request) => String((request.params as { text?: unknown } | undefined)?.text ?? ""));
+
+  /** Starts a hosted session and hands it a spoken request, so a turn is followed. */
+  async function speakingHarness() {
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+      item: { type: "handoff_request", input_transcript: "spoken request" },
+    });
+    await harness.messageSent;
+    return { harness, token: result.token };
+  }
+
+  it("speaks the answer as it is written instead of once at the end", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "I checked the PR and its CI. " } as never);
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "Everything is green, so it is merging now. " } as never);
+      expect(spokenLines(harness)).toEqual([
+        "I checked the PR and its CI.",
+        "Everything is green, so it is merging now.",
+      ]);
+
+      // The turn's end must not read the answer a second time.
+      harness.sessions.observeChatEvent(harness.chat, { type: "done", turnId: "turn-1", status: "completed" } as never);
+      expect(spokenLines(harness)).toHaveLength(2);
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+
+  it("says the prose and drops the code around it", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.observeChatEvent(harness.chat, {
+        type: "text",
+        text: "Here is the fix:\n\n```ts\nconst secret = 42;\n```\n\nThat should do it. ",
+      } as never);
+      harness.sessions.observeChatEvent(harness.chat, { type: "done", turnId: "turn-1", status: "completed" } as never);
+
+      const spoken = spokenLines(harness).join(" ");
+      expect(spoken).toContain("Here is the fix:");
+      expect(spoken).toContain("That should do it.");
+      expect(spoken).not.toContain("secret");
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+
+  it("stays quiet while the user is talking", async () => {
+    const { harness, token } = await speakingHarness();
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/delta", {
+        role: "user",
+        delta: "hold on",
+      });
+      harness.sessions.observeChatEvent(harness.chat, { type: "text", text: "The tests all passed. " } as never);
+      expect(spokenLines(harness)).toEqual([]);
+    } finally {
+      await stopHostedVoiceHarness(harness, token);
+    }
+  });
+});
+
+/**
+ * Hanging up because of something the user did not say is the one mistake here
+ * that cannot be taken back, so the wording that decides it is pinned by test.
+ * Reaching it any other way needs a live Codex call and a microphone.
+ */
+describe("Codex voice ending on request", () => {
+  it.each([
+    ["can you end the call", true],
+    ["please hang up now", true],
+    ["stop the conversation", true],
+    ["bye", true],
+    ["that's all for now", true],
+    ["don't end the call", false],
+    ["no need to hang up", false],
+    ["does this end the call?", false],
+    ["is there a way to close the session?", false],
+  ])("reads %j as a request to end: %s", async (utterance, shouldEnd) => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", {
+        role: "user",
+        text: utterance,
+      });
+      // The voice is given a moment to say goodbye before the call closes.
+      await vi.advanceTimersByTimeAsync(4_000);
+      const state = harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token });
+      expect(state.status).toBe(shouldEnd ? "ended" : "live");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
+  it("never sends a request to end the call on to the agent", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      harness.sessions.handleNotification(harness.chat, "thread/realtime/itemAdded", {
+        item: { type: "handoff_request", input_transcript: "Can you end this call" },
+      });
+
+      // The agent cannot end a call it has no control over, so a turn asking it
+      // to is a turn spent explaining that back to the user.
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("ended");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+});

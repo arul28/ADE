@@ -6518,7 +6518,6 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
-      <CodexVoiceBar voice={codexVoice} />
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -6532,6 +6531,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      voiceBar={<CodexVoiceBar voice={codexVoice} />}
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
