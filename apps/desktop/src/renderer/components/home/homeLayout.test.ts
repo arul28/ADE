@@ -101,6 +101,25 @@ describe("stored home layouts", () => {
     expect(normalizeHomeLayouts("not a store", legacy).presets[1]!.name).toBe("Previous layout");
   });
 
+  it("keeps a usable version 2 store when the version 1 mirror is also there", () => {
+    // The mirror is written by every build; a live store must win over it.
+    window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify({
+      defaultStack: HOME_DEFAULT_STACK_VERSION,
+      activeId: "mine",
+      presets: [preset("default", "Default"), preset("mine", "Mine", [{ id: "feed", type: "feed", size: "m" }])],
+    }));
+    window.localStorage.setItem(HOME_LAYOUT_STORAGE_KEY, JSON.stringify(layoutWith([{ id: "pomodoro", type: "pomodoro", size: "s" }])));
+    reloadHomeLayoutsFromStorage();
+
+    const state = useHomeLayoutStore.getState();
+    expect(state.activeId).toBe("mine");
+    expect(state.layout.items.map((item) => item.type)).toEqual(["feed"]);
+    // No "Previous layout" preset appears: the mirror was ignored.
+    expect(state.presets.map((entry) => entry.id)).toEqual(["default", "mine"]);
+    window.localStorage.removeItem(HOME_LAYOUTS_STORAGE_KEY);
+    window.localStorage.removeItem(HOME_LAYOUT_STORAGE_KEY);
+  });
+
   it("writes the shipped stack down, so the migration happens once", () => {
     window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify({
       activeId: "focus",

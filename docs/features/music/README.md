@@ -109,7 +109,8 @@ retry. Missing devices and Premium failures have their own messages.
 | `apps/desktop/src/main/services/music/spotifyLocalPlayer.ts` | ADE's own Spotify player in the music host. |
 | `apps/desktop/native/ADEMusicHostWin/page-spotify/` | The Web Playback SDK page the host runs. |
 | `apps/desktop/src/renderer/components/music/musicApps.tsx` | The Apple Music and Spotify home-page apps. |
-| `apps/desktop/src/main/services/music/musicProviderRouter.ts` | Selected provider routing and persistence. |
+| `apps/desktop/src/main/services/music/musicProviderRouter.ts` | Selected provider routing and persistence (the settings file, and each provider's remembered volume). |
+| `apps/desktop/src/main/services/music/musicVolume.ts` | A provider's remembered volume: the 0–1 clamp, the session copy, and the dedupe both services share. |
 | `apps/desktop/src/renderer/components/music/MusicProviderControls.tsx` | Spotify setup guide and the Playing on menu. |
 | `apps/desktop/src/renderer/components/music/musicProvider.tsx` | Selected provider labels and attribution. |
 
