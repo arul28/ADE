@@ -179,7 +179,7 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it.each(["project_data_restore", "project_data_start_fresh"])("accepts the recovery screen's %s fact with only its coarse fields", (action) => {
+  it.each(["project_data_restore", "project_data_start_fresh", "project_move"])("accepts the project storage %s fact with only its coarse fields", (action) => {
     const harness = makeHarness();
     expect(harness.service.capture({
       event: "ade_feature_used",

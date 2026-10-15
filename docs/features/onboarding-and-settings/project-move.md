@@ -3,7 +3,8 @@
 Settings → General → **Project location** shows where the open project lives
 and offers **Move…**. The move copies the project with every lane, rewrites
 every place that names its old path, checks the copy, then switches over. The
-original is kept, renamed, until the person deletes it. macOS only for now.
+original is kept, renamed, until the person deletes it. macOS only for now;
+other systems show the row disabled.
 
 Research, the full map of stored paths and the experiments behind each rule:
 [`docs/plans/project-move.md`](../../plans/project-move.md).
@@ -22,7 +23,8 @@ Research, the full map of stored paths and the experiments behind each rule:
 | `apps/ade-cli/src/services/projects/projectMove/moveVolumes.ts` | Drives via `df` + `diskutil info -plist`. |
 | `apps/ade-cli/src/services/projects/projectRegistry.ts` | `relocate()` re-keys the registry and writes `project-aliases.json` (old id → new id); `assertProjectNotMovedAway` and `assertProjectNotBeingMoved` refuse opening the kept original or a project mid-move, on every open path. |
 | `apps/desktop/src/main/services/projects/projectMoveController.ts` | One move at a time; activity, release, reopen and progress wiring come from `main.ts`. |
-| `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (Where → Check → Move → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
+| `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (one setup screen with the drive, folder and checks → Moving → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
+| `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, interrupted-move recovery, and the journal's process check. |
 | `apps/desktop/src/renderer/components/settings/ProjectLocationSection.tsx` | The Settings row. `machine: "local"`. |
 
 ## How a move runs
@@ -69,9 +71,9 @@ untouched original.
   drive with the same name mounts at the same path and is writable; the move
   records and re-checks the volume UUID.
 - **An interrupted move** is settled at startup by `recoverInterruptedMoves`:
-  before the switch the copy is removed; mid-switch the original is put back
-  and anything `finishSwitch` did is undone; after it the bookkeeping is
-  finished.
+  before the copy is in place the original is put back and the partial copy
+  removed; once the copy is in place the move is only ever finished, never
+  undone (with the drive unplugged it waits for a later start).
 - **Remote:** the move needs this computer's disk and windows, so the section
   is `machine: "local"`, and a project open from another machine shows "Move
   it from ADE on that computer" instead of the button.

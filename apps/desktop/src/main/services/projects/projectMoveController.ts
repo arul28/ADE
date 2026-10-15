@@ -102,7 +102,7 @@ export type ProjectMoveControllerDeps = {
 
 /**
  * Moves one project at a time on this machine. macOS only: the engine refuses
- * elsewhere, and the Settings row is hidden off macOS.
+ * elsewhere, and the Settings row is disabled off macOS.
  */
 export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
   let running: string | null = null;

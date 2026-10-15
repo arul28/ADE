@@ -5002,7 +5002,7 @@ export function registerIpc({
   // missing and which way people recover. Nothing about the project. The 1 h
   // dedupe bounds a retry loop to 24 events per key per day.
   const captureProjectDataRecovery = (
-    action: "project_data_restore" | "project_data_start_fresh",
+    action: "project_data_restore" | "project_data_start_fresh" | "project_move",
     outcome: "completed" | "failed",
   ) => {
     try {
@@ -5065,10 +5065,14 @@ export function registerIpc({
   ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-    return controller.start(
+    const result = await controller.start(
       { projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot), moveAgentHistory: arg?.moveAgentHistory === true },
       windowId,
     );
+    // A move refused before it began (another move running, a check that now
+    // blocks) has no record and is not counted.
+    if (result.record) captureProjectDataRecovery("project_move", result.ok ? "completed" : "failed");
+    return result;
   });
   ipcMain.handle(IPC.projectMoveStatus, async (_event, arg: { projectRoot?: unknown }) => {
     if (!projectMoveController) return null;

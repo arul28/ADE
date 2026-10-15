@@ -49,11 +49,6 @@ export function currentBootMinute(): number {
   return Math.round((Date.now() - os.uptime() * 1000) / 60_000);
 }
 
-/**
- * Whether the process that ran a move is still running. A pid recorded before
- * a reboot (a power cut mid-copy) may now belong to an unrelated process, so
- * a different boot means it is gone.
- */
 /** Moves this process is running right now. A pid alone cannot say so: after a reboot it may be reused. */
 const activeMoveIds = new Set<string>();
 
@@ -62,6 +57,11 @@ export function markMoveActive(moveId: string, active: boolean): void {
   else activeMoveIds.delete(moveId);
 }
 
+/**
+ * Whether the process that ran a move is still running. A pid recorded before
+ * a reboot (a power cut mid-copy) may now belong to an unrelated process, so
+ * a different boot means it is gone.
+ */
 export function isMoveProcessAlive(record: Pick<ProjectMoveRecord, "moveId" | "pid" | "bootMinute">): boolean {
   const { pid } = record;
   if (!pid) return false;
