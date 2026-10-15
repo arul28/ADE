@@ -1798,7 +1798,11 @@ branch. `prService.createFromLane` reads the worktree's checked-out branch
 (`git rev-parse --abbrev-ref HEAD`) after its input checks and before the push.
 When it names a different branch, it adopts it through
 `laneService.updateBranchRef` and opens the PR for that branch. A detached HEAD
-or a failed read keeps the recorded branch.
+or a failed read keeps the recorded branch, and a lane with no branch either way
+is refused before anything is pushed. The remote check and the push use the
+branch's upstream only when it names the same branch; a branch made with
+`git checkout -b <new> origin/main` tracks main, so ADE compares with and
+pushes to `origin/<new>` instead (`git push -u origin <new>`).
 
 ### Lane branch history
 

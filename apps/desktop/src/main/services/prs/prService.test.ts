@@ -7203,6 +7203,8 @@ describe("prService.createFromLane", () => {
     const createRequest = ghService.apiRequest.mock.calls.find(([request]: any[]) => request?.method === "POST")?.[0];
     expect(createRequest?.body).toMatchObject({ head: "my-feature-v2", base: "main" });
     expect(laneService.updateBranchRef).toHaveBeenCalledWith(LANE_ID, "my-feature-v2");
+    // Its upstream still names my-feature, so the new branch is pushed by name.
+    expect(mockGit.runGit).toHaveBeenCalledWith(["push", "-u", "origin", "my-feature-v2"], expect.anything());
     expect(mockGit.runGit).not.toHaveBeenCalledWith(
       expect.arrayContaining(["my-feature"]),
       expect.anything(),
@@ -7781,6 +7783,7 @@ describe("prService.createFromLane", () => {
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
     });
     mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "not-a-count\n", stderr: "" });
@@ -7865,7 +7868,10 @@ describe("prService.createFromLane", () => {
     ).rejects.toThrow("Lane not found: nonexistent");
   });
 
-  it("throws before git or GitHub work when the lane has no branch", async () => {
+  it.each([
+    { worktree: "on no branch", checkedOutBranch: undefined },
+    { worktree: "detached", checkedOutBranch: "HEAD" },
+  ])("throws before pushing or GitHub work when the lane has no branch and its worktree is $worktree", async ({ checkedOutBranch }) => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
       getRepoOrThrow: vi.fn(async () => REPO),
@@ -7875,7 +7881,7 @@ describe("prService.createFromLane", () => {
         branchRef: "",
       }),
     ]);
-    const { service } = buildService({ githubService: ghService, laneService });
+    const { service } = buildService({ githubService: ghService, laneService, checkedOutBranch });
 
     await expect(
       service.createFromLane({
@@ -7887,7 +7893,8 @@ describe("prService.createFromLane", () => {
       }),
     ).rejects.toThrow('Lane "my-feature" has no branch checked out');
 
-    expect(mockGit.runGit).not.toHaveBeenCalled();
+    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "push")).toBe(false);
+    expect(laneService.updateBranchRef).not.toHaveBeenCalled();
     expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
     expect(ghService.apiRequest).not.toHaveBeenCalled();
   });

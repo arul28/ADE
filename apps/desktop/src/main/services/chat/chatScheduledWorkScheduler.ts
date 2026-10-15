@@ -394,22 +394,7 @@ export function createChatScheduledWorkScheduler(
     }
 
     if (options.claimFire && !options.claimFire(cloneSchedule(schedule))) {
-      // Another brain is delivering this occurrence. Settle it here the way
-      // that delivery will, so this brain neither re-fires it nor keeps a
-      // stale "scheduled" row.
-      clearTimer(schedule.id);
-      schedule.lastFiredAt = currentTime;
-      if (schedule.kind === "cron") {
-        schedule.fireAt = nextCronOccurrence(schedule, currentTime);
-        await persist();
-        await emitTransition(schedule, schedule.status);
-        arm(schedule);
-        return;
-      }
-      markTerminal(schedule, "done");
-      pruneTerminalHistory();
-      await persist();
-      await emitTransition(schedule, "done");
+      await followClaimOwner(schedule);
       return;
     }
 
@@ -421,7 +406,20 @@ export function createChatScheduledWorkScheduler(
     schedule.status = "fired";
     schedule.lastFiredAt = currentTime;
     schedule.lateFlag = late;
-    await persist();
+    try {
+      await persist();
+    } catch (error) {
+      // Nothing was delivered: give the occurrence back so a later attempt,
+      // here or in another brain, can claim it.
+      schedule.status = "scheduled";
+      if (previousLastFiredAt == null) delete schedule.lastFiredAt;
+      else schedule.lastFiredAt = previousLastFiredAt;
+      schedule.lateFlag = previousLateFlag;
+      inFlight.delete(scheduleId);
+      options.releaseFire?.(cloneSchedule(schedule));
+      armBusyDeferRetry(schedule);
+      throw error;
+    }
     await emitTransition(schedule, "fired");
 
     // A cancel (a user message, a superseding schedule) can land inside those
@@ -476,6 +474,37 @@ export function createChatScheduledWorkScheduler(
     await persist();
     await emitTransition(current, current.status);
     arm(current);
+  };
+
+  /**
+   * Another brain claimed this occurrence. Its delivery may still be retried
+   * or never start, so settle nothing on its behalf: adopt the outcome it
+   * persisted (started, finished, or a cron moved to its next occurrence) and
+   * check again later until there is one.
+   */
+  const followClaimOwner = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
+    clearTimer(schedule.id);
+    const persisted = normalizeState(await options.loadState()).schedules
+      .find((candidate) => candidate.id === schedule.id);
+    // A cron stays armed here for its later occurrences, so wait for the owner
+    // to move it on; a one-shot the owner started is settled by the owner.
+    const ownerMoved = persisted != null && (
+      isTerminal(persisted)
+      || persisted.fireAt !== schedule.fireAt
+      || (persisted.status === "fired" && schedule.kind !== "cron")
+    );
+    if (!ownerMoved || schedules.get(schedule.id) !== schedule) {
+      armBusyDeferRetry(schedule);
+      return;
+    }
+    schedule.status = persisted.status;
+    schedule.fireAt = persisted.fireAt;
+    schedule.lastFiredAt = persisted.lastFiredAt;
+    schedule.lateFlag = persisted.lateFlag;
+    schedule.terminalAt = persisted.terminalAt;
+    if (isTerminal(schedule)) pruneTerminalHistory();
+    else if (schedule.status === "scheduled") arm(schedule);
+    await emitTransition(schedule, schedule.status);
   };
 
   const armBusyDeferRetry = (schedule: ChatScheduledWorkRecord): void => {

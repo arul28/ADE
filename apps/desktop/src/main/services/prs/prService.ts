@@ -4384,9 +4384,11 @@ export function createPrService({
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
 
-    if (upstreamCheck.exitCode === 0) {
-      const upstreamRef = upstreamCheck.stdout.trim();
-      const parsedUpstream = parseUpstreamRef(upstreamRef);
+    const upstreamRef = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    const parsedUpstream = upstreamRef ? parseUpstreamRef(upstreamRef) : null;
+    // A branch made with `git checkout -b <new> origin/main` tracks main. The
+    // PR head is <new>, so compare with and push to origin/<new> instead.
+    if (upstreamRef && (!parsedUpstream || parsedUpstream.branch === headBranch)) {
       if (parsedUpstream) {
         await fetchRemoteBranchForPrCheck({
           cwd: lane.worktreePath,
@@ -7574,9 +7576,6 @@ export function createPrService({
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    if (!branchNameFromRef(recorded.branchRef)) {
-      throw new Error(`Lane "${recorded.name}" has no branch checked out. Check out a branch before creating a PR.`);
-    }
     const parentLane = recorded.parentLaneId ? allLanes.find((entry) => entry.id === recorded.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
     const parentPr = parentLane ? getRowForLane(parentLane.id) : null;
@@ -7594,6 +7593,9 @@ export function createPrService({
     const title = args.title?.trim() || defaultPrTitleForLane(recorded, baseBranch, allLanes);
     const lane = await adoptWorktreeBranch(recorded);
     const headBranch = branchNameFromRef(lane.branchRef);
+    if (!headBranch) {
+      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
+    }
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
     }

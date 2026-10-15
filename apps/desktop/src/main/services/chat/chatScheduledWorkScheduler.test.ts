@@ -1013,39 +1013,68 @@ describe("createChatScheduledWorkScheduler", () => {
   });
 
   it.each([
-    { kind: "wakeup" as const, cron: undefined, settled: { status: "done" } },
+    // The winner's one-shot stays `fired` until its turn finishes.
+    { kind: "wakeup" as const, cron: undefined, settled: { status: "fired", fireAt: START + 1_000 } },
     { kind: "cron" as const, cron: "*/20 * * * *", settled: { status: "scheduled", fireAt: START + 20 * 60_000 } },
-  ])("delivers a due $kind once when several brains load the same rows", async ({ kind, cron, settled }) => {
+  ])("delivers a due $kind once when several brains share the same rows", async ({ kind, cron, settled }) => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
-    const persisted = storedState([wakeup({ kind, cron, fireAt: START + 1_000 })]);
+    // One persisted state and one claim store, as in the project database.
+    let state: ChatScheduledWorkState | null = storedState([wakeup({ kind, cron, fireAt: START + 1_000 })]);
     const claims = sharedClaims();
-    const brains = [createFireMock(), createFireMock(), createFireMock()].map((fire) => {
-      let state: ChatScheduledWorkState | null = cloneState(persisted);
-      const scheduler = createChatScheduledWorkScheduler({
+    const brains = [createFireMock(), createFireMock(), createFireMock()].map((fire) => ({
+      fire,
+      scheduler: createChatScheduledWorkScheduler({
         loadState: () => cloneState(state),
         saveState: (next) => { state = structuredClone(next); },
         isGlobalPaused: () => false,
         sessionState: () => "active",
         ...claims,
         fire,
-      });
-      return { fire, scheduler };
-    });
-    await Promise.all(brains.map(({ scheduler }) => scheduler.start()));
+      }),
+    }));
+    for (const { scheduler } of brains) await scheduler.start();
 
     await vi.advanceTimersByTimeAsync(1_000);
-
     expect(brains.reduce((total, { fire }) => total + fire.mock.calls.length, 0)).toBe(1);
-    const losers = brains.filter(({ fire }) => fire.mock.calls.length === 0);
-    expect(losers).toHaveLength(2);
-    for (const { scheduler } of losers) {
-      expect(scheduler.list()[0]).toEqual(expect.objectContaining({ ...settled, lastFiredAt: START + 1_000 }));
-    }
-    // Nothing re-fires the claimed occurrence later on the brains that lost it.
+
+    // The others follow the winner's persisted outcome and never re-fire it.
     await vi.advanceTimersByTimeAsync(120_000);
     expect(brains.reduce((total, { fire }) => total + fire.mock.calls.length, 0)).toBe(1);
+    for (const { scheduler } of brains.filter(({ fire }) => fire.mock.calls.length === 0)) {
+      expect(scheduler.list()[0]).toEqual(expect.objectContaining({ ...settled, lastFiredAt: START + 1_000 }));
+    }
     brains.forEach(({ scheduler }) => scheduler.dispose());
+  });
+
+  it("gives an occurrence back when recording its fire fails, so a later attempt delivers it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let failFiredWrite = true;
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => {
+        if (failFiredWrite && next.schedules.some((item) => item.status === "fired")) {
+          failFiredWrite = false;
+          throw new Error("disk full");
+        }
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      fire,
+    });
+    await scheduler.upsert(wakeup({ fireAt: START }));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fire).not.toHaveBeenCalled();
+    expect(scheduler.list()[0]).toEqual(expect.objectContaining({ status: "scheduled", fireAt: START }));
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    expect(scheduler.list()[0]).toEqual(expect.objectContaining({ status: "fired", lastFiredAt: START + 20_000 }));
+    scheduler.dispose();
   });
 
   it("completes a one-shot immediately when its delivery owns no tracked turn", async () => {

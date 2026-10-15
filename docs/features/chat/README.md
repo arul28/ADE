@@ -1053,11 +1053,14 @@ lanes, a second `ade serve`) loads the same rows and arms its own timer, and the
 in-process in-flight guard only covers one process. So before delivering, a
 brain claims the occurrence with an `insert or ignore` of
 `agent-chat:scheduled-work:claim:<id>@<fireAt>` into the project's `kv` table.
-Only the brain whose insert lands delivers. The others settle the row the way
-that delivery will (a one-shot as `done`, a cron moved to its next occurrence)
-and log `agent_chat.scheduled_work_claimed_elsewhere`. A retried delivery
-deletes its claim so the retry can claim it again; claims older than eight days
-are pruned on the next claim.
+Only the brain whose insert lands delivers. The others log
+`agent_chat.scheduled_work_claimed_elsewhere` and settle nothing on the
+winner's behalf: they re-read the persisted row and adopt the winner's outcome
+once it is there (a one-shot `fired` or finished, a cron moved to its next
+occurrence and re-armed), checking again every 20 seconds until then. A retried
+delivery, or a delivery whose `fired` write fails, deletes its claim so the
+occurrence can be claimed again; claims older than eight days are pruned on the
+next claim.
 
 Session teardown distinguishes deliberate end from runtime lifecycle. Deleting
 or archiving a chat cancels every durable schedule owned by that chat.
