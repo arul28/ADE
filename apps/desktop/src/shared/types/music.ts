@@ -295,7 +295,6 @@ export type MusicBridge = {
   devices: () => Promise<MusicDevice[]>;
   /** Move Spotify playback to a device (`play` keeps it playing there, default true). */
   transfer: (args: { deviceId: string; play?: boolean }) => Promise<MusicCommandResult>;
-  /** Start the Spotify app on this computer and wait for it to appear as a device. */
   onState: (cb: (state: MusicState) => void) => () => void;
 };
 

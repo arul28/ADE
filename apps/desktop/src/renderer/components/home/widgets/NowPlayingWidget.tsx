@@ -491,7 +491,8 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
     body = (
       <PlayerCard
         model={model}
-        still={still}
+        // Spotify's artwork stays still wherever it comes from (its guidelines).
+        still={still || spotify}
         top={top}
         seek={<SessionSeek positionMs={session.positionMs} durationMs={session.durationMs} updatedAt={session.updatedAt} playing={playing} ticking={visible && !preview} />}
       />

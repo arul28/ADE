@@ -19,8 +19,7 @@ import type { SpotifyService } from "./spotifyService";
 /**
  * One `window.ade.music` for two providers. Every call goes to the selected
  * provider, and only its state reaches the renderer, decorated with what the
- * picker and the setup page need (`provider`, `capabilities`, `providers`,
- * `spotify`).
+ * page and the Spotify setup need (`provider`, `spotify`).
  *
  * The choice and the Spotify Client ID are plain settings in
  * `<userData>/music-player/music-settings.json`: neither is a secret (a PKCE

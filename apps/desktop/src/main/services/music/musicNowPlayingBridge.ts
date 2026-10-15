@@ -1,4 +1,4 @@
-import type { HomeNowPlayingState } from "../../../shared/types/homeWidgets";
+import { SPOTIFY_APP_NAME, type HomeNowPlayingState } from "../../../shared/types/homeWidgets";
 import { musicArtworkUrl, type MusicCommand, type MusicState } from "../../../shared/types/music";
 import type { NowPlayingService } from "../home/nowPlayingService";
 
@@ -36,7 +36,7 @@ export function createMusicNowPlayingBridge(args: {
       session: {
         id: "ade-music",
         kind: "ade-music",
-        app: state.provider === "spotify" ? "Spotify" : "Apple Music",
+        app: state.provider === "spotify" ? SPOTIFY_APP_NAME : "Apple Music",
         appIcon: null,
         title: track.title,
         artist: track.artist,

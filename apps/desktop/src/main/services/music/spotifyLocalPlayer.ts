@@ -42,7 +42,7 @@ export function sdkTrack(track: SpotifyLocalState["track"]): SpotifyTrack | null
     type: track.type,
     album: track.album ? { name: track.album.name, uri: track.album.uri, images: track.album.images } : undefined,
     artists: track.artists,
-    external_urls: track.id ? { spotify: `https://open.spotify.com/track/${track.id}` } : undefined,
+    external_urls: track.id ? { spotify: `https://open.spotify.com/${track.type === "episode" ? "episode" : "track"}/${track.id}` } : undefined,
   };
 }
 
@@ -71,6 +71,8 @@ export function createSpotifyLocalPlayer(args: {
   let stopping: Promise<void> | null = null;
   /** Moves on every stop, so a start that finishes after one is abandoned, not published. */
   let generation = 0;
+  /** The generation the start in flight belongs to. */
+  let startingGen = -1;
   let volume = 0.8;
 
   const available = () => Boolean(args.hostExecutable);
@@ -102,9 +104,12 @@ export function createSpotifyLocalPlayer(args: {
 
   const start = (): Promise<string> => {
     if (host && deviceId) return Promise.resolve(deviceId);
+    // A start a stop has since abandoned will fail; wait it out, then start fresh.
+    if (starting && startingGen !== generation) return starting.then(() => start(), () => start());
     if (starting) return starting;
     if (!args.hostExecutable) return Promise.reject(new Error("Spotify plays in ADE on Windows and macOS."));
     const gen = generation;
+    startingGen = gen;
     starting = (async () => {
       if (stopping) await stopping;
       if (gen !== generation) throw new Error("Spotify's player was stopped while it started.");

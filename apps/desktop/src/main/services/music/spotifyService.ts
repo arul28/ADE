@@ -143,8 +143,8 @@ export function createSpotifyService(args: {
   let disposed = false;
   let broadcastTimer: NodeJS.Timeout | null = null;
   let lastBroadcast = "";
-  /** `state.message` holds a poll's rate-limit or connection failure, cleared by the next good poll. */
-  let pollFailed = false;
+  /** The rate-limit or connection message a failed poll set, cleared by the next good poll. */
+  let pollMessage: string | null = null;
   let sessionGen = 0;
   let watchGen = 0;
   let persisting: Promise<unknown> = Promise.resolve();
@@ -499,9 +499,10 @@ export function createSpotifyService(args: {
         if (gen !== watchGen) return;
         applyPlayer(player);
         // The poll works again: the rate-limit or connection message it set is over.
-        if (pollFailed) {
-          pollFailed = false;
-          state.message = null;
+        // Only the poll's own message: a newer one (a crash, a sign-out) stays.
+        if (pollMessage !== null) {
+          if (state.message === pollMessage) state.message = null;
+          pollMessage = null;
         }
         delay = nextPollDelay();
       } catch (error) {
@@ -513,7 +514,7 @@ export function createSpotifyService(args: {
           }
           if (error.reason === "RATE_LIMITED") delay = Math.max(POLL_IDLE_MS, (error.retryAfter ?? 30) * 1000);
           if (error.reason === "RATE_LIMITED" || error.reason === "NETWORK") {
-            pollFailed = true;
+            pollMessage = error.message;
             state.message = error.message;
             emit();
           }
@@ -549,8 +550,8 @@ export function createSpotifyService(args: {
       void local.stop();
     }
     state.host = { status: "stopped", pid: null, unloadAt: null };
-    // Spotify keeps playing; ADE just stops watching it. Clearing the song
-    // hands Now Playing back to the OS session, which still sees the app.
+    // A device playing elsewhere keeps playing; ADE just stops watching it.
+    // Clearing the song hands Now Playing back to the OS session, if any.
     resetPlayback();
     emit();
   };
@@ -844,7 +845,12 @@ export function createSpotifyService(args: {
       // Start ADE's player now, like Apple Music's host, so the first play
       // does not wait about a second for it; it stops again when idle.
       if (state.authorized && !remoteDeviceId && local.available() && !local.running()) {
-        void playDevice().then(scheduleIdle, (error: unknown) => {
+        const gen = watchGen;
+        void playDevice().then(() => {
+          // The tab closed (or Spotify signed out) while the player started.
+          if (gen !== watchGen || !engaged) void local.stop();
+          else scheduleIdle();
+        }, (error: unknown) => {
           args.logger?.warn("music.spotify.local_prestart_failed", { error: errorMessage(error) });
         });
       }
