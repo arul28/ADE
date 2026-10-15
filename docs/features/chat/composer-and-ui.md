@@ -2901,6 +2901,10 @@ override the chips.
 
 ### Resolving the accent for the chat on screen
 
+Codex/OpenAI user-message bubbles blend the near-white provider accent into
+muted violet at each gradient stop, keeping the highlight soft and the white
+message text readable. Provider icons and other chrome retain their accent.
+
 `chatAccentForRenderedChat()` in `chatSurfaceTheme.ts` is the single
 derivation, and it is synchronous — the accent must be right on the frame a
 chat switch renders, not one IPC round trip later. Best evidence first:
