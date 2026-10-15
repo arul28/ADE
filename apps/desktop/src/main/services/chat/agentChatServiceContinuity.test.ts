@@ -386,6 +386,36 @@ describe("suggestLaneNameFromPrompt", () => {
     }));
   });
 
+  it("previews Claude's lane-naming account without consuming the next chat slot", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const accountUsage = {
+      getUsageSnapshot: vi.fn(() => ({ windows: [], accounts: [] })),
+      resolveBalancedInstance: vi.fn(() => ({ instanceId: "claude", reason: "weekly-first" })),
+      peekBalancedInstance: vi.fn(() => ({ instanceId: "work", reason: "reserve-preview" })),
+    };
+    const { service, aiIntegrationService } = createService({
+      getAccountUsage: () => accountUsage as any,
+    });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Capacity Rotation", branchFragment: "capacity-rotation" }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "Use the reserve Claude account for one of every three chats.",
+      provider: "claude",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      temporaryBranch: "ade/capacity-rotation",
+    });
+
+    expect(result).toMatchObject({ source: "ai", laneTitle: "Capacity Rotation" });
+    expect(accountUsage.peekBalancedInstance).toHaveBeenCalledWith("claude");
+    expect(accountUsage.resolveBalancedInstance).not.toHaveBeenCalled();
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves a valid title when structured branch output is invalid", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },

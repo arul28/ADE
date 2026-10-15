@@ -10359,6 +10359,8 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 export type ChatAccountUsage = {
   getUsageSnapshot: () => Pick<UsageSnapshot, "windows" | "accounts">;
   resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
+  /** Preview the upcoming account without consuming a Claude rotation slot. */
+  peekBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
 };
 
 /** Claude could not resume the thread id it was given. */
@@ -11163,16 +11165,18 @@ export function createAgentChatService(args: {
 
   /**
    * The account a background call made before its chat exists (naming a new
-   * lane from the opening prompt) runs as: smart balance's pick when it is on,
-   * the same account the new chat will get. Undefined means the provider's
-   * default account, which is what chat creation falls back to as well.
+   * lane from the opening prompt) runs as: smart balance's current preview.
+   * The preview does not consume a Claude rotation slot; chat creation makes
+   * its own pick. Undefined means the provider's default account, which is
+   * what chat creation falls back to as well.
    */
   const newChatProviderAccount = (provider: string | null | undefined): ProviderTaskAccount | undefined => {
     if (provider !== "claude" && provider !== "codex") return undefined;
     try {
-      const pick = getAccountUsage()?.resolveBalancedInstance(provider);
-      // The same resolution chat creation uses: a pick that no longer names
-      // an account falls back to the default.
+      const accountUsage = getAccountUsage();
+      const pick = accountUsage?.peekBalancedInstance(provider);
+      // As in chat creation, a pick that no longer names an account falls back
+      // to the default.
       const instance = pick?.instanceId ? resolveProviderInstanceForLaunch(provider, pick.instanceId) : null;
       return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
     } catch {

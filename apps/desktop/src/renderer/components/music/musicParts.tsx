@@ -1,8 +1,10 @@
+import { openExternalUrl } from "../../lib/openExternal";
 import React from "react";
-import { MusicNotesSimple, Pause, Play, Queue, ListPlus } from "@phosphor-icons/react";
+import { ArrowSquareOut, MusicNotesSimple, Pause, Play, Queue, ListPlus } from "@phosphor-icons/react";
 
 import { musicArtworkUrl, type MusicArtwork, type MusicItem } from "../../../shared/types/music";
-import { formatMusicTime } from "./musicStore";
+import { currentMusicProvider, formatMusicTime } from "./musicStore";
+import spotifyLogoUrl from "./assets/spotify-full-logo-green.svg";
 import appleMusicBadgeUrl from "./assets/listen-on-apple-music-badge.svg";
 
 /**
@@ -132,6 +134,17 @@ export function NowPlayingBars({ playing }: { playing: boolean }) {
 
 export const SONG_ROW_HEIGHT = 48;
 
+/** Official, unmodified Spotify asset from its developer design kit. */
+export function SpotifyBrand() {
+  return <img src={spotifyLogoUrl} alt="Spotify" width={70} height={21} draggable={false} />;
+}
+
+/** Links only to Spotify's public metadata pages, never an arbitrary API URL. */
+export function SpotifyItemLink({ url }: { url: string | null | undefined }) {
+  if (!url || !/^https:\/\/open\.spotify\.com\//.test(url)) return null;
+  return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] text-muted-fg hover:text-fg" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openExternalUrl(url); }} onDoubleClick={(event) => event.stopPropagation()} aria-label="Open in Spotify" title="Open in Spotify"><SpotifyBrand /><ArrowSquareOut size={10} /></a>;
+}
+
 export function SongRow({
   item,
   index,
@@ -150,7 +163,7 @@ export function SongRow({
   playing: boolean;
   showAlbum?: boolean;
   showArt?: boolean;
-  onPlay: () => void;
+  onPlay?: () => void;
   onPlayNext?: () => void;
   onPlayLater?: () => void;
   style?: React.CSSProperties;
@@ -163,12 +176,12 @@ export function SongRow({
       onDoubleClick={onPlay}
       data-testid="music-song-row"
     >
-      <button type="button" className="ade-music-song-lead" onClick={onPlay} aria-label={`Play ${item.title}`}>
+      {onPlay ? <button type="button" className="ade-music-song-lead" onClick={onPlay} aria-label={`Play ${item.title}`}>
         <span className="ade-music-song-index kit-num">
           {current ? <NowPlayingBars playing={playing} /> : index + 1}
         </span>
         <span className="ade-music-song-play">{current && playing ? <Pause size={13} weight="fill" /> : <Play size={13} weight="fill" />}</span>
-      </button>
+      </button> : <span className="ade-music-song-lead"><span className="ade-music-song-index kit-num">{index + 1}</span></span>}
       {showArt ? <MusicArt artwork={item.artwork} size={34} /> : null}
       <span className="ade-music-song-titles">
         <span className="ade-music-song-title">
@@ -249,7 +262,7 @@ function whenVisible(): Promise<void> {
  * tile left before its turn, `"failed"` when the read failed.
  */
 function loadCover(id: string, library: boolean, wanted: () => boolean): Promise<MusicArtwork[] | "unwanted" | "failed"> {
-  const key = `${library ? "l" : "c"}:${id}`;
+  const key = `${currentMusicProvider()}:${library ? "l" : "c"}:${id}`;
   const hit = coverCache.get(key);
   if (hit && Date.now() - hit.at < COVER_CACHE_MS) {
     rememberCover(key, hit);
@@ -384,7 +397,7 @@ export function CollectionTile({
         ) : (
           <MusicArt artwork={item.artwork} size={168} round={round} className="ade-music-tile-img" />
         )}
-        {onPlay ? (
+        {onPlay && !item.id.startsWith("spotify:") ? (
           <span
             role="button"
             tabIndex={-1}
@@ -406,6 +419,7 @@ export function CollectionTile({
           {item.releaseYear && item.kind === "album" ? ` · ${item.releaseYear}` : ""}
         </span>
       </button>
+      {onPlay && item.id.startsWith("spotify:") ? <div className="flex items-center justify-end gap-2"><button type="button" className="kit-icon-btn" onClick={onPlay} aria-label={`Play ${item.title}`}><Play size={14} weight="fill" /></button></div> : null}
     </div>
   );
 }

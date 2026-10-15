@@ -1,5 +1,5 @@
 import type { MusicItem } from "../../../shared/types/music";
-import { musicActions } from "./musicStore";
+import { currentMusicProvider, musicActions } from "./musicStore";
 
 /**
  * Every song the Music page plays goes through here.
@@ -63,7 +63,7 @@ export function queueActions(item: MusicItem): { onPlayNext?: () => void; onPlay
   const id = queueableId(item);
   if (!id) return {};
   return {
-    onPlayNext: () => void musicActions.playNext([id]),
+    onPlayNext: currentMusicProvider() === "spotify" ? undefined : () => void musicActions.playNext([id]),
     onPlayLater: () => void musicActions.playLater([id]),
   };
 }

@@ -13812,6 +13812,10 @@ const adeBridge = {
     unload: () => ipcRenderer.invoke(MUSIC_IPC.unload),
     showSignIn: () => ipcRenderer.invoke(MUSIC_IPC.showSignIn),
     cancelSignIn: () => ipcRenderer.invoke(MUSIC_IPC.cancelSignIn),
+    selectProvider: (provider) => ipcRenderer.invoke(MUSIC_IPC.selectProvider, provider),
+    configureSpotify: (args) => ipcRenderer.invoke(MUSIC_IPC.configureSpotify, args),
+    devices: () => ipcRenderer.invoke(MUSIC_IPC.devices),
+    transfer: (args) => ipcRenderer.invoke(MUSIC_IPC.transfer, args),
     onState: (cb: (state: MusicState) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: MusicState) => cb(state);
       ipcRenderer.on(MUSIC_IPC.stateEvent, listener);
