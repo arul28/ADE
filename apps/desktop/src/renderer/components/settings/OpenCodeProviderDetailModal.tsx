@@ -228,12 +228,15 @@ export function OpenCodeProviderDetailModal({
               {accounts.length === 0 && accountsState.error && !accountsState.loading ? (
                 // The plain sign-in below still works (a machine on an older
                 // ADE has no account list to give); say the list is missing.
-                <div className="ade-oc-acct-hint" role="status">
-                  Could not load {signInTarget.providerName} accounts on {machineLabel}.{" "}
-                  <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => void accountsState.reload()}>
-                    Retry
-                  </button>
-                </div>
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: `opencode-accounts-load-${signInTarget.providerId}`,
+                    tone: "warning",
+                    title: `Could not load ${signInTarget.providerName} accounts on ${machineLabel}.`,
+                    actions: [{ label: "Retry", onClick: () => void accountsState.reload(), variant: "secondary" }],
+                  }}
+                />
               ) : null}
 
               {accounts.length > 0 ? (

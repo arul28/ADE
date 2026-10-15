@@ -360,17 +360,19 @@ export async function clearProviderKey(
 ): Promise<{ ok: boolean; error?: string }> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
-  // Its cloud logins leave the ADE account too, or the next sync would set
-  // them up again. First, so a failed account write changes nothing.
-  if (!forgetSyncedCloudLoginsFor(deps, providerId)) {
-    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Try again.` };
-  }
   try {
     deleteStoredApiKey(providerId);
   } catch (err) {
     const error = errorMessage(err);
     deps.logger.warn("opencode.provider_key_delete_failed", { providerId, error });
     return { ok: false, error: `ADE could not delete its stored key: ${error}` };
+  }
+  // Its cloud logins leave the ADE account too, or the next sync would set
+  // them up again. After the local key (a failure there leaves the account
+  // untouched on every computer), before the logins (Disconnect again
+  // finishes a run that stopped here).
+  if (!forgetSyncedCloudLoginsFor(deps, providerId)) {
+    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Try again.` };
   }
   clearOpenCodeInventoryCache();
   // Routes into other harnesses copied this sign-in's token into ADE's proxy
