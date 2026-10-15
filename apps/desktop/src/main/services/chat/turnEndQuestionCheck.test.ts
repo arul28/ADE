@@ -119,6 +119,10 @@ describe("classifyTurnEndAsk", () => {
       "Say the word if you would rather I run the independent delta re-review first, since that is the one step I shortened.",
       null,
     ],
+    ["an offer question: would you like", "unsure", "Would you like me to run another review?", null],
+    ["an offer question: would you prefer", "unsure", "Would you prefer me to run another review?", null],
+    ["an offer question: do you want", "unsure", "Do you want me to run another review?", null],
+    ["a consequential permission needing context", "unsure", "Would you like me to delete the production database?", null],
     ["a direct blocking question", "ask", "Should I wait for your choice before continuing?", "Should I wait for your choice before continuing?"],
     [
       "a question that only appears in quotes, then a progress note",

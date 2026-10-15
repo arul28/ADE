@@ -49,6 +49,9 @@ import {
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
+import { openKvDb } from "../state/kvDb";
+import { createSessionService } from "../sessions/sessionService";
+import { createPrChatLinkStore } from "../prs/prChatLinkStore";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -81,6 +84,33 @@ async function useRealLineReaderOnce(): Promise<void> {
 
 
 describe("createAgentChatService", () => {
+  it("gives a PR origin to the first ordinary persisted chat and cleans up failed claims", async () => {
+    const db = await openKvDb(path.join(tmpRoot, "origin.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const now = new Date().toISOString();
+    let service: ReturnType<typeof createAgentChatService> | undefined;
+    try {
+      db.run("insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values ('proj', ?, 'ADE', 'main', ?, ?)", [tmpRoot, now, now]);
+      db.run("insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-1', 'proj', 'lane', 'main', 'lane', ?, 'active', ?)", [tmpRoot, now]);
+      db.run("insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state, base_branch, head_branch, created_at, updated_at) values ('pr', 'proj', 'lane-1', 'acme', 'ade', 1, 'https://github.com/acme/ade/pull/1', 'open', 'main', 'lane', ?, ?)", [now, now]);
+      const sessions = createSessionService({ db });
+      const store = createPrChatLinkStore({ db, projectId: "proj", logger: { debug() {}, info() {}, warn() {}, error() {} } as any, knownStackNumberForPr: () => null });
+      expect(store.rememberLanePrChatOrigin({ laneId: "lane-1", prId: "pr" })).toBe(true);
+      service = createService({ sessionService: sessions, prService: store }).service;
+      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(store.chatSessionIdsByPrId(["pr"]).get("pr")).toBeUndefined();
+      db.run("create trigger fail_chat_claim before insert on pull_request_chat_sessions begin select raise(abort, 'injected claim failure'); end");
+      await expect(service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" })).rejects.toThrow("Could not save the PR link");
+      expect(sessions.list({ laneId: "lane-1", limit: null })).toHaveLength(1);
+      db.run("drop trigger fail_chat_claim");
+      const chat = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      expect(store.chatSessionIdsByPrId(["pr"]).get("pr")).toEqual([chat.id]);
+    } finally {
+      service?.forceDisposeAll();
+      db.close();
+    }
+  });
+
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
     const getIssue = vi.fn().mockResolvedValue({ title: "Keep desktop previews consistent" });
     const { service } = createService({ githubService: { getIssue } });

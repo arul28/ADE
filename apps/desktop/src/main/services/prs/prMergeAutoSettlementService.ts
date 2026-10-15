@@ -265,7 +265,7 @@ export function createPrMergeAutoSettlementService(args: {
     const get = args.db.get;
     if (!projectId || !get) return null;
     try {
-      return get(
+      return get<PendingOriginFollowup>(
         `select origin.pr_id, origin.lane_id, origin.claimed_session_id as session_id
            from pull_request_lane_chat_origins origin
            join pull_requests pr on pr.id = origin.pr_id and pr.project_id = origin.project_id
