@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { captureError } from "../../../../desktop/src/shared/sentry/capture";
 import { ToolError, asToolError } from "./errors";
 import {
   type FreeSpaceReader,
@@ -636,8 +637,12 @@ export async function gcTools(options: GcToolsOptions = {}): Promise<GcToolsResu
     let superseded: ReturnType<typeof supersededVersionDirs>;
     try {
       superseded = supersededVersionDirs(packageDir, pinnedVersions);
-    } catch {
-      // An unreadable package directory is left for a later pass.
+    } catch (error) {
+      // A package directory that cannot be read now (permissions, an antivirus
+      // or another process holding it) is left for a later pass.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EACCES" && code !== "EPERM" && code !== "EBUSY") throw error;
+      captureError(error, { tags: { area: "tools-gc", package: packageName } });
       continue;
     }
     const doomed = keepPrevious ? superseded.slice(1) : superseded;

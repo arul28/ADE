@@ -12,9 +12,10 @@ const launch = { profile: CLAUDE_AGENT_SDK_TOOL_PROFILE, mainModel: "claude-opus
 describe("claudeToolProfileFromInitTools", () => {
   it.each([
     ["the Agent SDK on macOS and Linux", ["Bash", "Read", "Edit", "Write"], { shellTool: "Bash", searchTools: false }],
-    ["a machine with Glob and Grep", ["Bash", "Glob", "Grep", "Read"], { shellTool: "Bash", searchTools: true }],
-    ["Windows without Git Bash", ["PowerShell", "Glob", "Grep", "Read"], { shellTool: "PowerShell", searchTools: true }],
+    ["a machine with Glob and Grep", ["Bash", "Glob", "Grep", "Read", "Edit", "Write"], { shellTool: "Bash", searchTools: true }],
+    ["Windows without Git Bash", ["PowerShell", "Glob", "Grep", "Read", "Edit", "Write"], { shellTool: "PowerShell", searchTools: true }],
     ["a probe that ran with no tools", [], null],
+    ["a chat that narrowed its tools", ["Bash", "Read"], null],
     ["no tool list", undefined, null],
   ])("%s", (_name, tools, expected) => {
     expect(claudeToolProfileFromInitTools(tools)).toEqual(expected);

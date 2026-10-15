@@ -3732,6 +3732,16 @@ function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | u
   return normalizedTurnId ? runtime.interruptedTurnIds.has(normalizedTurnId) : false;
 }
 
+/** `rememberBoundedId` for a map: keeps the newest `limit` keys; an existing key keeps its value. */
+function rememberBoundedEntry<TValue>(map: Map<string, TValue>, key: string, value: TValue, limit: number): void {
+  if (map.has(key)) return;
+  map.set(key, value);
+  for (const oldest of map.keys()) {
+    if (map.size <= limit) break;
+    map.delete(oldest);
+  }
+}
+
 function rememberBoundedId(set: Set<string>, value: string | null | undefined, limit = 64): void {
   const normalized = value?.trim() || null;
   if (!normalized) return;
@@ -7767,6 +7777,11 @@ function isBareClaudeOpusRuntimeAlias(model: string): boolean {
   return model.trim().toLowerCase()
     .replace(/^anthropic\//, "")
     .replace(/-api$/, "") === "opus";
+}
+
+/** The runtime's thread id when Claude has written it; a warm-up's thread is not on disk yet. */
+function writtenClaudeSessionId(runtime: { sdkSessionId: string | null; unwrittenWarmSessionId: string | null }): string | null {
+  return runtime.sdkSessionId !== runtime.unwrittenWarmSessionId ? runtime.sdkSessionId : null;
 }
 
 /**
@@ -17923,6 +17938,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The pointer-table thread a chat may resume, if any: none while the chat
+   * waits to start a fresh thread (`claudeFreshThreadPending`), and only one
+   * written for the chat's own lane.
+   */
+  const claudeResumePointer = (sessionId: string, laneId: string, freshThreadPending: boolean) => {
+    if (freshThreadPending) return null;
+    const pointer = getClaudeSessionPointerForChat(sessionId);
+    return pointer?.laneId === laneId ? pointer : null;
+  };
+
   const mirrorClaudeSessionPointer = (
     managed: ManagedChatSession,
     sdkSessionId: string | null | undefined,
@@ -17987,10 +18013,7 @@ export function createAgentChatService(args: {
     // A thread no message has been sent on is not on disk yet, so it is not
     // saved (nor mirrored to the pointer table below): a runtime started after
     // this one would resume it and fail with "No conversation found".
-    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude"
-      && managed.runtime.sdkSessionId !== managed.runtime.unwrittenWarmSessionId
-      ? managed.runtime.sdkSessionId
-      : null;
+    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? writtenClaudeSessionId(managed.runtime) : null;
     // A launch route the chat left (`leftLaunchRoute`) must not come back from disk.
     const persistedPresetId = managed.session.presetId
       ?? (managed.leftLaunchRoute?.preset ? undefined : prevPersisted?.presetId);
@@ -18619,11 +18642,8 @@ export function createAgentChatService(args: {
             }))
             .slice(-12)
         : undefined;
-      // A chat waiting to start a fresh thread must not get the old one back
-      // from the pointer table (`claudeFreshThreadPending`).
       const claudeFreshThreadPending = record.claudeFreshThreadPending === true;
-      const rawClaudePointer = provider === "claude" && !claudeFreshThreadPending ? getClaudeSessionPointerForChat(sessionId) : null;
-      const claudePointer = rawClaudePointer?.laneId === laneId ? rawClaudePointer : null;
+      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending) : null;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length
         ? record.sdkSessionId.trim()
         : claudePointer?.sessionId;
@@ -21382,8 +21402,7 @@ export function createAgentChatService(args: {
       if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
     }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
-      compactOnlyTurns.set(event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual");
-      while (compactOnlyTurns.size > 512) compactOnlyTurns.delete(compactOnlyTurns.keys().next().value!);
+      rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -21396,6 +21415,9 @@ export function createAgentChatService(args: {
         event = { ...event, summary: managed.runtime.compactionSummary };
         managed.runtime.compactionSummary = undefined;
       }
+      // Claude labels its own start "auto" and every `/compact` result
+      // "manual": a person's turn needs only its start corrected, ADE's own
+      // turn needs every state.
       const compactOnlyTrigger = event.turnId ? compactOnlyTurns.get(event.turnId) : undefined;
       if (compactOnlyTrigger && (event.state === "started" || compactOnlyTrigger === "auto")) event = { ...event, trigger: compactOnlyTrigger };
       const open = openNativeCompactions.get(managed.session.id) ?? new Map();
@@ -43371,9 +43393,8 @@ export function createAgentChatService(args: {
       laneWorktreePath: managed.laneWorktreePath,
     });
     const freshThread = managed.claudeFreshThreadPending === true;
-    const claudePointer = freshThread ? null : getClaudeSessionPointerForChat(managed.session.id);
-    const laneScopedClaudePointer = claudePointer?.laneId === managed.session.laneId ? claudePointer : null;
-    const sdkSessionId = freshThread ? null : persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null;
+    const claudePointer = claudeResumePointer(managed.session.id, managed.session.laneId, freshThread);
+    const sdkSessionId = freshThread ? null : persisted?.sdkSessionId ?? claudePointer?.sessionId ?? null;
     const forkFromSdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
       ? persisted?.forkFromSdkSessionId ?? null
       : null;
@@ -45645,9 +45666,7 @@ export function createAgentChatService(args: {
       ? ensureClaudeSessionRuntime(managed)
       : null;
     // A warm-up's thread is not on disk until a message writes it: nothing to fork yet.
-    const sourceSdkSessionId = sourceClaudeRuntime && sourceClaudeRuntime.sdkSessionId !== sourceClaudeRuntime.unwrittenWarmSessionId
-      ? sourceClaudeRuntime.sdkSessionId
-      : null;
+    const sourceSdkSessionId = sourceClaudeRuntime ? writtenClaudeSessionId(sourceClaudeRuntime) : null;
     if (nativeFork && managed.session.provider === "claude" && !sourceSdkSessionId) {
       throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
@@ -63805,24 +63824,20 @@ export function createAgentChatService(args: {
       // purpose — it still drives the runtime teardown and title re-adoption
       // below, which any model switch needs.
       const providerChanged = previousProvider !== nextProvider;
+      // By id when the model has one: a non-Claude preset's row holds the
+      // launch's own spelling (`custom:…`), which a re-sent model never matches.
+      const sameModel = descriptor ? managed.session.modelId === descriptor.id : managed.session.model === nextModel;
       const route = launchRouteTransition({
         currentPresetId: managed.session.presetId?.trim() || null,
         hasCredential: Boolean(managed.session.credentialId?.trim()),
         nextPresetId,
         explicitLeave: requestedPresetIdArg === null,
-        // By id when the model has one: a non-Claude preset's row holds the
-        // launch's own spelling (`custom:…`), which a re-sent model never matches.
-        sameModel: descriptor ? managed.session.modelId === descriptor.id : managed.session.model === nextModel,
+        sameModel,
         providerChanged,
         previouslyLeft: managed.leftLaunchRoute,
       });
       const { joinsPreset, leavesPreset } = route;
-      const modelChanged =
-        providerChanged
-        || leavesPreset
-        || joinsPreset
-        || managed.session.modelId !== descriptor?.id
-        || managed.session.model !== nextModel;
+      const modelChanged = providerChanged || leavesPreset || joinsPreset || !sameModel;
       modelSwitched = modelChanged;
       if (leavesPreset || joinsPreset || route.leavesCredential) {
         if (leavesPreset) delete managed.session.presetId;

@@ -72,10 +72,15 @@ export type ClaudeBuiltinToolProfile = {
 /** What Claude Code gives Agent SDK sessions on macOS and Linux. */
 export const CLAUDE_AGENT_SDK_TOOL_PROFILE: ClaudeBuiltinToolProfile = { shellTool: "Bash", searchTools: false };
 
-/** The profile a `system/init` tool list shows, or null when it names no shell tool (a probe with no tools). */
+/**
+ * The machine's profile as a `system/init` tool list shows it, or null when
+ * the list cannot say: a probe runs with no tools, and a chat that narrowed
+ * its tools (no Write or Edit) says nothing about the rest.
+ */
 export function claudeToolProfileFromInitTools(tools: unknown): ClaudeBuiltinToolProfile | null {
   if (!Array.isArray(tools)) return null;
   const names = new Set(tools.filter((tool): tool is string => typeof tool === "string"));
+  if (!names.has("Write") || !names.has("Edit")) return null;
   const shellTool = names.has("Bash") ? "Bash" : names.has("PowerShell") ? "PowerShell" : null;
   return shellTool ? { shellTool, searchTools: names.has("Glob") && names.has("Grep") } : null;
 }

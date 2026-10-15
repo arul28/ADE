@@ -48,6 +48,7 @@ export function createWarmIdleCompactionScheduler<TChat>(
   // Each chat's live claim, unique across chats and time. A schedule or a fire
   // that awaited history acts only if its claim is still the chat's: a clear
   // (a turn started, the chat was put away) or a later schedule replaced it.
+  // One number per chat until its next clear, schedule or dispose.
   const claims = new Map<string, number>();
   let lastClaim = 0;
   const claim = (sessionId: string): number => {
@@ -67,18 +68,10 @@ export function createWarmIdleCompactionScheduler<TChat>(
   const fire = async (chat: TChat, fireAt: number, held: number): Promise<void> => {
     const sessionId = options.sessionIdOf(chat);
     timers.delete(sessionId);
-    const current = () => claims.get(sessionId) === held && options.isIdle(chat);
-    if (Date.now() - fireAt > WARM_IDLE_COMPACT_MAX_LATE_MS || !current()) {
-      claims.delete(sessionId);
-      return;
-    }
+    if (Date.now() - fireAt > WARM_IDLE_COMPACT_MAX_LATE_MS) return;
     // The same schedule read again: no turn since, same cache, still big.
     const stillDue = (await options.compactAt(chat)) === fireAt;
-    if (!stillDue || !current()) {
-      if (claims.get(sessionId) === held) claims.delete(sessionId);
-      return;
-    }
-    claims.delete(sessionId);
+    if (!stillDue || claims.get(sessionId) !== held || !options.isIdle(chat)) return;
     options.logger.info("agent_chat.warm_idle_compaction", { sessionId });
     try {
       await options.compact(chat);
@@ -93,16 +86,11 @@ export function createWarmIdleCompactionScheduler<TChat>(
     const held = claim(sessionId);
     try {
       const fireAt = await options.compactAt(chat);
-      if (claims.get(sessionId) !== held) return;
-      if (fireAt == null) {
-        claims.delete(sessionId);
-        return;
-      }
+      if (fireAt == null || claims.get(sessionId) !== held) return;
       const timer = setTimeout(() => void fire(chat, fireAt, held), Math.max(0, fireAt - Date.now()));
       timer.unref?.();
       timers.set(sessionId, timer);
     } catch (error) {
-      if (claims.get(sessionId) === held) claims.delete(sessionId);
       options.logger.warn("agent_chat.warm_idle_compaction_schedule_failed", { sessionId, error: getErrorMessage(error) });
     }
   };

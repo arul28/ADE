@@ -17,13 +17,7 @@ export function noteClaudeCodeInit(init: { claude_code_version?: unknown; tools?
   if (typeof init.claude_code_version === "string" && init.claude_code_version.trim()) {
     reportedVersion = init.claude_code_version.trim();
   }
-  // The machine's tools, read only from a chat that has the full set: the
-  // settings probe runs with none, and a chat that narrowed its tools says
-  // nothing about the rest.
-  const tools = Array.isArray(init.tools) ? init.tools : [];
-  if (tools.includes("Write") && tools.includes("Edit")) {
-    reportedToolProfile = claudeToolProfileFromInitTools(tools) ?? reportedToolProfile;
-  }
+  reportedToolProfile = claudeToolProfileFromInitTools(init.tools) ?? reportedToolProfile;
 }
 
 export function reportedClaudeCodeVersion(): string | null {

@@ -167,13 +167,7 @@ export function resolveClaudeCodeExecutable(args?: {
   // previous copy, which the cache keeps for this, beats the machine's own
   // `claude`: that one can be any version, and ADE delivers its plugins only
   // to its own copies.
-  let previousPath: string | null = null;
-  try {
-    previousPath = previousCachedToolEntryPath("claude-code", { env, platform: args?.platform, arch: args?.arch });
-  } catch (error) {
-    // An unreadable tools cache must not stop a chat from starting on the next copy down.
-    captureError(error, { tags: { area: "claude-executable" } });
-  }
+  const previousPath = previousCachedToolEntryPath("claude-code", { env, platform: args?.platform, arch: args?.arch });
   if (previousPath && isExecutablePath(previousPath)) {
     return { path: previousPath, source: "tools-cache" };
   }
