@@ -1,4 +1,4 @@
-import { COMPACT_FIRST_MIN_TOKENS, compactFirstMinTokensFromEnv, compactFirstOffer, warmIdleCompactAtMs } from "../../../shared/compactFirst";
+import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
@@ -5335,6 +5335,20 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 // work was still due to wake the agent, so that wake-up reached nobody.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
+
+/**
+ * How long Compact first holds a message for a provider whose `/compact` is an
+ * action rather than a turn (Codex, Pi, OpenCode). Past this the person is
+ * waiting on a send that should have returned; the message goes with the full
+ * chat and the compaction keeps running on its own. Claude has no such cap:
+ * its message queues behind a real turn and returns at once.
+ */
+const COMPACT_FIRST_INLINE_WAIT_MS = 90_000;
+/**
+ * How often the hold re-reads the chat while the turn that carried a
+ * compaction closes. In-memory only, and only while one send waits.
+ */
+const COMPACT_FIRST_IDLE_POLL_MS = 200;
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
@@ -21375,6 +21389,19 @@ export function createAgentChatService(args: {
 
   const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
   /**
+   * Chats whose code named a compaction it is holding a send behind, and the
+   * resolvers to run when that compaction reaches a terminal state. Codex's
+   * `codex_context_compaction` and every other provider's `context_compact`
+   * both end here, so one wait serves all of them.
+   */
+  const compactionSettledWaiters = new Map<string, Set<() => void>>();
+  const settleCompactionWaiters = (sessionId: string): void => {
+    const waiters = compactionSettledWaiters.get(sessionId);
+    if (!waiters) return;
+    compactionSettledWaiters.delete(sessionId);
+    for (const settle of waiters) settle();
+  };
+  /**
    * Turns that only ran `/compact`, with who asked: the person, or ADE by
    * itself (`automaticCompactSessions` marks a chat whose next one is ADE's).
    * Claude reports every `/compact` as asked for, so this is what tells them apart.
@@ -21382,6 +21409,8 @@ export function createAgentChatService(args: {
   const compactOnlyTurns = new Map<string, "manual" | "auto">();
   const automaticCompactSessions = new Set<string>();
   const compactFirstMinTokens = compactFirstMinTokensFromEnv(process.env);
+  // A shortened window for trying the offer without waiting out a real cache.
+  const compactFirstIdleMsOverride = compactFirstIdleMsFromEnv(process.env);
   // "Always compact first" while the cache is still warm; see warmIdleCompactionScheduler.ts.
   const warmIdleCompaction = createWarmIdleCompactionScheduler<ManagedChatSession>({
     sessionIdOf: (managed) => managed.session.id,
@@ -21394,7 +21423,11 @@ export function createAgentChatService(args: {
       if (!row || row.archivedAt || row.settledAt) return null;
       return warmIdleCompactAtMs(await compactFirstArgs(managed));
     },
-    isIdle: (managed) => isIdleForCompactFirst(managed),
+    // The person may still click the offer while background work runs; ADE
+    // never compacts on its own then. `hasRuntimeActiveWorkload` is the close
+    // guard's predicate (busy, approvals, background tasks), so an idle turn
+    // with a live background shell or subagent is not compacted underneath it.
+    isIdle: (managed) => isIdleForCompactFirst(managed) && !hasRuntimeActiveWorkload(managed.runtime),
     // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
     compact: async (managed) => {
       automaticCompactSessions.add(managed.session.id);
@@ -21418,6 +21451,11 @@ export function createAgentChatService(args: {
     }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
+    }
+    if (event.type === "context_compact" || event.type === "codex_context_compaction") {
+      // A compaction that ended releases any Compact first hold on this chat
+      // before the rest of the event is bookkept.
+      if (event.state !== "started") settleCompactionWaiters(managed.session.id);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -40803,6 +40841,17 @@ export function createAgentChatService(args: {
       : null;
     return { ...defaults, ...account?.compaction };
   };
+  /**
+   * The Compact first mode a chat runs with. Claude keeps its long-standing
+   * default: the offer is there once the cache expires. Every other provider
+   * starts at `never`, so nobody who never opened the setting sees an offer;
+   * turning it on in Settings → Providers is what shows it.
+   */
+  const compactionIdleModeFor = (session: { provider?: string; instanceId?: string | null }): "ask" | "always" | "never" => {
+    const stored = compactionSettingsForSession(session).idleMode;
+    if (stored) return stored;
+    return session.provider === "claude" ? "ask" : "never";
+  };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   const compactionSignatureFor = (managed: ManagedChatSession) =>
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
@@ -55220,31 +55269,90 @@ export function createAgentChatService(args: {
     // already on in "always" mode; automation and CLI sends never carry it. A
     // chat that became busy meanwhile skips it and steers as usual.
     let compactFirst: { turn: Promise<AgentChatBackgroundTurnResult>; before: number } | null = null;
+    let compactFirstInline: "skipped" | "completed" | "failed" = "skipped";
     try {
       // Pending input includes Claude's native resume_return, which owns its
       // send; never combine it with ADE's pill.
-      if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text) && isIdleForCompactFirst(managed)) {
+      if (args.compactFirst === true && compactFirstSupportedProvider(managed.session.provider) && !isManualCompactCommand(args.text) && isIdleForCompactFirst(managed)) {
         const offer = compactFirstOffer(await compactFirstArgs(managed));
         // Checked again: a turn may have started while the history loaded.
-        if (offer && isIdleForCompactFirst(managed)) compactFirst = await startCompactFirstTurn(managed);
+        if (offer && isIdleForCompactFirst(managed)) {
+          if (managed.session.provider === "claude") {
+            compactFirst = await startCompactFirstTurn(managed);
+          } else {
+            // Codex, Pi and OpenCode run `/compact` as an action, not a turn,
+            // so there is no queue to put the message behind. Wait for the
+            // compaction to end, then send: the message always reaches the
+            // provider either with a compacted chat or, on failure or a wait
+            // that runs long, with the full one and the same notice Claude's
+            // fallback uses.
+            compactFirstInline = await runCompactFirstInline(managed);
+          }
+        }
       }
       // Behind a running compaction the message joins the queue, like any
       // message sent during a turn, so this call returns at once instead of
-      // waiting out the compaction.
+      // waiting out the compaction. After an inline compaction the same routing
+      // covers the sliver between "the chat is idle" and this send: a turn that
+      // started in that moment takes the message as a steer instead of
+      // refusing it.
       const result = await sendMessageWithoutReview(
         reviewed.args,
-        compactFirst ? { ...options, routeActiveToSteer: true } : options,
+        compactFirst || compactFirstInline === "completed" ? { ...options, routeActiveToSteer: true } : options,
       );
       // Rerouted into a steer the queue refused: nothing was delivered.
       if (isDroppedSteer(result)) reviewed.restore();
       else if (reviewed.block && result && result.queued) rememberQueuedSteerReview(result.steerId, reviewed.block, reviewed.restore);
       if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, Boolean(result && result.queued));
+      else if (compactFirstInline === "failed") emitCompactFirstFallbackNotice(managed);
       return result;
     } catch (error) {
       reviewed.restore();
       // The compaction still runs; report how it ends.
       if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, false);
+      if (compactFirstInline === "failed") emitCompactFirstFallbackNotice(managed);
       throw error;
+    }
+  }
+
+  /**
+   * Compact first for a provider whose `/compact` is an action rather than a
+   * turn (Codex, Pi, OpenCode): dispatch the same `/compact` the meter's
+   * "Compact now" sends, wait for the compaction to end, and report whether it
+   * did. Never throws; on a failure or a wait that runs long the caller sends
+   * the message with the full chat.
+   */
+  async function runCompactFirstInline(managed: ManagedChatSession): Promise<"completed" | "failed"> {
+    const sessionId = managed.session.id;
+    const before = managed.compactionEmitterState.sessionCompactionCount;
+    let settle = () => {};
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const waiters = compactionSettledWaiters.get(sessionId) ?? new Set<() => void>();
+    waiters.add(settle);
+    compactionSettledWaiters.set(sessionId, waiters);
+    const deadlineAt = Date.now() + COMPACT_FIRST_INLINE_WAIT_MS;
+    const timeout = setTimeout(settle, COMPACT_FIRST_INLINE_WAIT_MS);
+    timeout.unref?.();
+    try {
+      await sendMessageWithoutReview({ sessionId, text: "/compact", displayText: "/compact" });
+      await settled;
+      // The compaction's terminal event can arrive inside the turn that
+      // carried it (Codex closes that turn a moment later), so the message
+      // would meet "A turn is already active" and be refused. Wait the turn
+      // out; the send then starts one of its own as it does normally.
+      while (Date.now() < deadlineAt && !isIdleForCompactFirst(managed)) {
+        await new Promise((resolve) => setTimeout(resolve, COMPACT_FIRST_IDLE_POLL_MS));
+      }
+      const compacted = managed.compactionEmitterState.sessionCompactionCount > before;
+      logger.info("agent_chat.compact_first_inline", { sessionId, provider: managed.session.provider, compacted });
+      return compacted ? "completed" : "failed";
+    } catch (error) {
+      logger.warn("agent_chat.compact_first_inline_failed", { sessionId, error: getErrorMessage(error) });
+      return "failed";
+    } finally {
+      clearTimeout(timeout);
+      waiters.delete(settle);
+      if (waiters.size === 0) compactionSettledWaiters.delete(sessionId);
     }
   }
 
@@ -55330,11 +55438,13 @@ export function createAgentChatService(args: {
   async function compactFirstArgs(managed: ManagedChatSession) {
     const history = (await getChatEventHistory(managed.session.id, { maxEvents: 512 })).events;
     return {
-      provider: "claude",
+      provider: managed.session.provider ?? "",
+      model: managed.session.model,
       events: history,
       cache: managed.session.promptCache,
+      idleMs: compactFirstIdleMsOverride,
       minTokens: compactFirstMinTokens,
-      mode: compactionSettingsFor(managed).idleMode ?? "ask",
+      mode: compactionIdleModeFor(managed.session),
     } as const;
   }
 
@@ -59523,9 +59633,15 @@ export function createAgentChatService(args: {
       provider,
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
-      ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
-      // Always sent, so a client built with an older floor offers at this one.
-      ...(provider === "claude" ? { compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS } : {}),
+      ...(compactFirstSupportedProvider(provider)
+        ? {
+            compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }),
+            // Always sent, so a client built with an older floor offers at this one.
+            compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS,
+            // The provider's documented (or, for Claude, measured) cache window.
+            compactFirstIdleMs: compactFirstIdleMsOverride ?? compactFirstIdleMs({ provider, model, cache: liveSession?.promptCache ?? persisted?.promptCache }),
+          }
+        : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),

@@ -316,7 +316,10 @@ struct WorkChatSummaryRenderContext: Equatable {
     }
 
     self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
-    self.compactFirstIdleSeconds = summary.promptCache?.ttl == "5m" ? 300 : 3600
+    // The brain resolves the window (Claude's measured 5m/1h, OpenAI's 30m, an
+    // hour when the model's vendor is unknown); older brains send only the cache.
+    self.compactFirstIdleSeconds = summary.compactFirstIdleMs.map { TimeInterval($0) / 1000 }
+      ?? (summary.promptCache?.ttl == "5m" ? 300 : 3600)
     self.promptCacheSince = summary.promptCache?.since.flatMap(workParsedDate)
     self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 200_000
     self.compactFirstSupported = summary.compactionIdleMode != nil
@@ -1509,7 +1512,9 @@ struct WorkChatSessionView: View {
   }
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
-    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.provider == "claude", chatSummaryContext.compactionIdleMode != "never",
+    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+          // OpenCode only offers `/compact` when its server lists the command.
+          chatSummaryContext.provider != "opencode" || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
           // A queued message is about to send on its own; the offer would only flash.
           pendingSteers.isEmpty,

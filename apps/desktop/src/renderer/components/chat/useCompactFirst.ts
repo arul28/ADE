@@ -17,7 +17,14 @@ export type CompactFirstChoice = { sessionId: string; value: boolean; dismissed?
  * `sendRef` carries what the chip shows into the send path, which is defined
  * before the chip is computed.
  */
-export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null, cache?: ClaudePromptCache | null) {
+export function useCompactFirst(
+  events: readonly AgentChatEventEnvelope[],
+  sessionId: string | null,
+  cache?: ClaudePromptCache | null,
+  provider?: string | null,
+  model?: string | null,
+  idleMs?: number | null,
+) {
   const [now, setNow] = useState(Date.now());
   const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
@@ -26,11 +33,11 @@ export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessi
   const cacheSince = cache?.since;
   const eligibleAt = useMemo(
     () => compactFirstEligibleAtMs(
-      cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null,
+      { provider: provider ?? "claude", model, cache: cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null, idleMs },
       lastTurnEndedAt,
       lastTurnStartedAt,
     ),
-    [cacheTtl, cacheSince, lastTurnEndedAt, lastTurnStartedAt],
+    [provider, model, cacheTtl, cacheSince, idleMs, lastTurnEndedAt, lastTurnStartedAt],
   );
   useEffect(() => {
     if (eligibleAt == null) return;

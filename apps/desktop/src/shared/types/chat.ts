@@ -3126,9 +3126,16 @@ export type AgentChatRuntimeOwnerRef = {
 };
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
+  /** The chat's Compact first mode. Sent for Claude, Codex, Pi and OpenCode. */
   compactionIdleMode?: "ask" | "always" | "never";
-  /** The Compact first floor for a Claude chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
+  /** The Compact first floor for this chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
   compactFirstMinTokens?: number;
+  /**
+   * How long this chat's prompt cache lives, in ms (Claude's measured 5m/1h,
+   * OpenAI's 30m, an hour when the model's vendor is unknown). A client with no
+   * cache table of its own — iOS — reads this.
+   */
+  compactFirstIdleMs?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
