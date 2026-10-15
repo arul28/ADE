@@ -67523,10 +67523,18 @@ export function createAgentChatService(args: {
         `${scheduledWorkClaimKeyPrefix}%`,
         claimedAt - SCHEDULED_WORK_CLAIM_RETENTION_MS,
       ]);
-      return db.runChanged("insert or ignore into kv(key, value) values (?, ?)", [
+      const won = db.runChanged("insert or ignore into kv(key, value) values (?, ?)", [
         scheduledWorkClaimKey(schedule),
         JSON.stringify({ claimedAt }),
       ]) === 1;
+      if (!won) {
+        logger.info("agent_chat.scheduled_work_claimed_elsewhere", {
+          scheduleId: schedule.id,
+          sessionId: schedule.sessionId,
+          fireAt: schedule.fireAt ?? null,
+        });
+      }
+      return won;
     },
     releaseFire: (schedule) => {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);

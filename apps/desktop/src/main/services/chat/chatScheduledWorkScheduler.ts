@@ -242,6 +242,10 @@ function normalizeState(value: unknown): ChatScheduledWorkState {
   };
 }
 
+function nextCronOccurrence(schedule: ChatScheduledWorkRecord, after: number): number | undefined {
+  return schedule.cron ? nextChatScheduledCronFireAt(schedule.cron, after) ?? undefined : undefined;
+}
+
 function cloneSchedule(schedule: ChatScheduledWorkRecord): ChatScheduledWorkRecord {
   return { ...schedule };
 }
@@ -396,9 +400,7 @@ export function createChatScheduledWorkScheduler(
       clearTimer(schedule.id);
       schedule.lastFiredAt = currentTime;
       if (schedule.kind === "cron") {
-        schedule.fireAt = schedule.cron
-          ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
-          : undefined;
+        schedule.fireAt = nextCronOccurrence(schedule, currentTime);
         await persist();
         await emitTransition(schedule, schedule.status);
         arm(schedule);
@@ -469,9 +471,7 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
-    current.fireAt = current.cron
-      ? nextChatScheduledCronFireAt(current.cron, now()) ?? undefined
-      : undefined;
+    current.fireAt = nextCronOccurrence(current, now());
     current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
     await persist();
     await emitTransition(current, current.status);
@@ -539,9 +539,7 @@ export function createChatScheduledWorkScheduler(
 
     if (schedule.status === "fired") {
       if (schedule.kind === "cron") {
-        schedule.fireAt = schedule.cron
-          ? nextChatScheduledCronFireAt(schedule.cron, Math.max(now(), schedule.lastFiredAt ?? 0)) ?? undefined
-          : undefined;
+        schedule.fireAt = nextCronOccurrence(schedule, Math.max(now(), schedule.lastFiredAt ?? 0));
         schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
       } else {
         // A persisted fired one-shot was already claimed before the previous
@@ -800,9 +798,7 @@ export function createChatScheduledWorkScheduler(
             // Only clear the turn we claimed — a newer fire's recordTurnStarted
             // may already own activeTurnId, and its outcome summary must land.
             if (schedule.activeTurnId === turnId) delete schedule.activeTurnId;
-            schedule.fireAt = schedule.cron
-              ? nextChatScheduledCronFireAt(schedule.cron, currentTime) ?? undefined
-              : undefined;
+            schedule.fireAt = nextCronOccurrence(schedule, currentTime);
             schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
             await persist();
             await emitTransition(schedule, schedule.status);
