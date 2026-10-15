@@ -4,6 +4,7 @@ import { Table } from "@phosphor-icons/react";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
 import type { SpreadsheetWindow, SpreadsheetWorkbook } from "./office/xlsx";
 import { DocumentSurface } from "./DocumentSurface";
+import { ooxmlFailureMessage } from "./office/ooxmlError";
 import { OoxmlPreviewShell, ViewerCenteredMessage } from "./OoxmlPreviewShell";
 import type { ViewerProps } from "./types";
 
@@ -91,9 +92,8 @@ function WorkbookGrid({
         if (!cancelled) setSheet({ status: "ready", window });
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          setSheet({ status: "error", message: err instanceof Error && err.message ? err.message : "This sheet could not be read." });
-        }
+        // Same rule as the shell: only a parser's own message is copy.
+        if (!cancelled) setSheet({ status: "error", message: ooxmlFailureMessage(err) });
       });
     return () => {
       cancelled = true;

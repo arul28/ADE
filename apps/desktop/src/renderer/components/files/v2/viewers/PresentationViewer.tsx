@@ -108,7 +108,11 @@ function DeckViewer({ deck, tabId }: { deck: PptxDeck; tabId: string }) {
       setMediaUrls(next);
     })().catch((err: unknown) => {
       // A recovered failure still has to be visible to Sentry (docs/logging.md).
-      captureError(err, { handled: true, tags: { feature: "files.presentation_preview", stage: "media" } });
+      captureError(err, {
+        handled: true,
+        tags: { feature: "files.presentation_preview", stage: "media" },
+        fingerprint: ["files.presentation_preview", "media"],
+      });
     });
     return () => {
       cancelled = true;

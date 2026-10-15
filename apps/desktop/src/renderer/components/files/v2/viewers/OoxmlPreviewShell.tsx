@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { PinnedFilesApi } from "../pinnedFilesApi";
 import { streamFileBytes } from "../streamBytes";
+import { captureError } from "../../../../../shared/sentry/capture";
 import { DocumentSurface } from "./DocumentSurface";
 import { formatBytes } from "../../../../../shared/formatting";
-import { ooxmlFailureMessage } from "./office/ooxmlError";
+import { OoxmlError, ooxmlFailureMessage } from "./office/ooxmlError";
 
 type ShellState<T> =
   | { status: "loading" }
@@ -81,7 +82,18 @@ export function OoxmlPreviewShell<T>({
         if (cancelled) return;
         setState({ status: "ready", value });
       } catch (err) {
-        if (!cancelled) setState({ status: "error", retryable: true, message: ooxmlFailureMessage(err) });
+        if (cancelled) return;
+        // A typed refusal is a state the user is in — a CSV renamed `.xlsx`, a
+        // legacy file, a package past the cap — so it is shown on the card and
+        // is not a defect. Anything else is worth one issue per fingerprint.
+        if (!(err instanceof OoxmlError)) {
+          captureError(err, {
+            handled: true,
+            tags: { feature: "files.office_preview" },
+            fingerprint: ["files.office_preview", "parse"],
+          });
+        }
+        setState({ status: "error", retryable: true, message: ooxmlFailureMessage(err) });
       }
     })();
     return () => {

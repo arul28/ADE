@@ -245,11 +245,16 @@ Renderer:
   lookups, entity decoding, event-loop yields), `xlsx.ts` and `pptx.ts`
   (the display models), and `ooxmlError.ts` (a typed failure reason each
   viewer turns into copy). See [Office previews](#office-previews).
+- `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
+  — the shell both office viewers share: size pre-check, capped byte stream,
+  parse through a dynamic import, cancellation, and the one failure card (with
+  a retry only where retrying can help). `load` is held in a ref, so a caller
+  passing an inline arrow cannot restart the read on a re-render.
 - `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
   — the one "no in-app preview" card (icon, name, mime · size, an honest
   notice, Copy full path, Open externally). `DocumentViewer` renders it for
-  documents with no renderer, and the spreadsheet/presentation viewers
-  reuse it when the bytes turn out to be something their parser refuses.
+  documents with no renderer, and the spreadsheet/presentation viewers reuse it
+  when the bytes turn out to be something their parser refuses.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers, and an

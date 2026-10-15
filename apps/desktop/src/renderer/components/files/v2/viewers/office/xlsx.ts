@@ -196,7 +196,7 @@ export function formatExcelSerial(serial: number, kind: CellFormatKind, date1904
  */
 function collectTextRuns(fragment: string): string {
   if (!fragment.length) return "";
-  const working = /<[A-Za-z_][\w.-]*:?rPh\b/.test(fragment)
+  const working = /<(?:[A-Za-z_][\w.-]*:)?rPh\b/.test(fragment)
     ? fragment.replace(/<(?:[A-Za-z_][\w.-]*:)?rPh\b[\s\S]*?<\/(?:[A-Za-z_][\w.-]*:)?rPh>/g, "")
     : fragment;
   let out = "";

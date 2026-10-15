@@ -166,6 +166,12 @@ async function readEntryStreaming(
   const chunks: Uint8Array[] = [];
   let total = 0;
   let found = false;
+  // Decided once per READ, and then every chunk of that read is charged. The
+  // decision cannot be made per chunk: the entry is in the set after its first
+  // chunk, so a per-chunk check would debit only that first chunk and the
+  // budget would stop bounding the package at all.
+  const charging = !budget.charged.has(name);
+  if (charging) budget.charged.add(name);
 
   return new Promise<Uint8Array<ArrayBuffer> | null>((resolve, reject) => {
     let settled = false;
@@ -199,15 +205,11 @@ async function readEntryStreaming(
           return;
         }
         total += chunk.length;
-        // Charged once per entry, not once per read: the deck re-reads a
-        // slide's media on every visit and the workbook re-reads its shared
-        // string table for each sheet, and those repeats release what they
-        // read. The bound that matters is DISTINCT parts, which is what a
-        // crafted archive would multiply.
-        if (!budget.charged.has(name)) {
-          budget.charged.add(name);
-          budget.remaining -= chunk.length;
-        }
+        // A distinct entry spends the package budget once; a re-read of an
+        // entry already charged is free, because the deck re-reads a slide's
+        // media on every visit and the workbook re-reads its shared string
+        // table per sheet. The bound that matters is DISTINCT parts.
+        if (charging) budget.remaining -= chunk.length;
         if (total > maxBytes) {
           file.terminate();
           fail(tooLarge());
