@@ -28,12 +28,14 @@ function Chip({
   anchorRef,
   onClick,
   muted,
+  disabled,
 }: {
   label: string;
   children: React.ReactNode;
   anchorRef?: React.RefObject<HTMLButtonElement>;
   onClick: () => void;
   muted?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -41,10 +43,12 @@ function Chip({
       type="button"
       aria-label={label}
       title={label}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
         "inline-flex h-7 min-w-0 max-w-[220px] items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11.5px] transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.05]",
         muted ? "text-[color:var(--kit-text-3)]" : "text-fg/85",
+        disabled && "cursor-not-allowed opacity-50 hover:border-fg/[0.08] hover:bg-fg/[0.02]",
       )}
     >
       {children}
@@ -63,6 +67,7 @@ export function ChipPicker({
   onOpen,
   onPick,
   muted,
+  disabled,
 }: {
   label: string;
   display: React.ReactNode;
@@ -73,14 +78,15 @@ export function ChipPicker({
   onOpen?: () => void;
   onPick: (id: string) => void;
   muted?: boolean;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   return (
     <>
-      <Chip label={label} anchorRef={ref} muted={muted} onClick={() => { onOpen?.(); setOpen(true); }}>{display}</Chip>
+      <Chip label={label} anchorRef={ref} muted={muted} disabled={disabled} onClick={() => { if (disabled) return; onOpen?.(); setOpen(true); }}>{display}</Chip>
       <PickerMenu
-        open={open}
+        open={open && !disabled}
         anchorRef={ref}
         onClose={() => setOpen(false)}
         options={options}
@@ -379,6 +385,7 @@ export function JiraCreateChips({
   meta,
   users,
   labels,
+  onProjectPick,
 }: {
   jira: JiraFields;
   setJira: Setter<JiraFields>;
@@ -386,6 +393,7 @@ export function JiraCreateChips({
   meta: JiraCreateMeta | null;
   users: JiraUser[];
   labels: string[];
+  onProjectPick?: () => void;
 }) {
   const projectKey = jira.projectKey;
   const types = meta?.issueTypes ?? [];
@@ -403,27 +411,30 @@ export function JiraCreateChips({
         options={projects.map((entry) => ({ id: entry.key, label: `${entry.key} · ${entry.name}` }))}
         selected={projectKey ? [projectKey] : []}
         placeholder="Project…"
-        onPick={(id) => setJira((current) => ({ ...current, projectKey: id, issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [] }))}
+        onPick={(id) => {
+          onProjectPick?.();
+          setJira((current) => ({ ...current, projectKey: id, issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [] }));
+        }}
       />
-      <label className="inline-flex h-7 max-w-[200px] items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
-        Type
-        <select
-          aria-label="Jira issue type"
-          className="min-w-0 bg-transparent text-fg/85 outline-none"
-          value={jira.issueTypeId}
-          disabled={!meta}
-          onChange={(event) => setJira((current) => ({ ...current, issueTypeId: event.target.value }))}
-        >
-          <option value="">{meta ? "Choose type" : "Loading types…"}</option>
-          {types.map((entry) => {
-            const missing = entry.fields.filter((field) => field.required && !field.supported);
-            const reason = missing.length
-              ? `Required fields are not supported: ${missing.map((field) => field.name).join(", ")}.`
-              : undefined;
-            return <option key={entry.id} value={entry.id} disabled={Boolean(reason)} title={reason}>{entry.name}{reason ? ` — requires ${missing.map((field) => field.name).join(", ")}` : ""}</option>;
-          })}
-        </select>
-      </label>
+      <ChipPicker
+        label="Type"
+        display={issueType ? <>{issueType.iconUrl ? <img src={issueType.iconUrl} alt="" className="h-3.5 w-3.5 shrink-0" /> : null}{issueType.name}</> : "Issue type"}
+        muted={!issueType}
+        disabled={!meta || types.length === 0}
+        options={types.map((entry) => {
+          const missing = entry.fields.filter((field) => field.required && !field.supported);
+          return {
+            id: entry.id,
+            label: entry.name,
+            icon: entry.iconUrl ? <img src={entry.iconUrl} alt="" className="h-3.5 w-3.5" /> : undefined,
+            disabled: missing.length > 0,
+            detail: missing.length ? `Required fields aren't supported: ${missing.map((field) => field.name).join(", ")}` : undefined,
+          };
+        })}
+        selected={jira.issueTypeId ? [jira.issueTypeId] : []}
+        placeholder={meta ? "Issue type…" : "Loading issue types…"}
+        onPick={(id) => setJira((current) => ({ ...current, issueTypeId: id }))}
+      />
       <ChipPicker
         label="Assignee"
         display={assignee ? <><LinearAssigneeAvatar name={assignee.displayName} avatarUrl={assignee.avatarUrl} size={14} />{assignee.displayName}</> : "Assignee"}

@@ -11,6 +11,8 @@ export type PickerOption = {
   label: string;
   icon?: React.ReactNode;
   keywords?: string;
+  disabled?: boolean;
+  detail?: string;
 };
 
 const MAX_VISIBLE_OPTIONS = 120;
@@ -95,14 +97,24 @@ export function PickerMenu({
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
-            setHighlight((current) => Math.min(filtered.length - 1, current + 1));
+            setHighlight((current) => {
+              for (let index = current + 1; index < filtered.length; index += 1) {
+                if (!filtered[index]?.disabled) return index;
+              }
+              return current;
+            });
           } else if (event.key === "ArrowUp") {
             event.preventDefault();
-            setHighlight((current) => Math.max(0, current - 1));
+            setHighlight((current) => {
+              for (let index = current - 1; index >= 0; index -= 1) {
+                if (!filtered[index]?.disabled) return index;
+              }
+              return current;
+            });
           } else if (event.key === "Enter") {
             event.preventDefault();
             const option = filtered[highlight];
-            if (option) onPick(option.id);
+            if (option && !option.disabled) onPick(option.id);
           }
         }}
         className="mb-1 h-7 w-full rounded-[var(--radius-sm)] border border-fg/[0.07] bg-black/20 px-2 text-[11.5px] text-fg outline-none placeholder:text-muted-fg/40 focus:border-fg/18"
@@ -118,13 +130,19 @@ export function PickerMenu({
               type="button"
               role="option"
               aria-selected={selected}
+              aria-disabled={option.disabled || undefined}
+              disabled={option.disabled}
+              title={option.detail}
               data-highlighted={index === highlight ? "" : undefined}
-              className={cn(MENU_ITEM_CLASS, "w-full text-left")}
+              className={cn(MENU_ITEM_CLASS, "w-full text-left", option.disabled && "cursor-not-allowed opacity-45")}
               onMouseEnter={() => setHighlight(index)}
               onClick={() => onPick(option.id)}
             >
               {option.icon ? <span className="grid w-4 shrink-0 place-items-center">{option.icon}</span> : null}
-              <span className="min-w-0 flex-1 truncate">{option.label}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{option.label}</span>
+                {option.detail ? <span className="block truncate text-[10px] text-muted-fg/60">{option.detail}</span> : null}
+              </span>
               {selected ? <Check size={11} weight="bold" className="shrink-0 text-fg/70" /> : null}
             </button>
           );

@@ -8,7 +8,9 @@ a search.
 Linear, GitHub and Jira issues open natively and are editable in place:
 status and the other properties through pickers, the title and description
 inline, and comments from the activity thread. Each tracker also has a top-bar
-pane for browsing. New issues start in one composer for all three trackers.
+pane for browsing. New issues start in one composer for all three trackers, and
+lanes and agents start from any of them through one launcher (see
+[Starting work from an issue](#starting-work-from-an-issue)).
 
 ## The rule: open it where you are
 
@@ -40,13 +42,17 @@ sheet is 760px wide.
 
 ## Plain `ADE-123` in agent replies
 
-`shared/threadEntities.ts` turns an identifier in agent prose into a Linear
-chip when it matches Linear's format (a team key of a letter plus up to nine
-letters or digits, a hyphen, a number) AND the key is one of the connected
-workspace's teams. Prose matches only the uppercase form Linear prints, and
-never inside a path, a branch name, or a version (`feat/ADE-1`, `ade-1-fix`,
-`ADE-1.2`), so `SHA-256` and `UTF-8` never match. Code blocks and existing links
-are never rewritten.
+`shared/threadEntities.ts` turns an identifier in agent prose into an issue
+chip when it matches a tracker's key format (a letter, then up to nine letters
+or digits, a hyphen, a number). Prose matches only the uppercase form the
+trackers print, and never inside a path, a branch name, or a version
+(`feat/ADE-1`, `ade-1-fix`, `ADE-1.2`), so `SHA-256` and `UTF-8` never match.
+Code blocks and existing links are never rewritten.
+
+Which tracker gets the chip depends on the key's project. A key in the Jira
+projects bound to this project (`issueTrackers.jira.projectKeys`, see Jira
+below) is a Jira chip. Otherwise the key is a Linear chip when it is one of the
+connected workspace's team keys.
 
 The team keys come from `useLinearWorkspaceTeamKeys` (`linearIssueStore.ts`):
 read from the picker catalog at most once an hour per project, kept in
@@ -115,10 +121,23 @@ clickable.
 ## Jira
 
 Settings → Integrations → Jira connects this machine to one Jira Cloud site
-with an Atlassian API token. The token stays in the machine's encrypted
-credential store. A project can bind one or more Jira project keys; those keys
-also decide whether a bare `KEY-123` in agent prose is a Jira chip before ADE
-checks Linear's team keys. Jira URLs use `/browse/KEY-123`.
+with an Atlassian API token. The site URL, the account email and the token are
+stored in the machine's encrypted credential store under `jira.siteUrl`,
+`jira.email` and `jira.apiToken`. The token is never logged and never sent back
+to a client. The site URL must be `https://`; plain `http://` is accepted only
+for a loopback host, so the test server below works. Jira URLs use
+`/browse/KEY-123`.
+
+The project binding is `issueTrackers.jira.projectKeys` in this project's
+`.ade/local.yaml`. It is the one place ADE reads Jira project keys from: the
+pane's default project filter, the create form's default project, and whether a
+bare `KEY-123` in agent prose is a Jira chip. The shared `ade.yaml` is no longer
+read.
+
+The runtime exposes Jira as `window.ade.jira` (runtime-only; see
+[ARCHITECTURE](../../ARCHITECTURE.md)). Its actions are in the `jira` action
+domain. Connecting and disconnecting are CTO-only, because the credential is
+machine-wide.
 
 The Jira viewer edits the title and Markdown description inline. Its property
 box changes status through the workflow transitions Jira offers, and edits
@@ -133,6 +152,26 @@ issues use the shared composer with project, issue type, assignee, priority,
 labels, parent and due date. Issue types with required fields the form cannot
 fill are disabled with the missing field names. Description text is Markdown;
 the Jira API converts it to Atlassian Document Format.
+
+### Testing without a Jira site
+
+`apps/desktop/scripts/fake-jira-server.mjs` is a dependency-free Node server on
+`127.0.0.1` that answers the REST v3 calls the client makes. It has two seeded
+projects (ADE and PAY), issues, comments, users, transitions and create
+metadata. Start it with `node apps/desktop/scripts/fake-jira-server.mjs --port
+4318` (the port defaults to `PORT`, then 4318). In ADE, connect to
+`http://127.0.0.1:4318` with any email and the token `fake-token`. Add
+`--rate-limit` to answer every authenticated call with 429 and `Retry-After: 30`,
+which shows the rate-limit message. ADE does not start the server.
+
+### The `ade jira` CLI
+
+`ade jira` (`apps/ade-cli/src/cliJira.ts`) does the same work from a terminal or
+an agent: `status`, `connect` (CTO role; the token comes from stdin with
+`--token-stdin`, never as an argument), `disconnect` (CTO role), `projects`,
+`list` (paged; pass the returned cursor to `--cursor`), `issue`, `create`,
+`edit`, `comment`, `transition`, `assign`, `label` and `unlabel`. Add `--text`
+for a readable answer; the default is JSON.
 
 ## Creating issues
 
@@ -186,37 +225,88 @@ cross the sync channel, capped at 10 MB) and inserts the markdown. GitHub has no
   `POST …/sub_issues` after the create; if only that step fails, the issue
   exists and the toast says it was not linked.
 
-## Starting work from a GitHub issue
+## Starting work from an issue
 
-"Launch agent" and "Lane only" in the GitHub viewer (and "Start lane" on the
-create toast) open `githubIssueLaunch.tsx`: one lane named `#123 Title` on the
-branch `gh-123-short-title`, and, for "Launch agent", a chat in it with the
-model controls of the Work composer and an editable kickoff prompt. The issue
-goes to the chat as a `github_issue` context attachment, which records the
-session's issue link. The lane itself is linked too (`githubIssue` on
-`lanes.create`, stored as a `session_github_issues` row under the session id
-`lane:<laneId>`), so "Lane only" also shows under "Linked in ADE" and the
-lane's PR says `Closes #123`. Lanes carry these links as `githubIssueLinks`.
-Detaching the issue from a chat in that lane removes the lane's link too, so
-the PR no longer closes an issue the user took off.
-The machine picker is the Linear launcher's: the lane and its chat go to one
-machine that has the repository open.
-If the chat fails to start, the new lane is deleted again. The Linear batch
-launcher is not reused: it is built around Linear's lane link and runs many
-issues at once, and a GitHub issue needs one lane at a time.
+Linear, GitHub and Jira issues start lanes and agents through one launcher. It
+is `IssueLaunchHost` (in `components/app/BatchLaunchModal.tsx`), mounted once by
+`AppShell`. Nothing else renders the dialog. A caller asks for a launch with
+`requestIssueLaunch(issues, { laneOnly })` (`lib/issueLaunchRequests.ts`). The
+asks come from the "Launch agent" and "Lane only" buttons in each viewer, from
+the multi-select in the GitHub and Jira panes, from the Linear pane, and from
+the "Start lane" action on a create toast. Each issue is a `LaunchIssue`
+(`lib/linearBatchLaunch.ts`): its tracker, id, key, title, URL, lane name,
+branch name, the context attachment the chat gets, and the lane link that
+records the issue on the lane.
+
+The dialog shows one row per issue, with the model, reasoning effort, Fast mode
+where the provider supports it, an editable kickoff prompt and the branch name.
+A default row seeds the others. "Lane only" creates the lanes and no agents.
+Up to three issues run at once (`BATCH_LAUNCH_CONCURRENCY`). Each one creates
+its lane, then its chat or CLI session, then sends the kickoff. A failure before
+the session exists deletes the new lane again, so a retry does not leave an
+empty lane. A kickoff that fails after the session exists shows "Needs
+attention" and keeps the lane. The batch goes to one machine that has the
+project open, and every lane create and launch is pinned there.
+
+Lane names and branches: a Linear issue keeps its own. A GitHub issue gets the
+lane `#123 Title` on `gh-123-short-title`. A Jira issue gets `PROJ-123 Title` on
+`proj-123-short-title`.
+
+Each launched lane records its issue, so the work shows under "Linked in ADE":
+
+- GitHub: a `githubIssue` lane link (`session_github_issues`), and the lane's PR
+  says `Closes #123`. Detaching the issue from a chat in that lane removes the
+  lane's link too.
+- Jira: a `jiraIssue` lane link (`session_jira_issues`). The PR body gets a
+  `Jira: PROJ-123` line, so Jira's GitHub integration can link it. The link
+  never closes the issue.
+- Linear: its existing lane link.
+
+Before a launch, `findIssueConflicts` warns about an issue that already has a
+lane or an agent. Conflicts are checked per tracker and id.
+
+## Jira issues on lanes and chats
+
+A Jira issue attaches to a chat as a `jira_issue` context attachment
+(`AgentChatJiraIssueContextAttachment`, joined to the chat's attachment union).
+When a message with that attachment is sent, `recordJiraIssueContextForLane` in
+`agentChatService.ts` links the issue to the chat's session in
+`session_jira_issues` (role `worked`, source `chat_attach`, included in the PR).
+The model reads the issue as untrusted data (`shared/chatContextAttachments.ts`).
+A lane launched from a Jira issue carries the same link as `jiraIssueLinks`.
+Jira links never close the issue on merge.
+
+## Linked issue snapshots
+
+A lane's issue links keep a snapshot of the issue's title, state and update
+time. When a chat's turn ends (the `done` event), `refreshLinkedIssueSnapshots`
+in `agentChatService.ts` re-reads that chat's linked issues and writes the
+snapshots to the lane. The read is bounded. It reads at most 12 distinct issues
+per turn end; a cursor for each chat moves through longer lists. It reads three
+at a time, skips an issue read in the last 60 seconds, and skips a tracker that
+is not connected. A failed read is ignored and never changes the turn's result.
+Nothing polls: the reads happen only at a turn's end.
 
 ## Agents: the CLI
 
-Agents create and edit issues in both providers with the `ade` CLI. The calls
-go through the running brain, which holds the Linear and GitHub credentials, so
-an agent needs no token. Names work where the provider has names (states,
-users, labels, projects, milestones, cycles, templates); ids work too. Add
-`--text` for a short receipt (id, title, URL); the default is JSON.
+Agents create and edit issues in all three trackers with the `ade` CLI. The
+calls go through the running brain, which holds the Linear, GitHub and Jira
+credentials, so an agent needs no token. Names work where the provider has
+names (states, users, labels, projects, milestones, cycles, templates); ids work
+too. Add `--text` for a short receipt (id, title, URL); the default is JSON.
+
+`ade issue` is the tracker-neutral command. It works across the connected
+trackers: `list` (with `--tracker linear|github|jira` and `--scope`), `view`,
+`resolve`, `comment`, `state`, `create` and `open-url`. Its references can be a
+Linear key, a Jira key, a GitHub number or a URL. The runtime `issues` action
+domain serves `list`, `get`, `resolve`, `comment`, `setState` and `create`
+(`actionPolicy.ts`). Editing fields goes through the tracker's own command below.
 
 - **Linear** (`ade linear`): `create`, `edit`, `comment`, `set-state`,
   `assign`, `label`, `unlabel`, `set-priority`, `set-estimate`, `set-cycle`,
   `set-project`, `set-milestone`, `set-due`, `set-parent`, `relate`, and
   `issue`. See the Linear integration doc for the flags.
+- **Jira** (`ade jira`): see "The `ade jira` CLI" above.
 - **GitHub** (`ade github issue`): `list`, `view`, `create`, `edit`,
   `comment`, `close`, `reopen`, `label`, `assign`, `milestone`, `type`, and
   `sub-issue`. Each works on the project's origin repo, or on `--repo
@@ -248,19 +338,65 @@ Issues tab and the sheet. Turning Linear off is signing out.
 
 ## Source file map
 
-- `apps/desktop/src/shared/issueRefs.ts` — `IssueRef` (`linear` identifier, or
-  GitHub owner/repo/number), `issueRefKey`, and `issueRefFromUrl`, which reuses
-  the smart-link classifier so a link that draws as an issue chip and a link
-  that opens the viewer cannot disagree.
+- `apps/desktop/src/shared/issueRefs.ts` — `IssueRef` (`linear` identifier,
+  GitHub owner/repo/number, or Jira site and key), `issueRefKey`, and
+  `issueRefFromUrl`, which reuses the smart-link classifier so a link that draws
+  as an issue chip and a link that opens the viewer cannot disagree.
 - `apps/desktop/src/renderer/lib/issueNavigation.ts` — the router.
   `openIssueRef` sends to the tools pane when an in-place host is registered,
   else to the sheet; `openIssueInSheet` always uses the sheet (command
-  palette, inbound deeplink modal). Both trackers have a native viewer.
+  palette, inbound deeplink modal). All three trackers have a native viewer.
 - `apps/desktop/src/renderer/lib/openExternal.ts` — `openLinkFromUi` checks
   for an issue link first, so every markdown link and URL chip in ADE routes
   through the issue viewer with no per-surface wiring.
+- `apps/desktop/src/shared/threadEntities.ts` — prose chips: Jira keys bound to
+  the project first, then Linear team keys (see "Plain `ADE-123`" above).
+- `apps/desktop/src/shared/types/issueTrackers.ts` — the tracker-neutral
+  contract: `IssueTrackerKind`, the adapter and its capabilities, list and
+  update args, and the service type. `shared/types/jira.ts` holds every Jira
+  type; `shared/jiraAdf.ts` converts between Markdown and Atlassian Document
+  Format; `shared/jiraErrors.ts` parses the `[jira:<reason>]` error prefix;
+  `shared/laneJiraIssue.ts` and `shared/jiraIssueBranch.ts` hold the lane issue
+  shape and its lane name and branch.
+- `apps/desktop/src/main/services/issueTrackers/` — the one layer over the three
+  trackers, used by the runtime `issues` action domain and `ade issue`.
+  - `issueTrackerService.ts` — `createIssueTrackerService`: resolves a reference
+    (URL, key, `owner/repo#N`, `#N` in the project's repository) to a tracker,
+    checks the tracker is connected and has the capability, and exposes `resolve`,
+    `getViewer`, `list`, `get`, `getComments`, `comment`, `update`, `setState`,
+    `create` and `listStates`. A bare key is Jira only when its project is bound
+    or known on the connected site; a Linear team key is tried first.
+  - `adapters.ts` — one adapter per tracker (`createLinearIssueTrackerAdapter`,
+    `createGithubIssueTrackerAdapter`, `createJiraIssueTrackerAdapter`), which
+    map each tracker's reads and writes to the shared shape.
+  - `issueTrackerError.ts` — `IssueTrackerError`, with one reason vocabulary
+    (`not-connected`, `unauthenticated`, `forbidden`, `rate-limited`,
+    `not-found`, `invalid`, `failed`) and the message prefix `[issues:<reason>]`.
+- `apps/desktop/src/main/services/jira/` — `jiraService.ts` (the Jira reads and
+  writes, with short caches for the project list and the create metadata),
+  `jiraClient.ts` (the REST v3 client: Basic auth, the site URL rules, paging,
+  and error mapping), and `jiraCredentialService.ts` (the three `jira.*` keys in
+  the machine credential store).
+- `apps/desktop/scripts/fake-jira-server.mjs` — the test server (see "Testing
+  without a Jira site").
+- `apps/ade-cli/src/cliIssue.ts` — `ade issue`; `apps/ade-cli/src/cliJira.ts` —
+  `ade jira`.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` —
+  `refreshLinkedIssueSnapshots` (see "Linked issue snapshots") and
+  `recordJiraIssueContextForLane` (the Jira chat link).
+- `apps/desktop/src/main/services/prs/prService.ts` — `applyJiraPrLinkage`, the
+  `Jira: KEY` line in a lane's PR body.
+- `apps/desktop/src/main/services/state/kvDb.ts` — `session_jira_issues`.
+- `apps/desktop/src/main/services/adeActions/actionPolicy.ts` — the `jira` and
+  `issues` action domains: which actions are reads, writes, and CTO-only.
+- `apps/desktop/src/preload/preload.ts` — `window.ade.jira` (runtime-only).
+- `apps/desktop/src/renderer/webclient/adapter/jira.ts` — the hosted web client's
+  Jira adapter.
 - `apps/desktop/src/renderer/components/issues/`
-  - `IssueViewer.tsx` — picks the provider's viewer.
+  - `IssueViewer.tsx` — picks the provider's viewer (Linear, GitHub or Jira).
+  - `JiraIssueViewer.tsx`, `JiraIssueView.tsx`, `jiraIssueStore.ts` — the Jira
+    viewer, its body, and its cache. `JiraIssuesPane.tsx` and
+    `JiraIssuesButton.tsx` are the top-bar pane and button.
   - `LinearIssueViewer.tsx` — the Linear viewer: reads by identifier, edits,
     the load and failure states that say what fixes them, and "Linked in ADE".
   - `LinearIssueView.tsx` — the Linear issue body: title, description,
@@ -305,7 +441,18 @@ Issues tab and the sheet. Turning Linear off is signing out.
     `issueCreateChips.tsx` (the property chips), `GitHubIssueFormFields.tsx`,
     `useSimilarIssues.tsx`, and `issueCreateSubmit.ts`. A sub-issue is created
     in its parent's repository.
-  - `githubIssueLaunch.tsx` — the GitHub lane and agent launch, and its host.
+  - `githubIssueLaunch.tsx` — a thin wrapper that turns a GitHub issue into a
+    `LaunchIssue` and asks the shared launcher. It keeps the old call sites
+    working; it renders no dialog of its own.
+  - `JiraIssueViewer.tsx` launches through the same request (`requestIssueLaunch`).
+- `apps/desktop/src/renderer/components/app/BatchLaunchModal.tsx` —
+  `IssueLaunchHost`, the one shared launch dialog and runner, and its status
+  toast. It is mounted by `AppShell`.
+- `apps/desktop/src/renderer/lib/issueLaunchRequests.ts` — `requestIssueLaunch`
+  and the launch progress and cancel events the host publishes.
+- `apps/desktop/src/renderer/lib/linearBatchLaunch.ts` — `LaunchIssue`, the
+  per-tracker builders (`buildLinearLaunchIssue`, `buildGitHubLaunchIssue`,
+  `buildJiraLaunchIssue`), and the batch runner's config and conflict checks.
 - `apps/desktop/src/renderer/components/ui/dialog/Dialog.tsx` — `placement:
   "right"` is the side sheet: full height, docked right, opaque, a lighter
   scrim, slides in.
@@ -341,9 +488,14 @@ Issues tab and the sheet. Turning Linear off is signing out.
   page only switches the pane to the Issues tool; `IssuesToolPanel` takes the
   held request on mount or from the broadcast. The page must not clear the
   hold, or a panel that was not mounted yet would miss the request.
-- **Launching from the sheet closes the sheet.** The launch modal is owned by
-  `LinearQuickViewButton`; cancelling it returns to the pane only when the
-  pane opened it (`batchReturnsToPaneRef`).
+- **One launch dialog.** Every launch goes to `IssueLaunchHost`, which owns the
+  dialog, the runner and the status. Nothing else mounts `BatchLaunchModal`.
+- **Cancelling a launch returns to the Linear pane only for a launch that
+  came from it.** The request carries `returnToLinearPane` for the Linear pane,
+  and the host reports the cancel back to that pane.
+- **The GitHub and Linear sheets close when a launch starts,** because the
+  dialog takes over and the sheet would sit behind it over the new lane. The
+  Jira sheet does not close.
 - **Failures say what fixes them.** A failed read asks the Linear connection
   once: no project open, Linear not connected, issue not returned, or a request
   error each get their own words and action.
@@ -377,5 +529,7 @@ GitHub's new-issue page; the full create form is desktop-only.
 ## Not done yet
 
 - The full create form on iOS ("+" opens GitHub's page instead).
+- Jira on iOS. The phone has no Jira pane and no Jira launch. Its database has
+  the same `session_jira_issues` table as the desktop.
 - The ADE GitHub App itself still needs `Issues: write` and the `issues` event
   added in its GitHub settings; ADE only detects and explains the grant.

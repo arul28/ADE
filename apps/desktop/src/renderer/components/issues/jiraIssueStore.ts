@@ -313,7 +313,7 @@ export function editJiraIssue(
 ): Promise<JiraIssueDetail | null> {
   const api = window.ade?.jira;
   const key = issueKey(projectRoot, siteUrl, issue.key);
-  return issueEntries.edit(
+  const promise = issueEntries.edit(
     [key],
     issue,
     { ...issue, ...optimistic },
@@ -326,6 +326,14 @@ export function editJiraIssue(
     },
     "Jira refused the change.",
   );
+  syncJiraIssueLists(projectRoot, siteUrl, { ...issue, ...optimistic });
+  return promise.then((updated) => {
+    if (updated) syncJiraIssueLists(projectRoot, siteUrl, updated);
+    return updated;
+  }, (error: unknown) => {
+    syncJiraIssueLists(projectRoot, siteUrl, issue);
+    throw error;
+  });
 }
 
 export function transitionJiraIssue(
@@ -336,7 +344,7 @@ export function transitionJiraIssue(
 ): Promise<JiraIssueDetail | null> {
   const api = window.ade?.jira;
   const key = issueKey(projectRoot, siteUrl, issue.key);
-  return issueEntries.edit(
+  const promise = issueEntries.edit(
     [key],
     issue,
     { ...issue, status: transition.to },
@@ -349,6 +357,15 @@ export function transitionJiraIssue(
     },
     "Jira refused the status change.",
   );
+  const optimistic = { ...issue, status: transition.to };
+  syncJiraIssueLists(projectRoot, siteUrl, optimistic);
+  return promise.then((updated) => {
+    if (updated) syncJiraIssueLists(projectRoot, siteUrl, updated);
+    return updated;
+  }, (error: unknown) => {
+    syncJiraIssueLists(projectRoot, siteUrl, issue);
+    throw error;
+  });
 }
 
 export async function addJiraIssueComment(
@@ -509,6 +526,8 @@ if (typeof window !== "undefined") {
 export type JiraIssueFilters = Pick<JiraListIssuesArgs, "projectKeys" | "state" | "assignee" | "query">;
 type JiraIssueListEntry = {
   issues: JiraIssueSummary[];
+  firstPageKeys: string[];
+  hasLoadedMore: boolean;
   nextCursor: string | null;
   fetchedAt: number;
   status: "idle" | "loading" | "ready" | "error";
@@ -516,7 +535,7 @@ type JiraIssueListEntry = {
   promise: Promise<void> | null;
 };
 const lists = new Map<string, JiraIssueListEntry>();
-const EMPTY_LIST: JiraIssueListEntry = { issues: [], nextCursor: null, fetchedAt: 0, status: "idle", error: null, promise: null };
+const EMPTY_LIST: JiraIssueListEntry = { issues: [], firstPageKeys: [], hasLoadedMore: false, nextCursor: null, fetchedAt: 0, status: "idle", error: null, promise: null };
 
 function jiraListKey(projectRoot: string | null, filters: JiraIssueFilters, siteUrl = ""): string {
   const projectKeys = [...(filters.projectKeys ?? [])].map((key) => key.toUpperCase()).sort().join(",");
@@ -527,6 +546,43 @@ function mergeJiraIssues(previous: JiraIssueSummary[], next: JiraIssueSummary[])
   const rows = new Map(previous.map((issue) => [issue.key, issue]));
   for (const issue of next) rows.set(issue.key, issue);
   return [...rows.values()];
+}
+
+function summaryFromDetail(issue: JiraIssueDetail): JiraIssueSummary {
+  return {
+    id: issue.id,
+    key: issue.key,
+    projectKey: issue.projectKey,
+    title: issue.title,
+    status: issue.status,
+    issueType: issue.issueType,
+    priority: issue.priority,
+    assignee: issue.assignee,
+    reporter: issue.reporter,
+    labels: issue.labels,
+    parentKey: issue.parentKey,
+    url: issue.url,
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+  };
+}
+
+function syncJiraIssueLists(projectRoot: string | null, siteUrl: string, detail: JiraIssueDetail): void {
+  const summary = summaryFromDetail(detail);
+  const normalizedSite = siteUrl.toLowerCase().replace(/\/$/, "");
+  const normalizedRoot = projectRoot ?? "";
+  let changed = false;
+  for (const [key, list] of lists) {
+    let filters: unknown;
+    try { filters = JSON.parse(key); } catch { continue; }
+    if (!Array.isArray(filters) || filters[0] !== normalizedRoot || filters[1] !== normalizedSite) continue;
+    const projectKeys = String(filters[2] ?? "").split(",").filter(Boolean);
+    if (projectKeys.length && !projectKeys.includes(summary.projectKey.toUpperCase())) continue;
+    if (!list.issues.some((issue) => issue.key === summary.key)) continue;
+    lists.set(key, { ...list, issues: list.issues.map((issue) => issue.key === summary.key ? summary : issue) });
+    changed = true;
+  }
+  if (changed) notify();
 }
 
 export function loadJiraIssueList(
@@ -551,10 +607,19 @@ export function loadJiraIssueList(
     .then((page: JiraIssuePage) => {
       const rows = page.issues ?? [];
       for (const issue of rows) primeJiraIssue(projectRoot, issue);
-      const issues = cursor ? mergeJiraIssues(current.issues, rows) : mergeJiraIssues(rows, current.issues);
+      const firstPageKeys = cursor ? current.firstPageKeys : rows.map((issue) => issue.key);
+      const firstPageSet = new Set(firstPageKeys);
+      const oldFirstPageSet = new Set(current.firstPageKeys);
+      const refreshedKeys = new Set(rows.map((issue) => issue.key));
+      const retainedLaterPages = !cursor && current.hasLoadedMore
+        ? current.issues.filter((issue) => !oldFirstPageSet.has(issue.key) && !firstPageSet.has(issue.key) && !refreshedKeys.has(issue.key))
+        : [];
+      const issues = cursor ? mergeJiraIssues(current.issues, rows) : mergeJiraIssues(rows, retainedLaterPages);
       lists.set(key, {
         issues,
-        nextCursor: cursor ? page.nextCursor ?? null : current.nextCursor ?? page.nextCursor ?? null,
+        firstPageKeys,
+        hasLoadedMore: cursor ? true : current.hasLoadedMore,
+        nextCursor: cursor ? page.nextCursor ?? null : current.hasLoadedMore ? current.nextCursor : page.nextCursor ?? null,
         fetchedAt: Date.now(),
         status: "ready",
         error: null,

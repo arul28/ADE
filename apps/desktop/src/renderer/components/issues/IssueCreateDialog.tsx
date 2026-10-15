@@ -55,6 +55,7 @@ import {
   loadJiraCreateMeta,
   loadJiraIssue,
   loadJiraLabels,
+  loadJiraProjects,
   noteJiraIssueCreated,
   useJiraConnectionStatus,
   useJiraProjects,
@@ -215,27 +216,56 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const [jiraLabels, setJiraLabels] = useState<string[]>([]);
   const [jiraCatalogError, setJiraCatalogError] = useState<string | null>(null);
   const [jiraBoundProjectKeys, setJiraBoundProjectKeys] = useState<string[]>([]);
+  const [jiraBindingLoaded, setJiraBindingLoaded] = useState(false);
   const [jiraBindingError, setJiraBindingError] = useState<string | null>(null);
   const [jiraBindingRetry, setJiraBindingRetry] = useState(0);
+  const [jiraProjectsLoaded, setJiraProjectsLoaded] = useState(false);
+  const jiraProjectDefaulted = useRef(false);
+  const jiraProjectTouched = useRef(false);
   useEffect(() => {
     if (provider !== "jira") return;
     let cancelled = false;
+    setJiraBindingLoaded(false);
     setJiraBindingError(null);
     void window.ade.projectConfig.get()
       .then((snapshot) => {
-        if (!cancelled) setJiraBoundProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
+        if (cancelled) return;
+        setJiraBoundProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
+        setJiraBindingLoaded(true);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setJiraBindingError(error instanceof Error ? error.message : "Couldn't load this project's Jira settings.");
+        if (cancelled) return;
+        setJiraBindingError(error instanceof Error ? error.message : "Couldn't load this project's Jira settings.");
+        setJiraBindingLoaded(true);
       });
     return () => { cancelled = true; };
   }, [jiraBindingRetry, projectRoot, provider]);
   useEffect(() => {
-    if (provider !== "jira" || !jiraProjects.projects.length || jira.projectKey) return;
-    const projectKey = jiraBoundProjectKeys.find((key) => jiraProjects.projects.some((entry) => entry.key === key))
-      ?? jiraProjects.projects[0]?.key;
-    if (projectKey) setJira((current) => current.projectKey ? current : { ...current, projectKey });
-  }, [jira.projectKey, jiraBoundProjectKeys, jiraProjects.projects, provider]);
+    const siteUrl = jiraConnection.status?.siteUrl;
+    if (provider !== "jira" || !jiraConnection.status?.connected || !siteUrl) {
+      setJiraProjectsLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    setJiraProjectsLoaded(false);
+    void loadJiraProjects(projectRoot, { siteUrl }).then(() => {
+      if (!cancelled) setJiraProjectsLoaded(true);
+    }).catch(() => {
+      if (!cancelled) setJiraProjectsLoaded(true);
+    });
+    return () => { cancelled = true; };
+  }, [jiraConnection.status?.connected, jiraConnection.status?.siteUrl, projectRoot, provider]);
+  useEffect(() => {
+    if (provider !== "jira" || !jiraProjectsLoaded || !jiraBindingLoaded || jiraProjectDefaulted.current) return;
+    jiraProjectDefaulted.current = true;
+    if (jiraProjectTouched.current) return;
+    const boundProjectKey = jiraBoundProjectKeys[0];
+    const lastUsedProjectKey = jiraProjects.projects.some((entry) => entry.key === jira.projectKey) ? jira.projectKey : null;
+    const projectKey = boundProjectKey ?? lastUsedProjectKey ?? jiraProjects.projects[0]?.key;
+    if (projectKey && projectKey !== jira.projectKey) {
+      setJira((current) => ({ ...current, projectKey, issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [] }));
+    }
+  }, [jira.projectKey, jiraBindingLoaded, jiraBoundProjectKeys, jiraProjects.projects, jiraProjectsLoaded, provider]);
   useEffect(() => {
     if (provider !== "jira" || !jiraConnection.status?.connected || !jira.projectKey) {
       setJiraMeta(null);
@@ -586,7 +616,10 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               tone: "warning",
               title: "Couldn't load this project's Jira bindings",
               detail: jiraBindingError,
-              actions: [{ label: "Retry", onClick: () => setJiraBindingRetry((value) => value + 1) }],
+              actions: [{ label: "Retry", onClick: () => {
+                if (!jiraProjectTouched.current) jiraProjectDefaulted.current = false;
+                setJiraBindingRetry((value) => value + 1);
+              } }],
             }} /></div>
           ) : null}
           {provider === "jira" && jiraProjects.error ? (
@@ -722,7 +755,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             ? <LinearCreateChips linear={linear} setLinear={setLinear} catalog={catalog} teamKey={teamKey} />
             : provider === "github"
               ? <GitHubCreateChips github={github} setGitHub={setGitHub} repoCatalog={repoCatalog} types={createCatalog.types} />
-              : <JiraCreateChips jira={jira} setJira={setJira} projects={jiraProjects.projects} meta={jiraMeta} users={jiraUsers} labels={jiraLabels} />}
+              : <JiraCreateChips jira={jira} setJira={setJira} projects={jiraProjects.projects} meta={jiraMeta} users={jiraUsers} labels={jiraLabels} onProjectPick={() => { jiraProjectTouched.current = true; jiraProjectDefaulted.current = true; }} />}
           <button
             type="button"
             className="kit-icon-btn"

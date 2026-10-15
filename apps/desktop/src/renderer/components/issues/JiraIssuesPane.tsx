@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
+import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import type { JiraIssueListState, JiraIssueSummary } from "../../../shared/types/jira";
 import { parseJiraError } from "../../../shared/jiraErrors";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
@@ -14,6 +14,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore, useActiveProjectRoot } from "../../state/appStore";
 import { buildJiraLaunchIssue } from "../../lib/linearBatchLaunch";
 import { requestIssueLaunch } from "../../lib/issueLaunchRequests";
+import { ChipPicker } from "./issueCreateChips";
 
 const STATE_FILTERS: Array<{ value: JiraIssueListState; label: string }> = [
   { value: "open", label: "Open" },
@@ -71,6 +72,15 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
   const [projectConfigRefresh, setProjectConfigRefresh] = useState(0);
   const [selectedProjectKey, setSelectedProjectKey] = useState("");
   const projectCatalog = useJiraProjects(true, siteUrl);
+  const availableProjects = useMemo(() => projectCatalog.projects.length
+    ? projectCatalog.projects
+    : boundProjectKeys.map((key) => ({ key, name: key, id: key, avatarUrl: null })), [boundProjectKeys, projectCatalog.projects]);
+  const projectOptions = useMemo(() => [
+    { id: "", label: boundProjectKeys.length ? "Bound projects" : "All projects" },
+    ...availableProjects.map((entry) => ({ id: entry.key, label: `${entry.key} · ${entry.name}`, keywords: entry.name })),
+  ], [availableProjects, boundProjectKeys.length]);
+  const selectedProject = availableProjects.find((entry) => entry.key === selectedProjectKey);
+  const projectDisplay = selectedProject?.key ?? selectedProjectKey ?? (boundProjectKeys.length ? "Bound projects" : "All projects");
   const projectKeys = selectedProjectKey ? [selectedProjectKey] : boundProjectKeys;
   const filters = useMemo(() => ({
     projectKeys,
@@ -167,7 +177,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-      <div className="flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
+      <div className="relative flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
         <div className="flex shrink-0 flex-col gap-2 border-b border-[color:var(--kit-rule)] p-3">
           <label className="flex h-8 items-center gap-2 rounded-md border border-[color:var(--kit-rule)] px-2 text-[12px] focus-within:border-[color:var(--color-accent)]">
             <MagnifyingGlass size={13} className="shrink-0 text-[color:var(--kit-text-3)]" />
@@ -187,20 +197,22 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
                 </button>
               ))}
             </div>
-            <select
-              aria-label="Jira project"
-              className="h-7 min-w-0 max-w-[150px] rounded-md border border-[color:var(--kit-rule)] bg-transparent px-1.5 text-[11.5px] text-fg/85 outline-none focus:border-[color:var(--color-accent)]"
-              value={selectedProjectKey}
-              onChange={(event) => setSelectedProjectKey(event.target.value)}
-            >
-              <option value="">{boundProjectKeys.length ? "Bound projects" : "All projects"}</option>
-              {(projectCatalog.projects.length ? projectCatalog.projects : boundProjectKeys.map((key) => ({ key, name: key, id: key, avatarUrl: null })))
-                .map((entry) => <option key={entry.key} value={entry.key}>{entry.key} · {entry.name}</option>)}
-            </select>
-            <label className="inline-flex h-7 items-center gap-1 rounded-md border border-[color:var(--kit-rule)] px-2 text-[11.5px] text-[color:var(--kit-text-2)]">
-              <input type="checkbox" checked={mine} onChange={(event) => setMine(event.target.checked)} />
-              Mine
-            </label>
+            <ChipPicker
+              label="Jira project"
+              display={projectDisplay}
+              options={projectOptions}
+              selected={[selectedProjectKey]}
+              placeholder="Project…"
+              onPick={setSelectedProjectKey}
+            />
+            <ChipPicker
+              label="Assignee"
+              display={mine ? "Mine" : "Anyone"}
+              options={[{ id: "any", label: "Anyone" }, { id: "me", label: "Assigned to me" }]}
+              selected={[mine ? "me" : "any"]}
+              placeholder="Assignee…"
+              onPick={(id) => setMine(id === "me")}
+            />
           </div>
           {projectConfigError ? (
             <Banner layout="inline" model={{
@@ -221,20 +233,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
             }} />
           ) : null}
         </div>
-        {launchSelected.size > 0 ? (
-          <div className="kit-card mx-2 mt-2 shrink-0">
-            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
-              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
-                <Rocket size={12} /> Launch agents ({launchSelected.size})
-              </button>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
-                Lanes only ({launchSelected.size})
-              </button>
-            </div>
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="list" aria-label="Jira issues">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelected.size > 0 && "pb-12")} role="list" aria-label="Jira issues">
           {list.status === "error" && list.issues.length === 0 ? (
             <div className="p-2"><Banner layout="inline" model={listError("jira-issues-error", "Couldn't load Jira issues", list.error, list.refresh)} /></div>
           ) : !projectConfigLoaded || projectCatalog.loading || (list.status === "loading" && list.issues.length === 0) ? (
@@ -247,17 +246,32 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
             visible.map((issue, index) => (
               <div key={issue.key} role="listitem">
                 <div className={cn(
-                  "kit-row !items-start !gap-2 !py-2",
+                  "group/row kit-row !items-start !gap-2 !py-2",
                   issue.key === selectedKeyToShow && "!bg-[color:var(--kit-active)]",
                   launchSelected.has(issue.key) && "!bg-[color:var(--kit-hover)]",
                 )}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${issue.key} for launch`}
-                    checked={launchSelected.has(issue.key)}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => toggleLaunchSelection(issue.key, index, (event.nativeEvent as MouseEvent).shiftKey)}
-                  />
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-label={launchSelected.has(issue.key) ? `Deselect ${issue.key}` : `Select ${issue.key} for launch`}
+                    aria-checked={launchSelected.has(issue.key)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleLaunchSelection(issue.key, index, event.shiftKey);
+                    }}
+                    className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-fg/[0.06]"
+                  >
+                    <span className={cn(
+                      "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+                      launchSelected.has(issue.key)
+                        ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                        : launchSelected.size > 0
+                          ? "border-fg/[0.18] bg-transparent group-hover/row:border-white/35"
+                          : "border-fg/[0.12] bg-transparent group-hover/row:border-white/35",
+                    )}>
+                      {launchSelected.has(issue.key) ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
+                    </span>
+                  </button>
                   <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" onClick={() => setSelectedKey(issue.key)}>
                     <span className="mt-[2px]"><JiraStatusIcon category={issue.status.category} /></span>
                     <span className="min-w-0 flex-1">
@@ -282,6 +296,19 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
             </button>
           ) : null}
         </div>
+        {launchSelected.size > 0 ? (
+          <div className="kit-card absolute bottom-[30px] left-2 right-2 z-10">
+            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
+              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
+                <Rocket size={12} /> Launch agents ({launchSelected.size})
+              </button>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
+                Lanes only ({launchSelected.size})
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="shrink-0 border-t border-[color:var(--kit-rule)] px-3 py-1.5 text-[11px] text-[color:var(--kit-text-3)]">
           <span className="kit-num">{visible.length}</span> of <span className="kit-num">{list.issues.length}</span> loaded
         </div>

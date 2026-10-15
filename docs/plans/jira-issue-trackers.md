@@ -1,6 +1,6 @@
 # Jira Cloud, one tracker layer, and one launcher for every tracker
 
-Status: in progress (one PR). Coordinator: the Claude chat that wrote this.
+Status: built on branch `ade/context-skill-improvements-from-t3code`. All four workstreams (W1–W4) are in that branch. This plan does not record the live check on a Jira Cloud site or the "Done means" checks (typecheck, lint, on-screen proof); those are not confirmed here. The user-facing description is in [features/issues/README.md](../features/issues/README.md).
 
 ## Goal
 

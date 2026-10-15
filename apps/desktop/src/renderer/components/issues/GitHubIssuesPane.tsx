@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
+import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import { relativeWhen } from "../../lib/format";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
@@ -168,7 +168,7 @@ export function GitHubIssuesPane({
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-      <div className="flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
+      <div className="relative flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
         <div className="flex shrink-0 flex-col gap-2 border-b border-[color:var(--kit-rule)] p-3">
           <label className="flex h-8 items-center gap-2 rounded-md border border-[color:var(--kit-rule)] px-2 text-[12px] focus-within:border-[color:var(--color-accent)]">
             <MagnifyingGlass size={13} className="shrink-0 text-[color:var(--kit-text-3)]" />
@@ -198,20 +198,7 @@ export function GitHubIssuesPane({
             <FilterSelect label="Milestone" value={milestone} options={options.milestones} onChange={setMilestone} />
           </div>
         </div>
-        {launchSelected.size > 0 ? (
-          <div className="kit-card mx-2 mt-2 shrink-0">
-            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
-              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
-                <Rocket size={12} /> Launch agents ({launchSelected.size})
-              </button>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
-                Lanes only ({launchSelected.size})
-              </button>
-            </div>
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="list" aria-label="Issues">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelected.size > 0 && "pb-12")} role="list" aria-label="Issues">
           {list.status === "error" && list.issues.length === 0 ? (
             <div className="p-2">
               <Banner
@@ -235,18 +222,33 @@ export function GitHubIssuesPane({
             visible.map((issue, index) => (
               <div key={issue.number} role="listitem">
                 <div className={cn(
-                  "kit-row !items-start !gap-2 !py-2",
+                  "group/row kit-row !items-start !gap-2 !py-2",
                   issue.number === selectedIssue?.number && "!bg-[color:var(--kit-active)]",
                   launchSelected.has(issue.number) && "!bg-[color:var(--kit-hover)]",
                 )}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select #${issue.number} for launch`}
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-label={launchSelected.has(issue.number) ? `Deselect #${issue.number}` : `Select #${issue.number} for launch`}
+                    aria-checked={launchSelected.has(issue.number)}
                     disabled={issue.isPullRequest}
-                    checked={launchSelected.has(issue.number)}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => toggleLaunchSelection(issue.number, index, (event.nativeEvent as MouseEvent).shiftKey)}
-                  />
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleLaunchSelection(issue.number, index, event.shiftKey);
+                    }}
+                    className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className={cn(
+                      "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+                      launchSelected.has(issue.number)
+                        ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                        : launchSelected.size > 0
+                          ? "border-fg/[0.18] bg-transparent group-hover/row:border-white/35"
+                          : "border-fg/[0.12] bg-transparent group-hover/row:border-white/35",
+                    )}>
+                      {launchSelected.has(issue.number) ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
+                    </span>
+                  </button>
                   <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" onClick={() => setSelected(issue.number)}>
                     <span className="mt-[2px]"><GitHubIssueStateIcon state={issue.state} stateReason={issue.stateReason} /></span>
                     <span className="min-w-0 flex-1">
@@ -267,6 +269,19 @@ export function GitHubIssuesPane({
             ))
           )}
         </div>
+        {launchSelected.size > 0 ? (
+          <div className="kit-card absolute bottom-[30px] left-2 right-2 z-10">
+            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
+              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
+                <Rocket size={12} /> Launch agents ({launchSelected.size})
+              </button>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
+                Lanes only ({launchSelected.size})
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="shrink-0 border-t border-[color:var(--kit-rule)] px-3 py-1.5 text-[11px] text-[color:var(--kit-text-3)]">
           <span className="kit-num">{visible.length}</span> of <span className="kit-num">{list.issues.length}</span> loaded
         </div>

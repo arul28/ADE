@@ -23,7 +23,8 @@ import { AboutSection } from "./AboutSection";
 import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
-import { LinearMark } from "../lanes/linearBrand";
+import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
@@ -294,13 +295,13 @@ const TAB_GROUPS = {
   github: {
     title: "GitHub",
     description: "Pull requests, checks and reviews.",
-    icon: <GithubLogo size={15} weight="duotone" />,
+    icon: <GithubLogo size={15} weight="duotone" color={GITHUB_BRAND.primary} />,
     tone: "slate",
   },
   linear: {
     title: "Linear",
     description: "Issues, and the agent that works them.",
-    icon: <LinearMark size={15} />,
+    icon: <span style={{ color: LINEAR_BRAND.primary }}><LinearMark size={15} /></span>,
     tone: "violet",
   },
   jira: {

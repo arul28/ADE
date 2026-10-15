@@ -738,7 +738,7 @@ export function BatchLaunchModal({
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Branch
                       </span>
-                      <div className="kit-card flex items-center gap-1.5 px-3">
+                      <div className="kit-card !flex-row items-center gap-1.5 px-3">
                         <GitBranch size={12} className="shrink-0 text-muted-fg/50" />
                         <input
                           value={state.branchOverride}
