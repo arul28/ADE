@@ -198,6 +198,13 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
     getForLane: async (laneId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getForLane", pin, infra);
+      // Prefer the host's own answer: it prefers the current-branch PR, and it
+      // answers null for a primary lane parked on its base branch — the exact
+      // contract every lane link is written against (the local fallback can
+      // only approximate it by recency, and would still name the ancient PR).
+      if (commands.hasAction("prs.getForLane")) {
+        return await read<PrSummary | null>("prs.getForLane", { laneId }, null);
+      }
       return (await listPrs()).find((pr) => pr.laneId === laneId) ?? null;
     },
     // Manual ⟳ PR-sync (ChatGitToolbar) — force a fresh reconcile for one lane.

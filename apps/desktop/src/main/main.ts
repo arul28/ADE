@@ -3788,6 +3788,7 @@ app.whenReady().then(async () => {
     } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
+      logger,
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
       // Read at call time: the automation service is built later.

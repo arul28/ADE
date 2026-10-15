@@ -93,6 +93,7 @@ import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
@@ -533,6 +534,10 @@ const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // How long "Reconnect this computer" waits for a sync-host start it kicked
 // off before answering with why nothing hosts sync.
 const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
+// A brain this CLI just spawned has to boot before its socket exists. A cold
+// start on a slow or busy machine takes longer than the 5 seconds an
+// already-running brain gets to answer.
+const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
 
 export type InvocationStep = {
   key: string;
@@ -20939,9 +20944,10 @@ function connectSocket(
   socketPath: string,
   timeoutMs: number,
   label: string,
+  connectWindowMs = 5000,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const connectTimeoutMs = Math.min(timeoutMs, 5000);
+    const connectTimeoutMs = Math.min(timeoutMs, connectWindowMs);
     const deadline = Date.now() + connectTimeoutMs;
     const attempt = () => {
       const socket = createSocketConnection(socketPath);
@@ -21023,8 +21029,9 @@ class SocketJsonRpcClient {
     socketPath: string,
     timeoutMs: number,
     label = "ADE endpoint",
+    connectWindowMs?: number,
   ): Promise<SocketJsonRpcClient> {
-    const socket = await connectSocket(socketPath, timeoutMs, label);
+    const socket = await connectSocket(socketPath, timeoutMs, label, connectWindowMs);
     return new SocketJsonRpcClient(
       socket,
       timeoutMs,
@@ -23161,6 +23168,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
@@ -23204,6 +23212,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
@@ -33120,10 +33129,21 @@ function createLinkEnvelopeResolver(
       // deeplink envelope with the PR a human would name: open before draft
       // before terminal history, newest first. Same comparator as the desktop
       // lane badge, so a link minted here points where the badge points.
-      const pr = pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
+      //
+      // A primary lane parked on its base branch names no PR at all (its row
+      // cannot be deleted, so history would otherwise be stamped onto `main`
+      // forever). The badge answers the same way, so a link and a badge agree —
+      // the rule is imported from `shared/laneBaseResolution.ts`, not restated.
+      const laneBranch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const primaryOnBase = laneIsOnBaseBranch({
+        laneType: asString(lane?.laneType),
+        branchRef: asString(lane?.branchRef),
+        baseRef: asString(lane?.baseRef),
+      });
+      const pr = primaryOnBase ? null : pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
         .filter((candidate) => asString(candidate.laneId) === context.laneId));
 
-      const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const branch = laneBranch;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
       const linearIssue = asString(laneIssue?.identifier);
       // `pickPrimaryPrRecord` accepts `githubPrNumber`, `number`, or `prNumber`,

@@ -202,6 +202,8 @@ export function useAppleDeviceStream({
    * and the one going away always releases after the one arriving has started.
    */
   const leaseEpochRef = useRef<number | null>(null);
+  /** Cleanup targets the runtime that acquired the lease, even if props move on. */
+  const leaseRuntimePinRef = useRef<OpenProjectBinding | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -221,10 +223,11 @@ export function useAppleDeviceStream({
     const key = leaseKeyRef.current;
     if (!key) return;
     const epoch = leaseEpochRef.current ?? undefined;
+    const pin = leaseRuntimePinRef.current;
     leaseKeyRef.current = null;
     leaseEpochRef.current = null;
+    leaseRuntimePinRef.current = null;
     if (!releaseAppleStreamLease(key, epoch).last) return;
-    const pin = runtimePinRef.current;
     window.setTimeout(() => {
       // Somebody took the lane's stream up in the meantime, on this device or
       // another one (a swap): theirs now. The stop is lane-scoped, so it would
@@ -234,7 +237,7 @@ export function useAppleDeviceStream({
         .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
         .catch(() => {});
     }, APPLE_STREAM_STOP_GRACE_MS);
-  }, [runtimePinRef]);
+  }, []);
 
   const reconnect = useCallback(() => {
     sawFrameRef.current = false;
@@ -339,6 +342,7 @@ export function useAppleDeviceStream({
       const { epoch } = acquireAppleStreamLease(leaseKey, { laneId, deviceUdid, pinKey });
       leaseKeyRef.current = leaseKey;
       leaseEpochRef.current = epoch;
+      leaseRuntimePinRef.current = pin ?? bound;
     }
 
     let cancelled = false;

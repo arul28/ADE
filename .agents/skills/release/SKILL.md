@@ -545,7 +545,13 @@ matters here; each step below came from a release that waited on CI.
   either commit lets the tag through; tag on whichever lands first.
 - **The run is queued behind other CI:** cancel runs the release does not need,
   such as open PRs' CI and the release-notes commit's own push run (the tag
-  borrows its parent's result). Restart the PR runs after the tag.
+  borrows its parent's result). Restart the PR runs after the tag. A cancelled
+  run reports `ci-pass` as **failure**, not cancelled; `verify` still walks past
+  it to the parent because only a failed `validate-docs` blocks a notes-only
+  commit.
+- **Do not wait on the notes commit's own CI.** Once the parent's `ci-pass` is
+  green, tag. Waiting a second full CI round on a notes-only commit is what
+  turned a 30-minute release into an hour.
 - **A job fails on a real error:** stop and fix it; never tag past it.
 
 After release docs are committed on `main`:
@@ -893,10 +899,11 @@ main app, widgets, and App Clip all use the intended marketing version/build
 number and the App Clip bundle has the expected icon/deployment metadata.
 
 Use Apple package validation before upload so metadata errors surface before
-the final upload step:
+the final upload step. altool looks for `AuthKey_<id>.p8` only in fixed folders,
+so point it at the key's folder, and stop if validation fails:
 
 ```bash
-xcrun altool --validate-app --type ios --file "$OUT/ADE.ipa" \
+API_PRIVATE_KEYS_DIR="$(dirname "$ASC_KEY_PATH")" xcrun altool --validate-app --type ios --file "$OUT/ADE.ipa" \
   --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 ```
 
@@ -939,7 +946,9 @@ asc builds add-groups --build-id "$BUILD_ID" --group "<group-id>" --submit --con
 ```
 
 Use `--submit --confirm` for external groups. Internal groups may also be added
-explicitly if they do not automatically receive the build.
+explicitly if they do not automatically receive the build. An internal group
+set to receive every build answers `Cannot add internal group to a build`;
+that is expected, and the group-links check below confirms it has the build.
 
 Verify every group:
 
@@ -1043,6 +1052,8 @@ for surface in webclient account-directory webhook-relay tunnel-relay push-relay
   echo "$surface baseline=${base:-UNKNOWN}"
 done
 ```
+
+Run the loop through `bash -c '…'` when the conductor's shell is zsh.
 
 `UNKNOWN` means nothing in the last 20 runs proves that surface is current.
 Treat it as **changed** and reconcile it fully; never treat an unknown baseline

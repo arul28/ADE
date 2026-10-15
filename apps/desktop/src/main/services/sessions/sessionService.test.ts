@@ -455,6 +455,64 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("drops the PR links that pointed at a deleted session", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const now = "2026-03-17T00:10:00.000Z";
+
+    for (const sessionId of ["session-with-links", "session-survivor"]) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Chat",
+        startedAt: now,
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "claude-chat",
+      });
+    }
+    db.run(
+      `insert into pull_requests(
+         id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+         state, base_branch, head_branch, created_at, updated_at
+       ) values ('pr-linked', 'project-1', 'lane-1', 'arul28', 'ADE', 1501,
+                 'https://github.com/arul28/ADE/pull/1501', 'merged', 'main', 'fix/update-recovery', ?, ?)`,
+      [now, now],
+    );
+    for (const sessionId of ["session-with-links", "session-survivor"]) {
+      db.run(
+        `insert into pull_request_chat_sessions(id, project_id, pr_id, lane_id, session_id, created_at, updated_at)
+         values (?, 'project-1', 'pr-linked', 'lane-1', ?, ?, ?)`,
+        [`edge-${sessionId}`, sessionId, now, now],
+      );
+    }
+    db.run(
+      `insert into pull_request_chat_session_dismissals(id, project_id, pr_id, session_id, created_at, updated_at)
+       values ('dismissal-1', 'project-1', 'pr-linked', 'session-with-links', ?, ?)`,
+      [now, now],
+    );
+
+    expect(service.deleteSession("session-with-links")).toBe(true);
+
+    // The dead session's edge and tombstone go; the surviving chat keeps its
+    // claim on the PR, and the PR row itself is history that must survive.
+    expect(
+      db.all<{ session_id: string }>(
+        "select session_id from pull_request_chat_sessions where pr_id = 'pr-linked'",
+      ).map((row) => row.session_id),
+    ).toEqual(["session-survivor"]);
+    expect(
+      db.all("select id from pull_request_chat_session_dismissals where session_id = 'session-with-links'"),
+    ).toEqual([]);
+    expect(db.get<{ id: string }>("select id from pull_requests where id = 'pr-linked'")?.id).toBe("pr-linked");
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("reattaches an existing tracked session to a new PTY without changing its identity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

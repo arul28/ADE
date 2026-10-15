@@ -277,7 +277,7 @@ Renderer PR helpers outside the PRs tab (the Work-surface badge/pill path):
 | `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` | The lane→PR map every Work surface reads. Builds the bound machine's map from a coalesced `prs.listAll` + GitHub snapshot refreshed by `prs-updated`, then folds in each union machine's `prs` slice. Exports the three namespaced key builders (`laneBoundMachineKey`, `lanePrCompositeKey`, `laneAnyMachineKey`) and their accessors `boundMachineLanePrs`, `lanePrsForMachine`, and `laneHasAnyPr` — see [Which machine answers a PR read](#which-machine-answers-a-pr-read). |
 | `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. `getGitHubSnapshotCoalesced` also keys on `automaticRefresh`, so a timer-driven snapshot and a user's Refresh never collapse onto one in-flight request — they mean different things to the service. |
 | `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx` | The compact PR chip itself. Presentation only — its host supplies `onOpen`, which is always `openLanePr`. |
-| `apps/desktop/src/renderer/components/lanes/lanePageModel.ts` | `selectLanePrs` (strictly lane-owned, for lane surfaces) and `selectChatPrs` (lane-owned **plus** this chat's cross-lane links, for chat surfaces), both ordered by `comparePrTags`. The split is load-bearing; see [Lane surfaces and chat surfaces need two different selectors](#lane-surfaces-and-chat-surfaces-need-two-different-selectors). |
+| `apps/desktop/src/renderer/components/lanes/lanePageModel.ts` | `selectLanePrs` (strictly lane-owned — and empty for a primary lane on its base branch — for lane surfaces) and `selectChatPrs` (lane-owned **plus** this chat's own links, even when the lane surface dropped them, for chat surfaces), both ordered by `comparePrTags`. The split is load-bearing; see [Lane surfaces and chat surfaces need two different selectors](#lane-surfaces-and-chat-surfaces-need-two-different-selectors). |
 | `apps/desktop/src/renderer/lib/prChatScope.ts` | Pure chat-specific PR scoping. `selectPrsForChat` narrows a set to one session; `selectPrsForChatInLane` is the one answer to "what does this chat show" for both the chat toolbar and the PR pane, which previously disagreed. Explicit `pull_request_chat_sessions` edges win, decided per PR so one linked row does not hide every older row in the lane; rows with no edge use the lane fallback for legacy data, while a chat with no edge never displays another chat's explicitly linked PR. `prStateTone` is the single state dot/label map. |
 
 Shared contracts:
@@ -905,13 +905,19 @@ and the two rules have to live apart
   project. Only the **branch** half is relaxed: a PR this lane owns and a chat
   deliberately linked stays visible even once the lane moves to another branch,
   which is what lifts a lane's cap of one visible PR. Historical rows with no
-  link still fall back to the branch rule and stay hidden.
+  link still fall back to the branch rule and stay hidden. One gate precedes all
+  of it: a primary lane parked on its base branch (live HEAD) returns nothing,
+  chat link or not — the row cannot be deleted, so a merged PR a chat once
+  linked would otherwise stay pinned to `main` forever. Deleting the chat drops
+  its links, so a deleted chat cannot keep a lane's PR visible at all.
 - **`selectChatPrs` takes the union.** It is everything `selectLanePrs` gives
-  the lane, plus any PR this chat explicitly linked even though another lane
-  owns it. Chat surfaces must not be lane-bound, because `linkToLane`
-  deliberately leaves `lane_id` on the original owning lane — so without this a
-  cross-lane link would be written to the database and then filtered out of
-  every view.
+  the lane, plus any PR this chat explicitly linked — even though another lane
+  owns it, or because the lane surface dropped it (a primary lane back on its
+  base branch sheds its PR tags, but the chat that opened the PR still shows the
+  thread that did the work). Chat surfaces must not be lane-bound, because
+  `linkToLane` deliberately leaves `lane_id` on the original owning lane — so
+  without this a cross-lane link would be written to the database and then
+  filtered out of every view.
 
 `renderer/lib/prChatScope.ts` narrows either set to one chat session.
 `selectPrsForChatInLane` exists because the rule had been written three times
@@ -957,9 +963,13 @@ reserved for deleting the lane (or an explicit destructive cleanup path).
 PR workspace and history views. `getForLane(laneId)` remains a single-value
 compatibility bridge: it prefers the current-branch PR and otherwise returns
 the newest previous-branch row, so renderer badge consumers must still apply
-the current-branch selector before displaying it. Lane, Work, and chat badges
-go through `selectLanePrs` / `selectChatPrs` above rather than matching the
-branch themselves; a primary lane on its base branch has no PR badge. The PR workspace retains the complete
+the current-branch selector before displaying it. The one exception is a
+primary lane on its base branch: the bridge answers `null` rather than handing
+out history a consumer can only stamp onto `main` (lane links, Linear cards,
+proof owners), matching the host-side `selectLanePrDisplayCandidate`. Lane,
+Work, and chat badges go through `selectLanePrs` / `selectChatPrs` above rather
+than matching the branch themselves; a primary lane on its base branch has no
+PR badge. The PR workspace retains the complete
 set so branch switching does not erase merged/closed history.
 
 Chat ownership is a separate optional edge in
@@ -974,8 +984,19 @@ unedged current-branch PRs with no silent write, and it never shows a PR
 another chat claimed. PR cards, the desktop Work peek, TUI `/pr`, the iOS
 peek, and merge auto-settlement all use those explicit edges; rows created
 before this table existed fall back to the lane's recent eligible Work chat so
-old data stays useful. Deleting a lane or retiring a session removes its live routing edges
-while preserving the PR row/history.
+old data stays useful. Deleting a chat (`sessionService.deleteSession`, the
+cascade every chat/CLI delete path lands in) or deleting a lane
+(`laneService.cleanupLaneDatabaseRows`, which removes that lane's sessions too)
+removes those sessions' live routing edges and unlink tombstones while
+preserving the PR row/history — a dead chat can neither claim a PR nor pin it
+to a lane. Both doors call `deletePullRequestChatLinksForSessions` in
+`pullRequestRowCleanup`, the module that owns both link tables; the lane door
+matters most for a *cross-lane* link, which the lane's `pr_id`-keyed detach
+does not touch, and an unresolved dangling edge would flip from a cross-lane
+reference to a claim on the other lane's PR. A session row this machine has
+never seen is deliberately NOT treated as deleted: it may simply live on
+another machine (see the stacked-PR claim rule), so the purge rides the delete
+cascades rather than a read-time guess.
 
 The edge table is a CRR table with a primary-key-only uniqueness contract and
 is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.

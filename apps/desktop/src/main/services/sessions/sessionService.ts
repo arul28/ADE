@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
+import { deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processRegistryService";
 import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
@@ -447,6 +449,7 @@ type SettleCommitGuard = (sessionId: string) => boolean;
 
 export function createSessionService({
   db,
+  logger,
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
@@ -454,6 +457,8 @@ export function createSessionService({
   listSubagentLinks,
 }: {
   db: AdeDb;
+  /** Optional: only the delete cascade's best-effort PR-link purge reports through it. */
+  logger?: Logger;
   /**
    * Stop the session's background work. Injected rather than per-call: teardown
    * is a service capability, not something a caller decides.
@@ -2617,6 +2622,18 @@ export function createSessionService({
       // already cascaded here.
       settleLifecycle.forget(trimmed);
       clearSettleResidue(trimmed);
+      // PR links are routing metadata for one chat; a link outliving its chat
+      // pins its lane's PR (the primary lane can never shed those). The row is
+      // already gone, so a failed purge must not report the delete as failed —
+      // but it still says so, because the orphan it leaves is otherwise invisible.
+      try {
+        deletePullRequestChatLinksForSessions(db, [trimmed]);
+      } catch (error) {
+        logger?.warn("sessions.pr_chat_link_purge_failed", {
+          sessionId: trimmed,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

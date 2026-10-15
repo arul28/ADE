@@ -1134,6 +1134,7 @@ export async function createAdeRuntime(args: {
     } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
+      logger,
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),

@@ -310,3 +310,37 @@ export function detachPullRequestRowsByIds(
     provenance: countLaneProvenance(db, projectId, laneId),
   });
 }
+
+/** Bound variables per delete statement; lane teardown can carry many sessions. */
+const SESSION_LINK_DELETE_CHUNK_SIZE = 500;
+
+/**
+ * Remove PR link rows (and unlink tombstones) for sessions that no longer
+ * exist.
+ *
+ * Both ways a session disappears land here: deleting one chat
+ * (`sessionService.deleteSession` — the cascade every chat/CLI delete path
+ * uses) and deleting a whole lane (`laneService`, which bulk-deletes its
+ * sessions). A link row outliving its chat is routing metadata aimed at
+ * nobody, and a dangling edge for a session a reader cannot resolve flips
+ * from a cross-lane *reference* to a *claim*, which pins another lane's PR.
+ * Each table is attempted on its own and tolerates a database that predates it.
+ */
+export function deletePullRequestChatLinksForSessions(db: DbLike, sessionIds: string[]): void {
+  const ids = uniqueIds(sessionIds);
+  if (ids.length === 0) return;
+  for (let offset = 0; offset < ids.length; offset += SESSION_LINK_DELETE_CHUNK_SIZE) {
+    const chunk = ids.slice(offset, offset + SESSION_LINK_DELETE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    runDeleteAllowMissingTable(
+      db,
+      `delete from pull_request_chat_sessions where session_id in (${placeholders})`,
+      chunk,
+    );
+    runDeleteAllowMissingTable(
+      db,
+      `delete from pull_request_chat_session_dismissals where session_id in (${placeholders})`,
+      chunk,
+    );
+  }
+}
