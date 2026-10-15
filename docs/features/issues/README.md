@@ -286,6 +286,9 @@ per turn end; a cursor for each chat moves through longer lists. It reads three
 at a time, skips an issue read in the last 60 seconds, and skips a tracker that
 is not connected. A failed read is ignored and never changes the turn's result.
 Nothing polls: the reads happen only at a turn's end.
+An open chat refreshes its Jira context chips from the session links when that
+lane is invalidated, so updated title and status snapshots appear without
+reloading the transcript.
 
 ## Agents: the CLI
 

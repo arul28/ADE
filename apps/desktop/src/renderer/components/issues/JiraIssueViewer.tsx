@@ -156,7 +156,7 @@ export function JiraIssueViewer({
   } else {
     body = (
       <>
-        <IssueStaleBanner error={entry.error} onRetry={entry.refresh} />
+        <IssueStaleBanner error={entry.error ? jiraErrorMessage(entry.error, "Jira request failed.") : null} onRetry={entry.refresh} />
         {readOnlyReason && isCompleteJiraIssue(entry) ? <JiraPermissionNotice reason={readOnlyReason} onLeave={onClose} /> : null}
         <JiraIssueView
           issue={issue}

@@ -2156,7 +2156,7 @@ declare global {
           closeOnMerge?: boolean;
         }) => Promise<SessionJiraIssueLink[]>;
         detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        listJiraIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionJiraIssueLink[]>;
+        listJiraIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
         listJiraIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionJiraIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;

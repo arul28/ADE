@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
@@ -10,12 +11,14 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 export function UserMessageIssueContext({
   attachments,
   contextAttachments,
+  jiraIssueSnapshotsById,
   mode,
   sessionId,
   accepted = false,
 }: {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   mode: ChatSurfaceMode;
   sessionId?: string | null;
   /** The message reached the agent; image previews show a small check. */
@@ -30,8 +33,14 @@ export function UserMessageIssueContext({
   const [hiddenContextKeys, setHiddenContextKeys] = useState<string[]>([]);
 
   const visibleContextAttachments = useMemo(
-    () => contextAttachments.filter((attachment) => !hiddenContextKeys.includes(chatContextAttachmentKey(attachment))),
-    [contextAttachments, hiddenContextKeys],
+    () => contextAttachments
+      .map((attachment) => {
+        if (attachment.type !== "jira_issue") return attachment;
+        const latestIssue = jiraIssueSnapshotsById?.get(attachment.issue.id);
+        return latestIssue ? { ...attachment, issue: latestIssue } : attachment;
+      })
+      .filter((attachment) => !hiddenContextKeys.includes(chatContextAttachmentKey(attachment))),
+    [contextAttachments, hiddenContextKeys, jiraIssueSnapshotsById],
   );
 
   // Detaching an issue from the chat used to live in the Linear details modal

@@ -6907,8 +6907,11 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "detachJiraIssueFromSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDetachJiraIssueFromSession, args),
       ),
-    listJiraIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionJiraIssueLink[]> =>
-      callProjectRuntimeActionOr("lane", "listJiraIssuesForSession", { args }, () =>
+    listJiraIssuesForSession: async (
+      args: { chatSessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionJiraIssueLink[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "listJiraIssuesForSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListJiraIssuesForSession, args),
       ),
     listJiraIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionJiraIssueLink[]> =>

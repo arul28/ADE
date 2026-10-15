@@ -297,15 +297,17 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
           ) : null}
         </div>
         {launchSelected.size > 0 ? (
-          <div className="kit-card absolute bottom-[30px] left-2 right-2 z-10">
-            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
-              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
-                <Rocket size={12} /> Launch agents ({launchSelected.size})
-              </button>
-              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
-                Lanes only ({launchSelected.size})
-              </button>
+          <div className="absolute bottom-[30px] left-2 right-2 z-10">
+            <div className="kit-card">
+              <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
+                <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
+                <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
+                  <Rocket size={12} /> Launch agents ({launchSelected.size})
+                </button>
+                <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
+                  Lanes only ({launchSelected.size})
+                </button>
+              </div>
             </div>
           </div>
         ) : null}

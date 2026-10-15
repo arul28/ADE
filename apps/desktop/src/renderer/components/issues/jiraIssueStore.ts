@@ -15,11 +15,12 @@ import type {
 } from "../../../shared/types/jira";
 import type { IssueRef } from "../../../shared/issueRefs";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { jiraErrorMessage } from "../../../shared/jiraErrors";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { useActiveProjectRoot } from "../../state/appStore";
-import { createIssueEntryCache, errorMessage, type IssueEntry } from "./issueEntryCache";
+import { createIssueEntryCache, type IssueEntry } from "./issueEntryCache";
 
 const ISSUE_STALE_MS = 60_000;
 const LIST_STALE_MS = 60_000;
@@ -422,7 +423,7 @@ export function loadJiraProjects(projectRoot: string | null, options: { force?: 
       return next;
     })
     .catch((error: unknown) => {
-      projects.set(key, { ...current, fetchedAt: Date.now(), promise: null, error: errorMessage(error, "Couldn't load Jira projects.") });
+      projects.set(key, { ...current, fetchedAt: Date.now(), promise: null, error: jiraErrorMessage(error, "Couldn't load Jira projects.") });
       throw error;
     })
     .finally(notify);
@@ -630,7 +631,7 @@ export function loadJiraIssueList(
       lists.set(key, {
         ...current,
         status: "error",
-        error: errorMessage(error, "Jira request failed."),
+        error: jiraErrorMessage(error, "Jira request failed."),
         promise: null,
       });
     })

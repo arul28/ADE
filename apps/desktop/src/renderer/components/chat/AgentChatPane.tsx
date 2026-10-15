@@ -81,6 +81,7 @@ import {
   type ChatLaunchLaneConfig,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import { formatWorkingDuration, turnStallSilenceMs } from "../../../shared/sessionStatusPresentation";
 import { latestTurnProgressAt, turnHasOpenWork } from "../../../shared/turnInFlight";
@@ -4062,6 +4063,10 @@ export function AgentChatPane({
     && selectedSessionId == null
     && Boolean(onLaunchCliSession);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
+  const [jiraIssueSnapshots, setJiraIssueSnapshots] = useState<{
+    sessionId: string;
+    byId: ReadonlyMap<string, LaneJiraIssue>;
+  } | null>(null);
   // Older-transcript pagination: byte-offset cursor (line start) where the
   // oldest loaded transcript window begins. 0 = head reached; missing key =
   // pagination unavailable (no truncated transcript / old runtime).
@@ -5265,6 +5270,54 @@ export function AgentChatPane({
     }
     return displayEvents;
   }, [chatLaunch, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
+  const selectedHasJiraIssueContext = useMemo(
+    () => selectedEventsForDisplay.some(({ event }) => (
+      event.type === "user_message"
+      && event.contextAttachments?.some((attachment) => attachment.type === "jira_issue")
+    )),
+    [selectedEventsForDisplay],
+  );
+  useEffect(() => {
+    if (!renderedSessionId || !selectedHasJiraIssueContext || personalScope) {
+      setJiraIssueSnapshots(null);
+      return;
+    }
+
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+    const refresh = () => {
+      const listIssues = window.ade?.lanes?.listJiraIssuesForSession;
+      if (!listIssues) return;
+      void listIssues({ chatSessionId: renderedSessionId }, chatRuntimePinRef.current)
+        .then((links) => {
+          if (cancelled) return;
+          setJiraIssueSnapshots({
+            sessionId: renderedSessionId,
+            byId: new Map(links.map((link) => [link.issue.id, link.issue])),
+          });
+        })
+        .catch(() => {
+          // Keep the last readable snapshot and the historical attachment on a transient read failure.
+        });
+    };
+    refresh();
+    const unsubscribe = chatScopeLaneId
+      ? window.ade?.lanes?.onLifecycleEvent?.((event) => {
+        if (event.type !== "lanes-invalidated" || event.laneId !== chatScopeLaneId) return;
+        if (refreshTimer != null) window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => {
+          refreshTimer = null;
+          refresh();
+        }, 150);
+      })
+      : undefined;
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      unsubscribe?.();
+    };
+  }, [chatRuntimePinKey, chatScopeLaneId, personalScope, renderedSessionId, selectedHasJiraIssueContext]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -17501,6 +17554,7 @@ export function AgentChatPane({
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
+                        jiraIssueSnapshotsById={jiraIssueSnapshots?.sessionId === renderedSessionId ? jiraIssueSnapshots.byId : undefined}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={listInsertDraft}
                         onRevealChatTerminal={listRevealChatTerminal}

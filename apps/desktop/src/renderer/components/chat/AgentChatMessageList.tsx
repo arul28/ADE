@@ -110,6 +110,7 @@ import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { getToolMeta } from "./chatToolAppearance";
 import { deriveChatSources, type ChatSource, type ChatSources } from "../../../shared/chatSources";
 import { ChatSourceIcon } from "./ChatSourcesPanel";
@@ -2548,6 +2549,7 @@ function renderEvent(
     laneId?: string | null;
     sessionId?: string | null;
     runtimeName?: string | null;
+    jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
     turnDiffSummaries?: TurnDiffSummary[];
@@ -2882,6 +2884,7 @@ function renderEvent(
               <UserMessageIssueContext
                 attachments={event.attachments ?? []}
                 contextAttachments={event.contextAttachments ?? []}
+                jiraIssueSnapshotsById={options?.jiraIssueSnapshotsById}
                 mode={options?.surfaceMode ?? "standard"}
                 sessionId={options?.sessionId}
                 accepted={userMessageAttachmentsAccepted(event)}
@@ -4833,6 +4836,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopyText?: string | null;
@@ -4915,6 +4919,7 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
+  jiraIssueSnapshotsById,
   runtimePin,
   anchored,
   onScrollToRowKey,
@@ -5033,6 +5038,7 @@ const EventRow = React.memo(function EventRow({
             laneId,
             sessionId,
             runtimeName,
+            jiraIssueSnapshotsById,
             runtimePin,
             onRevealChatTerminal,
             chatInfoHostAvailable,
@@ -5545,6 +5551,7 @@ function AgentChatMessageListMain({
   laneId,
   runtimePin = null,
   sessionId,
+  jiraIssueSnapshotsById,
   scrollMemoryKey,
   transcriptCollapseCacheKey,
   onInsertDraft,
@@ -5641,6 +5648,8 @@ function AgentChatMessageListMain({
    * read `useChatRuntimeScope()`, which the pane provides with this same value.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** Fresh Jira snapshots from the owning chat session, overlaid on old message attachments. */
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   sessionId?: string | null;
   /** Separate scroll state for the parent and a drilled-in native transcript. */
   scrollMemoryKey?: string | null;
@@ -8222,6 +8231,7 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
+          jiraIssueSnapshotsById={jiraIssueSnapshotsById}
           runtimePin={runtimePin}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
@@ -8297,7 +8307,8 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
-          runtimePin={runtimePin}
+        jiraIssueSnapshotsById={jiraIssueSnapshotsById}
+        runtimePin={runtimePin}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopyText={assistantTurnCopyText}
@@ -8315,7 +8326,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
