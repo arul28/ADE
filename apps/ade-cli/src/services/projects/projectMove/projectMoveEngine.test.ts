@@ -310,7 +310,7 @@ describe("isMoveProcessAlive", () => {
     }
   });
 
-  it.skipIf(process.getuid?.() === 0)("counts a process owned by another user as alive", () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("counts a process owned by another user as alive", () => {
     // launchd / init: signalling it is refused (EPERM), which means it exists.
     expect(isMoveProcessAlive({ moveId: "move_e", pid: 1, bootMinute: boot })).toBe(true);
   });
