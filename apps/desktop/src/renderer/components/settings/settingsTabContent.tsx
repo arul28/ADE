@@ -38,6 +38,7 @@ import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { ProjectSection } from "./ProjectSection";
+import { ProjectLocationSection } from "./ProjectLocationSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
@@ -363,6 +364,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "ade",
     },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
+    // The move runs in this computer's main process, on a project this computer has.
+    { entryIds: ["general.project-location"], render: () => <ProjectLocationSection />, machine: "local", title: "Project location", group: "project" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },
     {

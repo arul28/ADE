@@ -213,6 +213,11 @@ export class ProjectScopeRegistry {
 
     const record = this.projectRegistry.get(projectId);
     if (!record) {
+      // A project's id is a hash of its folder, so a move gives it a new one.
+      // A window, phone or link that still holds the old id is sent on to the
+      // project it now names instead of being told the project is unknown.
+      const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
+      if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 

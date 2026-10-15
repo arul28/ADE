@@ -8,6 +8,7 @@ import {
   type MachineAdeLayout,
 } from "./machineLayout";
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import { resolveMachineAdeDir } from "./machineLayout";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 
@@ -236,6 +237,7 @@ export class ProjectRegistry {
       throw new Error(`Project root is not a directory: ${normalized}`);
     }
 
+    assertProjectNotMovedAway(normalized);
     const file = this.read();
     const now = Date.now();
     const projectId = deriveProjectId(normalized);
@@ -372,6 +374,76 @@ export class ProjectRegistry {
    */
   forgetDatabaseIdentity(projectId: ProjectId): void {
     fs.rmSync(this.databaseIdentityPath(projectId), { force: true });
+  }
+
+  /**
+   * A project moved to a new folder. Its id is a hash of its path, so the
+   * record is re-keyed; the old id is kept as an alias (in its own file, for
+   * the same reason as the identity files) so links made before the move
+   * still find the project. The database identity moves with it.
+   */
+  relocate(oldRoots: string[], newRoot: string): ProjectRecord {
+    // The old folder is gone by now, so it can't be resolved to its real
+    // path: match every spelling the caller knew (`/tmp` and `/private/tmp`).
+    const oldCandidates = oldRoots.map((root) => path.resolve(root));
+    const newNormalized = normalizeRoot(newRoot);
+    const newId = deriveProjectId(newNormalized);
+    const file = this.read();
+    const index = file.projects.findIndex((record) =>
+      oldCandidates.includes(record.rootPath)
+      || oldCandidates.some((root) => record.projectId === deriveProjectId(root)),
+    );
+    const existing = index >= 0 ? file.projects[index]! : null;
+    const oldId = existing?.projectId ?? deriveProjectId(oldCandidates[0]!);
+    const next: ProjectRecord = {
+      projectId: newId,
+      rootPath: newNormalized,
+      displayName: existing?.displayName ?? path.basename(newNormalized),
+      addedAt: existing?.addedAt ?? Date.now(),
+      lastOpenedAt: Date.now(),
+      gitOriginUrl: existing?.gitOriginUrl ?? readGitOriginUrl(newNormalized),
+      catalogVisibility: existing?.catalogVisibility ?? "recent",
+      registrationSource: existing?.registrationSource ?? "desktop",
+    };
+    const projects = file.projects.filter(
+      (record, i) => i !== index && record.projectId !== newId,
+    );
+    projects.splice(index >= 0 ? Math.min(index, projects.length) : projects.length, 0, next);
+    this.write({ ...file, projects });
+    this.forgetDatabaseIdentity(oldId);
+    this.recordDatabaseIfPresent(newId, newNormalized);
+    const aliases = this.readAliases();
+    for (const [from, to] of Object.entries(aliases)) {
+      if (to === oldId) aliases[from] = newId;
+    }
+    aliases[oldId] = newId;
+    delete aliases[newId];
+    fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
+    fs.writeFileSync(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
+    return next;
+  }
+
+  /** The current id of a project that was moved, given an id it had before. */
+  resolveMovedProjectId(projectId: ProjectId): ProjectId | null {
+    return this.readAliases()[projectId] ?? null;
+  }
+
+  private aliasesPath(): string {
+    return path.join(this.layout.adeDir, "project-aliases.json");
+  }
+
+  private readAliases(): Record<ProjectId, ProjectId> {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.aliasesPath(), "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
+    } catch {
+      return {};
+    }
   }
 
   /** Called after a successful open; a no-op until the database file exists. */
@@ -514,8 +586,79 @@ export class ProjectRegistry {
 }
 
 export function assertLocalProjectDataAvailable(projectRoot: string): void {
+  assertProjectNotMovedAway(projectRoot);
+  assertProjectNotBeingMoved(projectRoot);
   const registry = new ProjectRegistry();
   registry.assertProjectDataAvailable(registry.findByRootPath(projectRoot));
+}
+
+/**
+ * While a move copies a project, nothing may open it: a write after the copy
+ * would be lost. The move's journal (`<ADE_HOME>/project-moves/`) names the
+ * project and the process running the move.
+ */
+export function assertProjectNotBeingMoved(projectRoot: string): void {
+  const dir = path.join(resolveMachineAdeDir(), "project-moves");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  const root = path.resolve(projectRoot);
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    let record: { state?: unknown; sourceRoot?: unknown; destinationRoot?: unknown; pid?: unknown };
+    try {
+      record = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as typeof record;
+    } catch {
+      continue;
+    }
+    if (record.state !== "running" || typeof record.pid !== "number") continue;
+    if (record.sourceRoot !== root && record.destinationRoot !== root) continue;
+    try {
+      process.kill(record.pid, 0);
+    } catch {
+      continue; // the process that ran it is gone; the next ADE start settles it
+    }
+    throw codedError("This project is being moved. It opens again when the move finishes.", "project_moving");
+  }
+}
+
+/** Written into a project's old folder when it moves (see projectMove/projectMoveEngine.ts). */
+export const PROJECT_MOVED_MARKER = path.join(".ade", "moved-to.json");
+
+/**
+ * A project's old folder is kept after a move until the person deletes it.
+ * Opening it would register a second copy of the project and let agents work
+ * in the stale one, so every open refuses it and names the new location.
+ */
+export function assertProjectNotMovedAway(projectRoot: string): void {
+  // Any folder inside the old copy counts too: its lanes live there, and a
+  // lane folder opened on its own would otherwise slip past.
+  let movedTo: string | null = null;
+  let found = false;
+  for (let dir = path.resolve(projectRoot); ; dir = path.dirname(dir)) {
+    const marker = path.join(dir, PROJECT_MOVED_MARKER);
+    if (fs.existsSync(marker)) {
+      found = true;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(marker, "utf8")) as { movedTo?: unknown };
+        movedTo = typeof parsed.movedTo === "string" ? parsed.movedTo : null;
+      } catch {
+        movedTo = null;
+      }
+      break;
+    }
+    if (path.dirname(dir) === dir) break;
+  }
+  if (!found) return;
+  throw codedError(
+    movedTo
+      ? `This is the old copy of a project that moved to ${movedTo}. Open it there. ADE keeps this copy only until you delete it.`
+      : "This is the old copy of a project that was moved. Open the project at its new location.",
+    "project_moved",
+  );
 }
 
 export function isLocalProjectDataMissing(projectRoot: string): boolean {

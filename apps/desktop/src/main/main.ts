@@ -223,7 +223,7 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathKey, pathsEqual } from "./services/shared/pathCompare";
-import { assertLocalProjectDataAvailable, deriveProjectId, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
@@ -437,6 +437,7 @@ import {
   runVerifiedRuntimeRestart,
 } from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService, restartBrainForRepair } from "./services/runtime/projectRecoveryService";
+import { createProjectMoveController } from "./services/projects/projectMoveController";
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
 import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
@@ -3274,6 +3275,105 @@ app.whenReady().then(async () => {
         .catch(() => undefined);
     },
   });
+
+  // Moving a project to a new folder (macOS). The move runs here, in the
+  // process that owns the windows, because it has to close the project in
+  // every window and in the background service, then reopen it at the new
+  // location. The engine itself is shared with the CLI.
+  const projectMoveController = process.platform === "darwin"
+    ? createProjectMoveController({
+        logger: localRuntimeLogger,
+        getActivity: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          const runningChats: string[] = [];
+          const openTerminals: string[] = [];
+          const inProcess = shouldUseInProcessProjectRuntime() ? projectContexts.get(root)?.agentChatService ?? null : null;
+          const chats = inProcess
+            ? runtimeChatRefs(await inProcess.listInterruptedChats())
+            : runtimeChatRefs((await localRuntimePool.callActionForRoot(root, { domain: "chat", action: "listInterruptedChats" })).result);
+          for (const chat of chats) runningChats.push(chat.title || "Untitled chat");
+          if (!inProcess) {
+            const sessions = (await localRuntimePool.callActionForRoot(root, { domain: "session", action: "list" })).result;
+            for (const session of Array.isArray(sessions) ? sessions as Array<Record<string, unknown>> : []) {
+              if (session.status !== "running" || typeof session.ptyId !== "string" || !session.ptyId) continue;
+              const toolType = typeof session.toolType === "string" ? session.toolType : "shell";
+              if (toolType.endsWith("-chat")) continue;
+              const label = [session.title, session.laneName].filter((part) => typeof part === "string" && part).join(" — ") || toolType;
+              // An agent CLI in a terminal is an agent at work, not just a shell.
+              if (toolType === "shell" || toolType === "run") openTerminals.push(label);
+              else runningChats.push(label);
+            }
+          }
+          return { runningChats, openTerminals };
+        },
+        releaseProject: async (projectRoot) => {
+          const root = normalizeProjectRoot(projectRoot);
+          await closeProjectByPath(root);
+          openProjectDataWatch.forget(root);
+          const record = new ProjectRegistry().findByRootPath(root);
+          if (record) await localRuntimePool.removeProject(root, record.projectId);
+        },
+        afterMove: async (record, windowId) => {
+          const spellings = new Set(record.resume?.sourceSpellings ?? [record.sourceRoot]);
+          const moved = (root: string | null | undefined): string | null | undefined =>
+            root && (spellings.has(root) || spellings.has(normalizeProjectRoot(root))) ? record.destinationRoot : root;
+          const state = readGlobalState(globalStatePath);
+          writeGlobalState(globalStatePath, {
+            ...state,
+            recentProjects: (state.recentProjects ?? []).map((entry) =>
+              entry.remote ? entry : { ...entry, rootPath: moved(entry.rootPath) ?? entry.rootPath }),
+            lastProjectRoot: moved(state.lastProjectRoot) ?? undefined,
+            ...(state.updateWorkspace
+              ? {
+                  updateWorkspace: {
+                    localRoots: state.updateWorkspace.localRoots.map((root) => moved(root) ?? root),
+                    activeLocalRoot: moved(state.updateWorkspace.activeLocalRoot) ?? null,
+                  },
+                }
+              : {}),
+          });
+          // Every window that knew the project keeps it, at its new folder.
+          for (const knownRoots of windowKnownLocalProjectRoots.values()) {
+            let hadIt = false;
+            for (const root of [...knownRoots]) {
+              if (root !== record.destinationRoot && moved(root) === record.destinationRoot) {
+                knownRoots.delete(root);
+                hadIt = true;
+              }
+            }
+            if (hadIt) knownRoots.add(record.destinationRoot);
+          }
+          for (const tabRoots of windowProjectTabRoots.values()) {
+            const hadIt = [...tabRoots].some((root) => moved(root) === record.destinationRoot && root !== record.destinationRoot);
+            if (!hadIt) continue;
+            for (const root of [...tabRoots]) if (moved(root) === record.destinationRoot) tabRoots.delete(root);
+            tabRoots.add(record.destinationRoot);
+          }
+          attemptedProjectRoots.record(record.destinationRoot);
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.destinationRoot));
+          // A switch the renderer did not start: tell the window, so its
+          // cached binding (and every call it routes) uses the new folder.
+          if (windowId != null) bindWindowToProject(windowId, record.destinationRoot, { emit: true });
+          persistUpdateWorkspace();
+        },
+        afterFailedMove: async (record, windowId) => {
+          if (!fs.existsSync(record.sourceRoot)) return;
+          await ipcWindowScope.run(windowId, () => switchProjectFromDialog(record.sourceRoot));
+          if (windowId != null) bindWindowToProject(windowId, record.sourceRoot, { emit: true });
+        },
+        emitProgress: (progress) => {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (win.isDestroyed()) continue;
+            try {
+              win.webContents.send(IPC.projectMoveProgress, progress);
+            } catch {
+              // a closing window
+            }
+          }
+        },
+      })
+    : null;
+  void projectMoveController?.recover();
   reportAppFallback = (reason) => {
     void autoDiagnosticsService
       .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
@@ -9398,6 +9498,7 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    projectMoveController,
     onAccountRollupFetcherReady: (fetcher) => {
       machineAccountRollupFetcher = fetcher;
     },

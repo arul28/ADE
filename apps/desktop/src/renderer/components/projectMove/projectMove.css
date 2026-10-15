@@ -1,0 +1,114 @@
+/* Move project dialog. Layout only: surfaces, buttons, meters and tags come
+   from the surface kit (surfaceKit.css). */
+
+.ade-pm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 12.5px;
+}
+
+.ade-pm-muted { color: var(--kit-text-3); font-size: 11.5px; }
+.ade-pm-mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-pm-footer { display: flex; width: 100%; align-items: center; justify-content: flex-end; gap: 8px; }
+
+/* Drives: one choice card per drive. */
+.ade-pm-drives { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.ade-pm-drive {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: var(--radius-md);
+  background: var(--kit-panel-bg);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+.ade-pm-drive:hover { background: var(--kit-hover); }
+.ade-pm-drive[data-active="true"] { border-color: var(--color-accent); }
+.ade-pm-drive:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 1px; }
+.ade-pm-drive-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ade-pm-drive-name { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The destination folder: the whole row opens the folder picker. */
+.ade-pm-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--kit-track);
+  color: var(--kit-text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-pm-path:hover { background: var(--kit-active); color: var(--color-fg); }
+.ade-pm-path > .ade-pm-mono { flex: 1; }
+.ade-pm-path-action { font-size: 11.5px; color: var(--kit-text-3); }
+
+/* Check result: one "Ready" line, or the problems. */
+.ade-pm-status { display: flex; flex-direction: column; gap: 8px; min-height: 18px; }
+.ade-pm-ready { display: inline-flex; align-items: center; gap: 8px; font-weight: 550; }
+.ade-pm-issue { display: flex; gap: 9px; align-items: flex-start; }
+.ade-pm-issue > svg { flex: none; margin-top: 1px; }
+.ade-pm-issue[data-status="blocked"] > svg { color: var(--kit-crit); }
+.ade-pm-issue[data-status="warning"] > svg { color: var(--kit-warn); }
+.ade-pm-issue > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-pm-issue-title { font-weight: 550; }
+
+.ade-pm-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.ade-pm-option > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.ade-pm-after { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--kit-rule); }
+.ade-pm-after ul { margin: 0; padding-left: 16px; list-style: disc; color: var(--kit-text-2); line-height: 1.6; }
+.ade-pm-after li::marker { color: var(--kit-text-3); }
+
+/* Moving. */
+.ade-pm-route { display: flex; align-items: center; gap: 8px; color: var(--kit-text-3); }
+.ade-pm-route > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pm-steps { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.ade-pm-steps > li { display: flex; align-items: center; gap: 10px; height: 26px; color: var(--kit-text-3); }
+.ade-pm-steps > li[data-state="done"] { color: var(--kit-text-2); }
+.ade-pm-steps > li[data-state="done"] > svg { color: var(--kit-ok); }
+.ade-pm-steps > li[data-state="current"] { color: var(--color-fg); font-weight: 550; }
+.ade-pm-step-dot { width: 14px; display: grid; place-items: center; }
+.ade-pm-step-dot::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: var(--kit-track); }
+
+/* Done. */
+.ade-pm-hero { display: flex; align-items: center; gap: 12px; }
+.ade-pm-hero > svg { flex: none; color: var(--kit-ok); }
+.ade-pm-hero > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-pm-hero-title { font-size: 14px; font-weight: 600; }
+
+.ade-pm-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.ade-pm-row > svg { color: var(--kit-text-2); }
+.ade-pm-row-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.ade-pm-controls { display: flex; align-items: center; gap: 6px; }
+.ade-pm-controls .kit-btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.ade-pm-controls .kit-btn[data-tone="crit"] { color: var(--kit-crit); }
