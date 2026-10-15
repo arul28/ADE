@@ -95,6 +95,12 @@ function renderLaneBehaviorSection(snapshot: ProjectConfigSnapshot) {
 
 const autoRebaseSwitch = () => screen.getByRole("switch", { name: "Auto-rebase child lanes" });
 const baseSourceOption = (name: RegExp) => screen.getByRole("radio", { name });
+async function waitForBaseSource(source: "local" | "remote") {
+  await waitFor(() => {
+    expect(baseSourceOption(source === "local" ? /Local/ : /Remote/).getAttribute("aria-checked"))
+      .toBe("true");
+  });
+}
 
 afterEach(() => {
   cleanup();
@@ -109,7 +115,7 @@ describe("LaneBehaviorSection", () => {
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("local");
     fireEvent.click(autoRebaseSwitch());
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -124,7 +130,7 @@ describe("LaneBehaviorSection", () => {
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("local");
     fireEvent.click(autoRebaseSwitch());
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -141,7 +147,7 @@ describe("LaneBehaviorSection", () => {
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("local");
     fireEvent.click(baseSourceOption(/Remote/));
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -158,7 +164,7 @@ describe("LaneBehaviorSection", () => {
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("local");
     fireEvent.click(baseSourceOption(/Remote/));
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
 
@@ -176,7 +182,7 @@ describe("LaneBehaviorSection", () => {
       local: { git: { autoRebaseOnHeadChange: false } },
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("remote");
 
     // Toggling an unrelated setting must not pin the noise settings at their
     // default values — a stale local pin would shadow a later shared change.
@@ -197,7 +203,7 @@ describe("LaneBehaviorSection", () => {
     }));
     projectConfig.save.mockRejectedValueOnce(new Error("disk is full"));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource("remote");
     fireEvent.click(autoRebaseSwitch());
 
     expect(await screen.findByText("disk is full")).toBeTruthy();
