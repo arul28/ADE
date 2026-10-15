@@ -852,4 +852,21 @@ describe("lane vs chat PR scoping", () => {
 
     expect(selectChatPrs(lane, [detachedOwned, detachedForeign], "sess-a")).toEqual([]);
   });
+
+  it("keeps a primary lane's PR visible to the chat that linked it while the lane surface hides it", () => {
+    const primary = makeLane({ id: "lane-1", laneType: "primary", branchRef: "main", baseRef: "main" });
+    const linked = makePr({
+      id: "pr-linked",
+      laneId: "lane-1",
+      headBranch: "fix/update-recovery",
+      state: "merged",
+      chatSessionIds: ["sess-a"],
+    });
+
+    // The lane is parked on main, so its own surfaces show nothing...
+    expect(selectLanePrs(primary, [linked])).toEqual([]);
+    // ...but the thread that opened the PR still shows the PR it worked on.
+    expect(selectChatPrs(primary, [linked], "sess-a").map((pr) => pr.id)).toEqual(["pr-linked"]);
+    expect(selectChatPrs(primary, [linked], "sess-b")).toEqual([]);
+  });
 });
