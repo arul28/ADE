@@ -22244,9 +22244,12 @@ export function createAgentChatService(args: {
     // runs, and each repeat would look like a new compaction: an extra open
     // row, and — because a client counts a running compaction's elapsed from
     // the newest "started" it has — an elapsed clock that restarts mid-run.
-    // Only the first frame opens the row; the completion/failure deletes it
-    // from `openNativeCompactions`, so the next compaction still starts fresh.
-    if (openNativeCompactions.get(managed.session.id)?.size) return;
+    // Only the first frame of THIS compaction opens the row (the same key
+    // `emitChatEvent` files it under); a completed/failed event deletes that
+    // key, so the next compaction still starts fresh, and an entry left behind
+    // by a torn-down runtime cannot suppress a different turn's compaction.
+    const key = turnId ?? "native";
+    if (openNativeCompactions.get(managed.session.id)?.has(key)) return;
     // The real trigger arrives with the boundary (completed) event, so this
     // defaults to "auto".
     emitChatEvent(managed, {
