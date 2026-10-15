@@ -4,11 +4,14 @@ import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "../../../main/services/analytics/productAnalyticsPolicy";
 import {
+  HOME_DEFAULT_STACK_VERSION,
   HOME_LAYOUTS_STORAGE_KEY,
   HOME_LAYOUT_PRESETS_MAX,
+  HOME_LAYOUT_STORAGE_KEY,
   defaultHomeLayout,
   layoutCells,
   normalizeHomeLayouts,
+  reloadHomeLayoutsFromStorage,
   useHomeLayoutStore,
   type HomeLayoutItem,
   type HomeWidgetType,
@@ -21,41 +24,89 @@ const layoutWith = (items: HomeLayoutItem[]) => ({ ...defaultHomeLayout(), items
 const preset = (id: string, name: string, items: HomeLayoutItem[] = [{ id: "clock", type: "clock", size: "s" }]) => ({ id, name, layout: layoutWith(items) });
 
 describe("stored home layouts", () => {
-  const legacy = layoutWith([{ id: "feed", type: "feed", size: "l" }]);
+  /** The shipped stack, as the types the page shows. */
+  const shipped = defaultHomeLayout().items.map((item) => item.type);
+  /** A version 2 store this build wrote: it has already taken the shipped stack. */
+  const current = { defaultStack: HOME_DEFAULT_STACK_VERSION };
 
   it.each([
-    ["nothing stored", null, null, ["default"], "default", ["projects", "running", "activity", "limits", "prs"]],
-    ["only a version 1 layout (migrates as Default)", null, legacy, ["default"], "default", ["feed"]],
-    ["an unreadable version 2 next to version 1", { presets: "nope" }, legacy, ["default"], "default", ["feed"]],
-    ["a version 2 with no usable preset", { activeId: "x", presets: [null, { id: "" }] }, legacy, ["default"], "default", ["feed"]],
-    ["a version 2 whose active id is gone", { activeId: "gone", presets: [preset("a", "A"), preset("b", "B")] }, legacy, ["a", "b"], "a", ["clock"]],
-    ["a version 2 with duplicate ids", { activeId: "b", presets: [preset("a", "A"), preset("a", "Again"), preset("b", "B")] }, null, ["a", "b"], "b", ["clock"]],
+    ["nothing stored", null, ["default"], "default", shipped],
+    ["a version 2 whose active id is gone", { ...current, activeId: "gone", presets: [preset("a", "A"), preset("b", "B")] }, ["a", "b"], "a", ["clock"]],
+    ["a version 2 with duplicate ids", { ...current, activeId: "b", presets: [preset("a", "A"), preset("a", "Again"), preset("b", "B")] }, ["a", "b"], "b", ["clock"]],
     [
       "more presets than the limit",
-      { activeId: "p0", presets: Array.from({ length: HOME_LAYOUT_PRESETS_MAX + 5 }, (_, i) => preset(`p${i}`, `P${i}`)) },
-      null,
+      { ...current, activeId: "p0", presets: Array.from({ length: HOME_LAYOUT_PRESETS_MAX + 5 }, (_, i) => preset(`p${i}`, `P${i}`)) },
       Array.from({ length: HOME_LAYOUT_PRESETS_MAX }, (_, i) => `p${i}`),
       "p0",
       ["clock"],
     ],
-  ])("reads %s", (_label, stored, legacyLayout, presetIds, activeId, activeTypes) => {
-    const layouts = normalizeHomeLayouts(stored, legacyLayout);
+  ])("reads %s", (_label, stored, presetIds, activeId, activeTypes) => {
+    const layouts = normalizeHomeLayouts(stored);
     expect(layouts.presets.map((entry) => entry.id)).toEqual(presetIds);
     expect(layouts.activeId).toBe(activeId);
     const active = layouts.presets.find((entry) => entry.id === layouts.activeId)!;
     expect(active.layout.items.map((item) => item.type)).toEqual(activeTypes);
   });
 
+  it.each([
+    ["a store nothing has marked yet", {} as Record<string, unknown>],
+    ["a store one shipped stack behind", { defaultStack: HOME_DEFAULT_STACK_VERSION - 1 } as Record<string, unknown>],
+  ])("puts the shipped stack in as Default and shows it: %s", (_label, marker) => {
+    const stored = {
+      ...marker,
+      activeId: "focus",
+      presets: [preset("default", "My corner", [{ id: "feed", type: "feed", size: "m" }]), preset("focus", "Focus", [{ id: "pomodoro", type: "pomodoro", size: "m" }])],
+    };
+    const layouts = normalizeHomeLayouts(stored);
+
+    expect(layouts.presets.map((entry) => entry.id)).toEqual(["default", "focus"]);
+    expect(layouts.activeId).toBe("default");
+    const shippedPreset = layouts.presets[0]!;
+    expect(shippedPreset.name).toBe("Default");
+    expect(shippedPreset.layout.items.map((item) => item.type)).toEqual(shipped);
+    // The layout the user saved themselves stays, under its own name.
+    expect(layouts.presets[1]!.name).toBe("Focus");
+    expect(layouts.presets[1]!.layout.items.map((item) => item.type)).toEqual(["pomodoro"]);
+    // Never more presets than the page keeps room for.
+    expect(layouts.presets.length).toBeLessThanOrEqual(HOME_LAYOUT_PRESETS_MAX);
+  });
+
+  it("writes the shipped stack down, so the migration happens once", () => {
+    window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify({
+      activeId: "focus",
+      presets: [preset("focus", "Focus", [{ id: "pomodoro", type: "pomodoro", size: "m" }])],
+    }));
+    reloadHomeLayoutsFromStorage();
+    expect(useHomeLayoutStore.getState().layout.items.map((item) => item.type)).toEqual(shipped);
+
+    // The next read sees the marker and leaves the store alone.
+    const saved = JSON.parse(window.localStorage.getItem(HOME_LAYOUTS_STORAGE_KEY)!) as { defaultStack: number };
+    expect(saved.defaultStack).toBe(HOME_DEFAULT_STACK_VERSION);
+    useHomeLayoutStore.getState().remove("clock");
+    reloadHomeLayoutsFromStorage();
+    expect(useHomeLayoutStore.getState().layout.items.map((item) => item.type)).toEqual(["projects", "running", "prs", "heatmap"]);
+    window.localStorage.removeItem(HOME_LAYOUTS_STORAGE_KEY);
+    window.localStorage.removeItem(HOME_LAYOUT_STORAGE_KEY);
+  });
+
   it("drops unknown widgets, repeated ids and unknown app buttons inside a layout, and reads old free-resize cells as size classes", () => {
-    const layouts = normalizeHomeLayouts(null, {
-      items: [
-        { id: "a", type: "clock", w: 2, h: 2 },
-        { id: "a", type: "feed", size: "l" },
-        { id: "b", type: "spreadsheet", size: "m" },
-        { id: "c", type: "machine", w: 2, h: 1, stacked: true },
-        { id: "d", type: "pomodoro", w: 1, h: 1 },
-      ],
-      hiddenApps: ["spotify", "spotify", "tidal"],
+    const layouts = normalizeHomeLayouts({
+      defaultStack: HOME_DEFAULT_STACK_VERSION,
+      activeId: "a",
+      presets: [{
+        id: "a",
+        name: "A",
+        layout: {
+          items: [
+            { id: "a", type: "clock", w: 2, h: 2 },
+            { id: "a", type: "feed", size: "l" },
+            { id: "b", type: "spreadsheet", size: "m" },
+            { id: "c", type: "machine", w: 2, h: 1, stacked: true },
+            { id: "d", type: "pomodoro", w: 1, h: 1 },
+          ],
+          hiddenApps: ["spotify", "spotify", "tidal"],
+        },
+      }],
     });
     expect(layouts.presets[0]!.layout.items).toEqual([
       { id: "a", type: "clock", size: "l" },
@@ -65,13 +116,13 @@ describe("stored home layouts", () => {
     // A removed app button stays removed; an unknown app name is dropped.
     expect(layouts.presets[0]!.layout.hiddenApps).toEqual(["spotify"]);
     // A layout saved before app buttons existed shows both.
-    expect(normalizeHomeLayouts(null, { items: [] }).presets[0]!.layout.hiddenApps).toEqual([]);
+    expect(normalizeHomeLayouts({ defaultStack: HOME_DEFAULT_STACK_VERSION, activeId: "a", presets: [preset("a", "A", [])] }).presets[0]!.layout.hiddenApps).toEqual([]);
   });
 
   it("follows another window's save instead of keeping its own older copy", () => {
     renderHook(() => useHomeAppEffects());
     useHomeLayoutStore.getState().setEditing(true);
-    const saved = { version: 2, activeId: "focus", presets: [preset("default", "Default"), preset("focus", "Focus", [{ id: "pomodoro", type: "pomodoro", size: "m" }])] };
+    const saved = { ...current, activeId: "focus", presets: [preset("default", "Default"), preset("focus", "Focus", [{ id: "pomodoro", type: "pomodoro", size: "m" }])] };
 
     window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify(saved));
     window.dispatchEvent(new StorageEvent("storage", { key: HOME_LAYOUTS_STORAGE_KEY }));
@@ -91,16 +142,17 @@ describe("editing the home grid", () => {
   it("moves a widget with the widgets stacked under it, and hands its cell to the first of them when it goes", () => {
     const store = useHomeLayoutStore.getState();
     store.reset();
-    // Default: projects with running stacked under it, then activity, limits, prs.
-    expect(order()).toEqual(["projects", "running^", "activity", "limits", "prs"]);
+    // Default: projects with running stacked under it, then prs, contributions
+    // and the clock.
+    expect(order()).toEqual(["projects", "running^", "prs", "heatmap", "clock"]);
 
     useHomeLayoutStore.getState().moveCell("projects", "prs", "after");
-    expect(order()).toEqual(["activity", "limits", "prs", "projects", "running^"]);
+    expect(order()).toEqual(["prs", "projects", "running^", "heatmap", "clock"]);
     useHomeLayoutStore.getState().nudgeCell("projects", -1);
-    expect(order()).toEqual(["activity", "limits", "projects", "running^", "prs"]);
+    expect(order()).toEqual(["projects", "running^", "prs", "heatmap", "clock"]);
 
     useHomeLayoutStore.getState().remove("projects");
-    expect(order()).toEqual(["activity", "limits", "running", "prs"]);
+    expect(order()).toEqual(["running", "prs", "heatmap", "clock"]);
     // It takes the removed host's size, too.
     expect(useHomeLayoutStore.getState().layout.items.find((item) => item.id === "running")?.size).toBe("m");
   });

@@ -492,7 +492,10 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    await screen.findByText("This machine", { exact: true });
+    // The two locations of one repository settle into its single recents row.
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-tour="project.recentProject"]')).toHaveLength(1),
+    );
     expect(document.querySelector(`img[src="${projectIcon}"]`)).toBeTruthy();
     expect(screen.queryByText("Last active")).toBeNull();
     expect(screen.queryByText(/on Mac Studio/)).toBeNull();

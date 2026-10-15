@@ -7,21 +7,34 @@ import { captureHomeWidgetAdded } from "./homeAnalytics";
  * screen, so it lives in this machine's localStorage (the same durable store
  * the app's other screen-shaped preferences use) and never syncs.
  *
- * The default preset is the home page as it shipped before widgets existed:
- * Projects as a tall column with Working now stacked under it, Activity &
- * usage across the top right, Limits & machines and Pull requests below.
+ * The default preset is the stack the page ships with: Pull requests with
+ * Contributions under it, Projects with Working now under it, and the clock
+ * and weather beside them.
  *
  * Saved layouts: the page keeps named presets ("Default" first) and shows the
  * active one; every edit lands in the active preset. Version 2 storage holds
  * the presets. Version 1 held one layout; it loads as the "Default" preset,
  * and the active layout is still mirrored there so an older build keeps
  * opening the page the user last saw.
+ *
+ * A new shipped stack reaches everybody once: `defaultStack` records the
+ * version this store has seen, and an older one (or none) puts the new stack
+ * in as "Default" on the next launch and shows it. Presets the user saved
+ * themselves stay in the switcher, and everything is editable again from
+ * there.
  */
 
-/** Version 1: one layout. Read for migration and kept in step with the active preset. */
+/** Version 1: one layout. Kept in step with the active preset so an older build keeps opening the page the user last saw. */
 export const HOME_LAYOUT_STORAGE_KEY = "ade.home.layout.v1";
 /** Version 2: named presets and which one is showing. */
 export const HOME_LAYOUTS_STORAGE_KEY = "ade.home.layouts.v2";
+
+/**
+ * The shipped default stack's version. Bump it when `defaultHomeLayout`
+ * changes in a way every user should see: the next launch puts the new stack
+ * in as "Default" and shows it, once (see the file header).
+ */
+export const HOME_DEFAULT_STACK_VERSION = 2;
 
 /** Cycles saved layouts while the home page shows; rebindable in keybindings. */
 export const HOME_LAYOUT_KEYBINDING = { id: "home.layout.next", fallback: "Mod+Shift+L" } as const;
@@ -92,9 +105,9 @@ export function defaultHomeLayout(): HomeLayout {
     items: [
       { id: "projects", type: "projects", size: "m" },
       { id: "running", type: "running", size: "s", stacked: true },
-      { id: "activity", type: "activity", size: "w" },
-      { id: "limits", type: "limits", size: "s" },
       { id: "prs", type: "prs", size: "s" },
+      { id: "heatmap", type: "heatmap", size: "w" },
+      { id: "clock", type: "clock", size: "s" },
     ],
     columns: 3,
     appearance: { cardOpacity: null, cardBlur: null },
@@ -149,15 +162,37 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
 
 export type HomeLayoutPreset = { id: string; name: string; layout: HomeLayout };
 
-export type HomeLayouts = { version: 2; activeId: string; presets: HomeLayoutPreset[] };
+export type HomeLayouts = {
+  version: 2;
+  /** The shipped default stack this store has already taken (see HOME_DEFAULT_STACK_VERSION). */
+  defaultStack: number;
+  activeId: string;
+  presets: HomeLayoutPreset[];
+};
 
 export const DEFAULT_PRESET_ID = "default";
 const PRESET_NAME_MAX = 40;
 /** Saved layouts the page keeps; "Save as…" is off at the limit. */
 export const HOME_LAYOUT_PRESETS_MAX = 12;
 
-function defaultLayouts(layout: HomeLayout = defaultHomeLayout()): HomeLayouts {
-  return { version: 2, activeId: DEFAULT_PRESET_ID, presets: [{ id: DEFAULT_PRESET_ID, name: "Default", layout }] };
+function defaultLayouts(): HomeLayouts {
+  return {
+    version: 2,
+    defaultStack: HOME_DEFAULT_STACK_VERSION,
+    activeId: DEFAULT_PRESET_ID,
+    presets: [{ id: DEFAULT_PRESET_ID, name: "Default", layout: defaultHomeLayout() }],
+  };
+}
+
+/**
+ * The shipped stack takes over the "Default" preset and shows, once per
+ * version. Everything the user saved themselves (other presets) stays where
+ * it was, in the switcher.
+ */
+function withShippedDefaultStack(layouts: HomeLayouts): HomeLayouts {
+  const others = layouts.presets.filter((preset) => preset.id !== DEFAULT_PRESET_ID).slice(0, HOME_LAYOUT_PRESETS_MAX - 1);
+  const shipped: HomeLayoutPreset = { id: DEFAULT_PRESET_ID, name: uniqueName("Default", others), layout: defaultHomeLayout() };
+  return { version: 2, defaultStack: HOME_DEFAULT_STACK_VERSION, activeId: DEFAULT_PRESET_ID, presets: [shipped, ...others] };
 }
 
 export function cleanPresetName(value: unknown): string | null {
@@ -167,14 +202,18 @@ export function cleanPresetName(value: unknown): string | null {
 }
 
 /**
- * Reads stored layouts: version 2 when present and usable, else a version 1
- * layout as the "Default" preset, else the shipped default. Bad entries are
- * dropped one by one; there is always at least one preset and the active id
- * always names one of them.
+ * Reads stored layouts: version 2 when present and usable, else the shipped
+ * default. Bad entries are dropped one by one; there is always at least one
+ * preset and the active id always names one of them.
+ *
+ * A store that has not seen the current shipped stack (a `defaultStack` below
+ * HOME_DEFAULT_STACK_VERSION, or none at all) comes back showing it; the
+ * caller persists that, so it happens once. A store from before the presets
+ * (version 1) gets it too: the stack everyone opens the page to is the point.
  */
-export function normalizeHomeLayouts(stored: unknown, legacy: unknown): HomeLayouts {
+export function normalizeHomeLayouts(stored: unknown): HomeLayouts {
   if (stored && typeof stored === "object" && Array.isArray((stored as { presets?: unknown }).presets)) {
-    const raw = stored as { activeId?: unknown; presets: unknown[] };
+    const raw = stored as { activeId?: unknown; defaultStack?: unknown; presets: unknown[] };
     const seen = new Set<string>();
     const presets: HomeLayoutPreset[] = [];
     for (const entry of raw.presets) {
@@ -187,10 +226,12 @@ export function normalizeHomeLayouts(stored: unknown, legacy: unknown): HomeLayo
     }
     if (presets.length > 0) {
       const activeId = typeof raw.activeId === "string" && seen.has(raw.activeId) ? raw.activeId : presets[0]!.id;
-      return { version: 2, activeId, presets };
+      const defaultStack = typeof raw.defaultStack === "number" && Number.isFinite(raw.defaultStack) ? Math.max(1, Math.floor(raw.defaultStack)) : 1;
+      const layouts: HomeLayouts = { version: 2, defaultStack, activeId, presets };
+      return defaultStack >= HOME_DEFAULT_STACK_VERSION ? layouts : withShippedDefaultStack(layouts);
     }
   }
-  return legacy != null ? defaultLayouts(normalizeHomeLayout(legacy)) : defaultLayouts();
+  return defaultLayouts();
 }
 
 function parseStored(key: string): unknown {
@@ -200,18 +241,19 @@ function parseStored(key: string): unknown {
 
 function readStoredLayouts(): HomeLayouts {
   let stored: unknown = null;
-  let legacy: unknown = null;
   try {
     stored = parseStored(HOME_LAYOUTS_STORAGE_KEY);
   } catch {
-    // Unreadable version 2: fall back to version 1 below.
+    // Unreadable: the shipped default below.
   }
-  try {
-    legacy = parseStored(HOME_LAYOUT_STORAGE_KEY);
-  } catch {
-    // Unreadable version 1 too: the default layout.
-  }
-  return normalizeHomeLayouts(stored, legacy);
+  const storedStack = stored && typeof stored === "object" && typeof (stored as { defaultStack?: unknown }).defaultStack === "number"
+    ? (stored as { defaultStack: number }).defaultStack
+    : 0;
+  const layouts = normalizeHomeLayouts(stored);
+  // The shipped stack landed here: write it down now, so the migration runs
+  // once and an edit made this session is not undone by the next launch.
+  if (storedStack < layouts.defaultStack) writeStoredLayouts(layouts);
+  return layouts;
 }
 
 function writeStoredLayouts(layouts: HomeLayouts) {
@@ -397,7 +439,7 @@ type HomeLayoutStore = {
 
 export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
   const save = (presets: HomeLayoutPreset[], activeId: string) => {
-    const layouts: HomeLayouts = { version: 2, activeId, presets };
+    const layouts: HomeLayouts = { version: 2, defaultStack: HOME_DEFAULT_STACK_VERSION, activeId, presets };
     writeStoredLayouts(layouts);
     set({ presets, activeId, layout: activeLayout(layouts) });
   };

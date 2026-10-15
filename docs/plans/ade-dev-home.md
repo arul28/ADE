@@ -360,9 +360,18 @@ want it).**
   card look, headline, widgets) and `main/services/home/` (clipboard, machine
   health, weather, Now Playing, share images).
 - **Layout:** per computer, in localStorage, like Appearance. Named presets
-  live in `ade.home.layouts.v2`; a v1 layout (`ade.home.layout.v1`) loads as
-  "Default", and the active preset is still mirrored there for older builds.
+  live in `ade.home.layouts.v2`, and the active preset is still mirrored to
+  `ade.home.layout.v1` for older builds (this build no longer reads it; a
+  store from before the presets gets the shipped stack like everyone else).
   `home.layout.next` (Mod+Shift+L, rebindable) cycles presets.
+- **The shipped stack (2026-10-15):** Projects with Working now stacked under
+  it, Pull requests (Compact) with Contributions under it and Clock & weather
+  beside them, three columns. `HOME_DEFAULT_STACK_VERSION` marks the store:
+  a store that has not seen the current version gets the shipped stack as its
+  "Default" preset, active, on the next launch, and the version is written then
+  — once, for every computer, whatever the user had (the layouts they saved
+  themselves stay in the switcher; everything is editable again from there).
+  Bump the version when the stack changes and every user should see it.
 - **Auto-layout, no scrolling, compact cards:** the user picks widgets, a
   size class for each (Compact, Regular, Large; each widget declares the
   shape of each class it offers, its content's minimum, ideal and maximum
