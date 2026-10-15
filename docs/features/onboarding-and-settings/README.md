@@ -2310,12 +2310,17 @@ not carry the install command.
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance sends each new chat to
-  the account whose weekly room resets soonest, so room is used before it
-  resets. A running chat stays on its account; one that hits a usage limit
-  moves to another account with room (with the switch off, the limit offers
-  that move instead). Auto-start sends one tiny request on the cheapest model
-  when a window ends, each logged with its cost. Both read and write
+  and one line saying where new chats go. Smart balance normally sends new
+  chats to the account whose weekly room resets soonest, so room is used before
+  it resets. When another usable account has at least 30 percentage points
+  more five-hour headroom, Claude routes two consecutive new chats to the
+  weekly-first account, then one to the account with the most five-hour room.
+  This rotation ends when the gap reaches 15 points. **Next chat** previews
+  the next slot. Codex remains weekly-first. A
+  running chat stays on its account; one that hits a usage limit moves to
+  another account with room (with the switch off, the limit offers that move
+  instead). Auto-start sends one tiny request on the cheapest model when a
+  window ends, each logged with its cost. Both read and write
   `provider_instances` `getSettings`/`setSettings`.
 - **One card per account**, in a grid that fits as many 290px columns as the
   width allows, then evens them out over the rows (`balancedColumns`): two cards

@@ -49,16 +49,30 @@ brain scope is running, which is also the only time that tracker polls.
 Smart balance applies to Claude and Codex when it is enabled for that provider.
 New chats consider only signed-in instances, and an account whose stored login
 is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Weekly room left at the reset is lost, so the account whose
-weekly window resets soonest wins: it is spent first, and accounts that reset
-later keep their room for after it. An account with less than 25% of its
-five-hour window left, and more than an hour until that window resets, ranks
-after every account without that limit. An account with a weekly reading and no
-five-hour window is idle, so it counts as full five-hour room; an account with
-no weekly reading counts as a week from its reset. An account at or below its
+are not room. Weekly room left at the reset is lost, so the usable account whose
+weekly window resets soonest is the default choice: it is spent first, and
+accounts that reset later keep their room for after it. Claude adds a limited
+five-hour reserve rotation when another usable account has at least 30
+percentage points more five-hour headroom than that weekly-first choice: two
+consecutive new chats go to the weekly-first account, then the third goes to
+the account with the most five-hour room. The rotation stays active while the
+gap is above 15 points and ends at or below 15; after it ends, that pair must
+reach 30 points again to
+restart. A changed pair starts fresh at the 30-point threshold. The slot count
+resets to the weekly-first account when ADE's usage service restarts. The
+Settings **Next chat** mark previews the next slot without consuming it. Codex
+keeps weekly-first routing.
+
+An account with less than 25% of its five-hour window left, and more than an
+hour until that window resets, ranks after every account without that limit.
+An account with a weekly reading and no five-hour window is idle, so it counts
+as full five-hour room; an account with no weekly reading counts as a week from
+its reset in the weekly-first order, but can take a Claude reserve slot when its
+five-hour reading shows substantially more room. An account at or below its
 minimum five-hour or weekly headroom is out. A tie prefers the higher five-hour
-headroom, then the default. The usage-limit move to another account uses the
-same order. No usable readings fall back to the default, and
+headroom, then the default. The usage-limit move to another account keeps the
+weekly-first order and does not use the new-chat rotation. No usable readings
+fall back to the default, and
 `UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
 could not run. An explicit account selection always wins over balancing.
 

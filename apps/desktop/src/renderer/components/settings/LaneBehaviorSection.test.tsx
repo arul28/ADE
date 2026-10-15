@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ProjectConfigSnapshot } from "../../../shared/types";
 import { defaultEffectiveGitConfig } from "../../../shared/types/config";
@@ -90,11 +90,25 @@ function renderLaneBehaviorSection(snapshot: ProjectConfigSnapshot) {
     </MemoryRouter>,
   );
 
-  return projectConfig;
+  const initialRead = projectConfig.get.mock.results[0]?.value;
+  if (!initialRead) throw new Error("LaneBehaviorSection did not load project config");
+  return { projectConfig, initialRead };
 }
 
 const autoRebaseSwitch = () => screen.getByRole("switch", { name: "Auto-rebase child lanes" });
 const baseSourceOption = (name: RegExp) => screen.getByRole("radio", { name });
+async function waitForBaseSource(
+  initialRead: Promise<ProjectConfigSnapshot>,
+  source: "local" | "remote",
+) {
+  await act(async () => {
+    await initialRead;
+  });
+  await waitFor(() => {
+    expect(baseSourceOption(source === "local" ? /Local/ : /Remote/).getAttribute("aria-checked"))
+      .toBe("true");
+  });
+}
 
 afterEach(() => {
   cleanup();
@@ -103,13 +117,13 @@ afterEach(() => {
 
 describe("LaneBehaviorSection", () => {
   it("does not create a local base-source override when an unrelated setting changes", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       shared: { git: { newLaneBaseSource: "local" } },
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "local");
     fireEvent.click(autoRebaseSwitch());
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -119,12 +133,12 @@ describe("LaneBehaviorSection", () => {
   });
 
   it("preserves an existing local base-source override when an unrelated setting changes", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       local: { git: { autoRebaseOnHeadChange: false, newLaneBaseSource: "local" } },
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "local");
     fireEvent.click(autoRebaseSwitch());
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -135,13 +149,13 @@ describe("LaneBehaviorSection", () => {
   });
 
   it("writes a local base-source override as soon as the control changes", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       shared: { git: { newLaneBaseSource: "local" } },
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "local");
     fireEvent.click(baseSourceOption(/Remote/));
 
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
@@ -152,13 +166,13 @@ describe("LaneBehaviorSection", () => {
   });
 
   it("drops the override again when the control returns to the inherited value", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       shared: { git: { newLaneBaseSource: "local" } },
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: localBaseEffective(),
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "local");
     fireEvent.click(baseSourceOption(/Remote/));
     await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
 
@@ -172,11 +186,11 @@ describe("LaneBehaviorSection", () => {
   });
 
   it("pins rebase-noise settings only once they diverge from the shared config", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       local: { git: { autoRebaseOnHeadChange: false } },
     }));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "remote");
 
     // Toggling an unrelated setting must not pin the noise settings at their
     // default values — a stale local pin would shadow a later shared change.
@@ -192,12 +206,12 @@ describe("LaneBehaviorSection", () => {
   });
 
   it("reports a failed write instead of leaving the optimistic value showing", async () => {
-    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+    const { projectConfig, initialRead } = renderLaneBehaviorSection(makeSnapshot({
       local: { git: { autoRebaseOnHeadChange: false } },
     }));
     projectConfig.save.mockRejectedValueOnce(new Error("disk is full"));
 
-    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    await waitForBaseSource(initialRead, "remote");
     fireEvent.click(autoRebaseSwitch());
 
     expect(await screen.findByText("disk is full")).toBeTruthy();
