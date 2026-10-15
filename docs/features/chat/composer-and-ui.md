@@ -1700,27 +1700,28 @@ not end a call it never had control over. `handleHandoff` checks `asksToEnd`
 first and ends the call instead — which also decides the race, since either the
 hand-off or the user's own transcript may arrive first.
 
-**The bar.** `CodexVoiceBar` is a waveform, the state word, the timer, and two
-quiet round buttons (mute, end); the newest caption takes its own line beneath
-them. The waveform is the only thing that moves, so it carries the state — dim
-and still while connecting or muted, reactive to whoever is talking otherwise.
-Colour is the accent on the waveform and the state word only.
+**The bar.** `CodexVoiceBar` is the composer's **own top row** — a `voiceBar`
+slot on `ChatComposerShell`, drawn inside the glass above the input rather than
+as a second box above the composer. It is one line: a waveform, the newest
+caption taking the width, then the state word, the timer, and two quiet round
+buttons (mute, end). The waveform is the only thing that moves, so it carries
+the state — dim and still while connecting or muted, reactive to whoever is
+talking otherwise. Colour is the accent on the waveform and the state word only.
+
+The status reads Connecting, Listening, Speaking, Working or Muted. Captions and
+the working flag come from `chat.getCodexRealtimeState`, polled every 300 ms
+only while a session is live. Small talk that voice answers itself stays out of
+the thread.
 
 **The card.** A session that ends leaves a `system_notice` with
-`status: "voice_session"` and its numbers in `detail.voiceSession` (duration,
-requests, handoffs, whether the user asked it to end, and the transcript).
-`VoiceSessionCard` draws it: a head with the duration and what the call
-produced, the transcript underneath. `message` stays the one-line summary every
-other surface reads, so nothing has to parse it back apart.
-
-**Live UI.** While voice is live, `CodexVoiceBar` sits above the composer:
-a level meter from the real audio tracks, a status (Connecting, Listening,
-Speaking, Working on it, Muted), the newest caption, a timer, Mute, and End.
-Captions and the working flag come from `chat.getCodexRealtimeState`, polled
-every 300 ms only while a session is live. The chat gets one line when the
-session ends ("Voice conversation · 2:26 · 8 requests · 5 handed to the
-agent"); its detail holds the full transcript. Small talk that voice answers
-itself stays out of the thread.
+`status: "voice_session"`: a one-line `message` every surface reads ("Voice
+conversation · 2:26 · 8 requests · 5 handed to the agent"), the readable
+transcript in `detail`, and the numbers the card needs in a `voiceSession` field
+beside them. `VoiceSessionCard` draws that field as a `ChatCard` — a head with
+the duration and what the call produced, the transcript opening underneath.
+The numbers ride **beside** `detail` rather than inside it because iOS prints an
+object `detail` as pretty-printed JSON, which would have replaced the readable
+transcript on the phone with a blob.
 
 **Context and style.** At start, voice gets Codex's own startup context plus an
 ADE developer item: the chat, lane, worktree, and model, the rules above, the
