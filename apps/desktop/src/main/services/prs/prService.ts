@@ -5108,6 +5108,13 @@ export function createPrService({
         laneId: lane.id,
         prUrlOrNumber: preflight.githubUrl,
       });
+      // A lane imported from this PR carries one explicit, machine-local
+      // origin for its first agent chat. The chat service consumes it after a
+      // successful ordinary session create; later chats stay unlinked unless
+      // the user links them explicitly.
+      if (!chatLinks.rememberLanePrChatOrigin({ prId: pr.id, laneId: lane.id })) {
+        throw new Error(`Could not save PR #${preflight.githubPrNumber}'s chat origin for lane "${lane.name}".`);
+      }
       return { preflight, lane, pr };
     } catch (error) {
       if (!lane) throw error;
@@ -12624,6 +12631,17 @@ export function createPrService({
       });
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * Claim a lane's one-shot PR origin for a newly created chat. This is an
+     * internal service seam for agentChatService, not a renderer runtime action.
+     * `linked` means a new edge was inserted; only that case emits an update.
+     */
+    claimLanePrChatOrigin(args: { laneId: string; sessionId: string }) {
+      const linked = chatLinks.claimLanePrChatOrigin(args);
+      if (linked.status === "linked") emitPrsUpdated();
+      return linked;
     },
 
     unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {

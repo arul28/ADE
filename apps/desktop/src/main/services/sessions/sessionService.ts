@@ -443,6 +443,7 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
 }
 
 export type SettledChat = { sessionId: string; laneId: string; provider: string | null };
+type SettleCommitGuard = (sessionId: string) => boolean;
 
 export function createSessionService({
   db,
@@ -955,6 +956,9 @@ export function createSessionService({
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
     announce: ((chat: SettledChat) => void) | null = null,
+    commitGuard?: SettleCommitGuard,
+    commitGuardResult?: { rejected: boolean },
+    expectedLifecycleRevision?: number,
   ): string[] => {
     const ids = normalizeSessionIds(sessionIds);
     if (!ids.length) return [];
@@ -968,9 +972,12 @@ export function createSessionService({
       ids,
     );
     const newlySettled = settling.map((row) => row.id);
-    if (!newlySettled.length) return [];
+    if (!newlySettled.length) {
+      if (commitGuard && commitGuardResult) commitGuardResult.rejected = true;
+      return [];
+    }
     const hasOutcome = Object.prototype.hasOwnProperty.call(options, "outcome");
-    writeSettleLifecycle({
+    const writeSettle = () => writeSettleLifecycle({
       intent: {
         kind: "settle",
         settledAt: normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
@@ -985,6 +992,46 @@ export function createSessionService({
       guard: "(settled_at is null or settle_override is not null)",
       sessionIds: newlySettled,
     });
+    if (commitGuard) {
+      if (newlySettled.length !== 1) {
+        throw new Error("A guarded settle commit must name exactly one session.");
+      }
+      const savepoint = "session_settle_commit_guard";
+      db.run(`savepoint ${savepoint}`);
+      try {
+        if (!commitGuard(newlySettled[0])) {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+          if (commitGuardResult) commitGuardResult.rejected = true;
+          return [];
+        }
+        // The commit guard's write acquires SQLite's write lock. Re-read the
+        // shared lifecycle revision while that lock is held so a sibling
+        // process's activity or reopen between teardown and this transaction
+        // cannot be overwritten by this settle.
+        if (
+          expectedLifecycleRevision !== undefined
+          && settleLifecycle.readRevision(newlySettled[0]) !== expectedLifecycleRevision
+        ) {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+          if (commitGuardResult) commitGuardResult.rejected = true;
+          return [];
+        }
+        writeSettle();
+        db.run(`release savepoint ${savepoint}`);
+      } catch (error) {
+        try {
+          db.run(`rollback to savepoint ${savepoint}`);
+          db.run(`release savepoint ${savepoint}`);
+        } catch {
+          // Preserve the original guard or lifecycle write error.
+        }
+        throw error;
+      }
+    } else {
+      writeSettle();
+    }
     for (const id of newlySettled) {
       emitChanged({ sessionId: id, reason: "meta-updated" });
     }
@@ -1051,6 +1098,7 @@ export function createSessionService({
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
     /** Null for subagents that follow a settled parent; see `onChatSettled`. */
     announce: ((chat: SettledChat) => void) | null = onChatSettled ?? null,
+    commitGuard?: SettleCommitGuard,
   ): Promise<SettleSessionsOutcome> => {
     const ids = normalizeSessionIds(sessionIds);
     const settled: string[] = [];
@@ -1133,8 +1181,19 @@ export function createSessionService({
           return outcome;
         }
 
-        const changed = settleMany([id], options, announce);
+        const commitGuardResult = { rejected: false };
+        const changed = settleMany(
+          [id],
+          options,
+          announce,
+          commitGuard,
+          commitGuardResult,
+          commitGuard ? revisionBefore : undefined,
+        );
         outcome.settled.push(...changed);
+        if (commitGuardResult.rejected) {
+          outcome.aborted.push({ sessionId: id, reason: "lifecycle_changed" });
+        }
         if (changed.length && teardown?.confirmed && !teardown.residue.length) {
           // A settle that DID confirm everything must clear the previous
           // record, or the row keeps reporting "1 job could not be stopped"
@@ -2255,8 +2314,9 @@ export function createSessionService({
     async settleSessionsReportingAborts(
       sessionIds: string[],
       options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
+      commitGuard?: SettleCommitGuard,
     ): Promise<SettleSessionsOutcome> {
-      return await settleManyWithTeardown(sessionIds, options);
+      return await settleManyWithTeardown(sessionIds, options, onChatSettled ?? null, commitGuard);
     },
 
     /** Sessions currently mid-settle, for the visible `Settling…` state. */
@@ -2429,16 +2489,27 @@ export function createSessionService({
     },
 
     /**
-     * Clears the attention marker. When `expectedSource` is given the clear is
-     * conditional on the persisted source still matching — a newer request a
-     * different owner wrote in the meantime survives.
+     * Clears the attention marker. `expectedSource` fences the owner; the
+     * optional timestamp fence preserves a same-source request newer than the
+     * event asking for the clear.
      */
-    clearAttentionRequest(sessionId: string, expectedSource?: SessionAttentionSource): boolean {
+    clearAttentionRequest(
+      sessionId: string,
+      expectedSource?: SessionAttentionSource,
+      notNewerThan?: string,
+    ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
+        const timestampFence = notNewerThan ? normalizeIsoTimestamp(notNewerThan) : null;
+        // A timestamp fence is meaningful only with an ownership fence. Do not
+        // let an invalid or unowned conditional clear degrade to an unguarded
+        // delete.
+        if (notNewerThan && (!expectedSource || !timestampFence)) return;
         if (expectedSource) {
           db.run(
-            "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
-            [id, expectedSource],
+            timestampFence
+              ? "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ? and attention_requested_at <= ?"
+              : "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
+            timestampFence ? [id, expectedSource, timestampFence] : [id, expectedSource],
           );
           return;
         }

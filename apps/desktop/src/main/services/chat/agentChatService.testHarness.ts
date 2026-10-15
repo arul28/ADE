@@ -1637,6 +1637,16 @@ function createMockSessionService() {
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    clearAttentionRequest: vi.fn((sessionId: string, expectedSource?: string, notAfter?: string) => {
+      const row = sessions.get(sessionId);
+      if (!row) return false;
+      if (expectedSource && row.attentionSource !== expectedSource) return true;
+      if (notAfter && (!expectedSource || !row.attentionRequestedAt || Date.parse(row.attentionRequestedAt) > Date.parse(notAfter))) return true;
+      row.attentionRequestedAt = null;
+      row.attentionMessage = null;
+      row.attentionSource = null;
+      return true;
+    }),
     clearTurnStartMarkers: vi.fn(),
     clearSessionActivity: vi.fn(),
     setDetectedSessionActivity: vi.fn((sessionId: string) => Boolean(sessions.get(sessionId))),

@@ -4747,6 +4747,7 @@ app.whenReady().then(async () => {
     });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,

@@ -774,3 +774,29 @@ Spotify's service sets when Spotify accepts the play, not when audio starts.
   at most 46 reads and 6 pushes per ten minutes.
 - Windows (WebView2, Widevine) is measured separately; see the Windows numbers
   in the PR.
+
+### Focus attention inference (2026-10-15)
+
+Service measurement on the baseline MacBook Pro, Node 22.23.2: four representative
+reply endings, 20,000 classifications per round, six interleaved warm rounds.
+Baseline source: `c01b80fd2`; candidate: the Focus lifecycle fix. This measures
+local classification only, excluding the optional model request.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Reply-ending classification, median per call | 0.00131 ms | 0.00136 ms | Existing 25% regression rule |
+
+Warm service polling was measured separately with the same baseline and
+candidate (`1d3b6389e`, plus query type annotations): 1,000 already-handled PRs,
+no pending origins, an in-memory native SQLite database, 100 polls per round,
+eight interleaved rounds with the first two discarded.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Handled PR snapshot, median per poll | 1.31 ms | 1.40 ms | Existing 25% regression rule |
+
+The polling increase is about 7%, within the budget. The classification
+difference is within measurement noise. The reported optional offer is
+now decided locally, so that case does not make a model request. These service
+numbers do not establish Electron idle, GPU, typing, or memory performance;
+those desktop scenarios were not measured for this change.
