@@ -131,6 +131,11 @@ describe("createAgentChatService", () => {
           return;
         }
         // Begin: SDK status flips to "compacting" before the boundary lands.
+        // Claude repeats this status every ~30s while one compaction runs; a
+        // repeat is the same compaction and must not open a second row (the
+        // divider's elapsed clock is the timestamp of the row's newest
+        // "started").
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         // End: the compact boundary marks completion with the real trigger/tokens.
         yield {
