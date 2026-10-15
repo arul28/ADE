@@ -373,8 +373,13 @@ export async function clearProviderKey(
   } catch (err) {
     const error = errorMessage(err);
     deps.logger.warn("opencode.provider_key_delete_failed", { providerId, error });
-    forgotten.undo();
-    return { ok: false, error: `ADE could not delete its stored key: ${error}` };
+    const restored = forgotten.undo();
+    return {
+      ok: false,
+      error: restored
+        ? `ADE could not delete its stored key: ${error}`
+        : `ADE could not delete its stored key (${error}), and the ${providerId} cloud logins could not be put back in your ADE account. Disconnect again to finish.`,
+    };
   }
   clearOpenCodeInventoryCache();
   // Routes into other harnesses copied this sign-in's token into ADE's proxy

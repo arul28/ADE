@@ -133,9 +133,9 @@ export function credentialCloudKey(credential: OpenCodeCredentialSummary): strin
 export function forgetSyncedCloudLoginsFor(
   deps: OpenCodeAuthDeps,
   providerId: string,
-): { ok: false } | { ok: true; undo: () => void } {
+): { ok: false } | { ok: true; undo: () => boolean } {
   const synced = readSyncedCloudLogins(deps);
-  if (!synced?.some((login) => login.providerId === providerId)) return { ok: true, undo: () => {} };
+  if (!synced?.some((login) => login.providerId === providerId)) return { ok: true, undo: () => true };
   const remaining = synced.filter((login) => login.providerId !== providerId);
   if (!writeSyncedCloudLogins(deps, remaining)) return { ok: false };
   writeAppliedKeys(remaining.map(cloudLoginKey), deps);
@@ -143,8 +143,12 @@ export function forgetSyncedCloudLoginsFor(
     ok: true,
     // Puts the list back as it was: names and answers only, never a secret.
     undo: () => {
-      if (writeSyncedCloudLogins(deps, synced)) writeAppliedKeys(synced.map(cloudLoginKey), deps);
-      else deps.logger.warn("opencode.cloud_logins_restore_failed", { providerId });
+      if (!writeSyncedCloudLogins(deps, synced)) {
+        deps.logger.warn("opencode.cloud_logins_restore_failed", { providerId });
+        return false;
+      }
+      writeAppliedKeys(synced.map(cloudLoginKey), deps);
+      return true;
     },
   };
 }
