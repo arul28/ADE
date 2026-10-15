@@ -1199,19 +1199,26 @@ describe("explicit provider-thread continuity recovery", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-stale", slash_commands: [] };
           return;
         }
+        // The first turn writes the thread; it goes stale after.
+        if (streamCall === 2) {
+          yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
         if (streamError) throw new Error(streamError);
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })()),
       close: vi.fn(),
       sessionId: "sdk-stale",
-      setPermissionMode: permissionModeError
-        ? vi.fn().mockRejectedValue(new Error(permissionModeError))
-        : vi.fn().mockResolvedValue(undefined),
+      // Stale only once the first turn has written the thread.
+      setPermissionMode: vi.fn(async () => {
+        if (permissionModeError && streamCall >= 2) throw new Error(permissionModeError);
+      }),
     };
     vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
     vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
     const { service } = createService();
     const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+    await service.runSessionTurn({ sessionId: session.id, text: "Start the Claude task." });
     await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
     const originalSdkSessionId = readPersistedChatState(session.id).sdkSessionId as string;
 
