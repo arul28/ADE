@@ -289,6 +289,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
@@ -5568,6 +5571,49 @@ const adeBridge = {
         () =>
           callPinnedOrBoundRuntimeActionOr(pin, "ai", "clearOpencodeProviderKey", { args }, () =>
             ipcRenderer.invoke(IPC.aiClearOpencodeProviderKey, args),
+          ),
+      ),
+    opencodeAccounts: async (
+      args: { providerId?: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<OpenCodeAccountsResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAccounts", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeAccounts, args),
+      ),
+    // Every account change can change which provider reads as signed in, so
+    // the cached AI status goes with it.
+    opencodeAccountActivate: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<OpenCodeAccountActionResult> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAccountActivate", { args }, () =>
+            ipcRenderer.invoke(IPC.aiOpencodeAccountActivate, args),
+          ),
+      ),
+    opencodeAccountRename: async (
+      args: { id: string; label: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<OpenCodeAccountActionResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAccountRename", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeAccountRename, args),
+      ),
+    opencodeAccountRemove: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<OpenCodeAccountActionResult> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAccountRemove", { args }, () =>
+            ipcRenderer.invoke(IPC.aiOpencodeAccountRemove, args),
+          ),
+      ),
+    opencodeCloudConnect: async (
+      args: { providerId: string; methodIndex: number; inputs?: Record<string, string>; label?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<OpenCodeCloudConnectResult> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeCloudConnect", { args }, () =>
+            ipcRenderer.invoke(IPC.aiOpencodeCloudConnect, args),
           ),
       ),
     listHarnessRoutes: (pin?: OpenProjectBinding | null): Promise<HarnessRouteCatalog> =>

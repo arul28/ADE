@@ -685,6 +685,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -878,6 +881,13 @@ import {
   startOAuth as startOpenCodeOAuth,
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
+import {
+  activateOpenCodeAccount,
+  connectOpenCodeCloudLogin,
+  listOpenCodeAccounts,
+  removeOpenCodeAccount,
+  renameOpenCodeAccount,
+} from "../opencode/openCodeAccounts";
 import {
   addPiAuthStatusListener,
   cancelPiLogin,
@@ -5796,6 +5806,36 @@ export function registerIpc({
       }
       return result;
     },
+  );
+
+  // OpenCode accounts. This path runs only without a brain, so there is no
+  // account store and cloud logins stay on this computer.
+  ipcMain.handle(
+    IPC.aiOpencodeAccounts,
+    async (_event, arg?: { providerId?: string | null }): Promise<OpenCodeAccountsResult> =>
+      await listOpenCodeAccounts(buildOpenCodeAuthDeps(), { providerId: arg?.providerId ?? null }),
+  );
+  ipcMain.handle(
+    IPC.aiOpencodeAccountActivate,
+    async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
+      await activateOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
+  );
+  ipcMain.handle(
+    IPC.aiOpencodeAccountRename,
+    async (_event, arg: { id: string; label: string }): Promise<OpenCodeAccountActionResult> =>
+      await renameOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
+  );
+  ipcMain.handle(
+    IPC.aiOpencodeAccountRemove,
+    async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
+      await removeOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
+  );
+  ipcMain.handle(
+    IPC.aiOpencodeCloudConnect,
+    async (
+      _event,
+      arg: { providerId: string; methodIndex: number; inputs?: Record<string, string>; label?: string },
+    ): Promise<OpenCodeCloudConnectResult> => await connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), arg),
   );
 
   // Broadcast Pi sign-in transitions to all renderer windows. The relay/web

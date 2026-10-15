@@ -1612,7 +1612,19 @@ function coerceAiCustomProviders(value: unknown): AiConfig["customProviders"] {
         ? npmRaw
         : undefined;
     const name = asString(entry.name)?.trim();
-    return [{ id, name: name || id, baseURL, ...(npm ? { npm } : {}), models }];
+    const encoding: AiCustomProviderConfig["encoding"] =
+      entry.encoding === "gzip" || entry.encoding === "zstd" ? entry.encoding : undefined;
+    const cacheFormat: AiCustomProviderConfig["cacheFormat"] =
+      entry.cacheFormat === "anthropic" || entry.cacheFormat === "alibaba" ? entry.cacheFormat : undefined;
+    return [{
+      id,
+      name: name || id,
+      baseURL,
+      ...(npm ? { npm } : {}),
+      models,
+      ...(encoding ? { encoding } : {}),
+      ...(cacheFormat ? { cacheFormat } : {}),
+    }];
   });
   return out.length ? out : undefined;
 }

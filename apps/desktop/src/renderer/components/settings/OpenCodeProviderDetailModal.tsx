@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
-import { CheckCircle, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, CloudCheck, XCircle } from "@phosphor-icons/react";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
 import { openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
@@ -7,6 +7,12 @@ import { COLORS, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDe
 import { OAuthConnectModal } from "./OAuthConnectModal";
 import { ProviderDetailDialog } from "./providerSectionPrimitives";
 import { Banner } from "../ui/notice/Banner";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
+import {
+  OpenCodeAccountsSection,
+  OpenCodeAddAccountDialog,
+  useOpenCodeAccounts,
+} from "./providers/opencode/OpenCodeAccounts";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -104,6 +110,17 @@ export function OpenCodeProviderDetailModal({
     () => signInTarget.methods.filter((m) => m.type === "oauth"),
     [signInTarget.methods],
   );
+  const cloudMethods = useMemo(
+    () => signInTarget.methods.filter((m) => m.type === "cloud"),
+    [signInTarget.methods],
+  );
+  // Logins live on the machine this Settings page is showing.
+  const { pin, machineName } = useSettingsMachineScope();
+  // A machine whose ADE predates accounts cannot list them; the dialog then
+  // keeps its plain sign-in, which still works there.
+  const accountsState = useOpenCodeAccounts(signInTarget.providerId, pin);
+  const accounts = accountsState.accounts;
+  const [addingAccount, setAddingAccount] = useState(false);
   const credentialEnvVars = provider.envVars?.length
     ? provider.envVars
     : provider.envVar
@@ -121,7 +138,7 @@ export function OpenCodeProviderDetailModal({
   const externallyManaged = keySource === "env" || keySource === "config";
   // A provider signed in through another one is disconnected there, not here.
   const canDisconnect = !externallyManaged && ((!signInVia && provider.connected) || keySource === "store");
-  const showOauthSection = oauthMethods.length > 0 || (provider.connected && !provider.hasKey);
+  const showOauthSection = oauthMethods.length > 0 || cloudMethods.length > 0 || (provider.connected && !provider.hasKey);
   // A provider with free models is usable before any sign-in. With a sign-in
   // on offer, "Connected via OpenCode" is claimed only for a real login or key.
   // Through another provider's sign-in, this provider's own models are the proof.
@@ -133,7 +150,7 @@ export function OpenCodeProviderDetailModal({
   // The sign-in dialog runs against the target it opened with: a refresh that
   // changes `signInVia` mid-flow must not retarget it, which would cancel the
   // running sign-in and filter out its "connected" event.
-  const [oauthTarget, setOauthTarget] = useState<OpenCodeSignInVia | null>(null);
+  const [oauthTarget, setOauthTarget] = useState<(OpenCodeSignInVia & { methodIndex?: number }) | null>(null);
   const openOauth = () => setOauthTarget(signInTarget);
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState("");
@@ -206,14 +223,45 @@ export function OpenCodeProviderDetailModal({
                 />
               ) : null}
 
-              {showOauthSection ? (
+              {accounts.length > 0 ? (
+                <OpenCodeAccountsSection
+                  providerId={signInTarget.providerId}
+                  providerName={signInTarget.providerName}
+                  machineName={machineName}
+                  pin={pin}
+                  accounts={accounts}
+                  loading={accountsState.loading}
+                  error={accountsState.error}
+                  reload={accountsState.reload}
+                  onAddAccount={() => setAddingAccount(true)}
+                  onChanged={onConnected}
+                />
+              ) : null}
+
+              {accounts.length > 0 && canDisconnect ? (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -8 }}>
+                  <button
+                    type="button"
+                    className="kit-btn kit-btn-ghost"
+                    data-size="sm"
+                    data-tone="crit"
+                    disabled={busy}
+                    onClick={() => void remove()}
+                    aria-label={`Disconnect ${provider.name}`}
+                  >
+                    Sign out of all
+                  </button>
+                </div>
+              ) : null}
+
+              {showOauthSection && accounts.length === 0 ? (
                 <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={sectionLabelStyle}>Subscription / OAuth</div>
-                  {oauthMethods.length > 0 ? (
+                  <div style={sectionLabelStyle}>{oauthMethods.length > 0 ? "Subscription / OAuth" : "Sign in"}</div>
+                  {oauthMethods.length > 0 || cloudMethods.length > 0 ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                       {signInVia
                         ? `${provider.name} comes with your opencode.ai account. Sign in with it, as \`opencode auth login opencode\` does.`
-                        : oauthMethods.map((m) => m.label).join(" · ")}
+                        : [...oauthMethods, ...cloudMethods].map((m) => m.label).join(" · ")}
                     </div>
                   ) : provider.connected ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -257,16 +305,31 @@ export function OpenCodeProviderDetailModal({
                         ) : null}
                       </div>
                     </div>
-                  ) : oauthMethods.length > 0 ? (
-                    <button
-                      type="button"
-                      style={primaryButton()}
-                      disabled={busy}
-                      onClick={openOauth}
-                      aria-label={`Sign in to ${provider.name}`}
-                    >
-                      Sign in
-                    </button>
+                  ) : oauthMethods.length > 0 || cloudMethods.length > 0 ? (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {oauthMethods.length > 0 ? (
+                        <button
+                          type="button"
+                          style={primaryButton()}
+                          disabled={busy}
+                          onClick={openOauth}
+                          aria-label={`Sign in to ${provider.name}`}
+                        >
+                          Sign in
+                        </button>
+                      ) : null}
+                      {cloudMethods.length > 0 ? (
+                        <button
+                          type="button"
+                          className="kit-btn"
+                          disabled={busy}
+                          onClick={() => setAddingAccount(true)}
+                          aria-label={`Use a cloud login for ${provider.name}`}
+                        >
+                          <CloudCheck size={13} /> Use a cloud login
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </section>
               ) : null}
@@ -274,6 +337,11 @@ export function OpenCodeProviderDetailModal({
               {supportsApi ? (
                 <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={sectionLabelStyle}>API key</div>
+                  {accounts.length > 0 && provider.hasKey ? (
+                    <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                      Not used while {machineName} has an account above. Signing out of all of them falls back to this key.
+                    </div>
+                  ) : null}
                   {signInVia ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                       Optional. The sign-in above is enough; a key is only for a setup without it.
@@ -388,9 +456,30 @@ export function OpenCodeProviderDetailModal({
           providerId={oauthTarget.providerId}
           providerName={oauthTarget.providerName}
           methods={oauthTarget.methods}
+          initialMethodIndex={oauthTarget.methodIndex}
           onClose={() => setOauthTarget(null)}
           onConnected={() => {
             setOauthTarget(null);
+            void accountsState.reload();
+            onConnected();
+          }}
+        />
+      ) : null}
+
+      {addingAccount ? (
+        <OpenCodeAddAccountDialog
+          providerId={signInTarget.providerId}
+          providerName={signInTarget.providerName}
+          methods={signInTarget.methods}
+          pin={pin}
+          onClose={() => setAddingAccount(false)}
+          onStartOAuth={(methodIndex) => {
+            setAddingAccount(false);
+            setOauthTarget({ ...signInTarget, methodIndex });
+          }}
+          onAdded={() => {
+            setAddingAccount(false);
+            void accountsState.reload();
             onConnected();
           }}
         />

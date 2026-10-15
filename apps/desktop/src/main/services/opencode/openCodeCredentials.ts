@@ -8,20 +8,55 @@ import { OPENCODE_HOUSE_PROVIDER_IDS, openCodeSignInViaProvider } from "../../..
  * Non-secret facts about the credentials in an OpenCode 2.0 store.
  *
  * 2.0 keeps logins and saved keys in the `credential` table instead of
- * `auth.json`. `value` is JSON holding the secret itself, so only `type` and
- * `metadata.accountID` are extracted, inside SQLite: token fields never reach
- * this process.
+ * `auth.json`. `value` is JSON holding the secret itself, so only `type`,
+ * `metadata.accountID`, and an external (cloud) login's metadata are
+ * extracted, inside SQLite: token fields never reach this process. An
+ * external login holds no secret at all; its metadata is the answers it was
+ * set up with (a project, a location, an AWS profile name).
  */
 export type OpenCodeCredentialSummary = {
   id: string;
   integrationId: string;
   label: string;
   methodId: string | null;
-  type: "key" | "oauth" | null;
+  type: "key" | "oauth" | "external" | null;
   accountId: string | null;
+  /** An external login's string metadata; empty for every other type. */
+  externalDetails: Record<string, string>;
   active: boolean;
   updatedAt: number;
 };
+
+function externalDetailsFrom(raw: unknown): Record<string, string> {
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) out[key] = value.trim();
+      else if (typeof value === "number" && Number.isFinite(value)) out[key] = String(value);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let credentialsGeneration = 0;
+
+/**
+ * Bumped whenever ADE changes which credential OpenCode uses (a switch, a
+ * sign-in, a removal), so caches of "who pays" drop their copy at once
+ * instead of naming the previous account for minutes.
+ */
+export function bumpOpenCodeCredentialsGeneration(): void {
+  credentialsGeneration += 1;
+}
+
+export function openCodeCredentialsGeneration(): number {
+  return credentialsGeneration;
+}
 
 /** `opencode.db` of ADE's owned store, the one every ADE-managed server writes. */
 export function resolveAdeOpenCodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -71,7 +106,9 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
              active AS active,
              time_updated AS updatedAt,
              json_extract(value, '$.type') AS type,
-             json_extract(value, '$.metadata.accountID') AS accountId
+             json_extract(value, '$.metadata.accountID') AS accountId,
+             CASE WHEN json_extract(value, '$.type') = 'external'
+                  THEN json_extract(value, '$.metadata') END AS externalMetadata
         FROM credential
        ORDER BY (active = 1) DESC, time_updated DESC
     `).all() as Array<Record<string, unknown>>;
@@ -80,7 +117,7 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
       const id = textOrNull(row.id);
       const integrationId = textOrNull(row.integrationId);
       if (!id || !integrationId) continue;
-      const type = row.type === "key" || row.type === "oauth" ? row.type : null;
+      const type = row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null;
       out.push({
         id,
         integrationId,
@@ -88,6 +125,7 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
         methodId: textOrNull(row.methodId),
         type,
         accountId: textOrNull(row.accountId),
+        externalDetails: type === "external" ? externalDetailsFrom(row.externalMetadata) : {},
         active: row.active === 1 || row.active === 1n,
         updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : Number(row.updatedAt ?? 0) || 0,
       });

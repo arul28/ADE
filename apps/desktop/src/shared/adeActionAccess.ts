@@ -206,7 +206,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   ai: {
     read: [
       "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "listApiCredentials",
-      "getApiCredential", "listApiKeys", "opencodeAuthMethods", "listHarnessRoutes",
+      "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
       "getCursorCloudAgent", "listCursorCloudArtifacts", "getCursorCloudFleet",
@@ -217,7 +217,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
-      "clearOpencodeProviderKey", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",
+      "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
+      "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",
       "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout",
       "cursorAuthCancel", "createCursorCloudRun", "archiveCursorCloudAgent",
       "unarchiveCursorCloudAgent", "deleteCursorCloudAgent", "downloadCursorCloudArtifact",

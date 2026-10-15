@@ -81,6 +81,9 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
+  OpenCodeAccountActionResult,
+  OpenCodeAccountsResult,
+  OpenCodeCloudConnectResult,
   PiAuthStatusEvent,
   PiLoginProvider,
   CursorSdkAuthEvent,
@@ -684,6 +687,36 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         "ai.clearOpencodeProviderKey",
         args,
         { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccounts: (args: unknown) =>
+      call<OpenCodeAccountsResult>("ai.opencodeAccounts", args, { accounts: [] }),
+    opencodeAccountActivate: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountActivate",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccountRename: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountRename",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeAccountRemove: (args: unknown) =>
+      call<OpenCodeAccountActionResult>(
+        "ai.opencodeAccountRemove",
+        args,
+        { ok: false, error: "OpenCode accounts are unavailable in the web client while offline" },
+        false,
+      ),
+    opencodeCloudConnect: (args: unknown) =>
+      call<OpenCodeCloudConnectResult>(
+        "ai.opencodeCloudConnect",
+        args,
+        { ok: false, error: "OpenCode cloud logins are unavailable in the web client while offline" },
         false,
       ),
     refreshModelsDev: () =>

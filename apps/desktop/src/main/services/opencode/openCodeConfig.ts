@@ -70,6 +70,8 @@ export type OpenCodeProviderBlock = {
   name?: string;
   package?: string;
   settings?: Record<string, unknown>;
+  /** Wire quirks of the endpoint (2.0.28+), such as which prompt-cache markers it takes. */
+  compatibility?: Record<string, unknown>;
   models?: Record<string, OpenCodeModelBlock>;
 };
 
@@ -378,7 +380,15 @@ function addCustomProviders(
       ...existing,
       package: aiSdkPackage(entry.npm),
       name: trimToUndefined(entry.name) ?? id,
-      settings: { ...existing?.settings, baseURL, ...(apiKey ? { apiKey } : {}) },
+      settings: {
+        ...existing?.settings,
+        baseURL,
+        ...(apiKey ? { apiKey } : {}),
+        ...(entry.encoding ? { encoding: entry.encoding } : {}),
+      },
+      ...(entry.cacheFormat
+        ? { compatibility: { ...existing?.compatibility, cacheFormat: entry.cacheFormat } }
+        : {}),
       models: {
         ...existing?.models,
         ...Object.fromEntries(models.map((modelId) => [modelId, {}])),

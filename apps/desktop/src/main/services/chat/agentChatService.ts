@@ -359,6 +359,7 @@ import {
 } from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
+  openCodeTurnCostUsd,
   resolveOpenCodeServedModel,
 } from "./openCodeTurnUsage";
 import {
@@ -1141,6 +1142,7 @@ import {
   openCodeChildBlocked,
   openCodeChildSettled,
   openCodeChildStarted,
+  takeUnbilledOpenCodeChildCost,
   rememberOpenCodeSubagentCall,
   type OpenCodeChildSessions,
   type OpenCodePermissionAsk,
@@ -34298,10 +34300,15 @@ export function createAgentChatService(args: {
     void emitTurnDiffSummaryIfChanged(managed, turnId);
     markSessionIdleWithFreshCache(managed);
 
+    // Every ending bills what it spent, subagents included: a failed or
+    // stopped turn still paid for the steps it ran.
+    const doneUsage = buildOpenCodeDoneUsage(turn.mapper.usage, runtime.modelDescriptor.contextWindow);
+    const turnCostUsd = openCodeTurnCostUsd(doneUsage, takeUnbilledOpenCodeChildCost(runtime));
+    const doneCost = turnCostUsd !== undefined ? { costUsd: turnCostUsd, costSource: "provider" as const } : {};
+
     if (outcome.status === "completed") {
       persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey);
       emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-      const doneUsage = buildOpenCodeDoneUsage(turn.mapper.usage, runtime.modelDescriptor.contextWindow);
       const served = turn.mapper.servedModel();
       const servedModel = resolveOpenCodeServedModel(turn.requestedModel, served);
       emitChatEvent(managed, {
@@ -34311,7 +34318,7 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         ...(doneUsage ? { usage: doneUsage.usage } : {}),
-        ...(doneUsage?.costSource ? { costUsd: doneUsage.costUsd, costSource: doneUsage.costSource } : {}),
+        ...doneCost,
         ...(servedModel ? { servedModel } : {}),
         account: turnUsageAccounts.openCode(managed, served?.providerID || turn.requestedModel.providerID),
       });
@@ -34340,6 +34347,8 @@ export function createAgentChatService(args: {
         status: "interrupted",
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(doneUsage ? { usage: doneUsage.usage } : {}),
+        ...doneCost,
       });
     } else {
       const { message, errorInfo } = classifyOpenCodeError(
@@ -34355,6 +34364,8 @@ export function createAgentChatService(args: {
         status: "failed",
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(doneUsage ? { usage: doneUsage.usage } : {}),
+        ...doneCost,
       });
       appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
     }

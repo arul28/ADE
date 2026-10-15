@@ -16,6 +16,13 @@ import {
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
 import {
+  activateOpenCodeAccount,
+  connectOpenCodeCloudLogin,
+  listOpenCodeAccounts,
+  removeOpenCodeAccount,
+  renameOpenCodeAccount,
+} from "../opencode/openCodeAccounts";
+import {
   addPiAuthStatusListener,
   cancelPiLogin,
   listPiLoginProviders,
@@ -2334,10 +2341,19 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     }
   };
+  const accountSettingsStore = runtime.accountSettingsStore;
   const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
     projectRoot: runtime.projectRoot,
     projectConfig: runtime.projectConfigService.getEffective(),
     logger: runtime.logger,
+    // Cloud logins are saved to the ADE account through the brain's store.
+    accountSettings: accountSettingsStore
+      ? {
+          isSignedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+          get: (scope, key) => accountSettingsStore.get(scope, key),
+          set: (scope, key, value) => accountSettingsStore.set(scope, key, value),
+        }
+      : null,
   });
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
@@ -2360,6 +2376,29 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     clearOpencodeProviderKey: (args?: { providerId?: string }) =>
       clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
         providerId: requireNonEmptyString(args?.providerId, "providerId"),
+      }),
+    opencodeAccounts: (args?: { providerId?: string | null }) =>
+      listOpenCodeAccounts(buildOpenCodeAuthDeps(), { providerId: args?.providerId ?? null }),
+    opencodeAccountActivate: (args?: { id?: string }) =>
+      activateOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+    opencodeAccountRename: (args?: { id?: string; label?: string }) =>
+      renameOpenCodeAccount(buildOpenCodeAuthDeps(), {
+        id: requireNonEmptyString(args?.id, "id"),
+        label: requireNonEmptyString(args?.label, "label"),
+      }),
+    opencodeAccountRemove: (args?: { id?: string }) =>
+      removeOpenCodeAccount(buildOpenCodeAuthDeps(), { id: requireNonEmptyString(args?.id, "id") }),
+    opencodeCloudConnect: (args?: {
+      providerId?: string;
+      methodIndex?: number;
+      inputs?: Record<string, string>;
+      label?: string;
+    }) =>
+      connectOpenCodeCloudLogin(buildOpenCodeAuthDeps(), {
+        providerId: requireNonEmptyString(args?.providerId, "providerId"),
+        methodIndex: typeof args?.methodIndex === "number" ? args.methodIndex : 0,
+        inputs: args?.inputs,
+        ...(typeof args?.label === "string" ? { label: args.label } : {}),
       }),
     // Diagnostics and the updater report on the CLIs installed on the machine
     // this runtime runs on. Exposed as actions so Settings can show (and

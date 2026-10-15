@@ -8,9 +8,11 @@ import { openCodeFormAnswer, openCodeFormPrompt, type OpenCodeFormAnswer } from 
 /**
  * OpenCode 2.0 integrations in the auth-method shape ADE's settings already
  * render: an OAuth method becomes `oauth` with prompts from its form, a key
- * method becomes `api`. Environment and command methods have no ADE flow and
- * are left out. The renderer addresses a method by its index in this list, so
- * the mapping is deterministic for a given integration.
+ * method becomes `api`, and an external method (a login the machine already
+ * has: gcloud, an AWS profile) becomes `cloud`. Environment and command
+ * methods have no ADE flow and are left out. The renderer addresses a method
+ * by its index in this list, so the mapping is deterministic for a given
+ * integration.
  */
 
 export type OpenCodeIntegrationInfo = Awaited<ReturnType<OpenCodeClient["integration"]["list"]>>["data"][number];
@@ -24,12 +26,15 @@ export type MappedOpenCodeAuthMethod = {
 export function mapOpenCodeIntegrationAuthMethods(integration: OpenCodeIntegrationInfo): MappedOpenCodeAuthMethod[] {
   const out: MappedOpenCodeAuthMethod[] = [];
   for (const source of integration.methods) {
-    if (source.type === "oauth") {
+    if (source.type === "oauth" || source.type === "external") {
       const prompts = (source.form ?? []).flatMap((field) => {
         const prompt = openCodeFormPrompt(field);
         return prompt ? [prompt] : [];
       });
-      out.push({ source, method: { type: "oauth", label: source.label, ...(prompts.length ? { prompts } : {}) } });
+      const method: OpenCodeProviderAuthMethod = source.type === "oauth"
+        ? { type: "oauth", label: source.label }
+        : { type: "cloud", label: source.label, methodId: source.id };
+      out.push({ source, method: { ...method, ...(prompts.length ? { prompts } : {}) } });
     } else if (source.type === "key") {
       out.push({ source, method: { type: "api", label: source.label?.trim() || "API key" } });
     }
@@ -37,14 +42,17 @@ export function mapOpenCodeIntegrationAuthMethods(integration: OpenCodeIntegrati
   return out;
 }
 
-/** Only integrations with a sign-in (OAuth) method are listed; key-only providers already have API-key rows. */
+/**
+ * Only integrations with a sign-in (OAuth or cloud login) are listed; key-only
+ * providers already have API-key rows.
+ */
 export function openCodeAuthMethodsFromIntegrations(
   integrations: readonly OpenCodeIntegrationInfo[],
 ): OpenCodeProviderAuthMethods {
   const methods: OpenCodeProviderAuthMethods = {};
   for (const integration of integrations) {
     const mapped = mapOpenCodeIntegrationAuthMethods(integration);
-    if (!mapped.some((entry) => entry.method.type === "oauth")) continue;
+    if (!mapped.some((entry) => entry.method.type !== "api")) continue;
     methods[integration.id] = mapped.map((entry) => entry.method);
   }
   return methods;
@@ -58,7 +66,7 @@ export function openCodeMethodFormAnswer(
   source: IntegrationMethod,
   inputs: Record<string, string> | undefined,
 ): OpenCodeFormAnswer | undefined {
-  if (!inputs || (source.type !== "oauth" && source.type !== "key")) return undefined;
+  if (!inputs || (source.type !== "oauth" && source.type !== "key" && source.type !== "external")) return undefined;
   const answer = openCodeFormAnswer(source.form ?? [], (key) => {
     const raw = inputs[key];
     return raw === undefined || raw === "" ? [] : [raw];

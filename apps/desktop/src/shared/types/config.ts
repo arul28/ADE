@@ -1560,15 +1560,61 @@ export interface OpenCodeProviderAuthPrompt {
   type: "text" | "select";
   key: string;
   message: string;
+  /** One line under the field, from OpenCode ("Found 2 projects in your gcloud configuration."). */
+  description?: string;
   placeholder?: string;
+  /** The value OpenCode proposes. */
+  defaultValue?: string;
+  /** A select's choices; for a text prompt, suggestions the field also accepts typing past. */
   options?: Array<{ label: string; value: string; hint?: string }>;
+  required?: boolean;
   when?: { key: string; op: "eq" | "neq"; value: string };
 }
 export interface OpenCodeProviderAuthMethod {
-  type: "oauth" | "api";
+  /**
+   * `cloud` signs in with a login the machine already has (gcloud, an AWS
+   * profile, the Azure CLI): OpenCode stores which one, never a token.
+   */
+  type: "oauth" | "api" | "cloud";
   label: string;
+  /** OpenCode's id for a cloud method (`google-adc`, `aws-profile`). */
+  methodId?: string;
   prompts?: OpenCodeProviderAuthPrompt[];
 }
+
+/**
+ * One OpenCode login for a provider, on one machine. OpenCode keeps several
+ * per provider and uses exactly one, `active`, for every chat on that machine.
+ * No secret is ever part of it.
+ */
+export type OpenCodeAccountKind = "subscription" | "api_key" | "cloud" | "unknown";
+export type OpenCodeAccount = {
+  id: string;
+  providerId: string;
+  label: string;
+  kind: OpenCodeAccountKind;
+  active: boolean;
+  updatedAt: number;
+  /** For a cloud login: what it points at, and whether this machine can use it. */
+  cloud?: OpenCodeCloudLoginInfo;
+};
+export type OpenCodeCloudLoginInfo = {
+  methodId: string;
+  /** The answers it was set up with (project, location, profile). Never secret. */
+  details: Record<string, string>;
+  readiness: OpenCodeCloudReadiness;
+  /** Saved to the ADE account, so every signed-in machine sets it up too. */
+  synced: boolean;
+};
+export type OpenCodeCloudReadiness =
+  | { state: "ready"; detail: string }
+  /** The login it points at is missing here; `command` puts it back. */
+  | { state: "needs_login"; detail: string; command: string }
+  /** ADE cannot check this kind of login. */
+  | { state: "unknown" };
+export type OpenCodeAccountsResult = { accounts: OpenCodeAccount[] };
+export type OpenCodeAccountActionResult = { ok: boolean; error?: string };
+export type OpenCodeCloudConnectResult = { ok: boolean; accountId?: string; error?: string };
 export type OpenCodeProviderAuthMethods = Record<string, OpenCodeProviderAuthMethod[]>;
 export interface OpenCodeOAuthStartResult {
   url: string;
@@ -1586,7 +1632,13 @@ export interface AiCustomProviderConfig {
   baseURL: string;
   npm?: "@ai-sdk/openai-compatible" | "@ai-sdk/openai" | "@ai-sdk/anthropic";
   models: string[];
+  /** Compress request bodies (OpenCode `settings.encoding`). Unset sends them plain. */
+  encoding?: AiCustomProviderEncoding;
+  /** Which prompt-cache markers the endpoint accepts (OpenCode `compatibility.cacheFormat`). Unset keeps OpenCode's default. */
+  cacheFormat?: AiCustomProviderCacheFormat;
 }
+export type AiCustomProviderEncoding = "gzip" | "zstd";
+export type AiCustomProviderCacheFormat = "anthropic" | "alibaba";
 
 /**
  * Renderer-facing state of the pinned agent-CLI cache. ADE fetches codex,
