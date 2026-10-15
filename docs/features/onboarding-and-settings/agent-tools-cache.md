@@ -269,7 +269,7 @@ construction rather than by convention.
 
 | Tool | Resolver | Order |
 |---|---|---|
-| `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` → detected auth → PATH / known dirs → bare `claude` |
+| `claude-code` | `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` → tools cache → bundled `node_modules` (packaged, else ADE's own install, resolved from the module and never the working directory) → the previous pinned version still in the cache (`previousCachedToolEntryPath`) → detected auth → PATH / known dirs → bare `claude` |
 | `codex` | `apps/desktop/src/main/services/ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH` → tools cache → bundled → detected auth → PATH / known dirs → standalone installer dirs → bare `codex` |
 | `opencode` | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | tools cache → bundled `node_modules` roots → user-installed PATH → `missing` |
 | `muse` | `apps/ade-cli/src/services/tools/muse.ts` (re-exported by `apps/desktop/src/main/services/ai/museExecutable.ts`) | `ADE_MUSE_EXECUTABLE` (dev runs only) → tools cache → `missing`. Never PATH: ADE runs only the pinned build. |
@@ -328,7 +328,15 @@ This was verified empirically with a partially-warm cache:
 |---|---|---|
 | `opencode` | cached | `tools-cache` |
 | `codex` | not cached | `bundled` |
-| `claude-code` | not cached | the developer's own PATH install |
+| `claude-code` | not cached | `bundled` (ADE's own `node_modules`) |
+
+Claude used to fall through to the developer's own `claude` here, because its
+bundled lookup accepted only a packaged copy. That ran whatever Claude Code
+version the machine had, and without ADE's plugins, which ADE delivers only to
+its own copies. After an ADE update, while the new pin downloads, Claude now
+runs the previous pinned version that `gcTools` keeps instead of the PATH one.
+A first install with nothing in the cache still falls back to the machine's
+`claude`, so chats work before the download lands.
 
 ## When the cache gets populated
 

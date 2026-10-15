@@ -1235,7 +1235,9 @@ describe("createAgentChatService", () => {
         relay: null,
         getAccountUserId: () => "user_create_preset",
       });
-      settings.set("all", "harnessPresets", [savedPreset]);
+      // A model Claude Code runs but ADE files under another provider.
+      const foreignModelPreset: HarnessPreset = { ...savedPreset, id: "hp_create_foreign", model: "deepseek-v4.1-flash" };
+      settings.set("all", "harnessPresets", [savedPreset, foreignModelPreset]);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -1245,6 +1247,16 @@ describe("createAgentChatService", () => {
 
       expect(session.provider).toBe("claude");
       expect(session.model).toBe("claude-opus-4-5");
+
+      // Naming the provider too (`--provider claude`) must not let Claude's
+      // default model fill in: the row named Opus while DeepSeek ran.
+      const withProvider = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        presetId: foreignModelPreset.id,
+      } as any);
+      expect(withProvider.model).toBe("deepseek-v4.1-flash");
+      expect(withProvider.modelId ?? null).not.toMatch(/claude/);
       service.forceDisposeAll();
     });
 

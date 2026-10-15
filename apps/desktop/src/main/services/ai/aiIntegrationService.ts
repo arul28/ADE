@@ -441,7 +441,8 @@ function detectClaudeAuthModeFromConnection(
 
 function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
   const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
-  return resolved.source === "bundled"
+  // A copy ADE fetched counts as ADE's own, like one it shipped.
+  return resolved.source === "bundled" || resolved.source === "tools-cache"
     ? { present: true, source: "bundled", path: resolved.path }
     : { present: false, source: "missing", path: null };
 }

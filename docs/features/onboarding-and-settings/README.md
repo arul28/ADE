@@ -2238,8 +2238,10 @@ file, so they have exactly one identity per machine.
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
   same file under `settings.<provider>` and default to off.
-- **Auto-compact.** Each provider page shows the compaction settings ADE can
-  apply for that harness (`CompactionSettings.tsx`); the provider-level values
+- **Compaction.** Each provider page shows the compaction settings ADE can
+  apply for that harness (`CompactionSettings.tsx`): **Compact at** (Auto by
+  default) and, for Claude, **Subagents compact at** and **After the cache
+  expires**. There is no on/off switch: every chat compacts when it fills; the provider-level values
   live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
   more than one account, the actions menu of each account card has an
   **Auto-compact** page ("Same as provider default" or Custom), stored as

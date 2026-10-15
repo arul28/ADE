@@ -1196,11 +1196,42 @@ describe("createAgentChatService", () => {
         expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
           .toHaveLength(1);
       });
-      expect(harness.events.find((entry) =>
-        entry.event.type === "context_compact"
-        && entry.event.trigger === "ade_fallback"
-        && entry.event.state === "started"
-      )?.event).toMatchObject({ compactionId: expect.any(String) });
+      // Asked for, not running: Claude has not said it is compacting.
+      expect(harness.events.some((entry) => entry.event.type === "context_compact" && entry.event.state === "started"))
+        .toBe(false);
+    });
+
+    it("says Compacting once Claude starts the compaction ADE asked for, and pairs it with the result", async () => {
+      const harness = await createClaudeCompactionFixture({
+        sdkSessionId: "sdk-fallback-compact-started",
+        first: [
+          {
+            type: "stream_event",
+            event: { type: "message_start", message: { id: "fallback-started", usage: { input_tokens: 970_000, output_tokens: 0 } } },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+        afterCompact: [
+          // Claude repeats its status while it works.
+          { type: "system", subtype: "status", status: "compacting" },
+          { type: "system", subtype: "status", status: "compacting" },
+          {
+            type: "system",
+            subtype: "compact_boundary",
+            compact_metadata: { trigger: "manual", pre_tokens: 970_000, post_tokens: 20_000 },
+          },
+          { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+      });
+
+      const compactions = () => harness.events.flatMap((entry) => entry.event.type === "context_compact" ? [entry.event] : []);
+      await vi.waitFor(() => {
+        expect(compactions().some((event) => event.state === "completed")).toBe(true);
+      }, { timeout: 5_000 });
+      const startedEvents = compactions().filter((event) => event.state === "started");
+      expect(startedEvents).toHaveLength(1);
+      expect(startedEvents[0]).toMatchObject({ trigger: "ade_fallback", compactionId: expect.any(String) });
+      expect(compactions().find((event) => event.state === "completed")?.compactionId).toBe(startedEvents[0]?.compactionId);
     });
 
     it("claims a compaction only after the SDK confirms the boundary", async () => {

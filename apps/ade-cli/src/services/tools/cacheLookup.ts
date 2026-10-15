@@ -1,5 +1,5 @@
 import { isToolError } from "./errors";
-import { type ToolResolution, type ToolsContext, resolveTool, tryResolveTool } from "./install";
+import { type ToolResolution, type ToolsContext, resolveTool, tryResolvePreviousTool, tryResolveTool } from "./install";
 
 /**
  * The one place the pinned tools cache is consulted by an executable resolver.
@@ -31,6 +31,20 @@ export function lookupCachedTool(name: string, context: ToolsContext = {}): Tool
 /** `entryPath` of a cached tool, or null. The shape most resolvers want. */
 export function cachedToolEntryPath(name: string, context: ToolsContext = {}): string | null {
   return lookupCachedTool(name, context)?.entryPath ?? null;
+}
+
+/**
+ * `entryPath` of the previous pinned version still on disk, or null. Only for
+ * when the current pin is not installed yet: an ADE update runs its previous
+ * copy while the new one downloads, instead of whatever is on the PATH.
+ */
+export function previousCachedToolEntryPath(name: string, context: ToolsContext = {}): string | null {
+  try {
+    return tryResolvePreviousTool(name, context)?.entryPath ?? null;
+  } catch (error) {
+    if (isToolError(error)) return null;
+    throw error;
+  }
 }
 
 /**

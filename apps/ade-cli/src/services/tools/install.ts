@@ -218,6 +218,42 @@ export function resolveTool(name: string, context: ToolsContext = {}): ToolResol
   };
 }
 
+/**
+ * The newest installed version of `name` other than the pinned one: the copy
+ * `gcTools` keeps after an update, so a machine still downloading the new pin
+ * has the previous one to run. Null when there is none. Never touches the
+ * network.
+ */
+export function tryResolvePreviousTool(name: string, context: ToolsContext = {}): ToolResolution | null {
+  const resolved = resolveContext(context);
+  const pinned = resolvePinned(findToolPin(resolved.manifest, name), resolved);
+  const packageDir = toolPackageDir(resolved.toolsRoot, pinned.packageName);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(packageDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let newest: (ToolResolution & { mtimeMs: number }) | null = null;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === pinned.version) continue;
+    const dir = path.join(packageDir, entry.name);
+    const entryPath = readInstalledEntry(dir, pinned.entryRelativePath);
+    if (!entryPath) continue;
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(dir).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (newest && newest.mtimeMs >= mtimeMs) continue;
+    newest = { name, packageName: pinned.packageName, version: entry.name, target: resolved.target, dir, entryPath, mtimeMs };
+  }
+  if (!newest) return null;
+  const { mtimeMs: _mtimeMs, ...resolution } = newest;
+  return resolution;
+}
+
 export function tryResolveTool(name: string, context: ToolsContext = {}): ToolResolution | null {
   try {
     return resolveTool(name, context);

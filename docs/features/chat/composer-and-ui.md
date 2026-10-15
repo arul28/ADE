@@ -1345,7 +1345,8 @@ chat pane mount, which happens either way.
   input is live; ADE already compacts Claude at 97% of `compactAtTokens` at a
   turn boundary.
 - **Compact first after the cache expires.** For a Claude chat whose prompt
-  cache has expired and whose last measured context is 100,000 tokens or more, a
+  cache has expired and whose last measured context is 200,000 tokens or more
+  (Claude Code's own idle-compaction floor), a
   `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
   one action, **Compact first**. The tooltip gives the trade: the next message
   re-sends all 412k tokens, or about 8k after compacting (the last `postTokens`
@@ -1366,10 +1367,20 @@ chat pane mount, which happens either way.
   unless it never appears in the chat within two minutes (if another chat is
   open by then, or a new draft fills the composer, a toast says so instead). The Claude provider setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
-  `never` (no chip). Only a send that carries `compactFirst: true` compacts
+  `never` (no chip). With `always`, ADE also does what Claude Code does by
+  itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
+  cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and
+  the compaction reads the chat at the cached price (`warmIdleCompactAtMs`,
+  `scheduleWarmIdleCompaction`). Claude's own timer cannot fire in ADE, which
+  closes an idle Claude process after five minutes. A turn cancels the timer, a
+  timer that fires more than a minute late (a machine that slept) is dropped,
+  and a chat it misses compacts on the next send as before. Claude's
+  `idleCompaction` setting is left alone. Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own
   `resume_return` question is pending, ADE does not also compact. Thresholds:
   `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
+  The brain sends the floor to every client on the session summary
+  (`compactFirstMinTokens`), so a client built with an older floor uses it.
   The idle clock starts at the cache's `since`, except that a `since` older than
   the start of the last finished turn (`lastFinishedTurnMs`) is from an earlier
   turn whose summary has not caught up, so that turn's end is used instead; and

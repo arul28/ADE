@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DetectedAuth } from "./authDetector";
-import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import {
   getClaudeNativeBinaryFileName,
@@ -56,6 +56,20 @@ function resolvePackageFromRuntimeRoots(specifier: string): string {
   throw lastError instanceof Error ? lastError : new Error(`Unable to resolve ${specifier}`);
 }
 
+/**
+ * ADE's own `node_modules` copy, resolved from this module rather than the
+ * working directory. In a source checkout it is the version ADE's lockfile
+ * pins; a working directory can be any project, with a copy of its own.
+ */
+function resolveOwnInstallPackage(specifier: string): string | null {
+  if (typeof __filename !== "string") return null;
+  try {
+    return createRequire(__filename).resolve(specifier);
+  } catch {
+    return null;
+  }
+}
+
 function resolveBundledClaudeCodeExecutable(args?: {
   resourcesPath?: string | null;
   platform?: NodeJS.Platform;
@@ -88,12 +102,16 @@ function resolveBundledClaudeCodeExecutable(args?: {
     const normalized = path.normalize(packageJsonPath);
     const packagedNodeModule = normalized.includes(`${path.sep}app.asar.unpacked${path.sep}`)
       || normalized.includes(`${path.sep}app-${arch}.asar.unpacked${path.sep}`);
-    if (!packagedNodeModule) return null;
     const binaryPath = path.join(path.dirname(packageJsonPath), binaryName);
-    return isExecutablePath(binaryPath) ? binaryPath : null;
+    if (packagedNodeModule && isExecutablePath(binaryPath)) return binaryPath;
   } catch {
-    return null;
+    // Not resolvable from the working directory.
   }
+  // A source checkout has no packaged copy; ADE's own install does.
+  const ownPackageJsonPath = resolveOwnInstallPackage(`${packageName}/package.json`);
+  if (!ownPackageJsonPath) return null;
+  const ownBinaryPath = path.join(path.dirname(ownPackageJsonPath), binaryName);
+  return isExecutablePath(ownBinaryPath) ? ownBinaryPath : null;
 }
 
 export function resolveClaudeCodeExecutable(args?: {
@@ -127,6 +145,19 @@ export function resolveClaudeCodeExecutable(args?: {
   const bundledPath = resolveBundledClaudeCodeExecutable(args);
   if (bundledPath) {
     return { path: bundledPath, source: "bundled" };
+  }
+
+  // Just after an ADE update the new pin can still be downloading. ADE's
+  // previous copy, which the cache keeps for this, beats the machine's own
+  // `claude`: that one can be any version, and ADE delivers its plugins only
+  // to its own copies.
+  const previousPath = previousCachedToolEntryPath("claude-code", {
+    env,
+    platform: args?.platform,
+    arch: args?.arch,
+  });
+  if (previousPath && isExecutablePath(previousPath)) {
+    return { path: previousPath, source: "tools-cache" };
   }
 
   const authPath = findClaudeAuthPath(args?.auth);
