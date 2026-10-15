@@ -21,11 +21,7 @@ import type {
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
-import {
-  deleteApiKey as deleteStoredApiKey,
-  getApiKey as getStoredApiKey,
-  storeApiKey as storeStoredApiKey,
-} from "../ai/apiKeyStore";
+import { deleteApiKey as deleteStoredApiKey, storeApiKey as storeStoredApiKey } from "../ai/apiKeyStore";
 import {
   mapOpenCodeIntegrationAuthMethods,
   openCodeAuthMethodsFromIntegrations,
@@ -364,28 +360,21 @@ export async function clearProviderKey(
 ): Promise<{ ok: boolean; error?: string }> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
-  // Read before deleting, so a failed account write below can put it back.
-  const previousKey = getStoredApiKey(providerId);
+  // Its cloud logins leave the ADE account too, or the next sync would set
+  // them up again. The account goes first and the local key second: a failed
+  // account write changes nothing, and a failed key delete puts the account's
+  // list back. Only that non-secret list is ever restored, never a key.
+  const forgotten = forgetSyncedCloudLoginsFor(deps, providerId);
+  if (!forgotten.ok) {
+    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Nothing was disconnected; try again.` };
+  }
   try {
     deleteStoredApiKey(providerId);
   } catch (err) {
     const error = errorMessage(err);
     deps.logger.warn("opencode.provider_key_delete_failed", { providerId, error });
+    forgotten.undo();
     return { ok: false, error: `ADE could not delete its stored key: ${error}` };
-  }
-  // Its cloud logins leave the ADE account too, or the next sync would set
-  // them up again. After the local key, so a failed key delete never touches
-  // the account; a failed account write restores the key, so the disconnect
-  // either happens everywhere or not at all.
-  if (!forgetSyncedCloudLoginsFor(deps, providerId)) {
-    if (previousKey) {
-      try {
-        storeStoredApiKey(providerId, previousKey);
-      } catch (err) {
-        deps.logger.warn("opencode.provider_key_restore_failed", { providerId, error: errorMessage(err) });
-      }
-    }
-    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Nothing was disconnected; try again.` };
   }
   clearOpenCodeInventoryCache();
   // Routes into other harnesses copied this sign-in's token into ADE's proxy

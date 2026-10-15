@@ -130,11 +130,21 @@ export function credentialCloudKey(credential: OpenCodeCredentialSummary): strin
  * Drop one provider's cloud logins from the account, when the provider is
  * disconnected here; otherwise the next sync would set them up again.
  */
-export function forgetSyncedCloudLoginsFor(deps: OpenCodeAuthDeps, providerId: string): boolean {
+export function forgetSyncedCloudLoginsFor(
+  deps: OpenCodeAuthDeps,
+  providerId: string,
+): { ok: false } | { ok: true; undo: () => void } {
   const synced = readSyncedCloudLogins(deps);
-  if (!synced?.some((login) => login.providerId === providerId)) return true;
+  if (!synced?.some((login) => login.providerId === providerId)) return { ok: true, undo: () => {} };
   const remaining = synced.filter((login) => login.providerId !== providerId);
-  if (!writeSyncedCloudLogins(deps, remaining)) return false;
+  if (!writeSyncedCloudLogins(deps, remaining)) return { ok: false };
   writeAppliedKeys(remaining.map(cloudLoginKey), deps);
-  return true;
+  return {
+    ok: true,
+    // Puts the list back as it was: names and answers only, never a secret.
+    undo: () => {
+      if (writeSyncedCloudLogins(deps, synced)) writeAppliedKeys(synced.map(cloudLoginKey), deps);
+      else deps.logger.warn("opencode.cloud_logins_restore_failed", { providerId });
+    },
+  };
 }
