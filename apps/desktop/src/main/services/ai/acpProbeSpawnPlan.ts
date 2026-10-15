@@ -23,7 +23,10 @@ export async function prepareAcpProbeSpawnPlan(
   }
   let servers: unknown;
   try {
-    servers = (JSON.parse(result.stdout) as { mcpServers?: unknown })?.mcpServers;
+    // Some shells prepend a BOM or surrounding whitespace; strip only those
+    // leading bytes so a clean catalog is not rejected as unreadable.
+    const trimmedStdout = result.stdout.replace(/^\uFEFF/, "").trim();
+    servers = (JSON.parse(trimmedStdout) as { mcpServers?: unknown })?.mcpServers;
   } catch {
     // Do not log the output: definitions can contain credentials in headers.
   }
