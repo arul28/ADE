@@ -23,38 +23,68 @@ import type { SpotifyService } from "./spotifyService";
  *
  * The choice and the Spotify Client ID are plain settings in
  * `<userData>/music-player/music-settings.json`: neither is a secret (a PKCE
- * client has no secret). Switching pauses the provider that is playing, so
- * two never play at once.
+ * client has no secret). The volume each player was left at lives there too,
+ * so a launch starts where the slider was instead of at full volume. Switching
+ * pauses the provider that is playing, so two never play at once.
  */
 
-type Settings = { provider: MusicProvider; spotifyClientId: string | null };
+type Settings = {
+  provider: MusicProvider;
+  spotifyClientId: string | null;
+  /** The volume each player was left at (0–1), or null before it was ever set. */
+  volume: Record<MusicProvider, number | null>;
+};
 
 const SETTINGS_FILE = "music-settings.json";
 
+const clampVolume = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? Math.round(Math.max(0, Math.min(1, value)) * 100) / 100 : null;
+
 function createMusicSettings(dir: string, logger?: { warn: (event: string, data?: Record<string, unknown>) => void }) {
   const file = path.join(dir, SETTINGS_FILE);
-  let value: Settings = { provider: "apple", spotifyClientId: null };
+  let value: Settings = { provider: "apple", spotifyClientId: null, volume: { apple: null, spotify: null } };
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Settings>;
     value = {
       provider: parsed.provider === "spotify" ? "spotify" : "apple",
       spotifyClientId: normalizeSpotifyClientId(parsed.spotifyClientId),
+      volume: {
+        apple: clampVolume(parsed.volume?.apple),
+        spotify: clampVolume(parsed.volume?.spotify),
+      },
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
       logger?.warn("music.settings_unreadable", { error: error instanceof Error ? error.message : String(error) });
     }
   }
+  const set = (next: Partial<Settings>) => {
+    const merged = { ...value, ...next };
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    fs.renameSync(tmp, file);
+    value = merged;
+  };
   return {
     get: (): Settings => value,
     /** Persist, then remember: a write that fails leaves the old value in force. */
-    set: (next: Partial<Settings>) => {
-      const merged = { ...value, ...next };
-      fs.mkdirSync(dir, { recursive: true });
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
-      fs.renameSync(tmp, file);
-      value = merged;
+    set,
+    /** The volume a player's slider was left at, or null when it was never set. */
+    getVolume: (provider: MusicProvider): number | null => value.volume[provider],
+    /**
+     * Remembers a slider position. A drag sends one of these per step, so a
+     * value the file already has is not written again; a write that fails is
+     * reported and the session carries on.
+     */
+    setVolume: (provider: MusicProvider, volume: number) => {
+      const clamped = clampVolume(volume);
+      if (clamped == null || clamped === value.volume[provider]) return;
+      try {
+        set({ volume: { ...value.volume, [provider]: clamped } });
+      } catch (error) {
+        logger?.warn("music.volume_save_failed", { provider, error: error instanceof Error ? error.message : String(error) });
+      }
     },
   };
 }

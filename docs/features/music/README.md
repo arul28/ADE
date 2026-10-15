@@ -137,7 +137,12 @@ One visual language in three sizes (`MusicPlayer.tsx`):
 
 The scrubber and volume are `MusicSlider`: click or drag anywhere (the pointer
 is captured, so a drag may leave the track), or use the arrow, Page, Home and
-End keys. Only `MusicSeek` and the tab's progress line re-render on the position
+End keys. The slider's position is remembered per provider, so the next launch
+starts where it was left instead of at full volume: it lives in
+`<userData>/music-player/music-settings.json` under `volume`, keyed by
+provider, and ADE's own player gets it when it starts. Before it has ever been
+set, Apple Music starts at full volume and Spotify at 80%. Only `MusicSeek` and
+the tab's progress line re-render on the position
 tick (twice and once a second), from the renderer's own interpolation: the main
 process pushes state only when it changes (a steady song pushes nothing; see
 "Position pushes" below), and the store keeps `nowPlaying` and `host` objects
