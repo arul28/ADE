@@ -24,7 +24,8 @@ Research, the full map of stored paths and the experiments behind each rule:
 | `apps/ade-cli/src/services/projects/projectRegistry.ts` | `relocate()` re-keys the registry and writes `project-aliases.json` (old id → new id); `assertProjectNotMovedAway` and `assertProjectNotBeingMoved` refuse opening the kept original or a project mid-move, on every open path. |
 | `apps/desktop/src/main/services/projects/projectMoveController.ts` | One move at a time; activity, release, reopen and progress wiring come from `main.ts`. |
 | `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (one setup screen with the drive, folder and checks → Moving → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
-| `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, interrupted-move recovery, and the journal's process check. |
+| `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, Codex trust carry-over, interrupted-move recovery, and the journal's process check. |
+| `apps/desktop/src/renderer/components/projectMove/projectMove.test.tsx` | The old-copy banner shows only in the moved project's tab; the check agent launches only on Start agent, ask-first, with the edited prompt. |
 | `apps/desktop/src/renderer/components/settings/ProjectLocationSection.tsx` | The Settings row. `machine: "local"`. |
 
 ## How a move runs
@@ -57,7 +58,9 @@ untouched original.
 - **Done** offers the check agent and the old-copy choice; neither is
   required. *Set up…* opens the issue launchers' picker in place
   (`SessionLaunchModelControls`: model, effort, permissions) with the check
-  prompt editable, and the launch shows the whole prompt in the chat. The old
+  prompt editable. Permissions start ask-first (the standard profile), since
+  the prompt promises to ask before changing anything; nothing launches until
+  *Start agent*, and the chat shows the whole prompt. The old
   copy's Keep / Remind me / Delete can wait: the card says it can be cleaned
   up later from Settings → Project location.
 - **The old-copy banner** shows only in the moved project's tab (matched on

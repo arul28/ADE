@@ -307,6 +307,21 @@ function tomlQuoted(value: string): string {
   return `"${escaped}"`;
 }
 
+const TOML_UNESCAPES: Record<string, string> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "\"": "\"", "\\": "\\" };
+
+/**
+ * The path a `[projects."<path>"]` header names, however it is spelled: a
+ * basic or literal string key, spaces inside the brackets, a trailing comment.
+ * Null for any other line.
+ */
+function projectsHeaderKey(line: string): string | null {
+  const match = line.match(/^\s*\[\s*projects\s*\.\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*\]\s*(?:#.*)?$/u);
+  if (!match) return null;
+  if (match[2] !== undefined) return match[2];
+  return match[1]!.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/gu, (_, code: string) =>
+    code.length > 1 ? String.fromCodePoint(Number.parseInt(code.slice(1), 16)) : TOML_UNESCAPES[code] ?? code);
+}
+
 /**
  * Codex keeps folder trust in `config.toml` as `[projects."<path>"]` with a
  * `trust_level`. After a move the new path has no entry and Codex asks again,
@@ -319,16 +334,16 @@ export function carryCodexTrust(args: { oldSpellings: string[]; newRoot: string 
   if (!fs.existsSync(file)) return false;
   const content = fs.readFileSync(file, "utf8");
   const lines = content.split(/\r?\n/u);
-  const headerIndex = (root: string) => lines.findIndex((line) => line.trim() === `[projects.${tomlQuoted(root)}]`);
+  const headerIndex = (root: string) => lines.findIndex((line) => projectsHeaderKey(line) === root);
   if (headerIndex(args.newRoot) >= 0) return false;
   let trustLevel: string | null = null;
   for (const spelling of args.oldSpellings) {
     const start = headerIndex(spelling);
     if (start < 0) continue;
     for (let index = start + 1; index < lines.length && !lines[index]!.trim().startsWith("["); index += 1) {
-      const match = lines[index]!.match(/^\s*trust_level\s*=\s*"([^"]*)"\s*(?:#.*)?$/u);
+      const match = lines[index]!.match(/^\s*trust_level\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$/u);
       if (match) {
-        trustLevel = match[1]!;
+        trustLevel = match[1] ?? match[2]!;
         break;
       }
     }

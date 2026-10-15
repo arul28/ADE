@@ -7,6 +7,7 @@ import type { ProjectMoveRecord } from "../../../../../desktop/src/shared/types/
 import { openKvDb } from "../../../../../desktop/src/main/services/state/kvDb";
 import { loadNodeSqlite } from "../../../../../desktop/src/main/services/projects/readOnlySqlite";
 import { ProjectRegistry } from "../projectRegistry";
+import { carryCodexTrust } from "./moveAgentHistory";
 import { relativeToRoot } from "./moveGitLinks";
 import { currentBootMinute, isMoveProcessAlive, listMoveRecords, markMoveActive, readMovedMarker, writeMoveRecord } from "./moveJournal";
 import { recoverInterruptedMoves, runProjectMove } from "./projectMoveEngine";
@@ -23,7 +24,16 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmp, "home"));
   vi.stubEnv("ADE_HOME", path.join(tmp, "ade-home"));
   vi.stubEnv("HOME", path.join(tmp, "home"));
+  // Never the developer's own Codex config, even when CODEX_HOME is set.
+  vi.stubEnv("CODEX_HOME", path.join(tmp, "home", ".codex"));
 });
+
+function writeCodexConfig(content: string): string {
+  const file = path.join(tmp, "home", ".codex", "config.toml");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  return file;
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -112,6 +122,7 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
     const source = path.join(tmp, "Proj");
     const { outsideLane } = await makeProject(source);
     const destination = path.join(tmp, "drive", "Proj");
+    const codexConfig = writeCodexConfig(`model = "gpt-5"\n\n[projects."${source}"]\ntrust_level = "trusted"\n`);
     // A stale layout already saved under the new path must give way to the moved one.
     const record = await (async () => {
       const db = await openKvDb(path.join(source, ".ade", "ade.db"), logger);
@@ -155,6 +166,12 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
     const registry = new ProjectRegistry();
     expect(registry.findByRootPath(destination)).not.toBeNull();
     expect(registry.findByRootPath(source)).toBeNull();
+
+    // Codex trusts the new folder as it did the old one; the old entry stays while the old copy does.
+    expect(fs.readFileSync(codexConfig, "utf8")).toBe(
+      `model = "gpt-5"\n\n[projects."${source}"]\ntrust_level = "trusted"\n\n[projects."${destination}"]\ntrust_level = "trusted"\n`,
+    );
+    expect(record.followUps).toContain("Codex trusts the new location, as it did the old one.");
   });
 
   it("moves an already-moved project again, whose lanes now use relative links", async () => {
@@ -227,6 +244,56 @@ function moveRecord(overrides: Partial<ProjectMoveRecord> & Pick<ProjectMoveReco
     ...overrides,
   };
 }
+
+describe("carryCodexTrust", () => {
+  const before = (entries: string) => `model = "gpt-5"\n${entries}`;
+  it.each([
+    { name: "does nothing when Codex has no config", config: null, oldRoot: "/old", newRoot: "/new", added: null },
+    {
+      name: "keeps an entry the new path already has",
+      config: before(`\n[projects."/old"]\ntrust_level = "trusted"\n\n[projects."/new"]\ntrust_level = "untrusted"\n`),
+      oldRoot: "/old",
+      newRoot: "/new",
+      added: null,
+    },
+    {
+      name: "keeps an entry the new path has under a literal key with a comment",
+      config: before(`\n[projects."/old"]\ntrust_level = "trusted"\n\n[ projects.'/new' ] # mine\ntrust_level = "untrusted"\n`),
+      oldRoot: "/old",
+      newRoot: "/new",
+      added: null,
+    },
+    {
+      name: "reads an old entry written as a literal key",
+      config: before(`\n[projects.'/old']\ntrust_level = 'trusted'\n`),
+      oldRoot: "/old",
+      newRoot: "/new",
+      added: `\n[projects."/new"]\ntrust_level = "trusted"\n`,
+    },
+    {
+      name: "adds nothing when the old path was never trusted",
+      config: before(`\n[projects."/elsewhere"]\ntrust_level = "trusted"\n`),
+      oldRoot: "/old",
+      newRoot: "/new",
+      added: null,
+    },
+    {
+      name: "carries the old level and escapes the new path as a TOML string",
+      config: before(`\n[projects."/old \\"q\\""]\ntrust_level = "untrusted" # set by hand\n`),
+      oldRoot: '/old "q"',
+      newRoot: "/new\\dir\nline",
+      added: `\n[projects."/new\\\\dir\\nline"]\ntrust_level = "untrusted"\n`,
+    },
+  ])("$name", ({ config, oldRoot, newRoot, added }) => {
+    const file = config === null ? path.join(tmp, "home", ".codex", "config.toml") : writeCodexConfig(config);
+    const wrote = carryCodexTrust({ oldSpellings: [oldRoot], newRoot });
+    expect(wrote).toBe(added !== null);
+    if (config === null) expect(fs.existsSync(file)).toBe(false);
+    else expect(fs.readFileSync(file, "utf8")).toBe(added === null ? config : `${config}${added}`);
+    // A second move-finish (a restart) never adds it twice.
+    expect(carryCodexTrust({ oldSpellings: [oldRoot], newRoot })).toBe(false);
+  });
+});
 
 describe("recoverInterruptedMoves", () => {
   it("finishes a move whose copy was already in place, and waits while its drive is missing", async () => {
