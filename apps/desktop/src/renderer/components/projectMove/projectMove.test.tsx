@@ -29,16 +29,17 @@ const MOVED: ProjectMoveRecord = {
 
 const REMOTE: OpenProjectBinding = { kind: "remote", key: "remote:mac-mini" } as OpenProjectBinding;
 
+const attention = vi.fn(async () => ({ records: [MOVED], nextReminderAt: null }));
+
 beforeEach(() => {
   Object.defineProperty(window.navigator, "platform", { configurable: true, value: "MacIntel" });
-  (window as any).ade = {
-    projectMove: { attention: vi.fn(async () => ({ records: [MOVED], nextReminderAt: null })) },
-  };
+  (window as any).ade = { projectMove: { attention } };
 });
 
 afterEach(() => {
   cleanup();
   resetAppBannersForTests();
+  attention.mockClear();
   delete (window as any).ade;
 });
 
@@ -57,7 +58,7 @@ describe("ProjectMoveHost old-copy banner", () => {
     render(<ProjectMoveHost />);
     await act(async () => {});
 
-    expect(window.ade.projectMove.attention).toHaveBeenCalled();
+    expect(attention).toHaveBeenCalled();
     const banners = getAppBannerEntries().filter((entry) => entry.model.id.startsWith("project-move-old-copy:"));
     expect(banners.map((entry) => entry.model.id)).toEqual(shows ? [`project-move-old-copy:${MOVED.moveId}`] : []);
     if (shows) expect(banners[0]!.model.title).toContain(MOVED.projectName);
@@ -71,7 +72,7 @@ describe("ProjectMoveHost old-copy banner", () => {
  */
 describe("MoveProjectDialog check agent", () => {
   it("launches only on Start agent, in the main lane, with ask-first permissions and the edited prompt", async () => {
-    const launch = vi.fn(async () => ({ id: "session-1" }));
+    const launch = vi.fn(async (_args: Record<string, unknown>) => ({ id: "session-1" }));
     const start = vi.fn(async () => ({ ok: true, record: MOVED }));
     const bridge = {
       projectMove: {
