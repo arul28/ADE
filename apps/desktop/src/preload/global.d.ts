@@ -4730,7 +4730,7 @@ declare global {
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
-      /** Apple Music: playback through the on-demand player host, browsing through the Apple Music API. */
+      /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */
       music?: MusicBridge;
       perf: {
         getConfig: () => Promise<{

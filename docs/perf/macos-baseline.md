@@ -464,6 +464,15 @@ pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
 - **The host** is a WKWebView with no window on screen, which WebKit throttles
   like a background tab; 73-81 MB across the host, its WebContent, Networking
   and GPU processes. The Windows host (WebView2) measured 141 MB private.
+- **The Windows Spotify host** (same `ade-music-host.exe`, `--page page-spotify`,
+  Spotify's Web Playback SDK instead of MusicKit) measured on 2026-10-15 at
+  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to ADE's
+  own Connect device: 3.5% CPU and 237.7 MB private across the host and its 9
+  WebView2 children; 0.2% and 237.2 MB paused. The memory is 1.7x the Apple
+  Music host's 141 MB because the SDK runs its player in an `sdk.scdn.co`
+  iframe and Widevine decodes in its own process, so the tree has more
+  renderers; `--renderer-process-limit=1` does not cover either. Ceiling:
+  6% CPU playing, 320 MB private.
 - **Open item:** while the playing song's row is on screen, its three
   equalizer bars (a CSS `steps()` animation) make Chromium update style and
   draw every frame (243 style updates/s on this 240 Hz display). Driving the
@@ -730,3 +739,38 @@ host call are context, not ceilings.
 - Host commands rose by a few `prs.getGitHubSnapshot` reads that follow the
   host's own revision bumps; switching to Merged still reads it three times,
   which is the next thing to trim.
+
+### Spotify (playing inside ADE)
+
+Measured 2026-10-14 on this Mac Studio, dev build in an App Control session,
+signed in with Premium, DevTools closed, other agents running. Spotify's Web
+Playback SDK runs in the same macOS host as Apple Music (`page-spotify`, its own
+WebKit profile). Apple Music's rows above are the comparison; Spotify has no
+before. "Play accepted" is from the command to the first playing state, which
+Spotify's service sets when Spotify accepts the play, not when audio starts.
+
+| Metric | How | Apple Music | Spotify | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10`, 4 runs | 0.5-0.8% | 0.6-1.1% | 3% |
+| Same, playing: physical footprint | same | 75-81 MB | 77-82 MB | 120 MB |
+| Same, paused: CPU / footprint | same, 3 runs | 0.0-0.2% / 73-75 MB | 0.1-0.2% / 75 MB | 1% / 120 MB |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0/s | 0/s | 0.2/s |
+| Tab opened, then play 2.5 s later (the player starts with the tab) | `cdp.mjs eval`: `unload`, `warm`, wait, `playItems`, 5 runs | — | 0.15-0.35 s (was 1.2-1.5 s before the player started with the tab) | 0.6 s |
+| Play accepted, player not running (play the instant it starts) | `music.mjs first-play cold`, 4 runs | 0.76-1.15 s | 1.19-1.61 s | 2 s |
+| Same, player running | `music.mjs first-play warm`, 3 runs | 0.16-0.39 s | 0.16-0.17 s | 0.6 s |
+| Tab closed: player processes / audio output | `pgrep`, `pmset -g assertions` | 0 / none | 0 / none | 0 / none |
+
+- `music.mjs first-play` plays five songs of a search for Spotify (it has no
+  charts).
+- A cold start is about 0.25 s to launch the host, 0.2 s to load the SDK,
+  0.2 s until the SDK asks for a token, then 0.4-0.8 s for Spotify to register
+  the device over the network. None of it can be skipped, so the player starts
+  when the tab opens (like Apple Music's host) and stops after five minutes
+  without playing.
+- While ADE's own player plays, the Web API is read once a minute instead of
+  every 15 s: the SDK reports track, pause and position changes itself.
+- The service's request budget (`spotifyService.test.ts`, fake time): a closed
+  tab makes 0 requests; a device other than ADE playing 200-second songs makes
+  at most 46 reads and 6 pushes per ten minutes.
+- Windows (WebView2, Widevine) is measured separately; see the Windows numbers
+  in the PR.

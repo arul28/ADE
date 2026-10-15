@@ -58,7 +58,8 @@ export type FeatureAnalyticsAction =
   | "secret_requested"
   | "provider_cli_updated"
   | "notification_sent"
-  | "music_connected";
+  | "music_connected"
+  | "spotify_connected";
 
 export type FeatureAnalyticsOutcome =
   | "completed"

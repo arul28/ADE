@@ -1,3 +1,5 @@
+import { SpotifyItemLink } from "./musicParts";
+import { useMusicProvider } from "./musicProvider";
 import React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowClockwise, ArrowLeft, CircleNotch, Play, Shuffle, WarningCircle } from "@phosphor-icons/react";
@@ -103,6 +105,7 @@ function useCollectionTracks(kind: "album" | "playlist", id: string, library: bo
 
 /** An album or playlist: its hero and every song, virtualized. */
 export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps & { item: MusicItem; onBack: () => void }) {
+  const provider = useMusicProvider();
   const kind = item.kind === "album" ? "album" : "playlist";
   const { tracks, error, loading, retry } = useCollectionTracks(kind, item.id, item.library);
   const totalMs = React.useMemo(() => tracks.reduce((sum, t) => sum + (t.durationMs ?? 0), 0), [tracks]);
@@ -122,7 +125,8 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
     // Handing MusicKit the playlist id loads only its first page of songs, so a
     // click further down (or shuffle) never reaches the rest. Queue from the
     // songs this page has read (all of them once the last page is in).
-    if (tracks.length) queueFromList(tracks, index, shuffle);
+    if (provider === "spotify") void musicActions.playCollection(kind, item.id, index, shuffle);
+    else if (tracks.length) queueFromList(tracks, index, shuffle);
     else void musicActions.playCollection(kind, item.id, index, shuffle);
   };
   // Shuffle pressed while pages are still arriving waits for the last one, so
@@ -164,6 +168,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
             <div className="kit-eyebrow">{item.library ? `Library ${kind}` : kind}</div>
             <h1>{item.title}</h1>
             <div className="ade-music-hero-sub">{item.subtitle}</div>
+            <SpotifyItemLink url={item.externalUrl} />
             <div className="ade-music-hero-meta kit-num">
               {[
                 item.releaseYear ? String(item.releaseYear) : null,
@@ -172,7 +177,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
               ].filter(Boolean).join(" · ")}
             </div>
             <div className="ade-music-hero-actions">
-              <button type="button" className="ade-music-connect" onClick={() => play(0)} disabled={!tracks.length && !loading}>
+              <button type="button" className="ade-music-connect" onClick={() => play(0)} disabled={provider !== "spotify" && !tracks.length && !loading}>
                 <Play size={14} weight="fill" /> Play
               </button>
               <button type="button" className="ade-music-pill" onClick={() => play(0, true)} disabled={shuffleWaiting} aria-busy={shuffleWaiting}>
@@ -181,6 +186,7 @@ export function DetailView({ item, onBack, nowPlayingId, isPlaying }: RowProps &
             </div>
           </div>
         </header>
+        {provider === "spotify" && !tracks.length && !loading && !error ? <MusicEmpty icon={null} title="Play this collection in Spotify" hint="Spotify may limit track listings for playlists you do not own. Use Play above or open it in Spotify." /> : null}
         {error && !tracks.length ? (
           <MusicEmpty icon={<WarningCircle size={22} />} title="Couldn't load the songs" hint={error}>
             <button type="button" className="kit-btn" onClick={retry}>

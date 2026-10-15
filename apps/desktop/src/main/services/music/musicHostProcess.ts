@@ -51,13 +51,15 @@ export function startMusicHost(args: {
   userDataDir: string;
   logger?: { info: (event: string, data?: Record<string, unknown>) => void; warn: (event: string, data?: Record<string, unknown>) => void };
   show?: boolean;
+  /** The page folder beside the executable: `page` (Apple Music) or `page-spotify`. */
+  page?: "page" | "page-spotify";
 }): MusicHost {
   fs.mkdirSync(args.userDataDir, { recursive: true });
   const child: ChildProcessWithoutNullStreams = spawn(
     args.executable,
     [
       "--udf", args.userDataDir,
-      "--page", path.join(path.dirname(args.executable), "page"),
+      "--page", path.join(path.dirname(args.executable), args.page ?? "page"),
       "--parent-pid", String(process.pid),
       ...(args.show ? ["--show"] : []),
       // The host runs without a GPU process (half the memory). Escape hatch if

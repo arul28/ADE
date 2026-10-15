@@ -501,7 +501,8 @@
           "to": "native/ade-music-host",
           "filter": [
             "ade-music-host",
-            "page/**/*"
+            "page/**/*",
+            "page-spotify/**/*"
           ]
         }
       ]

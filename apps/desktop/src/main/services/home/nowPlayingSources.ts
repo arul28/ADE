@@ -1,3 +1,4 @@
+import { SPOTIFY_APP_NAME } from "../../../shared/types/homeWidgets";
 /**
  * Names for Now Playing sources: the player behind an OS media session, and
  * the service behind a browser tab. The icons come from the source itself
@@ -6,7 +7,7 @@
  */
 
 const APP_NAMES: Array<[RegExp, string]> = [
-  [/spotify/i, "Spotify"],
+  [/spotify/i, SPOTIFY_APP_NAME],
   [/appleinc\.applemusic|applemusic|apple\.music/i, "Apple Music"],
   [/^com\.apple\.music$/i, "Music"],
   [/itunes/i, "iTunes"],
@@ -51,7 +52,7 @@ const SITE_NAMES: Array<[RegExp, string]> = [
   [/(^|\.)music\.youtube\.com$/i, "YouTube Music"],
   [/(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i, "YouTube"],
   [/(^|\.)soundcloud\.com$/i, "SoundCloud"],
-  [/(^|\.)spotify\.com$/i, "Spotify"],
+  [/(^|\.)spotify\.com$/i, SPOTIFY_APP_NAME],
   [/(^|\.)twitch\.tv$/i, "Twitch"],
   [/(^|\.)music\.apple\.com$/i, "Apple Music"],
   [/(^|\.)podcasts\.apple\.com$/i, "Apple Podcasts"],

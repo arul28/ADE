@@ -70,10 +70,17 @@ export type HomeAppearance = {
   cardBlur: number | null;
 };
 
+/** The app buttons beside the hero actions; each can be taken off the page and put back. */
+export type HomeApp = "appleMusic" | "spotify";
+
+export const HOME_APPS: readonly HomeApp[] = ["appleMusic", "spotify"];
+
 export type HomeLayout = {
   items: HomeLayoutItem[];
   columns: 3 | 4;
   appearance: HomeAppearance;
+  /** App buttons taken off this layout. Both show by default. */
+  hiddenApps: HomeApp[];
 };
 
 const WIDGET_TYPES = new Set<HomeWidgetType>([
@@ -91,6 +98,7 @@ export function defaultHomeLayout(): HomeLayout {
     ],
     columns: 3,
     appearance: { cardOpacity: null, cardBlur: null },
+    hiddenApps: [],
   };
 }
 
@@ -135,6 +143,7 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
       cardOpacity: clampOrNull(appearance.cardOpacity, 0, 100),
       cardBlur: clampOrNull(appearance.cardBlur, 0, 40),
     },
+    hiddenApps: HOME_APPS.filter((app) => Array.isArray(raw.hiddenApps) && raw.hiddenApps.includes(app)),
   };
 }
 
@@ -372,6 +381,8 @@ type HomeLayoutStore = {
   updateSettings: (id: string, patch: Record<string, unknown>) => void;
   setAppearance: (patch: Partial<HomeAppearance>) => void;
   setColumns: (columns: 3 | 4) => void;
+  /** Shows or hides one app button on this layout. */
+  setAppShown: (app: HomeApp, shown: boolean) => void;
   /** Puts the active preset back to the shipped default. */
   reset: () => void;
   switchPreset: (id: string) => void;
@@ -460,6 +471,10 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
       withItems(get().layout.items.map((item) => (item.id === id ? { ...item, settings: { ...item.settings, ...patch } } : item))),
     setAppearance: (patch) => commit({ ...get().layout, appearance: { ...get().layout.appearance, ...patch } }),
     setColumns: (columns) => commit({ ...get().layout, columns }),
+    setAppShown: (app, shown) => {
+      const hidden = get().layout.hiddenApps.filter((entry) => entry !== app);
+      commit({ ...get().layout, hiddenApps: shown ? hidden : [...hidden, app] });
+    },
     reset: () => commit(defaultHomeLayout()),
     switchPreset: (id) => {
       const { presets, activeId } = get();

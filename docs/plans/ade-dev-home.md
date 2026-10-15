@@ -221,6 +221,9 @@ desktop layout is told how to ask for one (`narrowPageHint`).
 
 ## 3. Apple Music tab and widget
 
+_Spotify sits beside Apple Music as a second home-page app, playing inside ADE
+through the same player host; see `docs/features/music/README.md` ("Spotify")._
+
 _Playback architecture: filled in from the research pass. See the
 "Apple Music research" section below._
 

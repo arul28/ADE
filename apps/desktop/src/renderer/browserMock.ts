@@ -1,3 +1,4 @@
+import { createBrowserMockMusic } from "./browserMockMusic";
 /**
  * Browser-safe mock for `window.ade`.
  * Injected only when the Electron preload bridge is absent (i.e. opening the
@@ -8991,6 +8992,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateDismissInstalledNotice: resolved(undefined),
     updateRelaunchApp: resolved(false),
     onUpdateEvent: noop,
+    music: createBrowserMockMusic(),
     // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`; see
     // browserMockRecovery.ts for every recovery and brain-down preview URL).
     ...createBrowserMockRecoveryBridges(),

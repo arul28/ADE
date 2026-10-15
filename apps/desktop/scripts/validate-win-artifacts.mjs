@@ -679,6 +679,12 @@ async function validatePackagedRuntime(appDir) {
     console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
   } else {
     await assertPathExists(musicHostExePath, "packaged Windows music player host");
+    // Apple Music's page and Spotify's, which the host loads with --page.
+    for (const page of ["page", "page-spotify"]) {
+      for (const pageFile of ["index.html", "player.js"]) {
+        await assertPathExists(path.join(path.dirname(musicHostExePath), page, pageFile), `packaged Windows music player ${page}/${pageFile}`);
+      }
+    }
   }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {

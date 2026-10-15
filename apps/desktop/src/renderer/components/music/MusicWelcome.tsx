@@ -12,8 +12,10 @@ import {
 } from "@phosphor-icons/react";
 
 import type { MusicCharts, MusicItem, MusicSearchResult } from "../../../shared/types/music";
-import { AppleMusicBadge, MusicArt } from "./musicParts";
-import { useMusicReducedMotion } from "./MusicPlayer";
+import { MusicArt } from "./musicParts";
+import { useMusicArtworkStill } from "./MusicPlayer";
+import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
+import { SpotifySetup } from "./MusicProviderControls";
 import { musicActions, useMusicState } from "./musicStore";
 
 /**
@@ -53,8 +55,10 @@ async function loadShowcase(): Promise<Showcase> {
 
 let showcaseCache: Promise<Showcase> | null = null;
 function useShowcase(): Showcase | null {
+  const provider = useMusicProvider();
   const [value, setValue] = React.useState<Showcase | null>(null);
   React.useEffect(() => {
+    if (provider === "spotify") return;
     let live = true;
     showcaseCache ??= loadShowcase().catch(() => {
       showcaseCache = null;
@@ -66,11 +70,12 @@ function useShowcase(): Showcase | null {
     return () => {
       live = false;
     };
-  }, []);
+  }, [provider]);
   return value;
 }
 
 export function ConnectButton({ compact = false }: { compact?: boolean }) {
+  const providerName = useMusicProviderName();
   const connecting = useMusicState((s) => Boolean(s?.connecting));
   const hostStarting = useMusicState((s) => s?.host.status === "starting");
   const busy = connecting || hostStarting;
@@ -83,21 +88,22 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
       data-testid="music-connect"
     >
       {busy ? <CircleNotch size={14} className="animate-spin" /> : <MusicNotes size={14} weight="fill" />}
-      {connecting ? "Waiting for Apple…" : hostStarting ? "Starting…" : "Connect Apple Music"}
+      {connecting ? `Waiting for ${providerName}…` : hostStarting ? "Starting…" : `Connect ${providerName}`}
     </button>
   );
 }
 
 /** While Apple's window is open: where it is, and a way out. */
 export function SignInControls({ compact = false }: { compact?: boolean }) {
+  const provider = useMusicProvider();
   const connecting = useMusicState((s) => Boolean(s?.connecting));
   if (!connecting) return null;
   return (
     <div className="ade-music-signin-help" role="status">
-      {compact ? null : <span>Finish signing in to Apple in its own window.</span>}
+      {compact ? null : <span>{provider === "spotify" ? "Finish signing in to Spotify in your browser." : "Finish signing in to Apple in its own window."}</span>}
       <span className="ade-music-signin-actions">
         <button type="button" className="ade-music-pill is-small" onClick={musicActions.showSignIn}>
-          <AppWindow size={13} /> Show sign-in window
+          <AppWindow size={13} /> {provider === "spotify" ? "Open sign-in page" : "Show sign-in window"}
         </button>
         <button type="button" className="ade-music-pill is-small is-quiet" onClick={musicActions.cancelSignIn}>
           <X size={12} /> Cancel
@@ -109,7 +115,7 @@ export function SignInControls({ compact = false }: { compact?: boolean }) {
 
 /** A grid of real album covers behind the hero, softened so the text reads. */
 function ArtMosaic({ items }: { items: MusicItem[] }) {
-  const reduced = useMusicReducedMotion();
+  const reduced = useMusicArtworkStill();
   const tiles = items.slice(0, 24);
   return (
     <div className="ade-music-mosaic" aria-hidden>
@@ -132,6 +138,7 @@ function ArtMosaic({ items }: { items: MusicItem[] }) {
 
 /** The signed-out hero: mosaic, Connect, what you get, privacy. */
 export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase | null; compact?: boolean }) {
+  const provider = useMusicProvider();
   const own = useShowcase();
   const data = showcase ?? own;
   return (
@@ -140,12 +147,13 @@ export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase
       <div className="ade-music-welcome-body">
         <span className="ade-music-connect-glyph"><MusicNotes size={32} weight="fill" /></span>
         <h1>Your music, inside ADE</h1>
-        <p>Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews.</p>
+        <p>{provider === "spotify" ? "Connect Spotify to play your library, playlists and the whole catalog inside ADE while you work. Needs Spotify Premium." : "Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews."}</p>
         <div className="ade-music-welcome-cta">
           <ConnectButton />
         </div>
         <SignInControls />
-        <ul className="ade-music-welcome-points">
+        {provider === "spotify" ? <details className="w-full max-w-lg text-left text-xs"><summary className="cursor-pointer">Spotify app settings</summary><SpotifySetup /></details> : null}
+        {provider === "apple" ? <ul className="ade-music-welcome-points">
           <li>
             <span><Playlist size={15} /></span>
             <b>Your library</b>
@@ -161,12 +169,12 @@ export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase
             <b>Whole catalog</b>
             <i>Search 100 million songs</i>
           </li>
-        </ul>
+        </ul> : null}
         <p className="ade-music-welcome-privacy">
           <LockSimple size={12} weight="fill" />
-          You sign in on Apple's own page. ADE never sees your password; the access it gets stays encrypted on this computer. Needs an Apple Music subscription.
+          {provider === "spotify" ? "You sign in on Spotify’s own page. ADE never sees your password; access tokens stay encrypted on this computer." : "You sign in on Apple’s own page. ADE never sees your password; the access it gets stays encrypted on this computer. Needs an Apple Music subscription."}
         </p>
-        <AppleMusicBadge height={30} className="ade-music-welcome-badge" />
+        <MusicProviderBadge height={30} className="ade-music-welcome-badge" />
       </div>
     </section>
   );
@@ -180,7 +188,9 @@ export function MusicSignedOutHome({
   renderAlbums: (items: MusicItem[]) => React.ReactNode;
   renderSongs: (items: MusicItem[]) => React.ReactNode;
 }) {
+  const provider = useMusicProvider();
   const showcase = useShowcase();
+  if (provider === "spotify") return <ConnectHero />;
   return (
     <div className="ade-music-signedout">
       <ConnectHero showcase={showcase} />

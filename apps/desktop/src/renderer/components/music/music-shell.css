@@ -36,9 +36,13 @@
 .ade-music-center {
   display: flex;
   flex: 1;
-  align-items: center;
+  min-height: 0;
+  overflow: auto;
+  align-items: flex-start;
   justify-content: center;
 }
+
+.ade-music-center > .ade-music-gate { margin-block: auto; }
 
 /* ---------- Rail ---------- */
 

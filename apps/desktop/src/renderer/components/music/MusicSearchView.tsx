@@ -5,6 +5,7 @@ import type { MusicItem, MusicSearchResult, MusicSearchScope } from "../../../sh
 import { MusicArt, MusicEmpty, SongRow } from "./musicParts";
 import { isNowPlayingItem, queueActions, queueFromList } from "./musicQueue";
 import { TileSection, useLoad, type RowProps } from "./musicViewParts";
+import { useMusicProvider, useMusicProviderName } from "./musicProvider";
 import { MusicSignedOutHome } from "./MusicWelcome";
 
 /** Quick searches for the empty search page: a tap fills the field. */
@@ -25,6 +26,8 @@ export function SearchView({
   onOpen: (item: MusicItem) => void;
   onPlayContainer: (item: MusicItem, shuffle?: boolean) => void;
 }) {
+  const provider = useMusicProvider();
+  const providerName = useMusicProviderName();
   const [term, setTerm] = React.useState("");
   const [debounced, setDebounced] = React.useState("");
   const [scope, setScope] = React.useState<MusicSearchScope>("catalog");
@@ -42,9 +45,9 @@ export function SearchView({
     return () => window.clearTimeout(id);
   }, [term]);
   React.useEffect(() => inputRef.current?.focus(), []);
-  const effectiveScope: MusicSearchScope = authorized ? scope : "catalog";
+  const effectiveScope: MusicSearchScope = authorized && provider !== "spotify" ? scope : "catalog";
   const { data, error, loading } = useLoad<MusicSearchResult>(
-    debounced ? () => window.ade!.music!.search({ term: debounced, scope: effectiveScope, limit: 20 }) : null,
+    (debounced && (authorized || provider !== "spotify")) ? () => window.ade!.music!.search({ term: debounced, scope: effectiveScope, limit: 20 }) : null,
     [debounced, effectiveScope],
   );
   const results = debounced ? data : null;
@@ -61,7 +64,7 @@ export function SearchView({
             ref={inputRef}
             value={term}
             onChange={(event) => setTerm(event.target.value)}
-            placeholder={effectiveScope === "library" ? "Search your library" : "Search Apple Music"}
+            placeholder={effectiveScope === "library" ? "Search your library" : `Search ${providerName}`}
             aria-label="Search"
             data-testid="music-search-input"
           />
@@ -71,17 +74,17 @@ export function SearchView({
           ) : null}
         </label>
         <div className="kit-seg" data-case="sentence" role="tablist">
-          <button type="button" role="tab" aria-selected={effectiveScope === "catalog"} onClick={() => setScope("catalog")}>Apple Music</button>
-          <button
+          <button type="button" role="tab" aria-selected={effectiveScope === "catalog"} onClick={() => setScope("catalog")}>{providerName}</button>
+          {provider !== "spotify" ? <button
             type="button"
             role="tab"
             aria-selected={effectiveScope === "library"}
             onClick={() => setScope("library")}
             disabled={!authorized}
-            title={authorized ? undefined : "Connect Apple Music to search your library"}
+            title={authorized ? undefined : `Connect ${providerName} to search your library`}
           >
             Library
-          </button>
+          </button> : null}
         </div>
       </div>
       <div className="ade-music-scroll">
@@ -89,7 +92,7 @@ export function SearchView({
         {!debounced ? (
           authorized ? (
             <div className="ade-music-search-start">
-              <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint="Results play straight from Apple Music." />
+              <MusicEmpty icon={<MagnifyingGlass size={22} />} title="Search songs, albums, playlists and artists" hint={provider === "spotify" ? "Results play straight from Spotify." : "Results play straight from Apple Music."} />
               <div className="ade-music-ideas-label">Try</div>
               <div className="ade-music-ideas" aria-label="Search ideas">
                 {SEARCH_IDEAS.map((idea) => (
@@ -131,7 +134,7 @@ export function SearchView({
           <MusicEmpty
             icon={<MagnifyingGlass size={22} />}
             title={`Nothing found for “${debounced}”`}
-            hint={effectiveScope === "library" ? "Try Apple Music instead of your library." : "Check the spelling, or try an artist or album name."}
+            hint={effectiveScope === "library" ? `Try ${providerName} instead of your library.` : "Check the spelling, or try an artist or album name."}
           />
         ) : null}
         {results && songs.length + results.albums.length + results.playlists.length + results.artists.length > 0 ? (

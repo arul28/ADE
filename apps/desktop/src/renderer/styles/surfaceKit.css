@@ -295,3 +295,20 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-bg)); }
 .kit-btn-ghost { border-color: transparent; background: transparent; color: var(--kit-text-2); }
 .kit-btn-ghost:hover:not(:disabled) { background: var(--kit-hover); color: var(--color-fg); }
+
+/* A text field or select for card surfaces, the height of a .kit-btn. */
+.kit-input {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: var(--radius-md);
+  outline: none;
+  background: var(--kit-hover);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+}
+.kit-input::placeholder { color: var(--kit-text-3); }
+.kit-input:focus { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
+.kit-input:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent); outline-offset: 1px; }
+.kit-input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--kit-crit) 60%, transparent); }
