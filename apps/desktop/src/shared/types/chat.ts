@@ -3127,7 +3127,7 @@ export type AgentChatRuntimeOwnerRef = {
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   compactionIdleMode?: "ask" | "always" | "never";
-  /** Set only by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`: the lowered Compact first limit. */
+  /** The Compact first floor for a Claude chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
   compactFirstMinTokens?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;
@@ -5763,6 +5763,12 @@ export type AgentChatUpdateSessionArgs = {
   /** Persist that the takeover banner was shown and answered or dismissed. */
   subagentTakeoverPromptShown?: boolean;
   modelId?: ModelId;
+  /**
+   * Move the chat onto a saved preset (its harness and its model; `modelId` is
+   * then ignored), or `null` to leave the one it runs on. A `modelId` alone
+   * leaves a preset only when it names another model.
+   */
+  presetId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
   /**

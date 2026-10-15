@@ -621,15 +621,23 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 
 | Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
 |---|---|---|---|---|
-| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M) and `autoCompactEnabled` | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
+| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
 | Codex | Yes | `codex app-server -c model_auto_compact_token_limit=<n>`, capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
-| OpenCode | Yes | OpenCode config `compaction: { auto, buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
-| Pi | Yes | `settingsManager.applyOverrides({ compaction: { enabled, reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
+| OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
+| Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
 | Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |
 | Droid, ACP agents | Varies | None | Sent as a prompt where the agent accepts it | `contextStats.limit` / `usage_update` |
 
 Settings live in project config `ai.compaction.<provider>` (`shared/compactionSettings.ts`:
-`enabled`, `atTokens` (`null` = the harness default), `reserveTokens`, `keepRecentTokens`, `idleMode`). Claude and
+`atTokens` (`null` = Auto, the harness default), `subagentAtTokens` (Claude), `reserveTokens`, `keepRecentTokens`,
+`idleMode`). Compaction itself is always on: a chat that cannot compact only overflows, so there is no off switch,
+and an `enabled: false` saved before is dropped on read. `subagentAtTokens` reaches Claude as `autoCompactWindow` on
+every subagent definition. The SDK only lets it lower the window a subagent inherits, so Settings says "No effect"
+when it is at or above `atTokens`. Built-ins the chat does not already replace (Explore, Plan, general-purpose) get
+ADE's copy of their definition (`withClaudeSubagentCompactWindow`, `shared/claudeBuiltinAgentPrompts.ts`) as Claude
+Code runs them: the main model for Explore and Plan (Explore capped at Opus under a Fable or Mythos main model), the
+default subagent model for general-purpose, and no CLAUDE.md for Explore and Plan. On a Windows machine whose Claude
+has not yet reported its shell, the built-ins are left to Claude rather than given a copy naming the wrong tools. Claude and
 Codex accounts can override them on the account record (`ProviderInstance.compaction`); the effective value is
 the provider setting with the account's fields on top. A change restarts an idle Claude or Codex runtime, so it
 applies at the next query start. ADE never writes the user's `~/.claude/settings.json` and never sets

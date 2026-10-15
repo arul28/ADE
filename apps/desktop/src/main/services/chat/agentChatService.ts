@@ -1,6 +1,9 @@
-import { compactFirstMinTokensFromEnv, compactFirstOffer } from "../../../shared/compactFirst";
+import { COMPACT_FIRST_MIN_TOKENS, compactFirstMinTokensFromEnv, compactFirstOffer, warmIdleCompactAtMs } from "../../../shared/compactFirst";
+import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
+import { claudeToolProfileOrNull, noteClaudeCodeInit } from "../ai/claudeCodeInit";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -383,9 +386,8 @@ import {
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
-import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
-import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   createCredentialModelDescriptorBase,
@@ -2200,6 +2202,8 @@ type PersistedChatState = {
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
+  /** See ManagedChatSession.claudeFreshThreadPending. */
+  claudeFreshThreadPending?: true;
   /** See ManagedChatSession.pendingRestartNote. */
   pendingRestartNote?: string | null;
   /**
@@ -2736,6 +2740,12 @@ type ClaudeContextGuardrailState = {
   pendingInternalCompactionTrigger: "ade_fallback" | "recovery" | null;
   pendingInternalCompactionId: string | null;
   /**
+   * The pending compaction whose "started" event has gone out. A `/compact`
+   * waits behind the running turn, and Claude repeats its `compacting` status
+   * while it works, so "started" goes out once, when Claude really begins.
+   */
+  internalCompactionStartedId: string | null;
+  /**
    * The notice ADE will show *if* the SDK confirms the compaction it was asked
    * for. Held until the compact_boundary lands, because claiming a compaction
    * that never happened is how a chat ends up telling the user to re-send a
@@ -2805,6 +2815,14 @@ type ClaudeRuntime = {
    */
   resultCostBaseline: number | null;
   warmQuery: WarmQuery | null;
+  /**
+   * The id a warm-up opened a new thread under. Claude Code writes a thread's
+   * transcript with its first message, so until one goes in
+   * (`pushClaudeMessage`) there is nothing on disk to resume.
+   * `persistChatState` leaves it out, so a runtime started after this one (a
+   * model switch, a restart) starts fresh.
+   */
+  unwrittenWarmSessionId: string | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
   /** Resolves the current warmup race so waiters can stop blocking immediately. */
@@ -3715,6 +3733,16 @@ function codexSubagentEventBase(state: CodexSubagentThreadState) {
 function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): boolean {
   const normalizedTurnId = turnId?.trim() || null;
   return normalizedTurnId ? runtime.interruptedTurnIds.has(normalizedTurnId) : false;
+}
+
+/** `rememberBoundedId` for a map: keeps the newest `limit` keys; an existing key keeps its value. */
+function rememberBoundedEntry<TValue>(map: Map<string, TValue>, key: string, value: TValue, limit: number): void {
+  if (map.has(key)) return;
+  map.set(key, value);
+  for (const oldest of map.keys()) {
+    if (map.size <= limit) break;
+    map.delete(oldest);
+  }
 }
 
 function rememberBoundedId(set: Set<string>, value: string | null | undefined, limit = 64): void {
@@ -4998,6 +5026,20 @@ type ManagedChatSession = {
   seededPiSessionId?: string;
   seededPiSessionFile?: string;
   seededAcpSessionId?: string;
+  /**
+   * The next Claude runtime starts a new thread instead of resuming one: the
+   * chat moved onto a preset whose model cannot read the old thread (DeepSeek's
+   * endpoint refuses an Opus history), and the transcript travels as a replay.
+   * Persisted, because the pointer table would otherwise hand a restarted
+   * brain the old thread. Cleared once a message writes the new thread.
+   */
+  claudeFreshThreadPending?: boolean;
+  /**
+   * The launch routes a model switch left (see `updateSession`). A persist
+   * with no live runtime restores `presetId` / `credentialId` from disk, which
+   * would put a route the user just left back on the chat.
+   */
+  leftLaunchRoute?: { preset: boolean; credential: boolean };
   /**
    * Degradation notes already emitted for this chat. Mirrors the persisted set
    * so a note stays once-per-session across a runtime restart, and so W6 does
@@ -7731,6 +7773,28 @@ function isBareClaudeOpusRuntimeAlias(model: string): boolean {
   return model.trim().toLowerCase()
     .replace(/^anthropic\//, "")
     .replace(/-api$/, "") === "opus";
+}
+
+/** The runtime's thread id when Claude has written it; a warm-up's thread is not on disk yet. */
+function writtenClaudeSessionId(runtime: { sdkSessionId: string | null; unwrittenWarmSessionId: string | null }): string | null {
+  return runtime.sdkSessionId !== runtime.unwrittenWarmSessionId ? runtime.sdkSessionId : null;
+}
+
+/**
+ * Every message into Claude goes through here. Claude writes the thread with
+ * it, so the warm-up's thread id becomes one a later runtime can resume, and a
+ * pending fresh thread has started. Taking the warm query for a control
+ * request (`/context`, a plugin reload) writes nothing, so it does not count.
+ */
+function pushClaudeMessage<TMessage>(
+  managed: { claudeFreshThreadPending?: boolean },
+  runtime: { unwrittenWarmSessionId: string | null },
+  pump: { push: (message: TMessage) => void },
+  message: TMessage,
+): void {
+  runtime.unwrittenWarmSessionId = null;
+  managed.claudeFreshThreadPending = false;
+  pump.push(message);
 }
 
 function resolveModelIdFromStoredValue(
@@ -11217,6 +11281,28 @@ export function createAgentChatService(args: {
    */
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
   const launchPlanNoticeBySession = new Map<string, string>();
+
+  /**
+   * The model a chat on a preset sends. Prepares the launch first, before
+   * anything can warm the runtime: a route through ADE's proxy cannot resolve
+   * until the proxy runs, and a runtime started first would keep the harness's
+   * own sign-in for the whole chat. Some routes then rename the model on the
+   * wire (Droid's `custom:` ids, an OpenCode-native model's
+   * `opencode/<provider>/<model>`), and every non-Claude runtime re-sends the
+   * row's model, so the chat adopts the launch's spelling. Claude reads the
+   * plan's model directly and keeps the preset's id for display.
+   */
+  const resolvePresetLaunchModel = async (provider: AgentChatProvider, presetId: string, model: string): Promise<string> => {
+    await prepareHarnessLaunch({ provider, presetId });
+    if (provider === "claude") return model;
+    try {
+      const launch = resolveLaunchBrain({ provider, presetId }, { writeConfig: false });
+      if (launch?.status === "ready" && launch.model.trim()) return launch.model.trim();
+    } catch {
+      // The launch reports its own reason when the chat starts.
+    }
+    return model;
+  };
 
   /**
    * The thinking level a saved preset carries, without building its environment.
@@ -17848,6 +17934,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The pointer-table thread a chat may resume, if any: none while the chat
+   * waits to start a fresh thread (`claudeFreshThreadPending`), and only one
+   * written for the chat's own lane.
+   */
+  const claudeResumePointer = (sessionId: string, laneId: string, freshThreadPending: boolean) => {
+    if (freshThreadPending) return null;
+    const pointer = getClaudeSessionPointerForChat(sessionId);
+    return pointer?.laneId === laneId ? pointer : null;
+  };
+
   const mirrorClaudeSessionPointer = (
     managed: ManagedChatSession,
     sdkSessionId: string | null | undefined,
@@ -17909,7 +18006,15 @@ export function createAgentChatService(args: {
       : managed.runtimeInvalidated
         ? siblingBrainOwnerOnDisk(managed.session.id)
         : prevPersisted?.runtimeOwner ?? null;
-    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+    // A thread no message has been sent on is not on disk yet, so it is not
+    // saved (nor mirrored to the pointer table below): a runtime started after
+    // this one would resume it and fail with "No conversation found".
+    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? writtenClaudeSessionId(managed.runtime) : null;
+    // A launch route the chat left (`leftLaunchRoute`) must not come back from disk.
+    const persistedPresetId = managed.session.presetId
+      ?? (managed.leftLaunchRoute?.preset ? undefined : prevPersisted?.presetId);
+    const persistedCredentialId = managed.session.credentialId
+      ?? (managed.leftLaunchRoute?.credential ? undefined : prevPersisted?.credentialId);
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
       : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
@@ -18090,12 +18195,8 @@ export function createAgentChatService(args: {
       ...((managed.session.instanceId ?? prevPersisted?.instanceId)
         ? { instanceId: managed.session.instanceId ?? prevPersisted?.instanceId }
         : {}),
-      ...((managed.session.presetId ?? prevPersisted?.presetId)
-        ? { presetId: managed.session.presetId ?? prevPersisted?.presetId }
-        : {}),
-      ...((managed.session.credentialId ?? prevPersisted?.credentialId)
-        ? { credentialId: managed.session.credentialId ?? prevPersisted?.credentialId }
-        : {}),
+      ...(persistedPresetId ? { presetId: persistedPresetId } : {}),
+      ...(persistedCredentialId ? { credentialId: persistedCredentialId } : {}),
       ...(managed.runtime?.kind === "pi" && !managed.runtimeInvalidated
         ? {
             ...(managed.runtime.sdk.sessionId ? { piSessionId: managed.runtime.sdk.sessionId } : {}),
@@ -18115,7 +18216,7 @@ export function createAgentChatService(args: {
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
-          ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
+          ? { sdkSessionId: liveClaudeSdkSessionId ?? undefined }
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.forkFromSdkSessionId
         ? { forkFromSdkSessionId: managed.runtime.forkFromSdkSessionId }
@@ -18269,6 +18370,7 @@ export function createAgentChatService(args: {
         ? managed.pendingTranscriptReplay
         : null,
       pendingRestartNote: managed.pendingRestartNote?.trim() ? managed.pendingRestartNote : null,
+      ...(managed.claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
       ...(managed.transcriptReplayOrigin
         ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
         : {}),
@@ -18536,8 +18638,8 @@ export function createAgentChatService(args: {
             }))
             .slice(-12)
         : undefined;
-      const rawClaudePointer = provider === "claude" ? getClaudeSessionPointerForChat(sessionId) : null;
-      const claudePointer = rawClaudePointer?.laneId === laneId ? rawClaudePointer : null;
+      const claudeFreshThreadPending = record.claudeFreshThreadPending === true;
+      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending) : null;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length
         ? record.sdkSessionId.trim()
         : claudePointer?.sessionId;
@@ -18789,6 +18891,15 @@ export function createAgentChatService(args: {
         ...(devinCloud ? { devinCloud } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
+        // What the next turn still owes the provider; the restore after a
+        // restart reads these back.
+        ...(typeof record.pendingTranscriptReplay === "string" && record.pendingTranscriptReplay.trim()
+          ? { pendingTranscriptReplay: record.pendingTranscriptReplay }
+          : {}),
+        ...(typeof record.pendingRestartNote === "string" && record.pendingRestartNote.trim()
+          ? { pendingRestartNote: record.pendingRestartNote }
+          : {}),
+        ...(claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
         ...(asyncQuestions?.length ? { asyncQuestions } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
@@ -21244,8 +21355,38 @@ export function createAgentChatService(args: {
   const agentShellOutput = createAgentShellOutputObserver(projectRoot);
 
   const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
-  const compactOnlyTurns = new Set<string>();
+  /**
+   * Turns that only ran `/compact`, with who asked: the person, or ADE by
+   * itself (`automaticCompactSessions` marks a chat whose next one is ADE's).
+   * Claude reports every `/compact` as asked for, so this is what tells them apart.
+   */
+  const compactOnlyTurns = new Map<string, "manual" | "auto">();
+  const automaticCompactSessions = new Set<string>();
   const compactFirstMinTokens = compactFirstMinTokensFromEnv(process.env);
+  // "Always compact first" while the cache is still warm; see warmIdleCompactionScheduler.ts.
+  const warmIdleCompaction = createWarmIdleCompactionScheduler<ManagedChatSession>({
+    sessionIdOf: (managed) => managed.session.id,
+    compactAt: async (managed) => {
+      if (managed.closed || managed.session.provider !== "claude") return null;
+      // Only "Always" compacts by itself; the history read is for those chats.
+      if (compactionSettingsFor(managed).idleMode !== "always") return null;
+      // Like every other automatic wake: never one the person put away.
+      const row = sessionService.get(managed.session.id);
+      if (!row || row.archivedAt || row.settledAt) return null;
+      return warmIdleCompactAtMs(await compactFirstArgs(managed));
+    },
+    isIdle: (managed) => isIdleForCompactFirst(managed),
+    // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
+    compact: async (managed) => {
+      automaticCompactSessions.add(managed.session.id);
+      try {
+        await runSessionTurn({ sessionId: managed.session.id, text: "/compact", timeoutMs: null });
+      } finally {
+        automaticCompactSessions.delete(managed.session.id);
+      }
+    },
+    logger,
+  });
 
   const emitChatEvent = (
     managed: ManagedChatSession,
@@ -21257,7 +21398,7 @@ export function createAgentChatService(args: {
       if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
     }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
-      rememberBoundedId(compactOnlyTurns, event.turnId, 512);
+      rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -21270,7 +21411,11 @@ export function createAgentChatService(args: {
         event = { ...event, summary: managed.runtime.compactionSummary };
         managed.runtime.compactionSummary = undefined;
       }
-      if (event.state === "started" && event.turnId && compactOnlyTurns.has(event.turnId)) event = { ...event, trigger: "manual" };
+      // Claude labels its own start "auto" and every `/compact` result
+      // "manual": a person's turn needs only its start corrected, ADE's own
+      // turn needs every state.
+      const compactOnlyTrigger = event.turnId ? compactOnlyTurns.get(event.turnId) : undefined;
+      if (compactOnlyTrigger && (event.state === "started" || compactOnlyTrigger === "auto")) event = { ...event, trigger: compactOnlyTrigger };
       const open = openNativeCompactions.get(managed.session.id) ?? new Map();
       const key = event.compactionId ?? event.turnId ?? "native";
       // A failure event may not know who asked (OpenCode reports none); the
@@ -21315,6 +21460,7 @@ export function createAgentChatService(args: {
       const since = event.usage?.lastRequestStartedAt;
       if (ttl) managed.session.promptCache = { ttl, ...(since ? { since } : {}) };
     }
+    if (event.type === "status" && event.turnStatus === "started") warmIdleCompaction.clear(managed.session.id);
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -21509,6 +21655,8 @@ export function createAgentChatService(args: {
     noteLaneBranchTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
+      // Read from the history this event is now in.
+      if (managed.session.provider === "claude") void warmIdleCompaction.schedule(managed);
     }
   };
 
@@ -22041,6 +22189,39 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Claude's `compacting` status: the compaction has really begun. One that
+   * ADE asked for carries ADE's id so it pairs with the completion.
+   */
+  const emitClaudeCompactionStarted = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string | undefined,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    if (guardrail.pendingInternalCompactionTrigger && compactionId) {
+      if (guardrail.internalCompactionStartedId === compactionId) return;
+      guardrail.internalCompactionStartedId = compactionId;
+      emitChatEvent(managed, {
+        type: "context_compact",
+        trigger: "ade_fallback",
+        state: "started",
+        compactionId,
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+    // The real trigger arrives with the boundary (completed) event, so this
+    // defaults to "auto".
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "auto",
+      state: "started",
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
   const issueClaudeInternalCompaction = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -22064,17 +22245,14 @@ export function createAgentChatService(args: {
     message.timestamp = new Date().toISOString();
     message.priority = "next";
     message.shouldQuery = true;
-    runtime.inputPump.push(message);
+    pushClaudeMessage(managed, runtime, runtime.inputPump, message);
     guardrail.pendingInternalCompactionTrigger = trigger;
     guardrail.pendingInternalCompactionId = randomUUID();
     guardrail.fallbackIssuedThisEpisode = true;
-    emitChatEvent(managed, {
-      type: "context_compact",
-      trigger: "ade_fallback",
-      state: "started",
-      compactionId: guardrail.pendingInternalCompactionId,
-      ...(turnId ? { turnId } : {}),
-    });
+    // The `/compact` waits its turn behind whatever Claude runs next, so
+    // "Compacting" goes out when Claude starts (`emitClaudeCompactionStarted`).
+    // Shown from here, it sat on a chain of turns for half an hour while the
+    // context kept growing.
     guardrail.pendingInternalCompactionNotice = {
       message: trigger === "recovery"
         ? "context overflowed — compacted; please re-send your last message"
@@ -23285,7 +23463,15 @@ export function createAgentChatService(args: {
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
-      const fireAt = nextChatScheduledCronFireAt(cron, Date.now()) ?? undefined;
+      // The provider stamps the job's real next run, its scheduler's per-job
+      // offset included, so ten jobs sharing a cron do not all fire together.
+      // A local cron parse cannot know that offset and reads minutes early, so
+      // prefer the provider's number and fall back to the parse for a CLI that
+      // does not send `nextFireAt`.
+      const providerNextFireAt = typeof output.nextFireAt === "number" && Number.isFinite(output.nextFireAt)
+        ? output.nextFireAt
+        : null;
+      const fireAt = providerNextFireAt ?? nextChatScheduledCronFireAt(cron, Date.now()) ?? undefined;
       if (recurring) rememberActiveProviderCron(runtime, id, { ...args, ...output, prompt });
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
@@ -25289,6 +25475,7 @@ export function createAgentChatService(args: {
 
     setSessionEnded(managed);
     managed.closed = true;
+    warmIdleCompaction.clear(managed.session.id);
     managed.ctoSessionStartedAt = null;
     persistChatState(managed);
 
@@ -25576,6 +25763,7 @@ export function createAgentChatService(args: {
     if (typeof persisted?.pendingRestartNote === "string" && persisted.pendingRestartNote.trim()) {
       managed.pendingRestartNote = persisted.pendingRestartNote;
     }
+    if (persisted?.claudeFreshThreadPending === true) managed.claudeFreshThreadPending = true;
     for (const entry of persisted?.asyncQuestions ?? []) {
       managed.asyncQuestions.set(entry.itemId, {
         request: entry.request,
@@ -27540,6 +27728,7 @@ export function createAgentChatService(args: {
 
     if (msg.type === "system" && record.subtype === "init") {
       runtime.apiKeySource = stringOrNull(record.apiKeySource) ?? runtime.apiKeySource ?? null;
+      noteClaudeCodeInit(record);
       rememberClaudeTerminalSlashCommands(runtime, record.terminal_slash_commands);
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
@@ -27577,17 +27766,9 @@ export function createAgentChatService(args: {
 
     if (msg.type === "system" && record.subtype === "status" && record.status === "compacting") {
       const turnId = startClaudeIdleTurn(managed, runtime, state, "Claude is compacting context");
-      const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
       observeClaudeCompaction(managed, runtime, { completed: false });
       emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
-      if (!internalCompactionPending) {
-        emitChatEvent(managed, {
-          type: "context_compact",
-          trigger: "auto",
-          state: "started",
-          turnId,
-        });
-      }
+      emitClaudeCompactionStarted(managed, runtime, turnId);
       return;
     }
 
@@ -28692,7 +28873,7 @@ export function createAgentChatService(args: {
       if (!runtime.inputPump) {
         throw new Error("Claude's live input stream closed before the turn could be dispatched.");
       }
-      runtime.inputPump.push(messageToSend);
+      pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
       settleClaudeInitialInputDispatch(runtime);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -28915,6 +29096,7 @@ export function createAgentChatService(args: {
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
+          noteClaudeCodeInit(initMsg);
           const initSessionId = typeof initMsg.session_id === "string"
             ? initMsg.session_id.trim()
             : "";
@@ -28993,20 +29175,11 @@ export function createAgentChatService(args: {
             }
           }
           if (statusMsg.status === "compacting") {
-            const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
             observeClaudeCompaction(managed, runtime, { completed: false });
             emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
             // Begin marker so the UI shows a live "compacting…" indicator instead of
-            // feeling stuck until the compact_boundary lands. The real trigger arrives
-            // with the boundary (completed) event, so default to "auto" here.
-            if (!internalCompactionPending) {
-              emitChatEvent(managed, {
-                type: "context_compact",
-                trigger: "auto",
-                state: "started",
-                turnId,
-              });
-            }
+            // feeling stuck until the compact_boundary lands.
+            emitClaudeCompactionStarted(managed, runtime, turnId);
           }
           continue;
         }
@@ -41608,8 +41781,9 @@ export function createAgentChatService(args: {
       // ADE renders MCP Apps. With this the CLI declares the
       // `io.modelcontextprotocol/ui` extension to each MCP server, so a server
       // that asks before it registers a tool with a page is told so. Read in
-      // the CLI (2.1.293), not documented: recheck on a bump. Without it apps
-      // still work for servers that do not ask.
+      // the CLI (2.1.293, re-checked 2.1.300 — SDK 0.3.300), not documented:
+      // recheck on a bump. Without it apps still work for servers that do not
+      // ask.
       CLAUDE_CODE_MCP_APPS_HOST: "1",
     };
     // The account's own prompt cache choice. A preset or stored credential
@@ -41724,6 +41898,13 @@ export function createAgentChatService(args: {
         ...(claudePresetPlan.claudeAgents as NonNullable<ClaudeSDKOptions["agents"]>),
       };
     }
+    // The account's subagent compaction window. It sits on each agent's
+    // definition, so the built-ins get ADE's copy of theirs to carry it.
+    const agentsWithWindow = withClaudeSubagentCompactWindow(opts.agents ?? {}, compactionSettingsFor(managed), {
+      profile: claudeToolProfileOrNull(),
+      mainModel: managed.session.model,
+    });
+    if (Object.keys(agentsWithWindow).length) opts.agents = agentsWithWindow;
     // The CTO tool server is injected without `allowManagedMcpServersOnly`
     // isolation — the CTO is a daily driver chat and must keep the user's own
     // MCP servers.
@@ -42878,6 +43059,10 @@ export function createAgentChatService(args: {
         } else {
           assignedSessionId = randomUUID();
           runtime.sdkSessionId = assignedSessionId;
+          // Before any persist: the caller persists as soon as this returns.
+          // A fork writes under the id it was given and re-forks from its
+          // source if this one is lost, so only a brand-new thread is marked.
+          runtime.unwrittenWarmSessionId = assignedSessionId;
           options.sessionId = assignedSessionId;
         }
         logger.info("agent_chat.claude_prewarm_start", {
@@ -43216,9 +43401,9 @@ export function createAgentChatService(args: {
       laneId: resolveManagedExecutionLaneId(managed),
       laneWorktreePath: managed.laneWorktreePath,
     });
-    const claudePointer = getClaudeSessionPointerForChat(managed.session.id);
-    const laneScopedClaudePointer = claudePointer?.laneId === managed.session.laneId ? claudePointer : null;
-    const sdkSessionId = persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null;
+    const freshThread = managed.claudeFreshThreadPending === true;
+    const claudePointer = claudeResumePointer(managed.session.id, managed.session.laneId, freshThread);
+    const sdkSessionId = freshThread ? null : persisted?.sdkSessionId ?? claudePointer?.sessionId ?? null;
     const forkFromSdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
       ? persisted?.forkFromSdkSessionId ?? null
       : null;
@@ -43236,6 +43421,7 @@ export function createAgentChatService(args: {
         queryGeneration: 0,
         resultCostBaseline: persisted?.claudeResultCostTotalUsd ?? null,
         warmQuery: null,
+        unwrittenWarmSessionId: null,
       warmupDone: null,
       warmupCancel: null,
       warmupCancelled: false,
@@ -43285,6 +43471,7 @@ export function createAgentChatService(args: {
         fallbackIssuedThisEpisode: false,
         pendingInternalCompactionTrigger: null,
         pendingInternalCompactionId: null,
+        internalCompactionStartedId: null,
         pendingInternalCompactionNotice: null,
         compactionUnavailable: false,
         compactionUnavailableTurnId: null,
@@ -44562,8 +44749,15 @@ export function createAgentChatService(args: {
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
-    const rawModel = typeof model === "string" ? model : "";
+    // A preset names its harness and the model it launches. A caller that sends
+    // only `presetId` (the CLI, an action bus, a scheduled wake) gets the
+    // preset's model before any provider default can fill the gap: a default
+    // recorded "Claude Opus" on a chat that ran DeepSeek.
+    const trimmedPresetId = requestedPresetId?.trim() ?? "";
+    const presetSpec = trimmedPresetId ? readPresetLaunchTarget(trimmedPresetId, resolveMachineAdeDir()) : null;
+    const callerModel = typeof model === "string" ? model : "";
     const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
+    const rawModel = !callerModel.trim() && !rawModelId && presetSpec?.model ? presetSpec.model : callerModel;
     const requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
     const modelFromModelId = requestedModelDescriptor
       ? requestedModelDescriptor.isCliWrapped
@@ -44664,7 +44858,7 @@ export function createAgentChatService(args: {
     // A custom provider names its harness. A model id that ADE's registry
     // files under another provider (GPT served by OpenCode Go, run in Claude
     // Code) must not re-route the chat to that provider's harness.
-    const presetPinsHarness = Boolean(requestedPresetId?.trim())
+    const presetPinsHarness = Boolean(trimmedPresetId)
       && Boolean(resolvedDescriptor)
       && resolveProviderGroupForModel(resolvedDescriptor!) !== provider;
 
@@ -44680,55 +44874,25 @@ export function createAgentChatService(args: {
       requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
 
-    if (requestedPresetId?.trim()) {
+    if (presetSpec) {
       // A preset names its harness. When a caller supplies only `presetId` — the
       // CLI, an action bus, a scheduled wake — the provider would otherwise stay
       // at the caller's default, and the session row would record one provider
       // while the runtime launched under another. Every provider-gated surface
       // (the Work provider filter, provider notices, permission-mode labels)
       // then reads the wrong one, which is how a Claude Code chat ends up
-      // showing Codex configuration warnings. Read the preset's own body, from
-      // the same machine cache the launch reads, and adopt its harness. An
-      // ad-hoc route id carries its spec in the id itself. A caller that sent
-      // no model gets the preset's, so the row names the model that runs.
-      const presetId = requestedPresetId.trim();
-      const presetSpec: { harness: AgentChatProvider; model: string } | null = isRoutePresetId(presetId)
-        ? decodeRoutePresetId(presetId)
-        : readHarnessPresetsFromMachine(resolveMachineAdeDir())?.find((preset) => preset.id === presetId) ?? null;
-      if (presetSpec) {
-        effectiveProvider = presetSpec.harness;
-        if (!normalizedModel.trim() && presetSpec.model.trim()) normalizedModel = presetSpec.model.trim();
-        // The preset remaps the provider a third way, alongside the requested
-        // provider and the model's group, so the caller-MCP gate has to run on
-        // the provider that will actually launch — the same reason the model
-        // remap above is checked again. No servers is a no-op.
-        requireProviderAcceptsCallerMcpServers(effectiveProvider);
-      }
+      // showing Codex configuration warnings. The preset's body, read above
+      // from the same machine cache the launch reads, names the harness.
+      effectiveProvider = presetSpec.harness;
+      // The preset remaps the provider a third way, alongside the requested
+      // provider and the model's group, so the caller-MCP gate has to run on
+      // the provider that will actually launch — the same reason the model
+      // remap above is checked again. No servers is a no-op.
+      requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
 
-    if (requestedPresetId?.trim()) {
-      // Before anything can warm the runtime: a route translated through ADE's
-      // proxy cannot resolve until the proxy runs, and a runtime started first
-      // would keep the harness's own sign-in for the whole chat.
-      await prepareHarnessLaunch({ provider: effectiveProvider, presetId: requestedPresetId });
-    }
-    if (requestedPresetId?.trim() && effectiveProvider !== "claude") {
-      // Some routes rename the model on the wire (Droid's `custom:` ids, an
-      // OpenCode-native model's `opencode/<provider>/<model>`). Every
-      // non-Claude runtime re-sends `session.model` on each request, so the
-      // chat adopts the launch's spelling up front. Claude reads the plan's
-      // model directly and keeps the preset's id for display.
-      try {
-        const launch = resolveLaunchBrain(
-          { provider: effectiveProvider, presetId: requestedPresetId },
-          { writeConfig: false },
-        );
-        if (launch?.status === "ready" && launch.model.trim() && launch.model.trim() !== normalizedModel) {
-          normalizedModel = launch.model.trim();
-        }
-      } catch {
-        // The launch reports its own reason when the chat starts.
-      }
+    if (trimmedPresetId) {
+      normalizedModel = await resolvePresetLaunchModel(effectiveProvider, trimmedPresetId, normalizedModel);
     }
 
     if (normalizedIdempotencyKey && sessionService.get(sessionId)) {
@@ -45510,7 +45674,8 @@ export function createAgentChatService(args: {
     const sourceClaudeRuntime = nativeFork && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
       : null;
-    const sourceSdkSessionId = sourceClaudeRuntime?.sdkSessionId ?? null;
+    // A warm-up's thread is not on disk until a message writes it: nothing to fork yet.
+    const sourceSdkSessionId = sourceClaudeRuntime ? writtenClaudeSessionId(sourceClaudeRuntime) : null;
     if (nativeFork && managed.session.provider === "claude" && !sourceSdkSessionId) {
       throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
@@ -54998,15 +55163,13 @@ export function createAgentChatService(args: {
     // already on in "always" mode; automation and CLI sends never carry it. A
     // chat that became busy meanwhile skips it and steers as usual.
     let compactFirst: { turn: Promise<AgentChatBackgroundTurnResult>; before: number } | null = null;
-    const idle = () => !runtimeMidTurn(managed) && managed.session.status !== "active";
     try {
-      if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text) && idle()
-        // Native resume_return owns its send; never combine it with ADE's pill.
-        && !collectPendingInputRequests(managed).length) {
-        const history = (await getChatEventHistory(args.sessionId, { maxEvents: 512 })).events;
-        const offer = compactFirstOffer({ provider: "claude", events: history, cache: managed.session.promptCache, minTokens: compactFirstMinTokens, mode: compactionSettingsFor(managed).idleMode ?? "ask" });
+      // Pending input includes Claude's native resume_return, which owns its
+      // send; never combine it with ADE's pill.
+      if (args.compactFirst === true && managed.session.provider === "claude" && !isManualCompactCommand(args.text) && isIdleForCompactFirst(managed)) {
+        const offer = compactFirstOffer(await compactFirstArgs(managed));
         // Checked again: a turn may have started while the history loaded.
-        if (offer && idle()) compactFirst = await startCompactFirstTurn(managed);
+        if (offer && isIdleForCompactFirst(managed)) compactFirst = await startCompactFirstTurn(managed);
       }
       // Behind a running compaction the message joins the queue, like any
       // message sent during a turn, so this call returns at once instead of
@@ -55097,6 +55260,25 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.compact_first_settle_failed", { sessionId, error: getErrorMessage(error) });
     }
+  }
+
+  /** A chat Compact first may compact: nothing running, nothing waiting on the person. */
+  function isIdleForCompactFirst(managed: ManagedChatSession): boolean {
+    return !runtimeMidTurn(managed)
+      && managed.session.status !== "active"
+      && !collectPendingInputRequests(managed).length;
+  }
+
+  /** What the Compact first rules read for this chat (`shared/compactFirst`). */
+  async function compactFirstArgs(managed: ManagedChatSession) {
+    const history = (await getChatEventHistory(managed.session.id, { maxEvents: 512 })).events;
+    return {
+      provider: "claude",
+      events: history,
+      cache: managed.session.promptCache,
+      minTokens: compactFirstMinTokens,
+      mode: compactionSettingsFor(managed).idleMode ?? "ask",
+    } as const;
   }
 
   function emitCompactFirstFallbackNotice(managed: ManagedChatSession): void {
@@ -55360,7 +55542,7 @@ export function createAgentChatService(args: {
       steerId: steer.steerId,
       steer: { ...steer },
     });
-    runtime.inputPump.push(sdkMsg);
+    pushClaudeMessage(managed, runtime, runtime.inputPump, sdkMsg);
     onAccepted?.();
 
     emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
@@ -59285,7 +59467,8 @@ export function createAgentChatService(args: {
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
       ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
-      ...(provider === "claude" && compactFirstMinTokens != null ? { compactFirstMinTokens } : {}),
+      // Always sent, so a client built with an older floor offers at this one.
+      ...(provider === "claude" ? { compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
@@ -62744,6 +62927,7 @@ export function createAgentChatService(args: {
     if (!trimmedSessionId.length) {
       throw new Error("Chat session id is required.");
     }
+    warmIdleCompaction.clear(trimmedSessionId);
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
       // Idempotent, for the same reason the mid-flight `if (!current) return`
@@ -62881,6 +63065,7 @@ export function createAgentChatService(args: {
   const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
     const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
+    warmIdleCompaction.clear(trimmedSessionId);
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
@@ -62934,6 +63119,7 @@ export function createAgentChatService(args: {
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    warmIdleCompaction.dispose();
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
@@ -63368,6 +63554,7 @@ export function createAgentChatService(args: {
     tag,
     manuallyNamed,
     modelId,
+    presetId: requestedPresetIdArg,
     reasoningEffort,
     fastMode: requestedFastModeArg,
     fastTier: requestedFastTier,
@@ -63403,6 +63590,16 @@ export function createAgentChatService(args: {
       ? foldedCursorFast.configValues ?? null
       : requestedCursorConfigValuesArg;
     const managed = ensureManagedSession(sessionId);
+    // A preset to move onto, read once: the permission check, the switch and
+    // the launch all use it.
+    const requestedPresetId = typeof requestedPresetIdArg === "string" ? requestedPresetIdArg.trim() : "";
+    const requestedPreset = requestedPresetId ? readPresetLaunchTarget(requestedPresetId, resolveMachineAdeDir()) : null;
+    if (requestedPresetId && !requestedPreset?.model) {
+      throw new Error(`Preset '${requestedPresetId}' is not on this machine.`);
+    }
+    if (requestedPresetIdArg === null && modelId === undefined) {
+      throw new Error("Pick a model to leave the preset for.");
+    }
     // An agent can only lower permissions, never raise them past its own
     // chat's level or the target's parent. Checked only when the update can
     // change the level (a permission field, or a model that may switch the
@@ -63426,14 +63623,15 @@ export function createAgentChatService(args: {
     if (
       runtimeActor?.kind === "agent"
       && !isPrimaryPinnedIdentity(managed.session.identityKey)
-      && (modelId !== undefined || touchesPermissions)
+      && (modelId !== undefined || requestedPreset || touchesPermissions)
     ) {
       const ceiling = resolvePermissionCeiling({
         parentSessionId: managed.session.orchestrationParentSessionId,
         actor: runtimeActor,
       });
       const targetDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : null;
-      const provider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : managed.session.provider;
+      const provider = requestedPreset?.harness
+        ?? (targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : managed.session.provider);
       // The fields this update will leave, built in the update's own order:
       // the generic word rewrites the provider's native fields first, then any
       // explicit native field is layered on top.
@@ -63457,6 +63655,7 @@ export function createAgentChatService(args: {
     // A reconfigure can restart the provider under the rerun's rollback.
     if (
       modelId !== undefined
+      || requestedPresetIdArg !== undefined
       || reasoningEffort !== undefined
       || fastMode !== undefined
       || requestedMcpServers !== undefined
@@ -63509,11 +63708,21 @@ export function createAgentChatService(args: {
     // before either commits anything: a refused update must leave the old
     // servers, the old reports, and a live runtime exactly as they were.
     let requestedModel: {
-      descriptor: ModelDescriptor;
+      /** Null for a preset's model that ADE files under another provider (DeepSeek in Claude Code). */
+      descriptor: ModelDescriptor | null;
       nextProvider: AgentChatProvider;
       nextModel: string;
+      presetId?: string;
     } | null = null;
-    if (modelId !== undefined) {
+    if (requestedPreset) {
+      const descriptor = getModelById(requestedPreset.model) ?? resolveModelAlias(requestedPreset.model) ?? null;
+      requestedModel = {
+        descriptor: descriptor && resolveProviderGroupForModel(descriptor) === requestedPreset.harness ? descriptor : null,
+        nextProvider: requestedPreset.harness,
+        nextModel: requestedPreset.model,
+        presetId: requestedPresetId,
+      };
+    } else if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
       if (!nextModelId.length) {
         throw new Error("A modelId is required when updating a chat session model.");
@@ -63579,7 +63788,7 @@ export function createAgentChatService(args: {
     }
 
     if (requestedModel) {
-      const { descriptor, nextProvider, nextModel } = requestedModel;
+      const { descriptor, nextProvider, nextModel, presetId: nextPresetId = null } = requestedModel;
       const previousProvider = managed.session.provider;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, previousProvider)
@@ -63629,11 +63838,32 @@ export function createAgentChatService(args: {
       // purpose — it still drives the runtime teardown and title re-adoption
       // below, which any model switch needs.
       const providerChanged = previousProvider !== nextProvider;
-      const modelChanged =
-        providerChanged
-        || managed.session.modelId !== descriptor.id
-        || managed.session.model !== nextModel;
+      // By id when the model has one: a non-Claude preset's row holds the
+      // launch's own spelling (`custom:…`), which a re-sent model never matches.
+      const sameModel = descriptor ? managed.session.modelId === descriptor.id : managed.session.model === nextModel;
+      const route = launchRouteTransition({
+        currentPresetId: managed.session.presetId?.trim() || null,
+        hasCredential: Boolean(managed.session.credentialId?.trim()),
+        nextPresetId,
+        explicitLeave: requestedPresetIdArg === null,
+        sameModel,
+        providerChanged,
+        previouslyLeft: managed.leftLaunchRoute,
+      });
+      const { joinsPreset, leavesPreset } = route;
+      const modelChanged = providerChanged || leavesPreset || joinsPreset || !sameModel;
       modelSwitched = modelChanged;
+      if (leavesPreset || joinsPreset || route.leavesCredential) {
+        if (leavesPreset) delete managed.session.presetId;
+        if (joinsPreset && nextPresetId) managed.session.presetId = nextPresetId;
+        if (route.leavesCredential) delete managed.session.credentialId;
+        managed.leftLaunchRoute = route.leftLaunchRoute;
+        sessionLaunchPlanCache.delete(managed.session.id);
+        launchPlanNoticeBySession.delete(managed.session.id);
+      }
+      const launchModel = joinsPreset && nextPresetId
+        ? await resolvePresetLaunchModel(nextProvider, nextPresetId, nextModel)
+        : nextModel;
       if (providerChanged) {
         // What the Codex server last *reported* describes this session's Codex
         // thread, so leaving it behind a move to another provider draws a badge
@@ -63653,13 +63883,17 @@ export function createAgentChatService(args: {
           fromProvider: previousProvider,
           toProvider: nextProvider,
           ...(previousModelId ? { fromModelId: previousModelId } : {}),
-          toModelId: descriptor.id,
+          toModelId: descriptor?.id ?? launchModel,
         };
       }
 
       const previousCodexRuntime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      // A preset brings its own endpoint and environment, so moving onto one
+      // or off one needs a new process, never an in-place model change.
+      const launchRouteChanged = joinsPreset || leavesPreset;
       const liveCodexSettings = previousProvider === "codex"
         && nextProvider === "codex"
+        && !launchRouteChanged
         && Boolean(previousCodexRuntime)
         && Boolean(managed.session.threadId)
         && codexServerSupportsThreadSettings(previousCodexRuntime?.serverVersion ?? null);
@@ -63667,6 +63901,7 @@ export function createAgentChatService(args: {
       // the host and the conversation stay; the next turn applies it.
       const liveMuseSettings = previousProvider === "muse"
         && nextProvider === "muse"
+        && !launchRouteChanged
         && managed.runtime?.kind === "muse";
 
       if (managed.runtime && modelChanged && !liveCodexSettings && !liveMuseSettings) {
@@ -63694,12 +63929,13 @@ export function createAgentChatService(args: {
 
       const currentTitle = sessionService.get(sessionId)?.title ?? null;
       managed.session.provider = nextProvider;
-      managed.session.modelId = descriptor.id;
-      managed.session.model = nextModel;
+      if (descriptor) managed.session.modelId = descriptor.id;
+      else delete managed.session.modelId;
+      managed.session.model = launchModel;
       if (nextProvider === "pi") {
-        managed.session.piProfileId = descriptor.piProfileId ?? "default";
-        managed.session.piProviderId = descriptor.piProviderId ?? null;
-        managed.session.piModelId = descriptor.piModelId ?? (descriptor.providerModelId.split("/").slice(1).join("/") || null);
+        managed.session.piProfileId = descriptor?.piProfileId ?? "default";
+        managed.session.piProviderId = descriptor?.piProviderId ?? null;
+        managed.session.piModelId = descriptor?.piModelId ?? ((descriptor?.providerModelId ?? launchModel).split("/").slice(1).join("/") || null);
       } else {
         delete managed.session.piProfileId;
         delete managed.session.piProviderId;
@@ -63708,7 +63944,16 @@ export function createAgentChatService(args: {
         delete managed.session.piSessionFile;
       }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
-      if (previousProvider !== nextProvider) {
+      // A preset whose model ADE files under another family (DeepSeek in Claude
+      // Code) cannot resume the thread another model wrote: its endpoint
+      // refuses that history. It starts a new thread with the transcript
+      // replayed, as a move to another provider does.
+      const freshThreadForRoute = previousProvider === nextProvider && joinsPreset && descriptor === null;
+      if (freshThreadForRoute) {
+        forgetProviderThreadPointer(managed);
+        if (nextProvider === "claude") managed.claudeFreshThreadPending = true;
+      }
+      if (previousProvider !== nextProvider || freshThreadForRoute) {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
@@ -63716,7 +63961,7 @@ export function createAgentChatService(args: {
         stageTranscriptReplayOnSession(
           managed,
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
-          descriptor.contextWindow,
+          descriptor?.contextWindow,
           nextProvider,
         );
       } else if (previousProvider === "codex" && !liveCodexSettings) {
@@ -63754,9 +63999,13 @@ export function createAgentChatService(args: {
       }
 
       // Apply reasoningEffort BEFORE pre-warming so the query is created
-      // with the correct thinking configuration.
-      if (reasoningEffort !== undefined) {
-        const requested = normalizeReasoningEffort(reasoningEffort);
+      // with the correct thinking configuration. A preset carries its own
+      // level, which a chat moving onto it takes unless the update names one.
+      const switchEffort = reasoningEffort !== undefined
+        ? reasoningEffort
+        : joinsPreset && nextPresetId ? presetReasoningEffort(nextProvider, nextPresetId) : undefined;
+      if (switchEffort !== undefined) {
+        const requested = normalizeReasoningEffort(switchEffort);
         managed.session.reasoningEffort = nextProvider === "codex"
           ? validateReasoningEffortForDescriptor("codex", requested, descriptor)
           : nextProvider === "claude"
@@ -63801,7 +64050,7 @@ export function createAgentChatService(args: {
       // thread is remembered for the next session. Also runs when only the
       // reasoning tier changed for the same model — the helper no-ops when
       // nothing actually differs. Guarded and no-op-safe.
-      if (managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
+      if (descriptor && managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
         persistCtoModelPreference(managed, descriptor.id);
       }
       if (

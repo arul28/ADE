@@ -97,7 +97,7 @@ import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope }
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
-import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
@@ -1525,57 +1525,6 @@ function getUnavailableAiStatus(): AiSettingsStatus {
     opencodeBinarySource: "missing" as const,
     opencodeInventoryError: null,
     opencodeProviders: [],
-  };
-}
-
-function detectClaudeAuthModeFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability["auth"]["mode"] {
-  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
-  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
-  if (localCredentials) return "api_key";
-  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
-  if (cli || connection.authAvailable) return "oauth";
-  return "none";
-}
-
-function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
-  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
-  return resolved.source === "bundled"
-    ? { present: true, source: "bundled", path: resolved.path }
-    : { present: false, source: "missing", path: null };
-}
-
-function buildClaudeAvailabilityFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability {
-  const bundledBinary = resolveBundledClaudeBinary();
-  const binary = bundledBinary.present
-    ? bundledBinary
-    : {
-        present: connection.runtimeDetected,
-        source: connection.runtimeDetected ? "path" as const : "missing" as const,
-        path: connection.path,
-      };
-  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
-  const blockerIsOnlyAboutPath = binary.source === "bundled"
-    && [
-      "could not find the claude cli",
-      "cli not found",
-      "claude cli is installed",
-      "add that bin directory",
-    ].some((needle) => normalizedBlocker.includes(needle));
-  const ready = binary.present
-    && connection.authAvailable
-    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
-  const authMode = detectClaudeAuthModeFromConnection(connection);
-  return {
-    binary,
-    auth: {
-      ready,
-      mode: ready ? authMode : "none",
-      detail: ready ? null : connection.blocker,
-    },
   };
 }
 

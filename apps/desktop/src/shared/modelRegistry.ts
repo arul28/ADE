@@ -504,6 +504,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
     inputPricePer1M: 2,
     outputPricePer1M: 10,
+    cacheReadPricePer1M: 0.1,
     costTier: "medium",
   },
   {

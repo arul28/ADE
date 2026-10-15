@@ -308,10 +308,10 @@ describe("providerInstanceStore", () => {
     const work = store.create({ provider: "claude", label: "Work" }).instance;
     const codex = store.getDefault("codex");
 
-    store.setProviderSettings("claude", { compaction: { enabled: false } }, work.id);
+    store.setProviderSettings("claude", { compaction: { atTokens: 300_000 } }, work.id);
     store.setProviderSettings("claude", { subagentPromptCacheTtl: "1h" }, work.id);
     // A patch that names one account setting leaves the other alone.
-    expect(store.get(work.id)).toMatchObject({ subagentPromptCacheTtl: "1h", compaction: { enabled: false } });
+    expect(store.get(work.id)).toMatchObject({ subagentPromptCacheTtl: "1h", compaction: { atTokens: 300_000 } });
     expect(store.getDefault("claude").subagentPromptCacheTtl).toBeUndefined();
     // The choice survives a new store over the same file.
     expect(createProviderInstanceStore({ adeDir, env: {} }).get(work.id)?.subagentPromptCacheTtl).toBe("1h");

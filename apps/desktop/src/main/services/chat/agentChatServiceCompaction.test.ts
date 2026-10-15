@@ -242,7 +242,7 @@ describe("createAgentChatService", () => {
             type: "system",
             subtype: "compact_boundary",
             session_id: "sdk-session-compact-first",
-            compact_metadata: { trigger: "manual", pre_tokens: 150_000, post_tokens: 5_000 },
+            compact_metadata: { trigger: "manual", pre_tokens: 250_000, post_tokens: 5_000 },
           };
         }
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -261,7 +261,7 @@ describe("createAgentChatService", () => {
       // The last turn finished long ago and left 150k tokens in context.
       writeTestTranscriptEnvelopes(session.id, [
         { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
-        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 150_000 } } },
+        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 250_000 } } },
       ] as AgentChatEventEnvelope[]);
 
       await service.sendMessage({ sessionId: session.id, text: "hello again", compactFirst });
@@ -306,7 +306,7 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       writeTestTranscriptEnvelopes(session.id, [
         { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
-        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 150_000 } } },
+        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 250_000 } } },
       ] as AgentChatEventEnvelope[]);
 
       // The send returns while the compaction is still running: the message is queued, not sent.

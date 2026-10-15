@@ -282,7 +282,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.compactionIdleMode = "ask"
       self.compactFirstIdleSeconds = 3600
       self.promptCacheSince = nil
-      self.compactFirstMinTokens = 100_000
+      self.compactFirstMinTokens = 200_000
       self.compactFirstSupported = false
       self.manualCompactAvailable = false
       self.isAvailable = false
@@ -318,7 +318,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.compactionIdleMode = summary.compactionIdleMode ?? "ask"
     self.compactFirstIdleSeconds = summary.promptCache?.ttl == "5m" ? 300 : 3600
     self.promptCacheSince = summary.promptCache?.since.flatMap(workParsedDate)
-    self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 100_000
+    self.compactFirstMinTokens = summary.compactFirstMinTokens ?? 200_000
     self.compactFirstSupported = summary.compactionIdleMode != nil
     self.manualCompactAvailable = summary.manualCompactAvailable == true
     self.isAvailable = true
@@ -3009,70 +3009,77 @@ private struct WorkChatComposerDraftInput: View {
   /// [⋯][one-line field][send/stop], unfolded on focus to the field plus the
   /// model/access controls row. The CTO's composer is this same card.
   var body: some View {
-    ADEGlassComposerCard(
-      collapsed: showsFoldedCapsule,
-      isDictating: isDictating,
-      // No send-mode hint under the draft: the mode lives in "Stop and send
-      // settings", and the line only took room from the prompt.
-      hint: nil,
-      onFold: applyFold,
-      accessory: {
-        sendFailureRow
-
-        if !composerCollapsed {
-          WorkComposerSuggestionStrip(controller: suggestionController)
-            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
-        }
-
-        attachmentTray
-      },
-      field: {
-        WorkChatComposerTextField(
-          draftState: draftState,
-          controller: suggestionController,
-          canCompose: canCompose,
-          placeholder: composerPlaceholder,
-          acceptsPastedImages: canCompose && attachmentsAvailable,
-          onPasteImages: { images in
-            workChatInputPasteImages(images, into: $inputAttachments)
-          },
-          maxLines: composerMaxLines,
-          collapsed: composerCollapsed,
-          onFoldSwipeDown: { applyFold(.collapse) }
-        )
-      },
-      menu: {
-        composerOverflowMenu()
-      },
-      controls: {
-        WorkComposerChipStrip(
-          chatSummary: chatSummary,
-          settingsMutationInFlight: settingsMutationInFlight,
-          codexFastModeOverride: codexFastModeOverride,
-          onOpenModelPicker: onOpenModelPicker,
-          onSelectRuntimeMode: onSelectRuntimeMode
-        )
-
-        DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
-      },
-      trailing: {
-        if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
-          WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
-        }
-        if !isDictating, let contextMeter {
-          WorkComposerContextMeter(
-            model: contextMeter,
-            onCompact: contextMeter.compact == .ready ? onCompactContext : nil
-          )
-        }
-
-        composerDictationControl
-
-        if !isDictating {
-          sendOrInterruptControls()
-        }
+    // Spacing 0: the pill carries its own gap, so a pill that is not yet
+    // eligible (its timeline draws nothing) leaves no band above the card.
+    VStack(alignment: .leading, spacing: 0) {
+      // Compact first floats above the prompt box, as on desktop, instead of
+      // taking width from the send row.
+      if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
+        WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
       }
-    )
+
+      ADEGlassComposerCard(
+        collapsed: showsFoldedCapsule,
+        isDictating: isDictating,
+        // No send-mode hint under the draft: the mode lives in "Stop and send
+        // settings", and the line only took room from the prompt.
+        hint: nil,
+        onFold: applyFold,
+        accessory: {
+          sendFailureRow
+
+          if !composerCollapsed {
+            WorkComposerSuggestionStrip(controller: suggestionController)
+              .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+          }
+
+          attachmentTray
+        },
+        field: {
+          WorkChatComposerTextField(
+            draftState: draftState,
+            controller: suggestionController,
+            canCompose: canCompose,
+            placeholder: composerPlaceholder,
+            acceptsPastedImages: canCompose && attachmentsAvailable,
+            onPasteImages: { images in
+              workChatInputPasteImages(images, into: $inputAttachments)
+            },
+            maxLines: composerMaxLines,
+            collapsed: composerCollapsed,
+            onFoldSwipeDown: { applyFold(.collapse) }
+          )
+        },
+        menu: {
+          composerOverflowMenu()
+        },
+        controls: {
+          WorkComposerChipStrip(
+            chatSummary: chatSummary,
+            settingsMutationInFlight: settingsMutationInFlight,
+            codexFastModeOverride: codexFastModeOverride,
+            onOpenModelPicker: onOpenModelPicker,
+            onSelectRuntimeMode: onSelectRuntimeMode
+          )
+
+          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+        },
+        trailing: {
+          if !isDictating, let contextMeter {
+            WorkComposerContextMeter(
+              model: contextMeter,
+              onCompact: contextMeter.compact == .ready ? onCompactContext : nil
+            )
+          }
+
+          composerDictationControl
+
+          if !isDictating {
+            sendOrInterruptControls()
+          }
+        }
+      )
+    }
     .onAppear {
       configureSuggestionController()
     }

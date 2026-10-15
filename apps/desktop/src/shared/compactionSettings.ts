@@ -1,7 +1,12 @@
-/** ADE-owned overrides. Missing fields inherit the harness's own defaults. */
+/**
+ * ADE-owned overrides. Missing fields inherit the harness's own defaults.
+ * Compaction itself is always on: a chat that cannot compact only overflows.
+ * An `enabled: false` saved before that is dropped on read.
+ */
 export type ProviderCompactionSettings = {
-  enabled?: boolean;
   atTokens?: number | null;
+  /** Claude only: where subagents compact. It can only lower the main chat's window. */
+  subagentAtTokens?: number | null;
   reserveTokens?: number;
   keepRecentTokens?: number;
   idleMode?: "ask" | "always" | "never";
@@ -12,8 +17,8 @@ export function normalizeCompactionSettings(value: unknown): ProviderCompactionS
   const raw = value as Record<string, unknown>;
   const out: ProviderCompactionSettings = {};
   if (raw.atTokens === null) out.atTokens = null;
-  if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
-  for (const key of ["atTokens", "reserveTokens", "keepRecentTokens"] as const) {
+  if (raw.subagentAtTokens === null) out.subagentAtTokens = null;
+  for (const key of ["atTokens", "subagentAtTokens", "reserveTokens", "keepRecentTokens"] as const) {
     const n = raw[key];
     if (typeof n === "number" && Number.isSafeInteger(n) && n > 0) out[key] = n;
   }
@@ -26,12 +31,20 @@ export function claudeCompactWindow(atTokens: number | null | undefined): number
   return atTokens != null ? Math.max(100_000, Math.min(1_000_000, atTokens)) : undefined;
 }
 
-export function claudeCompactionSettings(settings: ProviderCompactionSettings): { autoCompactEnabled?: boolean; autoCompactWindow?: number } {
+export function claudeCompactionSettings(settings: ProviderCompactionSettings): { autoCompactWindow?: number } {
   const window = claudeCompactWindow(settings.atTokens);
-  return {
-    ...(settings.enabled !== undefined ? { autoCompactEnabled: settings.enabled } : {}),
-    ...(window !== undefined ? { autoCompactWindow: window } : {}),
-  };
+  return window !== undefined ? { autoCompactWindow: window } : {};
+}
+
+/**
+ * A subagent window at or above the main chat's never applies: the SDK only
+ * lets a subagent compact earlier than the window it inherits. Unknown when
+ * the main chat is on Auto, whose window depends on the model.
+ */
+export function claudeSubagentWindowIneffective(settings: ProviderCompactionSettings): boolean {
+  const main = claudeCompactWindow(settings.atTokens);
+  const subagent = claudeCompactWindow(settings.subagentAtTokens);
+  return main !== undefined && subagent !== undefined && subagent >= main;
 }
 
 /**
@@ -41,10 +54,10 @@ export function claudeCompactionSettings(settings: ProviderCompactionSettings): 
  */
 export function compactionRuntimeSignature(provider: string, settings: ProviderCompactionSettings): string {
   switch (provider) {
-    case "claude": return JSON.stringify([settings.enabled, claudeCompactWindow(settings.atTokens)]);
+    case "claude": return JSON.stringify([claudeCompactWindow(settings.atTokens), claudeCompactWindow(settings.subagentAtTokens)]);
     case "codex": return JSON.stringify([settings.atTokens]);
     case "pi":
-    case "opencode": return JSON.stringify([settings.enabled, settings.reserveTokens, settings.keepRecentTokens]);
+    case "opencode": return JSON.stringify([settings.reserveTokens, settings.keepRecentTokens]);
     default: return "";
   }
 }

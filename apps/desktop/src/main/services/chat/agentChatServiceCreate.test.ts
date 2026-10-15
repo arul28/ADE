@@ -80,6 +80,34 @@ async function useRealLineReaderOnce(): Promise<void> {
 }
 
 
+/**
+ * Two Claude Code presets on this machine's account settings: one on a Claude
+ * model through a stored key, and one on a model ADE files under another
+ * provider (DeepSeek), which no Claude thread can be resumed on.
+ */
+function saveClaudePresets(): { savedPreset: HarnessPreset; foreignModelPreset: HarnessPreset } {
+  const adeHome = path.join(tmpHomeRoot, ".ade");
+  fs.mkdirSync(adeHome, { recursive: true });
+  const savedPreset: HarnessPreset = {
+    id: "hp_create_preset",
+    name: "Opus on work",
+    harness: "claude",
+    source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
+    model: "claude-opus-4-5",
+    subagentModel: "inherit",
+    agentOverrides: {},
+    agentEfforts: {},
+    accentColor: "#7c5ce0",
+    logo: { kind: "ade" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const foreignModelPreset: HarnessPreset = { ...savedPreset, id: "hp_create_foreign", model: "deepseek-v4.1-flash" };
+  createAccountSettingsStore({ adeDir: adeHome, relay: null, getAccountUserId: () => "user_create_preset" })
+    .set("all", "harnessPresets", [savedPreset, foreignModelPreset]);
+  return { savedPreset, foreignModelPreset };
+}
+
 describe("createAgentChatService", () => {
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
     const getIssue = vi.fn().mockResolvedValue({ title: "Keep desktop previews consistent" });
@@ -1214,28 +1242,7 @@ describe("createAgentChatService", () => {
       // row kept the caller's default provider (codex) and an empty model while
       // the runtime launched the preset's Claude Code, so every provider-gated
       // surface read the wrong provider.
-      const adeHome = path.join(tmpHomeRoot, ".ade");
-      fs.mkdirSync(adeHome, { recursive: true });
-      const savedPreset: HarnessPreset = {
-        id: "hp_create_preset",
-        name: "Opus on work",
-        harness: "claude",
-        source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
-        model: "claude-opus-4-5",
-        subagentModel: "inherit",
-        agentOverrides: {},
-        agentEfforts: {},
-        accentColor: "#7c5ce0",
-        logo: { kind: "ade" },
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      };
-      const settings = createAccountSettingsStore({
-        adeDir: adeHome,
-        relay: null,
-        getAccountUserId: () => "user_create_preset",
-      });
-      settings.set("all", "harnessPresets", [savedPreset]);
+      const { savedPreset, foreignModelPreset } = saveClaudePresets();
 
       const { service } = createService();
       const session = await service.createSession({
@@ -1245,7 +1252,60 @@ describe("createAgentChatService", () => {
 
       expect(session.provider).toBe("claude");
       expect(session.model).toBe("claude-opus-4-5");
+
+      // Naming the provider too (`--provider claude`) must not let Claude's
+      // default model fill in: the row named Opus while DeepSeek ran.
+      const withProvider = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        presetId: foreignModelPreset.id,
+      } as any);
+      expect(withProvider.model).toBe("deepseek-v4.1-flash");
+      expect(withProvider.modelId ?? null).not.toMatch(/claude/);
       service.forceDisposeAll();
+    });
+
+    it("moves an open chat onto a preset and off it, starting a fresh thread a foreign model can read", async () => {
+      // Picking a preset on a running chat used to show the preset and run
+      // the old model; a preset whose model cannot read the chat's thread
+      // (DeepSeek after Opus) failed with the endpoint's 422 unless the next
+      // runtime starts a new thread with the transcript replayed, and that has
+      // to hold across a brain restart.
+      const { savedPreset, foreignModelPreset } = saveClaudePresets();
+      const first = createService();
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
+      await first.service.runSessionTurn({ sessionId: session.id, text: "Remember the word MANGO." });
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
+      const opusThread = String(readPersistedChatState(session.id).sdkSessionId);
+
+      const onPreset = await first.service.updateSession({ sessionId: session.id, presetId: foreignModelPreset.id });
+      expect(onPreset).toMatchObject({ provider: "claude", model: "deepseek-v4.1-flash", presetId: foreignModelPreset.id });
+      expect(readPersistedChatState(session.id)).toMatchObject({ claudeFreshThreadPending: true, presetId: foreignModelPreset.id });
+      expect(readPersistedChatState(session.id).sdkSessionId).toBeUndefined();
+      first.service.forceDisposeAll();
+
+      // A restarted brain still starts the new thread and still owes the replay.
+      vi.mocked(claudeSdkResumeSessionCompat).mockClear();
+      const freshThread = makeDefaultClaudeSession();
+      vi.mocked(claudeSdkCreateSessionCompat).mockReset().mockReturnValue(freshThread as any);
+      const second = createService();
+      // The pointer table is a database that outlives the brain: it still names the old thread.
+      second.sessionService.upsertClaudeSessionPointer({ sessionId: opusThread, laneId: "lane-1", chatSessionId: session.id });
+      await second.service.runSessionTurn({ sessionId: session.id, text: "What word did I ask you to remember?" });
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      expect((freshThread.send.mock.calls as unknown[][]).map(([message]) => claudeInputText(message)).join("\n")).toContain("MANGO");
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).claudeFreshThreadPending).toBeUndefined());
+
+      // The same model sent again (a settings save) keeps a preset; a plain
+      // model with `presetId: null` leaves it.
+      await second.service.updateSession({ sessionId: session.id, presetId: savedPreset.id });
+      const kept = await second.service.updateSession({ sessionId: session.id, modelId: (await second.service.getSessionSummary(session.id))!.modelId! });
+      expect(kept.presetId).toBe(savedPreset.id);
+      const left = await second.service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5", presetId: null });
+      expect(left.presetId).toBeUndefined();
+      expect(readPersistedChatState(session.id).presetId).toBeUndefined();
+      second.service.forceDisposeAll();
     });
 
     it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {

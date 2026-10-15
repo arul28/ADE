@@ -9,32 +9,30 @@
  * the user at the point of the choice (`harnessPresetAgentOverrideNote` in
  * `harnessPresets.ts`); this file is the fork itself.
  *
- * SOURCE: originally extracted from the Claude Code binary shipped with
- * `@anthropic-ai/claude-agent-sdk@0.3.258` — CLI version 2.1.258, build
- * 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1 —
- * and re-checked against CLI 2.1.280 (SDK 0.3.280), CLI 2.1.284 (SDK 0.3.284)
- * and CLI 2.1.287 (SDK 0.3.287) when the pin moved: Explore
- * and Plan are still the same templates (tool-name holes where Glob, Grep,
- * Read, and Bash are filled) and general-purpose's shared lines are unchanged,
- * so this copy still tracks the pinned binary. The prompts below are therefore
- * the 2.1.287 copies; only the 2.1.258 extraction has recorded build metadata,
- * because the CLI does not expose it.
+ * SOURCE: re-extracted from the template source in the Claude Code 2.1.300
+ * binary (`@anthropic-ai/claude-agent-sdk@0.3.300`), first extracted at 2.1.258
+ * (build 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1).
+ * The 2.1.300 re-extraction compared whole templates, not only ADE's lines:
+ * general-purpose had gained its strengths and guidelines block upstream.
  *
- * FIDELITY: the built-ins build their prompts from a template whose holes are
- * tool NAMES resolved at runtime (sandboxed vs. not, POSIX vs. PowerShell).
- * This copy renders the POSIX, non-sandboxed set — `Glob`, `Grep`, `Read`,
- * `Bash` — which is what ADE's chats run with on every supported platform's
- * default configuration. Everything outside those holes is verbatim.
+ * FIDELITY: the built-ins fill their templates' holes at runtime from the
+ * tools Claude Code gives its agents: the shell tool (Bash, or PowerShell on
+ * Windows without Git Bash) and whether the Glob and Grep tools exist (without
+ * them, agents search with `find` and `grep` in Bash, as Agent SDK sessions on
+ * macOS and Linux do). ADE renders the same templates from the same facts
+ * (`ClaudeBuiltinToolProfile`), read from Claude's own `system/init` tool list.
+ * Everything outside the holes is verbatim.
  *
  * UPDATING: when the pinned SDK moves, re-extract rather than hand-editing.
  * The three markers to search the binary for are the first line of each prompt
  * below; each one is followed by the whole template in cleartext.
  */
 
+import { claudeCompactWindow, claudeSubagentWindowIneffective, type ProviderCompactionSettings } from "./compactionSettings";
 import { HARNESS_PRESET_AGENT_KEYS, type HarnessPresetAgentKey } from "./harnessPresets";
 
 /** The CLI build these prompts are taken from. */
-export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.287";
+export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.300";
 
 /**
  * Tools each read-only built-in declares as denied.
@@ -61,7 +59,51 @@ const READ_ONLY_BUILTIN_DISALLOWED_TOOLS: readonly string[] = [
   "ArtifactCheck",
 ];
 
-const EXPLORE_PROMPT = `You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
+/**
+ * The tools Claude Code gives its agents on this machine, which fill the
+ * built-in prompts' holes. See FIDELITY above.
+ */
+export type ClaudeBuiltinToolProfile = {
+  shellTool: "Bash" | "PowerShell";
+  /** The Glob and Grep tools exist; without them agents search with `find` and `grep` in Bash. */
+  searchTools: boolean;
+};
+
+/** What Claude Code gives Agent SDK sessions on macOS and Linux. */
+export const CLAUDE_AGENT_SDK_TOOL_PROFILE: ClaudeBuiltinToolProfile = { shellTool: "Bash", searchTools: false };
+
+/**
+ * The machine's profile as a `system/init` tool list shows it, or null when
+ * the list cannot say: a probe runs with no tools, and a chat that narrowed
+ * its tools (no Write or Edit) says nothing about the rest.
+ */
+export function claudeToolProfileFromInitTools(tools: unknown): ClaudeBuiltinToolProfile | null {
+  if (!Array.isArray(tools)) return null;
+  const names = new Set(tools.filter((tool): tool is string => typeof tool === "string"));
+  if (!names.has("Write") || !names.has("Edit")) return null;
+  const shellTool = names.has("Bash") ? "Bash" : names.has("PowerShell") ? "PowerShell" : null;
+  return shellTool ? { shellTool, searchTools: names.has("Glob") && names.has("Grep") } : null;
+}
+
+/** The template's own names for its holes: `e`, `n` and `r` in the binary. */
+function templateHoles(profile: ClaudeBuiltinToolProfile) {
+  const bash = profile.shellTool === "Bash";
+  const shellSearch = bash && !profile.searchTools;
+  return {
+    shell: profile.shellTool,
+    shellSearch,
+    readOnlyCommands: bash
+      ? `ls, git status, git log, git diff, find${shellSearch ? ", grep" : ""}, cat, head, tail`
+      : "Get-ChildItem, git status, git log, git diff, Get-Content, Select-Object -First/-Last",
+    forbiddenCommands: bash
+      ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install"
+      : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install",
+  };
+}
+
+function explorePrompt(profile: ClaudeBuiltinToolProfile): string {
+  const holes = templateHoles(profile);
+  return `You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
 
 === CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
 This is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:
@@ -81,11 +123,11 @@ Your strengths:
 - Reading and analyzing file contents
 
 Guidelines:
-- Use Glob for broad file pattern matching
-- Use Grep for searching file contents with regex
+${holes.shellSearch ? "- Use `find` via Bash for broad file pattern matching" : "- Use Glob for broad file pattern matching"}
+${holes.shellSearch ? "- Use `grep` via Bash for searching file contents with regex" : "- Use Grep for searching file contents with regex"}
 - Use Read when you know the specific file path you need to read
-- Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find, cat, head, tail)
-- NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+- Use ${holes.shell} ONLY for read-only operations (${holes.readOnlyCommands})
+- NEVER use ${holes.shell} for: ${holes.forbiddenCommands}, or any file creation/modification
 - Adapt your search approach based on the thoroughness level specified by the caller
 - Communicate your final report directly as a regular message - do NOT attempt to create files
 
@@ -94,8 +136,11 @@ NOTE: You are meant to be a fast agent that returns output as quickly as possibl
 - Wherever possible you should try to spawn multiple parallel tool calls for grepping and reading files
 
 Complete the user's search request efficiently and report your findings clearly.`;
+}
 
-const PLAN_PROMPT = `You are a software architect and planning specialist for Claude Code. Your role is to explore the codebase and design implementation plans.
+function planPrompt(profile: ClaudeBuiltinToolProfile): string {
+  const holes = templateHoles(profile);
+  return `You are a software architect and planning specialist for Claude Code. Your role is to explore the codebase and design implementation plans.
 
 === CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
 This is a READ-ONLY planning task. You are STRICTLY PROHIBITED from:
@@ -117,12 +162,12 @@ You will be provided with a set of requirements and optionally a perspective on 
 
 2. **Explore Thoroughly**:
    - Read any files provided to you in the initial prompt
-   - Find existing patterns and conventions using Glob, \`find\`, \`grep\`, and Grep
+   - Find existing patterns and conventions using ${holes.shellSearch ? "`find`, `grep`, and Read" : "Glob, Grep, and Read"}
    - Understand the current architecture
    - Identify similar features as reference
    - Trace through relevant code paths
-   - Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find, cat, head, tail)
-   - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+   - Use ${holes.shell} ONLY for read-only operations (${holes.readOnlyCommands})
+   - NEVER use ${holes.shell} for: ${holes.forbiddenCommands}, or any file creation/modification
 
 3. **Design Solution**:
    - Create implementation approach based on your assigned perspective
@@ -145,9 +190,25 @@ List 3-5 files most critical for implementing this plan:
 - path/to/file3.ts
 
 REMEMBER: You can ONLY explore and plan. You CANNOT and MUST NOT write, edit, or modify any files. You do NOT have access to file editing tools.`;
+}
 
-const GENERAL_PURPOSE_PROMPT = `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.
+function generalPurposePrompt(): string {
+  return `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.
+
+Your strengths:
+- Searching for code, configurations, and patterns across large codebases
+- Analyzing multiple files to understand system architecture
+- Investigating complex questions that require exploring many files
+- Performing multi-step research tasks
+
+Guidelines:
+- For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.
+- For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.
+- Be thorough: Check multiple locations, consider different naming conventions, look for related files.
+- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.
 - You are already the dedicated agent for this task. Do the work directly — do not re-delegate your entire assignment to another single subagent.`;
+}
 
 /** One built-in, as the SDK's `agents` option wants it (minus the model). */
 export type ClaudeBuiltinAgentTemplate = {
@@ -155,8 +216,17 @@ export type ClaudeBuiltinAgentTemplate = {
   agentType: string;
   /** `whenToUse`, verbatim from the built-in. */
   description: string;
-  prompt: string;
+  prompt: (profile: ClaudeBuiltinToolProfile) => string;
   disallowedTools?: readonly string[];
+  /** The model the built-in runs on by itself; absent means the default subagent model. */
+  ownModel?: "inherit";
+  /**
+   * Claude Code caps the inherited model at Opus: under a Fable or Mythos main
+   * model, Explore runs on Opus.
+   */
+  inheritCappedAtOpus?: true;
+  /** The built-in runs without the CLAUDE.md instruction files. */
+  omitClaudeMd?: true;
 };
 
 export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, ClaudeBuiltinAgentTemplate> = {
@@ -167,8 +237,11 @@ export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, Claud
       + "directories, or naming conventions and you only need the conclusion, not the file dumps. It reads "
       + "excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search "
       + "breadth: \"medium\" for moderate exploration, \"very thorough\" for multiple locations and naming conventions.",
-    prompt: EXPLORE_PROMPT,
+    prompt: explorePrompt,
     disallowedTools: READ_ONLY_BUILTIN_DISALLOWED_TOOLS,
+    ownModel: "inherit",
+    inheritCappedAtOpus: true,
+    omitClaudeMd: true,
   },
   plan: {
     agentType: "Plan",
@@ -176,8 +249,10 @@ export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, Claud
       "Software architect agent for designing implementation plans. Use this when you need to plan the "
       + "implementation strategy for a task. Returns step-by-step plans, identifies critical files, and "
       + "considers architectural trade-offs.",
-    prompt: PLAN_PROMPT,
+    prompt: planPrompt,
     disallowedTools: READ_ONLY_BUILTIN_DISALLOWED_TOOLS,
+    ownModel: "inherit",
+    omitClaudeMd: true,
   },
   generalPurpose: {
     agentType: "general-purpose",
@@ -185,9 +260,26 @@ export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, Claud
       "General-purpose agent for researching complex questions, searching for code, and executing multi-step "
       + "tasks. When you are searching for a keyword or file and are not confident that you will find the right "
       + "match in the first few tries use this agent to perform the search for you.",
-    prompt: GENERAL_PURPOSE_PROMPT,
+    prompt: generalPurposePrompt,
   },
 };
+
+/** A built-in's definition as the SDK's `agents` entry takes it, before any model. */
+type ClaudeBuiltinAgentDefinition = {
+  description: string;
+  prompt: string;
+  disallowedTools?: string[];
+  omitClaudeMd?: boolean;
+};
+
+function builtinAgentDefinition(template: ClaudeBuiltinAgentTemplate, profile: ClaudeBuiltinToolProfile): ClaudeBuiltinAgentDefinition {
+  return {
+    description: template.description,
+    prompt: template.prompt(profile),
+    ...(template.disallowedTools ? { disallowedTools: [...template.disallowedTools] } : {}),
+    ...(template.omitClaudeMd ? { omitClaudeMd: true } : {}),
+  };
+}
 
 /**
  * One SDK `agents` entry. `effort` is the named level the pinned SDK's
@@ -200,6 +292,7 @@ export type ClaudeBuiltinAgentOverride = {
   model: string;
   effort?: string;
   disallowedTools?: string[];
+  omitClaudeMd?: boolean;
 };
 
 /**
@@ -219,7 +312,8 @@ export type ClaudeBuiltinAgentOverride = {
  */
 export function buildClaudeBuiltinAgentOverrides(
   pins: Partial<Record<HarnessPresetAgentKey, string | null | undefined>>,
-  efforts: Partial<Record<HarnessPresetAgentKey, string | null | undefined>> = {},
+  efforts: Partial<Record<HarnessPresetAgentKey, string | null | undefined>>,
+  profile: ClaudeBuiltinToolProfile,
 ): Record<string, ClaudeBuiltinAgentOverride> {
   const agents: Record<string, ClaudeBuiltinAgentOverride> = {};
   for (const key of HARNESS_PRESET_AGENT_KEYS) {
@@ -228,12 +322,51 @@ export function buildClaudeBuiltinAgentOverrides(
     if (!model) continue;
     const template = CLAUDE_BUILTIN_AGENT_TEMPLATES[key];
     agents[template.agentType] = {
-      description: template.description,
-      prompt: template.prompt,
+      ...builtinAgentDefinition(template, profile),
       model,
       ...(effort ? { effort } : {}),
-      ...(template.disallowedTools ? { disallowedTools: [...template.disallowedTools] } : {}),
     };
   }
   return agents;
+}
+
+/** Claude Code's families above Opus, whose inherited Explore it caps at Opus. */
+function claudeModelAboveOpus(model: string): boolean {
+  return /fable|mythos/i.test(model);
+}
+
+/**
+ * The SDK `agents` record with the account's subagent compaction window on
+ * every entry, or the record unchanged when there is no window or it cannot
+ * take effect (`claudeSubagentWindowIneffective`).
+ *
+ * The window lives on each agent's definition, and the SDK has no overlay for
+ * a built-in, so a built-in the record does not already replace gets ADE's
+ * copy of its definition on the model it runs on by itself. With no `profile`
+ * (a machine whose shell ADE has not seen yet) the built-ins are left to
+ * Claude Code rather than given a copy that names the wrong tools.
+ */
+export function withClaudeSubagentCompactWindow<TAgent extends object>(
+  agents: Record<string, TAgent>,
+  settings: ProviderCompactionSettings,
+  launch: { profile: ClaudeBuiltinToolProfile | null; mainModel: string },
+): Record<string, TAgent | (ClaudeBuiltinAgentDefinition & { model?: string; autoCompactWindow: number })> {
+  const autoCompactWindow = claudeCompactWindow(settings.subagentAtTokens);
+  if (autoCompactWindow === undefined || claudeSubagentWindowIneffective(settings)) return agents;
+  const out: Record<string, TAgent | (ClaudeBuiltinAgentDefinition & { model?: string; autoCompactWindow: number })> = {};
+  const profile = launch.profile;
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    const template = CLAUDE_BUILTIN_AGENT_TEMPLATES[key];
+    if (!profile || agents[template.agentType]) continue;
+    const model = template.ownModel && template.inheritCappedAtOpus && claudeModelAboveOpus(launch.mainModel)
+      ? "opus"
+      : template.ownModel;
+    out[template.agentType] = {
+      ...builtinAgentDefinition(template, profile),
+      ...(model ? { model } : {}),
+      autoCompactWindow,
+    };
+  }
+  for (const [name, agent] of Object.entries(agents)) out[name] = { ...agent, autoCompactWindow };
+  return out;
 }

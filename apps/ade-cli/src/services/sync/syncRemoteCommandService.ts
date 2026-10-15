@@ -3120,6 +3120,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
 
   if ("title" in value) parsed.title = value.title == null ? null : asTrimmedString(value.title) ?? null;
   if ("modelId" in value) parsed.modelId = value.modelId == null ? undefined : asTrimmedString(value.modelId) as AgentChatUpdateSessionArgs["modelId"];
+  if ("presetId" in value) parsed.presetId = value.presetId == null ? null : asTrimmedString(value.presetId) ?? null;
   if ("reasoningEffort" in value) parsed.reasoningEffort = value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null;
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatUpdateSessionArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatUpdateSessionArgs["interactionMode"];

@@ -43,8 +43,8 @@ const COMPACTED_FLOOR_TOKENS = 5_000;
 export function estimateCompactedTokens(contextTokens: number): number {
   return Math.max(COMPACTED_FLOOR_TOKENS, Math.round(contextTokens * 0.02));
 }
-/** Smallest measured context the offer is worth showing for. */
-export const COMPACT_FIRST_MIN_TOKENS = 100_000;
+/** Smallest measured context the offer is worth showing for: Claude Code's own idle-compaction floor. */
+export const COMPACT_FIRST_MIN_TOKENS = 200_000;
 /**
  * `ADE_COMPACT_FIRST_MIN_TOKENS` lowers that limit for a brain, so the offer
  * can be tried on a small chat. The brain sends it on the session summary;
@@ -56,8 +56,7 @@ export function compactFirstMinTokensFromEnv(env: Record<string, string | undefi
 }
 export type CompactFirstOffer = { contextTokens: number; estimatedPostTokens: number; eligibleAt: number; idleMs: number };
 
-/** Only measured occupancy is eligible; cumulative turn totals are never used. */
-export function compactFirstOffer({ provider, events, contextTokens, cache, minTokens, mode = "ask", now = Date.now() }: {
+type CompactFirstArgs = {
   provider: string;
   events: readonly AgentChatEventEnvelope[];
   contextTokens?: number | null;
@@ -66,8 +65,34 @@ export function compactFirstOffer({ provider, events, contextTokens, cache, minT
   /** Overrides `COMPACT_FIRST_MIN_TOKENS` (`AgentChatSessionSummary.compactFirstMinTokens`). */
   minTokens?: number | null;
   mode?: "ask" | "always" | "never";
-  now?: number;
-}): CompactFirstOffer | null {
+};
+
+/** Only measured occupancy is eligible; cumulative turn totals are never used. */
+export function compactFirstOffer({ now = Date.now(), ...args }: CompactFirstArgs & { now?: number }): CompactFirstOffer | null {
+  const offer = compactFirstCandidate(args);
+  return offer && now >= offer.eligibleAt ? offer : null;
+}
+
+/**
+ * Claude Code's own idle compaction fires at this share of a one-hour cache's
+ * life: late enough that the chat is truly idle, early enough that the cache
+ * is still warm and the compaction reads the chat at the cached price.
+ */
+const WARM_IDLE_COMPACT_FRACTION = 0.9;
+
+/**
+ * When "Always compact first" compacts an idle chat by itself, as Claude Code
+ * does: 54 minutes into a one-hour cache, for a chat at least the offer's
+ * size. Null when that does not apply (another mode, a 5-minute or unknown
+ * cache, a small chat); the chat then compacts on the next send instead.
+ */
+export function warmIdleCompactAtMs(args: CompactFirstArgs): number | null {
+  if (args.mode !== "always" || args.cache?.ttl !== "1h") return null;
+  const offer = compactFirstCandidate(args);
+  return offer ? offer.eligibleAt - (1 - WARM_IDLE_COMPACT_FRACTION) * offer.idleMs : null;
+}
+
+function compactFirstCandidate({ provider, events, contextTokens, cache, minTokens, mode = "ask" }: CompactFirstArgs): CompactFirstOffer | null {
   if (provider !== "claude" || mode === "never") return null;
   let endedAt: number | null = null;
   let startedAt: number | null = null;
@@ -92,6 +117,5 @@ export function compactFirstOffer({ provider, events, contextTokens, cache, minT
   const idleMs = compactFirstIdleMs(cache);
   const eligibleAt = compactFirstEligibleAtMs(cache, endedAt, Number.isFinite(startedAt) ? startedAt : null);
   if (eligibleAt == null) return null;
-  if (now < eligibleAt) return null;
   return { contextTokens: measured, estimatedPostTokens: lastPost ?? estimateCompactedTokens(measured), eligibleAt, idleMs };
 }

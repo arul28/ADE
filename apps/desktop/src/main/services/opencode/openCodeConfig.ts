@@ -403,7 +403,6 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeServ
     },
     // ADE has no share UI, and pins the binary itself.
     ...(args.projectConfig.ai?.compaction?.opencode ? { compaction: {
-      ...(args.projectConfig.ai.compaction.opencode.enabled !== undefined ? { auto: args.projectConfig.ai.compaction.opencode.enabled } : {}),
       ...(args.projectConfig.ai.compaction.opencode.reserveTokens ? { buffer: args.projectConfig.ai.compaction.opencode.reserveTokens } : {}),
       ...(args.projectConfig.ai.compaction.opencode.keepRecentTokens ? { keep: { tokens: args.projectConfig.ai.compaction.opencode.keepRecentTokens } } : {}),
     } } : {}),
