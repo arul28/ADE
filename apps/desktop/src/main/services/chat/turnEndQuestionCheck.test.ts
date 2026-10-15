@@ -33,6 +33,14 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
   const runPrompt = vi.fn((_args: { cwd: string; modelId: string }) =>
     new Promise<PromptResult>((resolve, reject) => { settlePrompt = { resolve, reject }; }));
   const requestAttention = vi.fn((_args: { sessionId: string; message: string; source: string }) => true);
+  const clearInferredAttention = vi.fn((_sessionId: string, startedAt: string) => {
+    const requestedAt = hand.attentionRequestedAt;
+    if (requestedAt && Date.parse(requestedAt) <= Date.parse(startedAt)) {
+      hand.attentionRequestedAt = null;
+      return true;
+    }
+    return false;
+  });
   const logger = {
     debug: vi.fn(),
     warn: vi.fn(),
@@ -46,6 +54,7 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
     readHandState: () => hand,
     runPrompt,
     requestAttention,
+    clearInferredAttention,
   });
   const facts = (overrides: Partial<TurnEndQuestionFacts> = {}): TurnEndQuestionFacts => ({
     sessionId: SESSION,
@@ -74,6 +83,7 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
     finishTurn,
     runPrompt,
     requestAttention,
+    clearInferredAttention,
     tiebreakDone,
     settle: () => {
       expect(settlePrompt, "the tiebreak asked the model").not.toBeNull();
@@ -103,6 +113,13 @@ describe("classifyTurnEndAsk", () => {
     ],
     ["a rhetorical question, then a progress note", "unsure", RHETORICAL, null],
     ["a sign-off offer", "unsure", "I updated foo. Let me know if anything breaks.", null],
+    [
+      "an optional offer while work continues",
+      "not_ask",
+      "Say the word if you would rather I run the independent delta re-review first, since that is the one step I shortened.",
+      null,
+    ],
+    ["a direct blocking question", "ask", "Should I wait for your choice before continuing?", "Should I wait for your choice before continuing?"],
     [
       "a question that only appears in quotes, then a progress note",
       "unsure",
@@ -135,6 +152,43 @@ describe("parseTurnEndAskDecision", () => {
 });
 
 describe("createTurnEndQuestionCheck", () => {
+  it("clears stale inferred attention on a timestamped turn start", () => {
+    const { check, hand } = harness({ hand: { attentionRequestedAt: "2026-10-14T11:59:00.000Z" } });
+    const start = { type: "status", turnStatus: "started", turnId: "turn-2" } as AgentChatEvent;
+    const startedAt = "2026-10-14T12:00:00.000Z";
+
+    check.onEvent(SESSION, start, startedAt);
+    check.onEvent(SESSION, start, startedAt);
+
+    expect(hand.attentionRequestedAt).toBeNull();
+  });
+
+  it("keeps inferred attention when a start has no current timestamp", () => {
+    const { check, hand } = harness({ hand: { attentionRequestedAt: "2026-10-14T11:59:00.000Z" } });
+
+    check.onEvent(SESSION, { type: "status", turnStatus: "started", turnId: "turn-2" } as AgentChatEvent);
+
+    expect(hand.attentionRequestedAt).toBe("2026-10-14T11:59:00.000Z");
+  });
+
+  it("invalidates a delayed model result when the next turn starts", async () => {
+    const h = harness();
+    h.finishTurn(RHETORICAL);
+    expect(h.runPrompt).toHaveBeenCalledTimes(1);
+    h.hand.attentionRequestedAt = "2026-10-14T11:59:00.000Z";
+
+    h.check.onEvent(
+      SESSION,
+      { type: "status", turnStatus: "started", turnId: "turn-2" } as AgentChatEvent,
+      "2026-10-14T12:00:00.000Z",
+    );
+    h.settle().resolve({ structuredOutput: { asksUser: true } });
+    await h.tiebreakDone;
+
+    expect(h.hand.attentionRequestedAt).toBeNull();
+    expect(h.requestAttention).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "a question and a progress note streamed across the paragraph break",

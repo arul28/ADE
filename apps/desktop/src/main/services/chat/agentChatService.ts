@@ -11953,6 +11953,8 @@ export function createAgentChatService(args: {
       });
     },
     requestAttention: requestSessionAttention,
+    clearInferredAttention: (sessionId, startedAt) =>
+      sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
   });
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
@@ -21334,7 +21336,16 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
-    turnEndQuestion.onEvent(managed.session.id, normalizedEvent);
+    const currentTurnStartedAt = managed.session.status === "active"
+      && managed.session.currentTurnStartedAt
+      && lastTurnStartedAtBySession.get(managed.session.id) === managed.session.currentTurnStartedAt
+      ? managed.session.currentTurnStartedAt
+      : null;
+    turnEndQuestion.onEvent(
+      managed.session.id,
+      normalizedEvent,
+      currentTurnStartedAt,
+    );
     if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
     }
@@ -45286,6 +45297,25 @@ export function createAgentChatService(args: {
     }
 
     persistChatState(managed);
+    // Importing a PR creates the lane before its first chat exists. Claim
+    // that durable origin only for a person's new Work chat, never a helper,
+    // identity, automation, handoff, or idempotently returned existing chat.
+    if (prService && !runtimeActor && !identityKey && !normalizedParentSessionId
+      && !launchedBySessionId && !recoveredFromSessionId && !automationId
+      && (surface ?? "work") === "work") {
+      const claim = prService.claimLanePrChatOrigin({ laneId, sessionId });
+      if (claim.status === "retry") {
+        try {
+          await deleteSession({ sessionId });
+        } catch (error) {
+          logger.warn("agent_chat.pr_origin_create_cleanup_failed", {
+            sessionId,
+            error: getErrorMessage(error),
+          });
+        }
+        throw new Error(claim.message);
+      }
+    }
     // Only a person's choice moves the machine's defaults.
     if (!runtimeActor) rememberLaunchDefaults(managed.session);
     return managed.session;

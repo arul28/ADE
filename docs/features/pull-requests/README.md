@@ -872,6 +872,23 @@ Linear PR cards. Referencing a colleague's PR must not edit their repository.
 plain link is a pointer and never refuses, but creating a whole new worktree to
 host a PR that already has one leaves a duplicate behind.
 
+### A lane imported from a PR carries one chat origin
+
+`createLaneFromPrBranch` records a machine-local, durable one-shot origin for
+the PR it imported. The ordinary user chat created on that lane claims the
+origin through the internal PR service; the claim and the
+`pull_request_chat_sessions` edge commit in one transaction. An insert failure
+rolls both back so the launch can retry. Chat creation must call this only
+after a successful persisted user-chat create, excluding identity and helper
+sessions; failed creates and calls scoped to another project or lane do not
+consume it. A chat already linked to another PR is treated as ambiguous and
+does not get another automatic edge. If the PR merges before its first chat
+claims the origin, that exact new edge gets one bounded settlement follow-up
+after the normal merge handling finishes. Explicit unlink cancels that
+follow-up, and later reopened chats do not rearm it. A manual link remains the
+way to associate any later chat. No runtime action is added; chat creation
+calls the PR service already injected into it.
+
 ### Lane surfaces and chat surfaces need two different selectors
 
 The renderer filters that hid the extra PRs are relaxed, but not identically,

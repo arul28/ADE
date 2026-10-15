@@ -49,6 +49,12 @@ const SOFT_ASK = new RegExp(
   "i",
 );
 
+/** An opt-in offer does not make the user's answer a prerequisite to progress. */
+const OPTIONAL_OFFER = new RegExp(
+  String.raw`\bif you(?:'d| would)? (?:rather|prefer|want|like)\b`,
+  "i",
+);
+
 /** The shapes of "work continues, I'll be back": no answer wanted. */
 const PROGRESS_NOTE = new RegExp(
   [
@@ -159,6 +165,11 @@ export function classifyTurnEndAsk(replyText: string | null | undefined): TurnEn
 
   if (closingAsk === "strong") return { verdict: "ask", question: questionFrom(closing) };
   if (closingAsk === "weak") return UNSURE;
+  // A conditional offer is optional unless the sentence explicitly asks a
+  // question or the previous paragraph already asked for a decision.
+  if (beforeAsk === "none") {
+    if (!closing.includes("?") && OPTIONAL_OFFER.test(closing)) return NOT_ASK;
+  }
   if (SOFT_ASK.test(closing)) {
     // "If you're happy with this, I'll…" usually closes a question asked just
     // above. On its own ("Let me know if anything breaks.") it is often a
@@ -185,9 +196,10 @@ const TURN_END_ASK_REPLY_TAIL_CHARS = 1_500;
 
 export const TURN_END_ASK_SYSTEM_PROMPT = [
   "You read the end of an AI coding agent's reply to its user.",
-  "Decide whether the reply ends by asking the user to answer, choose, approve, or decide something before the agent continues.",
+  "Decide whether the reply ends by asking the user to answer, choose, approve, or decide something that the agent must wait for before continuing.",
   "A progress update (work is running, the agent will report back later) is not an ask, even if it mentions what comes next.",
-  "An offer the user must accept or decline (\"want me to…\", \"if you want X, say so\") is an ask.",
+  "An optional offer (\"I can do X if you want\", \"say the word if you'd rather I do X\") is not an ask when work can continue without the user's answer.",
+  "A genuine blocking choice is an ask when the agent cannot continue until the user decides.",
   'Answer with JSON only: {"asksUser": true} or {"asksUser": false}.',
 ].join(" ");
 

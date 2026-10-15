@@ -2939,6 +2939,7 @@ export async function createAdeRuntime(args: {
     });
     const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,

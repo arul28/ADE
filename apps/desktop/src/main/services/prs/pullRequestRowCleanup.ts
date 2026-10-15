@@ -141,6 +141,15 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
   } catch {
     // Older test/embedded databases may predate the unlink tombstone table.
   }
+  try {
+    db.run(
+      `delete from pull_request_lane_chat_origins
+       where project_id = ? and pr_id in (${scope.selectSql})`,
+      [projectId, ...scope.params],
+    );
+  } catch {
+    // Older test/embedded databases may predate pending PR-origin rows.
+  }
   db.run(`delete from pull_requests where id in (${scope.selectSql})`, scope.params);
   pruneEmptyPrGroups(db, projectId);
 }
@@ -251,6 +260,15 @@ function detachRows(
       `delete from pull_request_chat_session_dismissals
        where pr_id in (${scope.selectSql})`,
       scope.params,
+    );
+  } catch {
+    // Older databases are upgraded before this path is normally reached.
+  }
+  try {
+    db.run(
+      `delete from pull_request_lane_chat_origins
+       where project_id = ? and pr_id in (${scope.selectSql})`,
+      [projectId, ...scope.params],
     );
   } catch {
     // Older databases are upgraded before this path is normally reached.

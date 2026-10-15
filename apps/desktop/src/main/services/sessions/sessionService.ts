@@ -2429,16 +2429,27 @@ export function createSessionService({
     },
 
     /**
-     * Clears the attention marker. When `expectedSource` is given the clear is
-     * conditional on the persisted source still matching — a newer request a
-     * different owner wrote in the meantime survives.
+     * Clears the attention marker. `expectedSource` fences the owner; the
+     * optional timestamp fence preserves a same-source request newer than the
+     * event asking for the clear.
      */
-    clearAttentionRequest(sessionId: string, expectedSource?: SessionAttentionSource): boolean {
+    clearAttentionRequest(
+      sessionId: string,
+      expectedSource?: SessionAttentionSource,
+      notNewerThan?: string,
+    ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
+        const timestampFence = notNewerThan ? normalizeIsoTimestamp(notNewerThan) : null;
+        // A timestamp fence is meaningful only with an ownership fence. Do not
+        // let an invalid or unowned conditional clear degrade to an unguarded
+        // delete.
+        if (notNewerThan && (!expectedSource || !timestampFence)) return;
         if (expectedSource) {
           db.run(
-            "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
-            [id, expectedSource],
+            timestampFence
+              ? "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ? and attention_requested_at <= ?"
+              : "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ? and attention_source = ?",
+            timestampFence ? [id, expectedSource, timestampFence] : [id, expectedSource],
           );
           return;
         }
