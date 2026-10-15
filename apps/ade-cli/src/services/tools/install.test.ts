@@ -294,17 +294,18 @@ describe("resolveTool", () => {
   });
 });
 
-describe("gcTools", () => {
-  async function seedVersion(version: string, mtimeMs: number): Promise<string> {
-    const dir = toolVersionDir(toolsRoot, "demo-tool-darwin-arm64", version);
-    await fsp.mkdir(path.join(dir, "bin"), { recursive: true });
-    await fsp.writeFile(path.join(dir, "bin", "demo"), version, "utf8");
-    await fsp.writeFile(path.join(dir, TOOL_INSTALL_SENTINEL), "{}", "utf8");
-    const stamp = new Date(mtimeMs);
-    await fsp.utimes(dir, stamp, stamp);
-    return dir;
-  }
+/** A finished install of the demo tool at `version`, its directory dated `mtimeMs`. */
+async function seedVersion(version: string, mtimeMs: number): Promise<string> {
+  const dir = toolVersionDir(toolsRoot, "demo-tool-darwin-arm64", version);
+  await fsp.mkdir(path.join(dir, "bin"), { recursive: true });
+  await fsp.writeFile(path.join(dir, "bin", "demo"), version, "utf8");
+  await fsp.writeFile(path.join(dir, TOOL_INSTALL_SENTINEL), "{}", "utf8");
+  const stamp = new Date(mtimeMs);
+  await fsp.utimes(dir, stamp, stamp);
+  return dir;
+}
 
+describe("gcTools", () => {
   it("keeps the pinned version and one predecessor, dropping older ones", async () => {
     const manifest = manifestFor({ entryPath: "bin/demo", integrity: `sha512-${"A".repeat(86)}==` });
     const pinned = await seedVersion("1.2.3", Date.now());
@@ -320,24 +321,17 @@ describe("gcTools", () => {
     expect(fs.existsSync(ancient)).toBe(false);
   });
 
-  it("keeps the predecessor runnable while the new pin is still downloading", async () => {
+  it("keeps the newest finished predecessor over a newer half-written one", async () => {
     const manifest = manifestFor({ entryPath: "bin/demo", integrity: `sha512-${"A".repeat(86)}==` });
-    await seedVersion("1.0.0", Date.now() - 600_000);
-    const previous = await seedVersion("1.2.2", Date.now() - 60_000);
-    // A predecessor whose install never finished is not a candidate.
-    const halfWritten = toolVersionDir(toolsRoot, "demo-tool-darwin-arm64", "1.2.1");
-    await fsp.mkdir(path.join(halfWritten, "bin"), { recursive: true });
-    await fsp.writeFile(path.join(halfWritten, "bin", "demo"), "half", "utf8");
-
-    expect(tryResolveTool("demo", baseContext(manifest))).toBeNull();
-    expect(tryResolvePreviousTool("demo", baseContext(manifest))).toMatchObject({
-      version: "1.2.2",
-      entryPath: path.join(previous, "bin", "demo"),
-    });
-    // Only predecessors: with nothing but the pin installed there is none.
-    await fsp.rm(path.join(toolsRoot, "demo-tool-darwin-arm64"), { recursive: true, force: true });
     await seedVersion("1.2.3", Date.now());
-    expect(tryResolvePreviousTool("demo", baseContext(manifest))).toBeNull();
+    const finished = await seedVersion("1.2.1", Date.now() - 600_000);
+    const halfWritten = toolVersionDir(toolsRoot, "demo-tool-darwin-arm64", "1.2.2");
+    await fsp.mkdir(path.join(halfWritten, "bin"), { recursive: true });
+
+    const result = await gcTools(baseContext(manifest));
+
+    expect(fs.existsSync(finished)).toBe(true);
+    expect(result.removed).toContain(halfWritten);
   });
 
   it("drops every superseded version when keepPrevious is off", async () => {
@@ -361,6 +355,28 @@ describe("gcTools", () => {
 
     expect(result.removed).not.toContain(foreign);
     expect(fs.existsSync(foreign)).toBe(true);
+  });
+});
+
+describe("tryResolvePreviousTool", () => {
+  it("runs the predecessor gcTools keeps while the new pin is still downloading", async () => {
+    const manifest = manifestFor({ entryPath: "bin/demo", integrity: `sha512-${"A".repeat(86)}==` });
+    await seedVersion("1.0.0", Date.now() - 600_000);
+    const previous = await seedVersion("1.2.2", Date.now() - 60_000);
+    // A predecessor whose install never finished is not a candidate.
+    const halfWritten = toolVersionDir(toolsRoot, "demo-tool-darwin-arm64", "1.2.1");
+    await fsp.mkdir(path.join(halfWritten, "bin"), { recursive: true });
+    await fsp.writeFile(path.join(halfWritten, "bin", "demo"), "half", "utf8");
+
+    expect(tryResolveTool("demo", baseContext(manifest))).toBeNull();
+    expect(tryResolvePreviousTool("demo", baseContext(manifest))).toMatchObject({
+      version: "1.2.2",
+      entryPath: path.join(previous, "bin", "demo"),
+    });
+    // Only predecessors: with nothing but the pin installed there is none.
+    await fsp.rm(path.join(toolsRoot, "demo-tool-darwin-arm64"), { recursive: true, force: true });
+    await seedVersion("1.2.3", Date.now());
+    expect(tryResolvePreviousTool("demo", baseContext(manifest))).toBeNull();
   });
 });
 

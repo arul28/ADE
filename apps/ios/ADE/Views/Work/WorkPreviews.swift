@@ -479,10 +479,10 @@ private enum WorkPreviewData {
 }
 
 /// The fixture chat every chat preview renders. `laneTools`, when given, fills
-/// the badge row's lane tool chips instead of polling a brain.
+/// the badge row's lane tool chips instead of polling a brain. `compactFirst`
+/// turns it into an idle Claude chat whose 5-minute cache has expired, so the
+/// composer offers Compact first.
 @MainActor
-/// `compactFirst` turns the fixture into an idle Claude chat whose 5-minute
-/// cache has expired, so the composer offers Compact first.
 func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil, compactFirst: Bool = false) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
   if compactFirst {

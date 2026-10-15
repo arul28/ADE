@@ -8,13 +8,15 @@ type ModelSource = {
  * A chat create with an empty `model` gets the host's first available model
  * for its provider. Shared by the sync host's `chat.create` / `chat.launch`
  * and the chat-launch service (desktop action and sync `chat.startLaunch`
- * alike), so every path that creates a chat picks the same model.
+ * alike), so every path that creates a chat picks the same model. A preset
+ * names its own model, which `createSession` fills in; a provider default
+ * here would name a model the chat never runs.
  */
-export async function resolveChatCreateModel<T extends Pick<AgentChatCreateArgs, "provider" | "model" | "modelId">>(
+export async function resolveChatCreateModel<T extends Pick<AgentChatCreateArgs, "provider" | "model" | "modelId" | "presetId">>(
   service: ModelSource,
   payload: T,
 ): Promise<T> {
-  if (payload.model.trim().length > 0) return payload;
+  if (payload.model.trim().length > 0 || payload.presetId?.trim()) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
     // ACP providers are here for the same reason as OpenCode/Pi: their model

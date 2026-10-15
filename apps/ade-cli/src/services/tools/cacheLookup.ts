@@ -20,8 +20,12 @@ import { type ToolResolution, type ToolsContext, resolveTool, tryResolvePrevious
  *     pin to resolve and the bundled copy is the only answer.
  */
 export function lookupCachedTool(name: string, context: ToolsContext = {}): ToolResolution | null {
+  return missOnToolError(() => tryResolveTool(name, context));
+}
+
+function missOnToolError(resolve: () => ToolResolution | null): ToolResolution | null {
   try {
-    return tryResolveTool(name, context);
+    return resolve();
   } catch (error) {
     if (isToolError(error)) return null;
     throw error;
@@ -39,12 +43,7 @@ export function cachedToolEntryPath(name: string, context: ToolsContext = {}): s
  * copy while the new one downloads, instead of whatever is on the PATH.
  */
 export function previousCachedToolEntryPath(name: string, context: ToolsContext = {}): string | null {
-  try {
-    return tryResolvePreviousTool(name, context)?.entryPath ?? null;
-  } catch (error) {
-    if (isToolError(error)) return null;
-    throw error;
-  }
+  return missOnToolError(() => tryResolvePreviousTool(name, context))?.entryPath ?? null;
 }
 
 /**

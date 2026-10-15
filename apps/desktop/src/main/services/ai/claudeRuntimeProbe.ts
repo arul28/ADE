@@ -13,7 +13,7 @@ import {
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
-import { noteClaudeCodeVersion } from "./claudeCodeVersion";
+import { noteClaudeCodeInit } from "./claudeCodeInit";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
@@ -167,7 +167,7 @@ export async function probeClaudeRuntimeHealth(args: {
       });
 
       for await (const message of stream) {
-        if (message.type === "system" && message.subtype === "init") noteClaudeCodeVersion(message.claude_code_version);
+        if (message.type === "system" && message.subtype === "init") noteClaudeCodeInit(message);
         const result = resultFromSdkMessage(message);
         if (result) {
           return cacheResult(projectRoot, result);

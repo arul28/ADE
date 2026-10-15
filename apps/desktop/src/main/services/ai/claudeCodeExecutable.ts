@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { captureError } from "../../../shared/sentry/capture";
 import type { DetectedAuth } from "./authDetector";
 import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
@@ -56,32 +57,26 @@ function resolvePackageFromRuntimeRoots(specifier: string): string {
   throw lastError instanceof Error ? lastError : new Error(`Unable to resolve ${specifier}`);
 }
 
-/**
- * ADE's own `node_modules` copy, resolved from this module rather than the
- * working directory. In a source checkout it is the version ADE's lockfile
- * pins; a working directory can be any project, with a copy of its own.
- */
-function resolveOwnInstallPackage(specifier: string): string | null {
-  if (typeof __filename !== "string") return null;
-  try {
-    return createRequire(__filename).resolve(specifier);
-  } catch {
-    return null;
-  }
-}
-
-function resolveBundledClaudeCodeExecutable(args?: {
+type ClaudeBinaryLookupArgs = {
   resourcesPath?: string | null;
   platform?: NodeJS.Platform;
   arch?: string;
   packageResolver?: (specifier: string) => string;
-}): string | null {
+};
+
+/** The platform package's name and binary file name for this host, or null when Claude ships none. */
+function claudeNativeBinaryCoordinates(args?: ClaudeBinaryLookupArgs): { packageName: string; binaryName: string; arch: string } | null {
   const platform = args?.platform ?? process.platform;
   const arch = args?.arch ?? process.arch;
   const packageName = getClaudeNativeBinaryPackageName(platform, arch);
-  if (!packageName) return null;
+  return packageName ? { packageName, binaryName: getClaudeNativeBinaryFileName(platform), arch } : null;
+}
 
-  const binaryName = getClaudeNativeBinaryFileName(platform);
+/** The copy a packaged app ships unpacked next to its asar. */
+function resolvePackagedClaudeBinary(args?: ClaudeBinaryLookupArgs): string | null {
+  const coordinates = claudeNativeBinaryCoordinates(args);
+  if (!coordinates) return null;
+  const { packageName, binaryName, arch } = coordinates;
   const resourcesPath = args?.resourcesPath ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null;
   const packageParts = scopedPackagePath(packageName);
   const candidates: string[] = [];
@@ -102,16 +97,37 @@ function resolveBundledClaudeCodeExecutable(args?: {
     const normalized = path.normalize(packageJsonPath);
     const packagedNodeModule = normalized.includes(`${path.sep}app.asar.unpacked${path.sep}`)
       || normalized.includes(`${path.sep}app-${arch}.asar.unpacked${path.sep}`);
+    if (!packagedNodeModule) return null;
     const binaryPath = path.join(path.dirname(packageJsonPath), binaryName);
-    if (packagedNodeModule && isExecutablePath(binaryPath)) return binaryPath;
+    return isExecutablePath(binaryPath) ? binaryPath : null;
   } catch {
-    // Not resolvable from the working directory.
+    return null;
   }
-  // A source checkout has no packaged copy; ADE's own install does.
-  const ownPackageJsonPath = resolveOwnInstallPackage(`${packageName}/package.json`);
-  if (!ownPackageJsonPath) return null;
-  const ownBinaryPath = path.join(path.dirname(ownPackageJsonPath), binaryName);
-  return isExecutablePath(ownBinaryPath) ? ownBinaryPath : null;
+}
+
+/**
+ * ADE's own `node_modules` copy, resolved from this module rather than the
+ * working directory: in a source checkout it is the version ADE's lockfile
+ * pins, while a working directory can be any project, with a copy of its own.
+ */
+function resolveOwnInstallClaudeBinary(args?: ClaudeBinaryLookupArgs): string | null {
+  const coordinates = claudeNativeBinaryCoordinates(args);
+  // ESM (`tsx` running the CLI from source) has no `__filename`; the script
+  // it runs is ADE's own too.
+  const script = process.argv[1];
+  const fromFile = typeof __filename === "string" ? __filename : script && path.isAbsolute(script) ? script : null;
+  if (!coordinates || !fromFile) return null;
+  try {
+    const packageJsonPath = createRequire(fromFile).resolve(`${coordinates.packageName}/package.json`);
+    const binaryPath = path.join(path.dirname(packageJsonPath), coordinates.binaryName);
+    return isExecutablePath(binaryPath) ? binaryPath : null;
+  } catch (error) {
+    // Not installed (a packaged app ships no platform package) is the ordinary miss.
+    if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") {
+      captureError(error, { tags: { area: "claude-executable" } });
+    }
+    return null;
+  }
 }
 
 export function resolveClaudeCodeExecutable(args?: {
@@ -142,7 +158,7 @@ export function resolveClaudeCodeExecutable(args?: {
     return { path: cachedPath, source: "tools-cache" };
   }
 
-  const bundledPath = resolveBundledClaudeCodeExecutable(args);
+  const bundledPath = resolvePackagedClaudeBinary(args) ?? resolveOwnInstallClaudeBinary(args);
   if (bundledPath) {
     return { path: bundledPath, source: "bundled" };
   }
@@ -151,11 +167,13 @@ export function resolveClaudeCodeExecutable(args?: {
   // previous copy, which the cache keeps for this, beats the machine's own
   // `claude`: that one can be any version, and ADE delivers its plugins only
   // to its own copies.
-  const previousPath = previousCachedToolEntryPath("claude-code", {
-    env,
-    platform: args?.platform,
-    arch: args?.arch,
-  });
+  let previousPath: string | null = null;
+  try {
+    previousPath = previousCachedToolEntryPath("claude-code", { env, platform: args?.platform, arch: args?.arch });
+  } catch (error) {
+    // An unreadable tools cache must not stop a chat from starting on the next copy down.
+    captureError(error, { tags: { area: "claude-executable" } });
+  }
   if (previousPath && isExecutablePath(previousPath)) {
     return { path: previousPath, source: "tools-cache" };
   }

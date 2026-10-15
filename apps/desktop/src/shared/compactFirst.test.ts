@@ -18,7 +18,6 @@ describe("compactFirstOffer", () => {
     ["claude idle past an hour with large context", { events: [done(61)], contextTokens: 250_000 }, true],
     ["exactly an hour idle", { events: [done(60)], contextTokens: 250_000 }, true],
     ["idle just under an hour", { events: [done(59)], contextTokens: 250_000 }, false],
-    ["context just under 100k", { events: [done(90)], contextTokens: 99_999 }, false],
     ["context exactly 200k", { events: [done(90)], contextTokens: 200_000 }, true],
     ["context just under 200k", { events: [done(90)], contextTokens: 199_999 }, false],
     ["mode never", { events: [done(90)], contextTokens: 250_000, mode: "never" as const }, false],
@@ -70,12 +69,9 @@ describe("warmIdleCompactAtMs", () => {
     ["a 5-minute cache is gone before it matters", { mode: "always" as const, cache: { ttl: "5m" as const, since: minutesAgo(1) }, contextTokens: 250_000 }, null],
     ["an unknown cache lifetime", { mode: "always" as const, cache: null, contextTokens: 250_000 }, null],
     ["a chat under the floor", { mode: "always" as const, cache: hourCache, contextTokens: 150_000 }, null],
+    ["a turn is running", { mode: "always" as const, cache: hourCache, contextTokens: 250_000, events: [done(10), started(5)] }, null],
   ])("%s", (_name, args, expected) => {
     expect(warmIdleCompactAtMs({ provider: "claude", events: [done(10)], ...args })).toBe(expected);
-  });
-
-  it("never schedules while a turn is running", () => {
-    expect(warmIdleCompactAtMs({ provider: "claude", events: [done(10), started(5)], mode: "always", cache: hourCache, contextTokens: 250_000 })).toBeNull();
   });
 });
 

@@ -13778,20 +13778,18 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
-      // A plain model picked on a preset chat leaves the preset, which the
-      // model id alone cannot show: the row can already name that model while
-      // the preset still decides what launches.
-      const routePick = sessionRoutePickRef.current;
-      const selectedPresetLeft =
-        Boolean(selectedSessionId)
-        && Boolean(selectedSession?.presetId)
-        && routePick?.sessionId === selectedSessionId
-        && !routePick.presetId;
+      // A pick can move the chat onto a preset or off one, which the model id
+      // alone cannot show: the row can already name the model while the
+      // preset decides what launches.
+      const routePick = selectedSessionId && sessionRoutePickRef.current?.sessionId === selectedSessionId
+        ? sessionRoutePickRef.current
+        : null;
+      const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
       const selectedModelChanged =
         Boolean(selectedSessionId)
         && (
           (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
-          || selectedPresetLeft
+          || selectedRouteChanged
         );
       const selectedFastModeChanged =
         Boolean(selectedSessionId)
@@ -13827,7 +13825,14 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const modelUpdate = selectedModelChanged ? { modelId } : {};
+        const sessionModelUpdate = (): { modelId?: string; presetId?: string | null } => {
+          if (!selectedModelChanged) return {};
+          // A preset names its own model.
+          if (routePick?.presetId && selectedRouteChanged) return { presetId: routePick.presetId };
+          // A plain pick on a preset chat leaves the preset.
+          return selectedRouteChanged ? { modelId, presetId: null } : { modelId };
+        };
+        const modelUpdate = sessionModelUpdate();
         const fastModeUpdate = selectedFastModeChanged
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {};
@@ -16373,6 +16378,12 @@ export function AgentChatPane({
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;
+  // The pick shows on the trigger before it is sent; otherwise what the chat runs on.
+  const activeHarnessPresetId = !selectedSessionId
+    ? draftHarnessPresetId
+    : sessionRoutePick?.sessionId === selectedSessionId
+      ? sessionRoutePick.presetId
+      : selectedSession?.presetId ?? null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -16395,11 +16406,7 @@ export function AgentChatPane({
             modelId={subagentComposerModel?.modelId ?? modelId}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
-            activeHarnessPresetId={selectedSessionId
-              ? sessionRoutePick?.sessionId === selectedSessionId
-                ? sessionRoutePick.presetId
-                : selectedSession?.presetId ?? null
-              : draftHarnessPresetId}
+            activeHarnessPresetId={activeHarnessPresetId}
             // Custom shows in CLI mode too; the picker lists the CLIs that take
             // no endpoint (`shared/harnessPresetCliGate.ts`) as unavailable.
             onOpenHarnessSettings={openHarnessSettings}

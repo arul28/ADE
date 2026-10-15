@@ -78,7 +78,7 @@ export function compactFirstOffer({ now = Date.now(), ...args }: CompactFirstArg
  * life: late enough that the chat is truly idle, early enough that the cache
  * is still warm and the compaction reads the chat at the cached price.
  */
-export const WARM_IDLE_COMPACT_FRACTION = 0.9;
+const WARM_IDLE_COMPACT_FRACTION = 0.9;
 
 /**
  * When "Always compact first" compacts an idle chat by itself, as Claude Code

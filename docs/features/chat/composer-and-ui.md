@@ -1371,7 +1371,7 @@ chat pane mount, which happens either way.
   itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
   cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and
   the compaction reads the chat at the cached price (`warmIdleCompactAtMs`,
-  `scheduleWarmIdleCompaction`). Claude's own timer cannot fire in ADE, which
+  `warmIdleCompactionScheduler.ts`). Claude's own timer cannot fire in ADE, which
   closes an idle Claude process after five minutes. A turn cancels the timer, a
   timer that fires more than a minute late (a machine that slept) is dropped,
   and a chat it misses compacts on the next send as before. Claude's

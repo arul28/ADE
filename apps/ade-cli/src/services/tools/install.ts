@@ -219,39 +219,52 @@ export function resolveTool(name: string, context: ToolsContext = {}): ToolResol
 }
 
 /**
- * The newest installed version of `name` other than the pinned one: the copy
- * `gcTools` keeps after an update, so a machine still downloading the new pin
- * has the previous one to run. Null when there is none. Never touches the
- * network.
+ * A package's version directories other than `pinnedVersions`: finished
+ * installs first, then newest first. One order for `gcTools` (which keeps the
+ * first) and `tryResolvePreviousTool` (which runs the first), so the copy
+ * collection keeps is the copy a machine mid-update can run.
  */
-export function tryResolvePreviousTool(name: string, context: ToolsContext = {}): ToolResolution | null {
-  const resolved = resolveContext(context);
-  const pinned = resolvePinned(findToolPin(resolved.manifest, name), resolved);
-  const packageDir = toolPackageDir(resolved.toolsRoot, pinned.packageName);
+function supersededVersionDirs(
+  packageDir: string,
+  pinnedVersions: ReadonlySet<string>,
+): { dir: string; version: string; installed: boolean }[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(packageDir, { withFileTypes: true });
-  } catch {
-    return null;
+  } catch (error) {
+    // Never installed is the ordinary miss; an unreadable cache is not.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
   }
-  let newest: (ToolResolution & { mtimeMs: number }) | null = null;
+  const superseded: { dir: string; version: string; installed: boolean; mtimeMs: number }[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name === pinned.version) continue;
+    if (!entry.isDirectory() || pinnedVersions.has(entry.name)) continue;
     const dir = path.join(packageDir, entry.name);
-    const entryPath = readInstalledEntry(dir, pinned.entryRelativePath);
-    if (!entryPath) continue;
     let mtimeMs = 0;
     try {
       mtimeMs = fs.statSync(dir).mtimeMs;
     } catch {
-      continue;
+      // Unreadable directories are still collectable.
     }
-    if (newest && newest.mtimeMs >= mtimeMs) continue;
-    newest = { name, packageName: pinned.packageName, version: entry.name, target: resolved.target, dir, entryPath, mtimeMs };
+    superseded.push({ dir, version: entry.name, installed: isToolInstalled(dir), mtimeMs });
   }
-  if (!newest) return null;
-  const { mtimeMs: _mtimeMs, ...resolution } = newest;
-  return resolution;
+  superseded.sort((left, right) => Number(right.installed) - Number(left.installed) || right.mtimeMs - left.mtimeMs);
+  return superseded.map(({ mtimeMs: _mtimeMs, ...rest }) => rest);
+}
+
+/**
+ * The version of `name` that `gcTools` keeps after an update, when it is a
+ * finished install: a machine still downloading the new pin runs it. Null
+ * when there is none. Never touches the network.
+ */
+export function tryResolvePreviousTool(name: string, context: ToolsContext = {}): ToolResolution | null {
+  const resolved = resolveContext(context);
+  const pinned = resolvePinned(findToolPin(resolved.manifest, name), resolved);
+  const [previous] = supersededVersionDirs(toolPackageDir(resolved.toolsRoot, pinned.packageName), new Set([pinned.version]));
+  const entryPath = previous ? readInstalledEntry(previous.dir, pinned.entryRelativePath) : null;
+  if (!previous || !entryPath) return null;
+  return { name, packageName: pinned.packageName, version: previous.version, target: resolved.target, dir: previous.dir, entryPath };
 }
 
 export function tryResolveTool(name: string, context: ToolsContext = {}): ToolResolution | null {
@@ -616,29 +629,17 @@ export async function gcTools(options: GcToolsOptions = {}): Promise<GcToolsResu
 
   for (const [packageName, pinnedVersions] of pinnedVersionsByPackage) {
     const packageDir = toolPackageDir(resolved.toolsRoot, packageName);
-    let entries: fs.Dirent[];
+    for (const version of pinnedVersions) {
+      const versionDir = toolVersionDir(resolved.toolsRoot, packageName, version);
+      if (fs.existsSync(versionDir)) kept.push(versionDir);
+    }
+    let superseded: ReturnType<typeof supersededVersionDirs>;
     try {
-      entries = await fsp.readdir(packageDir, { withFileTypes: true });
+      superseded = supersededVersionDirs(packageDir, pinnedVersions);
     } catch {
+      // An unreadable package directory is left for a later pass.
       continue;
     }
-    const superseded: { dir: string; mtimeMs: number }[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const versionDir = path.join(packageDir, entry.name);
-      if (pinnedVersions.has(entry.name)) {
-        kept.push(versionDir);
-        continue;
-      }
-      let mtimeMs = 0;
-      try {
-        mtimeMs = (await fsp.stat(versionDir)).mtimeMs;
-      } catch {
-        // Unreadable directories are still collectable.
-      }
-      superseded.push({ dir: versionDir, mtimeMs });
-    }
-    superseded.sort((left, right) => right.mtimeMs - left.mtimeMs);
     const doomed = keepPrevious ? superseded.slice(1) : superseded;
     if (keepPrevious && superseded[0]) kept.push(superseded[0].dir);
     for (const candidate of doomed) {

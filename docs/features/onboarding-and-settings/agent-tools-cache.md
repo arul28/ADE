@@ -412,8 +412,10 @@ typed `kind` is the whole point of the module: callers and support threads branc
 on it rather than parsing prose.
 
 `gc` keeps the newest superseded version of each package by default
-(`keepPrevious`), so rolling back to the previous ADE build does not re-download
-hundreds of megabytes. Packages the manifest has never heard of are left alone:
+(`keepPrevious`), preferring a finished install over a newer half-written one,
+so rolling back to the previous ADE build does not re-download hundreds of
+megabytes, and a machine still downloading a new pin has the old one to run
+(`tryResolvePreviousTool` reads the same order, `supersededVersionDirs`). Packages the manifest has never heard of are left alone:
 on a machine running two ADE channels, an unknown directory is far more likely to
 belong to the other channel than to be garbage.
 

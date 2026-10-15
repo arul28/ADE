@@ -191,6 +191,11 @@ function installCliCaptureMock(
 }
 
 
+/** Claude writes a thread at its first message; until then there is nothing to fork or move. */
+async function startClaudeThread(service: { runSessionTurn: (args: { sessionId: string; text: string }) => Promise<unknown> }, sessionId: string): Promise<void> {
+  await service.runSessionTurn({ sessionId, text: "Start." });
+}
+
 describe("createAgentChatService", () => {
   describe("handoffSession", () => {
     it("rejects handoff while the source chat is still outputting", async () => {
@@ -2480,9 +2485,7 @@ describe("createAgentChatService", () => {
         permissionMode: "default",
       });
 
-      // Claude writes a thread at its first message; until then there is
-      // nothing to fork or move.
-      await service.runSessionTurn({ sessionId: source.id, text: "Start." });
+      await startClaudeThread(service, source.id);
       await vi.waitFor(() => {
         expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
       });
@@ -2705,9 +2708,7 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
         instanceId: work.id,
       });
-      // Claude writes a thread at its first message; until then there is
-      // nothing to fork or move.
-      await service.runSessionTurn({ sessionId: source.id, text: "Start." });
+      await startClaudeThread(service, source.id);
       await vi.waitFor(() => {
         expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
       });
@@ -2943,9 +2944,7 @@ describe("createAgentChatService", () => {
           model: "claude-sonnet-5",
           modelId: "anthropic/claude-sonnet-5",
         });
-        // Claude writes a thread at its first message; until then there is
-        // nothing to fork or move.
-        await service.runSessionTurn({ sessionId: source.id, text: "Start." });
+        await startClaudeThread(service, source.id);
         await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
         const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
         const providerTranscript = `${JSON.stringify({
@@ -3047,9 +3046,7 @@ describe("createAgentChatService", () => {
           model: "claude-sonnet-5",
           modelId: "anthropic/claude-sonnet-5",
         });
-        // Claude writes a thread at its first message; until then there is
-        // nothing to fork or move.
-        await service.runSessionTurn({ sessionId: source.id, text: "Start." });
+        await startClaudeThread(service, source.id);
         await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
         const sourceSdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
         const providerDir = path.join(
