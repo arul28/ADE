@@ -11,7 +11,7 @@ import type {
 import { listAppleDeviceMarkers, writeAppleDeviceMarker } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import { ProjectRegistry } from "../projectRegistry";
 import { readGitDirPointer } from "../projectRoots";
-import { applyAgentHistoryRenames, planAgentHistoryRenames } from "./moveAgentHistory";
+import { applyAgentHistoryRenames, carryCodexTrust, planAgentHistoryRenames } from "./moveAgentHistory";
 import { copyProjectTree, countCopiedEntries, diskUsageBytes, trackedDependencyDirs } from "./moveCopy";
 import {
   projectDatabasePath,
@@ -475,6 +475,11 @@ function finishSwitch(record: ProjectMoveRecord): void {
     const history = applyAgentHistoryRenames(plans);
     if (history.moved) record.followUps.push(`Moved ${plural(history.moved, "chat history folder")} to the new location.`);
     record.problems.push(...history.problems);
+  });
+  attempt("ADE couldn't carry Codex's folder trust over", () => {
+    if (carryCodexTrust({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
+      record.followUps.push("Codex trusts the new location, as it did the old one.");
+    }
   });
 }
 

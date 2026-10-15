@@ -3,6 +3,8 @@ import { FolderSimple } from "@phosphor-icons/react";
 import type { ProjectMoveRecord } from "../../../shared/types/projectMove";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { isMacPlatform } from "../../lib/platform";
+import { arePathsEqual } from "../../lib/pathUtils";
+import { useAppStore } from "../../state/appStore";
 import { MoveProjectDialog } from "./MoveProjectDialog";
 import { chooseOldCopy } from "./oldCopyActions";
 import { displayPath, formatBytes, PROJECT_MOVE_CHANGED_EVENT, REMINDER_CHOICES } from "./projectMoveModel";
@@ -76,7 +78,12 @@ export function ProjectMoveHost() {
     };
   }, [api, refresh]);
 
-  const record = target ? null : attention[0] ?? null;
+  // The old copy belongs to the project that moved: its banner shows only in
+  // that project's tab, never over another project the window has open.
+  const projectRoot = useAppStore((s) => (s.projectBinding?.kind === "remote" ? null : s.project?.rootPath ?? null));
+  const record = target || !projectRoot
+    ? null
+    : attention.find((entry) => arePathsEqual(entry.destinationRoot, projectRoot)) ?? null;
 
   useAppBanner(
     record && {

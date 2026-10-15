@@ -52,6 +52,20 @@ Research, the full map of stored paths and the experiments behind each rule:
 Any failure before the switch deletes the partial copy and reopens the
 untouched original.
 
+## After the move
+
+- **Done** offers the check agent and the old-copy choice; neither is
+  required. *Set up…* opens the issue launchers' picker in place
+  (`SessionLaunchModelControls`: model, effort, permissions) with the check
+  prompt editable, and the launch shows the whole prompt in the chat. The old
+  copy's Keep / Remind me / Delete can wait: the card says it can be cleaned
+  up later from Settings → Project location.
+- **The old-copy banner** shows only in the moved project's tab (matched on
+  the record's `destinationRoot`), never over another open project.
+- **Codex trust.** `finishSwitch` adds the old path's `trust_level` from
+  `$CODEX_HOME/config.toml` for the new path (append only; the old entry
+  stays), so Codex doesn't ask to trust the folder again.
+
 ## Gotchas
 
 - **Never run `git worktree repair` on a copy.** Even with explicit lane paths

@@ -418,7 +418,8 @@ export function issueChatLaunchArgs(args: {
   laneId: string;
   config: BatchLaunchIssueConfig;
   kickoffText: string;
-  contextAttachment: AgentChatContextAttachment;
+  /** The issue as session context; omitted for a launch with no issue behind it. */
+  contextAttachment?: AgentChatContextAttachment | null;
 }): Parameters<BatchLaunchDeps["launch"]>[0] {
   const { config } = args;
   const nativeControls = config.nativeControls ?? defaultNativeControls();
@@ -443,7 +444,7 @@ export function issueChatLaunchArgs(args: {
         ? { permissionMode: nativePayload.permissionMode }
         : {}),
     kickoffText: args.kickoffText,
-    contextAttachments: [args.contextAttachment],
+    contextAttachments: args.contextAttachment ? [args.contextAttachment] : [],
     ...(presetId ? { presetId } : {}),
   };
 }
