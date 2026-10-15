@@ -152,14 +152,14 @@ describe("AgentChatModelsArgs", () => {
 });
 
 describe("handoff fork provider support", () => {
-  it("keeps local Droid and Cursor forks enabled while refusing them across machines", () => {
+  it("forks every handoff-capable provider across machines too, through transcript replay", () => {
     expect(providerSupportsHandoffFork("droid")).toBe(true);
     expect(providerSupportsHandoffFork("cursor")).toBe(true);
-    expect(providerSupportsCrossMachineHandoffFork("droid")).toBe(false);
+    expect(providerSupportsCrossMachineHandoffFork("droid")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("claude")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("codex")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("opencode")).toBe(true);
-    expect(providerSupportsCrossMachineHandoffFork("cursor")).toBe(false);
+    expect(providerSupportsCrossMachineHandoffFork("cursor")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("unknown-provider")).toBe(false);
   });
 });
