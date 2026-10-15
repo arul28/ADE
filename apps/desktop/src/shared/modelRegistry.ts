@@ -44,7 +44,8 @@ export type ProviderFamily =
   | "qwen"
   | "moonshot"
   | "github-copilot"
-  | "devin";
+  | "devin"
+  | "muse";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
@@ -92,6 +93,11 @@ export type ModelDescriptor = {
   inputPricePer1M?: number;
   /** Price per million output tokens (USD). Used for cost estimation. */
   outputPricePer1M?: number;
+  /**
+   * Price per million cached input tokens (USD), when the vendor publishes one.
+   * Absent means the usual 10% of the input price.
+   */
+  cacheReadPricePer1M?: number;
   /** Curated cost tier for UI display. */
   costTier?: "low" | "medium" | "high" | "very_high";
   /** ADE-owned safety/tooling profile for local and experimental models. */
@@ -172,6 +178,7 @@ export type WorkerExecutionPath = "cli" | "api" | "local";
 export type ModelProviderGroup =
   | "claude"
   | "codex"
+  | "muse"
   | "opencode"
   | "cursor"
   | "droid"
@@ -186,6 +193,7 @@ export type ModelProviderGroup =
 export const MODEL_PROVIDER_GROUPS = [
   "claude",
   "codex",
+  "muse",
   "cursor",
   "opencode",
   "pi",
@@ -228,6 +236,22 @@ export function modelSupportsServiceTier(
 
 export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undefined): boolean {
   return modelSupportsServiceTier(descriptor, "fast");
+}
+
+/**
+ * Which faster tier a chat with Fast on asks for. `fast` is Codex `priority`
+ * (and every other provider's Fast); `ultrafast` is Codex's tier above it,
+ * which the Codex catalog offers per account. Absent means `fast`.
+ */
+export type FastTier = "fast" | "ultrafast";
+
+export function modelSupportsUltrafast(descriptor: ModelDescriptor | null | undefined): boolean {
+  return modelSupportsServiceTier(descriptor, "ultrafast");
+}
+
+/** A stored tier, or null when it is not Ultrafast (Fast is the default). */
+export function normalizeFastTier(value: unknown): "ultrafast" | null {
+  return value === "ultrafast" ? "ultrafast" : null;
 }
 
 export type OpenCodeFastEffortSelection = {
@@ -480,6 +504,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
     inputPricePer1M: 2,
     outputPricePer1M: 10,
+    cacheReadPricePer1M: 0.1,
     costTier: "medium",
   },
   {
@@ -891,6 +916,55 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     outputPricePer1M: 14,
     costTier: "medium",
     deprecated: true,
+  },
+
+  // ---- Meta Muse Code (CLI-wrapped via `muse`; chat over MSP) ----
+  // The models Muse ships. A live `model/list` adds anything else the account
+  // can reach (see `replaceDynamicMuseModelDescriptors`). Muse's contributor
+  // variants are never listed: ADE always runs with contributor mode off.
+  {
+    id: "muse/muse-spark-1.3",
+    shortId: "muse-spark-1.3",
+    aliases: ["muse-spark", "spark-1.3"],
+    displayName: "Muse Spark 1.3",
+    family: "muse",
+    authTypes: ["cli-subscription", "api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "high",
+    color: "#0866FF",
+    providerRoute: "muse-cli",
+    providerModelId: "muse-spark-1.3",
+    cliCommand: "muse",
+    isCliWrapped: true,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 4.25,
+    cacheReadPricePer1M: 0.15,
+    costTier: "low",
+  },
+  {
+    id: "muse/muse-spark-1.2",
+    shortId: "muse-spark-1.2",
+    aliases: ["spark-1.2"],
+    displayName: "Muse Spark 1.2",
+    family: "muse",
+    authTypes: ["cli-subscription", "api-key"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "high",
+    color: "#7466E8",
+    providerRoute: "muse-cli",
+    providerModelId: "muse-spark-1.2",
+    cliCommand: "muse",
+    isCliWrapped: true,
+    inputPricePer1M: 1.25,
+    outputPricePer1M: 4.25,
+    cacheReadPricePer1M: 0.15,
+    costTier: "low",
   },
 
   // ---- Qwen (CLI-wrapped via `qwen`, ACP) ----
@@ -1322,7 +1396,7 @@ let dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
 let dynamicPiById = new Map<string, ModelDescriptor>();
 let dynamicPiByAlias = new Map<string, ModelDescriptor>();
 /** Live-discovered ACP models, one map per provider group. Curated rows win. */
-const dynamicAcpByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
+const dynamicAcpByProvider = new Map<LiveModelProviderGroup, Map<string, ModelDescriptor>>();
 let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 /**
  * Live ACP reports of models the registry already curates, per provider, keyed
@@ -1330,7 +1404,7 @@ let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
  * (`grok-4.5`, registered as `xai/grok-4.5`) while the curated row for the same
  * model is `xai/grok-4-5`; the two used to reach the picker as two rows.
  */
-const liveAcpReportsByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
+const liveAcpReportsByProvider = new Map<LiveModelProviderGroup, Map<string, ModelDescriptor>>();
 /**
  * Curated ACP rows as the picker sees them once a live session reported the
  * model: the curated row's own metadata with the efforts the live session
@@ -2245,11 +2319,26 @@ export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "copilot" | "devi
 
 const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 
-/** Family, route prefix, and brand color for each ACP provider group. */
+/**
+ * Provider groups whose catalog is curated rows plus a live list the runtime
+ * reports: the ACP providers, and Muse (MSP `model/list`). They share one
+ * contract: a curated row wins over a live report of the same model, and the
+ * live list is capped. Muse is not an ACP provider; only the catalog rules are
+ * shared, so it is kept out of {@link AcpModelProviderGroup}.
+ */
+export type LiveModelProviderGroup = AcpModelProviderGroup | "muse";
+
+/** True for a provider group whose live list the runtime reports (see {@link LiveModelProviderGroup}). */
+export function isLiveModelProviderGroup(value: string | null | undefined): value is LiveModelProviderGroup {
+  return value === "muse" || isAcpModelProviderGroup(value);
+}
+
+/** Family, route prefix, and brand color for each live-catalog provider group. */
 const ACP_GROUP_METADATA: Record<
-  AcpModelProviderGroup,
+  LiveModelProviderGroup,
   { family: ProviderFamily; providerRoute: string; cliCommand: string; color: string; previewTier: boolean }
 > = {
+  muse: { family: "muse", providerRoute: "muse-cli", cliCommand: "muse", color: DYNAMIC_MODEL_COLORS.muse, previewTier: false },
   qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: ACP_PROVIDER_MODEL_COLORS.qwen, previewTier: false },
   kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: ACP_PROVIDER_MODEL_COLORS.kimi, previewTier: false },
   grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: ACP_PROVIDER_MODEL_COLORS.grok, previewTier: false },
@@ -2274,9 +2363,11 @@ const ACP_GROUP_METADATA: Record<
  *
  * A provider catalog crosses the sync wire to the phone. Shipping an unbounded
  * discovered list is how 7238 OpenCode models once became a 4.85 MB payload, so
- * discovery is bounded here rather than at each consumer.
+ * discovery is bounded here rather than at each consumer. Once a live list
+ * exists it is the whole picker for that provider, so the cap sits above any
+ * real account catalog (Devin lists 52+ families) and only stops a runaway.
  */
-export const ACP_DYNAMIC_MODEL_LIMIT = 40;
+export const ACP_DYNAMIC_MODEL_LIMIT = 100;
 
 export function isAcpModelProviderGroup(value: string | null | undefined): value is AcpModelProviderGroup {
   return value != null && (ACP_MODEL_PROVIDER_GROUPS as readonly string[]).includes(value);
@@ -2289,7 +2380,7 @@ export function isAcpModelProviderGroup(value: string | null | undefined): value
  * a model that later graduates into the curated table keeps its id and every
  * chat that already picked it keeps working.
  */
-export function acpRegistryIdFor(provider: AcpModelProviderGroup, providerModelId: string): string {
+export function acpRegistryIdFor(provider: LiveModelProviderGroup, providerModelId: string): string {
   return `${ACP_GROUP_METADATA[provider].family}/${providerModelId.trim()}`;
 }
 
@@ -2310,7 +2401,7 @@ export type DynamicAcpModelDescriptorOptions = {
  * make the launch fail.
  */
 export function createDynamicAcpModelDescriptor(
-  provider: AcpModelProviderGroup,
+  provider: LiveModelProviderGroup,
   providerModelId: string,
   options?: DynamicAcpModelDescriptorOptions,
 ): ModelDescriptor {
@@ -2327,7 +2418,8 @@ export function createDynamicAcpModelDescriptor(
     capabilities: {
       tools: options?.capabilities?.tools ?? true,
       vision: options?.capabilities?.vision ?? false,
-      reasoning: options?.capabilities?.reasoning ?? false,
+      // A model with an effort list reasons; handoff and effort clamping read this.
+      reasoning: options?.capabilities?.reasoning ?? Boolean(options?.reasoningTiers?.length),
       streaming: options?.capabilities?.streaming ?? true,
     },
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
@@ -2350,7 +2442,7 @@ export function createDynamicAcpModelDescriptor(
  * `providerModelId: "grok-4.5"`. Both name one model.
  */
 function curatedAcpRowForLiveModel(
-  provider: AcpModelProviderGroup,
+  provider: LiveModelProviderGroup,
   descriptor: Pick<ModelDescriptor, "id" | "providerModelId">,
 ): ModelDescriptor | undefined {
   const route = ACP_GROUP_METADATA[provider].providerRoute;
@@ -2376,6 +2468,13 @@ function curatedAcpRowForLiveModel(
  */
 export function replaceDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
+  descriptors: ModelDescriptor[],
+): void {
+  replaceLiveModelDescriptors(provider, descriptors);
+}
+
+function replaceLiveModelDescriptors(
+  provider: LiveModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
   const next = new Map<string, ModelDescriptor>();
@@ -2416,8 +2515,42 @@ export function replaceDynamicAcpModelDescriptors(
   }
 }
 
+/**
+ * True once the provider itself has named its models (a chat session, a
+ * discovery probe, or the persisted copy of either). From then on the live list
+ * is the whole picker: curated rows it does not name are hidden, and curated
+ * rows it names keep their researched name, color and context window.
+ */
+export function hasLiveAcpModelCatalog(provider: LiveModelProviderGroup): boolean {
+  return ((dynamicAcpByProvider.get(provider)?.size ?? 0) + (liveAcpReportsByProvider.get(provider)?.size ?? 0)) > 0;
+}
+
+/** Every live report for a provider as it arrived, curated or not. What a persisted catalog stores. */
+export function getLiveAcpModelDescriptors(provider: AcpModelProviderGroup): ModelDescriptor[] {
+  return [
+    ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
+    ...getDynamicAcpModelDescriptors(provider),
+  ];
+}
+
+/**
+ * What the curated (non-ACP) registry says about whether a model reasons,
+ * matched by model name across families: an ACP agent reports
+ * `claude-sonnet-4.6` for the model curated as Anthropic's
+ * `claude-sonnet-4-6`. Undefined when no curated row names the model.
+ */
+export function curatedReasoningHintForModelName(name: string): boolean | undefined {
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/[._\s]+/g, "-");
+  const wanted = normalize(name);
+  if (!wanted) return undefined;
+  const row = MODEL_REGISTRY.find((candidate) =>
+    !candidate.providerRoute.endsWith("-acp")
+    && (normalize(candidate.providerModelId) === wanted || normalize(candidate.shortId) === wanted));
+  return row?.capabilities.reasoning;
+}
+
 /** Live ACP models the registry does not curate. Reports of curated models ride their curated row. */
-export function getDynamicAcpModelDescriptors(provider: AcpModelProviderGroup): ModelDescriptor[] {
+export function getDynamicAcpModelDescriptors(provider: LiveModelProviderGroup): ModelDescriptor[] {
   return [...(dynamicAcpByProvider.get(provider)?.values() ?? [])];
 }
 
@@ -2427,7 +2560,7 @@ export function getDynamicAcpModelDescriptors(provider: AcpModelProviderGroup): 
  * row, else undefined when nothing has reported it.
  */
 export function resolveAcpModelDescriptor(
-  provider: AcpModelProviderGroup,
+  provider: LiveModelProviderGroup,
   providerModelId: string,
 ): ModelDescriptor | undefined {
   const id = acpRegistryIdFor(provider, providerModelId);
@@ -2440,6 +2573,7 @@ export function mergeDynamicAcpModelDescriptors(
   provider: AcpModelProviderGroup,
   descriptors: ModelDescriptor[],
 ): void {
+  // Uncurated models first, as before: at the size cap they are the ones kept.
   const existing = [
     ...getDynamicAcpModelDescriptors(provider),
     ...(liveAcpReportsByProvider.get(provider)?.values() ?? []),
@@ -2454,6 +2588,129 @@ export function clearDynamicAcpModelDescriptors(): void {
   liveAcpReportsByProvider.clear();
   rebuildCuratedAcpLiveRows();
   dynamicAcpByAlias = new Map<string, ModelDescriptor>();
+}
+
+// ---------------------------------------------------------------------------
+// Meta Muse Code: curated rows plus the live MSP `model/list`
+// ---------------------------------------------------------------------------
+
+/** Every reasoning effort Muse accepts (`--reasoning-effort`, `session/setReasoningEffort`). */
+export const MUSE_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export const MUSE_DEFAULT_REASONING_EFFORT = "high";
+export const MUSE_DEFAULT_MODEL_ID = "muse/muse-spark-1.3";
+
+/**
+ * Muse contributor-mode models. ADE always runs Muse with contributor mode
+ * off, so a live list that still names one must not put it in a picker.
+ */
+export function isMuseContributorModelId(providerModelId: string): boolean {
+  return /contributor/i.test(providerModelId);
+}
+
+/** Stable ADE id for a Muse model: `muse/<model id>`, the same shape as the curated rows. */
+export function museRegistryIdFor(providerModelId: string): string {
+  return acpRegistryIdFor("muse", providerModelId);
+}
+
+/**
+ * A descriptor for a model Muse's `model/list` reported. Efforts default to
+ * Muse's full ladder, because every Muse model takes every effort.
+ */
+export function createDynamicMuseModelDescriptor(
+  providerModelId: string,
+  options?: DynamicAcpModelDescriptorOptions,
+): ModelDescriptor {
+  const tiers = options?.reasoningTiers?.length ? options.reasoningTiers : [...MUSE_REASONING_EFFORTS];
+  return createDynamicAcpModelDescriptor("muse", providerModelId, {
+    ...options,
+    contextWindow: options?.contextWindow ?? 1_000_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 128_000,
+    capabilities: { vision: true, reasoning: true, ...options?.capabilities },
+    reasoningTiers: [...tiers],
+    defaultReasoningEffort: options?.defaultReasoningEffort
+      ?? (tiers.includes(MUSE_DEFAULT_REASONING_EFFORT) ? MUSE_DEFAULT_REASONING_EFFORT : undefined),
+  });
+}
+
+/**
+ * Replace the live Muse model list (MSP `model/list`). Same rules as the ACP
+ * replacer: a curated model keeps its curated row, the list is capped, and a
+ * contributor variant is dropped.
+ */
+export function replaceDynamicMuseModelDescriptors(descriptors: ModelDescriptor[]): void {
+  replaceLiveModelDescriptors(
+    "muse",
+    descriptors.filter((descriptor) => !isMuseContributorModelId(descriptor.providerModelId)),
+  );
+}
+
+/**
+ * One row of MSP `model/list` (`ModelCatalogEntry`), structurally: shared code
+ * does not import the Muse SDK.
+ */
+export type MuseModelCatalogRow = {
+  modelId: string;
+  displayLabel?: string | null;
+  contextLimit?: number | null;
+  outputLimit?: number | null;
+  cost?: { input?: string | null; output?: string | null; cached?: string | null } | null;
+  defaultReasoningEffort?: string | null;
+  /** Complete ordered efforts, or `"unknown"`. */
+  variants?: readonly string[] | string | null;
+};
+
+function museCostPerMillion(value: string | null | undefined): number | undefined {
+  if (value == null) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/**
+ * A registry descriptor for one `model/list` row, or null for a row ADE never
+ * lists (an empty id, a contributor variant). Feed the results to
+ * {@link replaceDynamicMuseModelDescriptors}; curated models fold into their
+ * curated row there.
+ */
+export function museModelDescriptorFromCatalogRow(row: MuseModelCatalogRow): ModelDescriptor | null {
+  const modelId = row.modelId?.trim() ?? "";
+  if (!modelId || isMuseContributorModelId(modelId)) return null;
+  const known = new Set<string>(MUSE_REASONING_EFFORTS);
+  const tiers = Array.isArray(row.variants)
+    ? row.variants.filter((tier): tier is string => typeof tier === "string" && known.has(tier))
+    : undefined;
+  const descriptor = createDynamicMuseModelDescriptor(modelId, {
+    ...(row.displayLabel?.trim() ? { displayName: row.displayLabel.trim() } : {}),
+    ...(row.contextLimit && row.contextLimit > 0 ? { contextWindow: row.contextLimit } : {}),
+    ...(row.outputLimit && row.outputLimit > 0 ? { maxOutputTokens: row.outputLimit } : {}),
+    ...(tiers?.length ? { reasoningTiers: tiers } : {}),
+    ...(row.defaultReasoningEffort && (!tiers?.length || tiers.includes(row.defaultReasoningEffort))
+      ? { defaultReasoningEffort: row.defaultReasoningEffort }
+      : {}),
+  });
+  const input = museCostPerMillion(row.cost?.input);
+  const output = museCostPerMillion(row.cost?.output);
+  const cached = museCostPerMillion(row.cost?.cached);
+  if (input != null && output != null) {
+    descriptor.inputPricePer1M = input;
+    descriptor.outputPricePer1M = output;
+    if (cached != null) descriptor.cacheReadPricePer1M = cached;
+  }
+  return descriptor;
+}
+
+/** The curated (registry) rows for one model family, deprecated rows left out. */
+export function listCuratedModelDescriptors(family: ProviderFamily): ModelDescriptor[] {
+  return MODEL_REGISTRY.filter((model) => model.family === family && !model.deprecated);
+}
+
+/** Live Muse models the registry does not curate. */
+export function getDynamicMuseModelDescriptors(): ModelDescriptor[] {
+  return getDynamicAcpModelDescriptors("muse");
+}
+
+/** The registry row for a model Muse names by its own id (curated first, then live). */
+export function resolveMuseModelDescriptor(providerModelId: string): ModelDescriptor | undefined {
+  return resolveAcpModelDescriptor("muse", providerModelId);
 }
 
 export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): string {
@@ -2930,7 +3187,16 @@ function constructDynamicModelDescriptor(normalized: string): ModelDescriptor | 
   const cursor = parseDynamicCursorModelRef(normalized);
   if (cursor) return createDynamicCursorCliModelDescriptor(cursor.providerModelId);
   const droid = parseDynamicDroidModelRef(normalized);
-  return droid ? createDynamicDroidCliModelDescriptor(droid.providerModelId) : undefined;
+  if (droid) return createDynamicDroidCliModelDescriptor(droid.providerModelId);
+  // A Muse model a chat recorded before this process saw a live `model/list`
+  // (a restart, a remote host). `muse/<id>` still names the model to launch.
+  if (normalized.toLowerCase().startsWith("muse/")) {
+    const providerModelId = normalized.slice("muse/".length).trim();
+    if (providerModelId && !isMuseContributorModelId(providerModelId)) {
+      return createDynamicMuseModelDescriptor(providerModelId);
+    }
+  }
+  return undefined;
 }
 
 export function getAvailableModels(
@@ -2953,6 +3219,7 @@ export function getAvailableModels(
     xai: "grok",
     "github-copilot": "copilot",
     devin: "devin",
+    muse: "muse",
   };
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
@@ -3093,6 +3360,13 @@ export function resolveModelDescriptorForProvider(
       const direct = getModelById(prefixed);
       if (direct && !direct.deprecated) return direct;
     }
+    if (providerHint === "muse") {
+      // A bare Muse model id (`muse-spark-1.4`) from a live list or a CLI
+      // session log: the curated row if there is one, else the live row.
+      const live = resolveMuseModelDescriptor(raw)
+        ?? (normalized.startsWith("muse/") ? getModelById(normalized) : undefined);
+      if (live && !live.deprecated) return live;
+    }
     return undefined;
   }
 
@@ -3123,9 +3397,10 @@ export function resolveModelIdForProvider(
  */
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | null {
+): "claude" | "codex" | "muse" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | null {
   if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (!descriptor.isCliWrapped) return null;
+  if (descriptor.family === "muse") return "muse";
   if (descriptor.family === "cursor") return "cursor";
   if (descriptor.family === "factory") return "droid";
   if (descriptor.family === "qwen") return "qwen";
@@ -3161,25 +3436,27 @@ export function resolveChatProviderForDescriptor(
   return { provider, model: getRuntimeModelRefForDescriptor(descriptor, provider) };
 }
 
+/** Providers whose CLI or SDK takes the model's own `providerModelId`, not the ADE `id`. */
+const PROVIDER_MODEL_ID_IS_RUNTIME_REF: ReadonlySet<ModelProviderGroup> = new Set<ModelProviderGroup>([
+  "claude",
+  "codex",
+  "muse",
+  "cursor",
+  "droid",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+]);
+
 export function getRuntimeModelRefForDescriptor(
   descriptor: ModelDescriptor,
   providerHint?: ModelProviderGroup,
 ): string {
   const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
-  if (provider === "claude") {
-    return descriptor.providerModelId;
-  }
-  if (
-    provider === "codex"
-    || provider === "cursor"
-    || provider === "droid"
-    || provider === "pi"
-    || provider === "qwen"
-    || provider === "kimi"
-    || provider === "grok"
-    || provider === "copilot"
-    || provider === "devin"
-  ) {
+  if (PROVIDER_MODEL_ID_IS_RUNTIME_REF.has(provider)) {
     return descriptor.providerModelId;
   }
   return descriptor.id;
@@ -3197,27 +3474,43 @@ export function classifyWorkerExecutionPath(
   return "api";
 }
 
+/** The family each CLI-wrapped provider's curated rows carry. A row must be CLI-wrapped to belong to it. */
+const CLI_WRAPPED_FAMILY_BY_PROVIDER: Partial<Record<ModelProviderGroup, ProviderFamily>> = {
+  claude: "anthropic",
+  codex: "openai",
+  muse: "muse",
+  droid: "factory",
+  qwen: "qwen",
+  kimi: "moonshot",
+  grok: "xai",
+  copilot: "github-copilot",
+  devin: "devin",
+};
+
+/** Providers whose picker keeps the registry's own order instead of hoisting the default. */
+const REGISTRY_ORDER_PROVIDERS: ReadonlySet<ModelProviderGroup> = new Set<ModelProviderGroup>(["claude", "codex", "muse"]);
+
 function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
   if (provider === "pi") return getDynamicPiModelDescriptors();
+  const cliFamily = CLI_WRAPPED_FAMILY_BY_PROVIDER[provider];
   const curated = curatedRows().filter((descriptor) => {
     if (descriptor.deprecated) return false;
-    if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
-    if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
+    if (cliFamily) return descriptor.isCliWrapped && descriptor.family === cliFamily;
     if (provider === "cursor") return descriptor.family === "cursor";
-    if (provider === "droid") return descriptor.isCliWrapped && descriptor.family === "factory";
-    if (provider === "qwen") return descriptor.isCliWrapped && descriptor.family === "qwen";
-    if (provider === "kimi") return descriptor.isCliWrapped && descriptor.family === "moonshot";
-    if (provider === "grok") return descriptor.isCliWrapped && descriptor.family === "xai";
-    if (provider === "copilot") return descriptor.isCliWrapped && descriptor.family === "github-copilot";
-    if (provider === "devin") return descriptor.isCliWrapped && descriptor.family === "devin";
     return !descriptor.isCliWrapped;
   });
   // Curated rows first (with the efforts a live session reported), then the
   // live models the registry does not curate. The replacer folds every live
   // report of a curated model into its curated row, so this cannot duplicate
-  // a model.
-  if (isAcpModelProviderGroup(provider)) {
-    return [...curated, ...getDynamicAcpModelDescriptors(provider)];
+  // a model. Once the provider has named its models, curated rows are only
+  // shown when it named them: the curated table is the offline fallback, not
+  // a second catalog that drifts behind the provider's server.
+  if (isLiveModelProviderGroup(provider)) {
+    const reported = liveAcpReportsByProvider.get(provider);
+    const shownCurated = hasLiveAcpModelCatalog(provider)
+      ? curated.filter((descriptor) => reported?.has(descriptor.id))
+      : curated;
+    return [...shownCurated, ...getDynamicAcpModelDescriptors(provider)];
   }
   return curated;
 }
@@ -3337,6 +3630,7 @@ function pickDefaultModelForProvider(
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
   if (provider === "droid") return pickDefaultDroidDescriptorFromCliList(models);
   if (provider === "pi") return models[0];
+  if (provider === "muse") return models.find((model) => model.id === MUSE_DEFAULT_MODEL_ID) ?? models[0];
   // The ACP providers ship a short curated list in registry order, so the first
   // row is already the one ADE wants selected. Restating a preference here
   // would be a second place to keep in step with the list itself.
@@ -3420,7 +3714,7 @@ export function listModelDescriptorsForProvider(
   // other, and promoting the default split the picker from Settings. Every other
   // provider still leads with its default, which for most of them is the first
   // curated row anyway.
-  if (provider === "claude" || provider === "codex") return models;
+  if (REGISTRY_ORDER_PROVIDERS.has(provider)) return models;
   const preferred = pickDefaultModelForProvider(provider, models);
   if (!preferred) return models;
   return [preferred, ...models.filter((model) => model.id !== preferred.id)];
@@ -3509,7 +3803,9 @@ export function getModelPricing(providerModelId: string): { input: number; outpu
  * models.dev overrides. Usage cost reads models.dev through its own dated
  * cache; falling back to an undated override would keep stale rates alive.
  */
-export function getModelListPrice(providerModelId: string): { input: number; output: number } | undefined {
+export function getModelListPrice(
+  providerModelId: string,
+): { input: number; output: number; cacheRead?: number } | undefined {
   // Runtimes share wire ids (Codex and Copilot both run `gpt-5.4`), and the
   // one-per-id index keeps whichever row came last. Take the first row that
   // actually states a price.
@@ -3517,7 +3813,12 @@ export function getModelListPrice(providerModelId: string): { input: number; out
     entry.providerModelId === providerModelId
     && entry.inputPricePer1M != null
     && entry.outputPricePer1M != null);
-  return model ? { input: model.inputPricePer1M!, output: model.outputPricePer1M! } : undefined;
+  if (!model) return undefined;
+  return {
+    input: model.inputPricePer1M!,
+    output: model.outputPricePer1M!,
+    ...(model.cacheReadPricePer1M != null ? { cacheRead: model.cacheReadPricePer1M } : {}),
+  };
 }
 
 /** Dynamic pricing overrides — merged from models.dev at runtime */

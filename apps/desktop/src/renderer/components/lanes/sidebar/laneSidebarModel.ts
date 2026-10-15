@@ -165,6 +165,7 @@ const PROVIDER_TOOL_TYPES: Record<string, TerminalToolType> = {
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  muse: "muse",
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",

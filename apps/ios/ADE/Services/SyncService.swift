@@ -3575,6 +3575,7 @@ func performLiveChatCreationWithoutReplay<T>(
     throw CancellationError()
   } catch {
     guard !isRemoteCommandApplicationError(error) else { throw error }
+    CrashReporting.capture(error, context: ["area": "sync.chat_create"])
     // Once a live creation request is written, a transport failure or timeout
     // cannot prove whether the host created the session. Replaying it later can
     // duplicate a chat after the host's command ledger expires, so preserve the
@@ -4638,6 +4639,10 @@ final class SyncService: ObservableObject {
   private var reconnectConnectInFlight = false
   private var reconnectConnectInFlightGeneration: UInt64?
   private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
+  /// When discovery first resolved a machine with fewer LAN addresses than its
+  /// profile holds, by profile key. See `profileByApplyingDiscoveredRoutes`.
+  private var discoveredLanShrinkFirstSeen: [String: Date] = [:]
+  private static let discoveredLanShrinkGrace: TimeInterval = 120
   private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
   private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
   /// Single-flight over relay `/connect` dials, keyed by machine.
@@ -4691,6 +4696,9 @@ final class SyncService: ObservableObject {
   /// the chat pane so it can offer Retry instead of claiming the chat is empty.
   private var stalledChatSnapshotSessionIds: Set<String> = []
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
+  /// Per-chat record of the focused socket's chat stream, for the
+  /// empty-thread report (see `ChatStreamTrace`).
+  private var focusedChatStreamTraces: [String: ChatStreamTrace] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
   private var supportsChunkedEnvelopes = false
@@ -5533,10 +5541,15 @@ final class SyncService: ObservableObject {
         return normalizedProjectRoot(left) == normalizedProjectRoot(right)
       }) {
         var existing = match.value
-        let keepRemoteIdentity = preferRemoteSelection
+        // Once the selection has adopted the machine's id for this root, keep
+        // it: mapping the row back to the cached id here re-keyed the active
+        // project to and fro on every connect, and each flip cancelled the
+        // hydration in flight.
+        let keepRemoteIdentity = (preferRemoteSelection
           && activeProjectId != nil
           && activeProjectRootPath != nil
-          && normalizedProjectRoot(existing.rootPath) == activeProjectRootPath
+          && normalizedProjectRoot(existing.rootPath) == activeProjectRootPath)
+          || (activeProjectId != nil && activeProjectId == match.key)
         if !keepRemoteIdentity {
           mergedById.removeValue(forKey: match.key)
           existing.id = cachedProject.id
@@ -6154,6 +6167,17 @@ final class SyncService: ObservableObject {
     database.setActiveProjectId(projectId)
     if scopeChanged {
       bumpProjectionRevisions(for: Set())
+    }
+    // The same checkout re-keyed to the machine's own project id (the catalog
+    // reconcile adopting the remote identity for a cached root). Refreshes
+    // already in flight were scoped to the old id and cancel themselves on
+    // return, which left every domain parked in "syncing initial data" with
+    // nothing to retry it. Hydrate again under the new id.
+    if let previousProjectId, let nextProjectId, previousProjectId != nextProjectId,
+       previousRootPath != nil, previousRootPath == nextRootPath,
+       connectionState == .connected {
+      ScrollDiagnostics.shared.event("project.rekeyed", ["from": previousProjectId, "to": nextProjectId])
+      startInitialHydrationTask(for: connectionGeneration)
     }
     if let projectId {
       UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
@@ -8289,6 +8313,7 @@ final class SyncService: ObservableObject {
       lastError = identityError.localizedDescription
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "identity_verify"])
       ProductAnalytics.shared.captureError(.pairing)
       return false
     }
@@ -8481,6 +8506,7 @@ final class SyncService: ObservableObject {
         machineWasAsleep: blamesSleep
       )
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "connect"])
       ProductAnalytics.shared.captureError(.pairing)
       lastError = message
       connectionState = .error
@@ -9481,6 +9507,7 @@ final class SyncService: ObservableObject {
       lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
       ProductAnalytics.shared.capturePairingOutcome(.failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "database_ready"])
       ProductAnalytics.shared.captureError(.pairing)
       return
     }
@@ -9729,6 +9756,7 @@ final class SyncService: ObservableObject {
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
       ProductAnalytics.shared.capturePairingOutcome(lastPairingFailure?.analyticsOutcome ?? .failed)
+      CrashReporting.capture(error, context: ["area": "pairing", "step": "relay_connect"])
       ProductAnalytics.shared.captureError(.pairing)
     }
   }
@@ -13028,11 +13056,13 @@ final class SyncService: ObservableObject {
       // Explicit snapshot requests must not advertise a resume point — the
       // caller wants the full history, not a delta replay.
       let payload = chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
-      guard sendEnvelope(
+      let sent = sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
-      ) else {
+      )
+      noteFocusedChatSubscribe(sessionId: trimmedSessionId, payload: payload, sent: sent, requestSnapshot: requestSnapshot)
+      guard sent else {
         if requestSnapshot {
           recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
           stalledChatSnapshotSessionIds.insert(trimmedSessionId)
@@ -13241,6 +13271,8 @@ final class SyncService: ObservableObject {
 
   private func performChatEventUnsubscribe(sessionId: String) {
     guard subscribedChatSessionIds.contains(sessionId) else { return }
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].unsubscribes += 1
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_unsubscribe", data: ["session": sessionId])
     subscribedChatSessionIds.remove(sessionId)
     chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
@@ -14007,7 +14039,7 @@ final class SyncService: ObservableObject {
       // chats run cursor models through the SDK, so only that source is
       // probed synchronously — the CLI flavor revalidates in the background.
       var args: [String: Any] = ["provider": normalizedProvider]
-      if normalizedProvider == "cursor" || normalizedProvider == "droid" {
+      if normalizedProvider == "cursor" || normalizedProvider == "droid" || normalizedProvider == "muse" {
         args["activateRuntime"] = true
       }
       if normalizedProvider == "cursor" {
@@ -14245,6 +14277,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14272,6 +14305,7 @@ final class SyncService: ObservableObject {
       codexConfigSource: codexConfigSource,
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
+      musePermissionMode: musePermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14338,6 +14372,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14365,6 +14400,7 @@ final class SyncService: ObservableObject {
       codexConfigSource: codexConfigSource,
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
+      musePermissionMode: musePermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14428,6 +14464,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String?,
     opencodePermissionMode: String?,
     droidPermissionMode: String?,
+    musePermissionMode: String? = nil,
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
@@ -14488,6 +14525,9 @@ final class SyncService: ObservableObject {
     if let droidPermissionMode, !droidPermissionMode.isEmpty {
       args["droidPermissionMode"] = droidPermissionMode
     }
+    if let musePermissionMode, !musePermissionMode.isEmpty {
+      args["musePermissionMode"] = musePermissionMode
+    }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
     }
@@ -14511,6 +14551,86 @@ final class SyncService: ObservableObject {
       as: SourceFaviconsRemoteResult.self
     )
     return result.icons.compactMapValues { $0 }
+  }
+
+  // MARK: MCP Apps (`WorkMcpAppView.swift`)
+
+  /// True when this chat's machine serves apps to a phone. A personal chat
+  /// has no such command, and an older machine does not advertise it.
+  func supportsMcpApps(sessionId: String) -> Bool {
+    !isPersonalChatScope(sessionId: sessionId)
+      && supportsRemoteAction("chat.getMcpApp")
+      && supportsRemoteAction("chat.mcpAppRequest")
+  }
+
+  /// The app a tool call produced: its page, already bounded by the machine,
+  /// and the policy the machine built for it.
+  func fetchMcpApp(sessionId: String, itemId: String) async throws -> WorkMcpAppFetch {
+    try requireInvokableRemoteAction("chat.getMcpApp")
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendCommand(
+      action: "chat.getMcpApp",
+      args: ["sessionId": sessionId, "itemId": itemId],
+      disconnectOnTimeout: false,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return workParseMcpAppFetch(response)
+  }
+
+  /// One `tools/call` or `resources/read` from an app's page. The machine
+  /// routes it to the app's own server, and for a tool that may change data it
+  /// needs `userActivated` and may raise the chat's approval card first, so
+  /// this can take minutes. Never queued: an answer nobody is waiting for
+  /// must not run a tool later.
+  func sendMcpAppRequest(
+    sessionId: String,
+    itemId: String,
+    method: String,
+    params: [String: Any],
+    userActivated: Bool
+  ) async -> Result<Any, WorkMcpAppRefusal> {
+    do {
+      try requireInvokableRemoteAction("chat.mcpAppRequest")
+      guard canSendLiveRequests() else {
+        return .failure(WorkMcpAppRefusal(message: "This phone is not connected to the machine right now."))
+      }
+      // Never send a call with its arguments dropped: a tool that changes data would run on nothing.
+      guard JSONSerialization.isValidJSONObject(params) else {
+        return .failure(WorkMcpAppRefusal(message: "The app sent a request that could not be encoded."))
+      }
+      let scope = chatCommandScope(for: sessionId)
+      let response = try await sendCommand(
+        action: "chat.mcpAppRequest",
+        args: [
+          "sessionId": sessionId,
+          "itemId": itemId,
+          "method": method,
+          "params": params,
+          "userActivated": userActivated,
+        ],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: WorkMcpAppLimits.requestTimeoutNanoseconds,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath
+      )
+      guard let payload = response as? [String: Any] else {
+        return .failure(WorkMcpAppRefusal(message: "The machine gave no answer."))
+      }
+      if payload["queued"] as? Bool == true {
+        return .failure(WorkMcpAppRefusal(message: "This phone is not connected to the machine right now."))
+      }
+      if payload["ok"] as? Bool == true {
+        return .success(payload["result"] ?? [String: Any]())
+      }
+      let error = payload["error"] as? [String: Any]
+      return .failure(WorkMcpAppRefusal(
+        code: (error?["code"] as? NSNumber)?.intValue ?? WorkMcpAppLimits.refusedCode,
+        message: (error?["message"] as? String) ?? "The request failed."
+      ))
+    } catch {
+      return .failure(WorkMcpAppRefusal(message: error.localizedDescription))
+    }
   }
 
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
@@ -15543,6 +15663,7 @@ final class SyncService: ObservableObject {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -15569,6 +15690,7 @@ final class SyncService: ObservableObject {
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
         droidPermissionMode: droidPermissionMode,
+        musePermissionMode: musePermissionMode,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
@@ -18934,14 +19056,35 @@ final class SyncService: ObservableObject {
     matching: [DiscoveredSyncHost]
   ) -> HostConnectionProfile {
     var next = profile
-    let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    var liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    // Bonjour resolves the same machine with and without its IPv6 addresses
+    // from one browse to the next. A resolution that only drops addresses we
+    // already hold is usually that noise: keep the fuller list for a while.
+    // Otherwise the profile flipped on every browse and each flip re-saved it
+    // (~46 ms on the main thread) and republished it to every screen. A drop
+    // that lasts past the grace window is real, and the shorter list wins.
+    let shrinkKey = profileStorageKey(profile) ?? profile.hostIdentity ?? ""
+    let previous = Set(profile.discoveredLanAddresses)
+    let live = Set(liveLanAddresses)
+    if !live.isEmpty, live.isStrictSubset(of: previous) {
+      let now = Date()
+      let firstSeen = discoveredLanShrinkFirstSeen[shrinkKey] ?? now
+      discoveredLanShrinkFirstSeen[shrinkKey] = firstSeen
+      if now.timeIntervalSince(firstSeen) < Self.discoveredLanShrinkGrace {
+        liveLanAddresses = profile.discoveredLanAddresses
+      } else {
+        discoveredLanShrinkFirstSeen[shrinkKey] = nil
+      }
+    } else {
+      discoveredLanShrinkFirstSeen[shrinkKey] = nil
+    }
     let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
     next.discoveredLanAddresses = liveLanAddresses
     next.tailscaleAddress = liveTailscaleAddress
     if let livePort = matching.map(\.port).first(where: { $0 > 0 }) {
       next.port = livePort
     }
-    next.savedAddressCandidates = Array(
+    let candidates = Array(
       deduplicatedAddresses(
         (profile.lastSuccessfulAddress.map { [$0] } ?? [])
         + liveLanAddresses
@@ -18949,6 +19092,12 @@ final class SyncService: ObservableObject {
         + profile.savedAddressCandidates
       ).prefix(6)
     )
+    // The same routes reshuffled behind the same preferred (first) route are
+    // not a change worth saving.
+    next.savedAddressCandidates = Set(candidates) == Set(profile.savedAddressCandidates)
+      && candidates.first == profile.savedAddressCandidates.first
+      ? profile.savedAddressCandidates
+      : candidates
     if next.hostIdentity == nil {
       next.hostIdentity = matching.compactMap(\.hostIdentity).first
     }
@@ -21087,20 +21236,36 @@ final class SyncService: ObservableObject {
         // Gate on the raw dictionary first, then decode off the main actor:
         // a subscribe snapshot carries up to 256 KiB of transcript and this
         // lands while the user is watching the thread open.
-        guard let snapshotSessionId = dict["sessionId"] as? String,
-              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+        guard let snapshotSessionId = dict["sessionId"] as? String else { break }
+        let rawSnapshotEventCount = (dict["events"] as? [Any])?.count ?? 0
+        guard subscribedChatSessionIds.contains(snapshotSessionId) else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "notSubscribed", rawEventCount: rawSnapshotEventCount)
+          break
+        }
         // One off-main decode feeds both the thread engine (which keeps each
         // row's raw bytes for its disk log) and the legacy ring.
         let hostSupportsChatLogV2 = supportsChatLogV2
         let snapshotDecodeTask = Task.detached(priority: .userInitiated) {
           chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)
         }
-        guard let threadSnapshot = await snapshotDecodeTask.value else { break }
+        guard let threadSnapshot = await snapshotDecodeTask.value else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "decodeFailed", rawEventCount: rawSnapshotEventCount)
+          break
+        }
         // Re-check the subscription too: the decode is a suspension point, and
         // a project switch during it would otherwise land this snapshot in a
         // session the user has already left.
         guard isCurrentConnectionGeneration(generation),
-              subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+              subscribedChatSessionIds.contains(snapshotSessionId) else {
+          noteFocusedChatSnapshotDropped(sessionId: snapshotSessionId, reason: "staleOrUnsubscribedDuringDecode", rawEventCount: rawSnapshotEventCount)
+          break
+        }
+        focusedChatStreamTraces[snapshotSessionId, default: ChatStreamTrace()].noteSnapshotApplied(
+          rawEventCount: rawSnapshotEventCount,
+          decodedEventCount: threadSnapshot.events.count,
+          resumed: threadSnapshot.resumed,
+          gap: threadSnapshot.gap
+        )
         if let threadKey = chatThreadKey(for: snapshotSessionId) {
           chatThreadRegistry.routeSnapshot(threadSnapshot, key: threadKey)
         }
@@ -21132,13 +21297,17 @@ final class SyncService: ObservableObject {
         // Gate chat events on the current subscription set so events from a
         // previous project (still streaming on the host) do not leak into the
         // newly-active project's view after a quick switch.
-        guard let sessionId = dict["sessionId"] as? String,
-              subscribedChatSessionIds.contains(sessionId) else { break }
+        guard let sessionId = dict["sessionId"] as? String else { break }
+        guard subscribedChatSessionIds.contains(sessionId) else {
+          focusedChatStreamTraces[sessionId]?.liveEventsDropped += 1
+          break
+        }
         // Resumable stream: drop duplicates/old replays and advance the
         // per-session watermark used as sinceSeq on re-subscribe. Events
         // without seq (older hosts) keep today's behavior unchanged.
         let seq = (dict["seq"] as? NSNumber)?.intValue
         if let seq, let lastSeq = chatEventLastSeqBySession[sessionId], seq <= lastSeq {
+          focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].liveEventsDroppedAsOld += 1
           syncChatLog.debug(
             "chat_event_dropped_old session=\(sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public)"
           )
@@ -21167,6 +21336,7 @@ final class SyncService: ObservableObject {
         if let seq {
           chatEventLastSeqBySession[sessionId] = seq
         }
+        focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteLiveEvent()
         if let threadKey = chatThreadKey(for: sessionId) {
           chatThreadRegistry.routeLive(liveEvent, key: threadKey)
         }
@@ -22527,6 +22697,14 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    // Field diagnostics: one line per host command (name and round trip), so
+    // a screen's request fan-out can be counted. No-op unless enabled.
+    let diagnosticsStart = ScrollDiagnostics.shared.isRunning ? CACurrentMediaTime() : 0
+    defer {
+      if diagnosticsStart > 0 {
+        ScrollDiagnostics.shared.event("cmd", ["action": action, "ms": Int((CACurrentMediaTime() - diagnosticsStart) * 1000)])
+      }
+    }
     let targetProjectId: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
@@ -22752,11 +22930,12 @@ final class SyncService: ObservableObject {
       syncChatLog.notice(
         "chat_subscribe_restore session=\(sessionId, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
       )
-      sendEnvelope(
+      let sent = sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
       )
+      noteFocusedChatSubscribe(sessionId: sessionId, payload: payload, sent: sent, requestSnapshot: false)
       chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     }
   }
@@ -22878,7 +23057,10 @@ final class SyncService: ObservableObject {
   private func performInitialHydration(for connectionGeneration: UInt64) async {
     guard isCurrentConnectionGeneration(connectionGeneration),
           connectionState == .connected
-    else { return }
+    else {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "notConnected"])
+      return
+    }
 
     // Reconnect makes `canSendLiveRequests()` true immediately, so reads stop
     // holding a queued settle's deadline — and hydration below performs reads
@@ -22895,6 +23077,7 @@ final class SyncService: ObservableObject {
     }
 
     if projectHostPhase == .takeover || projectHostPhase == .recovering {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "hostPhase \(projectHostPhase)"])
       return
     }
     if projectHostPhase == .ready {
@@ -22931,8 +23114,10 @@ final class SyncService: ObservableObject {
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
       )
     } catch is CancellationError {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateCancelled"])
       return
     } catch {
+      ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateError", "error": error.localizedDescription])
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       if isSyncHostUnavailableError(error) {
         applyIncomingProjectHostFailure(error)
@@ -22958,16 +23143,21 @@ final class SyncService: ObservableObject {
           guard remoteProjectCatalog.count == 1,
                 remoteProjectCatalog.first?.id == onlyProject.id else {
             refreshProjectCatalog(cachedRows: projectRows)
+            ScrollDiagnostics.shared.event("hydration.exit", ["reason": "catalogMismatch"])
             return
           }
         }
         setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       } else {
         refreshProjectCatalog(cachedRows: projectRows)
+        ScrollDiagnostics.shared.event("hydration.exit", ["reason": "noActiveProject", "cached": cachedProjects.count])
         return
       }
     }
     refreshProjectCatalog(cachedRows: projectRows)
+    // The catalog refresh can re-key the project, which starts a fresh
+    // hydration; this one must not also issue its reads.
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     // Lanes, work sessions and PRs are three independent host round trips.
     // Awaiting them in series cost the sum of three latencies on every project
     // switch — tolerable on LAN, punishing over relay. `async let` overlaps
@@ -23029,6 +23219,7 @@ final class SyncService: ObservableObject {
   /// overlapping hydration attempts re-assert `.hydrating` constantly.
   private func setDomainStatusIfChanged(_ domain: SyncDomain, _ status: SyncDomainStatus) {
     guard domainStatuses[domain] != status else { return }
+    ScrollDiagnostics.shared.event("domain", ["domain": String(describing: domain), "phase": String(describing: status.phase)])
     domainStatuses[domain] = status
   }
 
@@ -25042,6 +25233,7 @@ extension SyncService {
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
+    musePermissionMode: String? = nil,
     cursorModeId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     try requireInvokableRemoteAction("personalChats.create")
@@ -25069,6 +25261,7 @@ extension SyncService {
     if let codexConfigSource, !codexConfigSource.isEmpty { args["codexConfigSource"] = codexConfigSource }
     if let opencodePermissionMode, !opencodePermissionMode.isEmpty { args["opencodePermissionMode"] = opencodePermissionMode }
     if let droidPermissionMode, !droidPermissionMode.isEmpty { args["droidPermissionMode"] = droidPermissionMode }
+    if let musePermissionMode, !musePermissionMode.isEmpty { args["musePermissionMode"] = musePermissionMode }
     if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
 
     let summary = try await sendDecodableCommand(
@@ -25613,6 +25806,54 @@ extension SyncService {
       }
     }
     if changed { objectWillChange.send() }
+  }
+
+  func noteFocusedChatSubscribe(sessionId: String, payload: [String: Any], sent: Bool, requestSnapshot: Bool) {
+    let resume = payload["sinceSequence"] != nil ? "sequence" : payload["sinceSeq"] != nil ? "seq" : "none"
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteSubscribe(
+      sent: sent,
+      requestSnapshot: requestSnapshot,
+      resume: resume
+    )
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe", data: [
+      "session": sessionId,
+      "sent": String(sent),
+      "requestSnapshot": String(requestSnapshot),
+      "resume": resume,
+    ])
+  }
+
+  func noteFocusedChatSnapshotDropped(sessionId: String, reason: String, rawEventCount: Int) {
+    focusedChatStreamTraces[sessionId, default: ChatStreamTrace()].noteSnapshotDropped(reason: reason)
+    CrashReporting.breadcrumb("chat.stream", message: "focused chat_subscribe ack dropped", data: [
+      "session": sessionId,
+      "reason": reason,
+      "rawEvents": String(rawEventCount),
+    ])
+  }
+
+  /// Everything the phone knows about one chat's stream, on whichever socket
+  /// serves it. Names and counts only; feeds the empty-thread report.
+  func chatStreamDiagnostics(sessionId: String) -> [String: String] {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = routedRemoteMachineChat(trimmed) {
+      guard let connection = machineFleet?.connection(for: remote.machineKey) else {
+        return ["path": "fleet", "connection": "missing"]
+      }
+      return connection.chatStreamDiagnostics(sessionId: trimmed)
+    }
+    var fields = (focusedChatStreamTraces[trimmed] ?? ChatStreamTrace()).fields
+    fields["path"] = "focused"
+    fields["connState"] = connectionState.rawValue
+    fields["canSendLive"] = String(canSendLiveRequests())
+    fields["hostChatStreaming"] = String(supportsChatStreaming)
+    fields["hostChatLogV2"] = String(supportsChatLogV2)
+    fields["subscribed"] = String(subscribedChatSessionIds.contains(trimmed))
+    fields["needsRemoteActivation"] = String(chatSubscriptionsNeedingRemoteActivation.contains(trimmed))
+    fields["snapshotPending"] = String(recentFullChatSnapshotRequestBySession[trimmed] != nil)
+    fields["snapshotStalled"] = String(stalledChatSnapshotSessionIds.contains(trimmed))
+    fields["scope"] = chatCommandScopeBySession[trimmed].map { String(describing: $0).prefix(40).description } ?? "project"
+    return fields
   }
 
   func remoteMachineChat(sessionId: String) -> SyncRemoteMachineChat? {

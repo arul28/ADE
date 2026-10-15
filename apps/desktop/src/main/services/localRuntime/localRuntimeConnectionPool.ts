@@ -37,6 +37,7 @@ import type {
 import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -57,6 +58,7 @@ import {
   LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
 } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -986,42 +988,6 @@ export function isLocalRuntimeConnectionDropped(error: Error): boolean {
   return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
-// Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
-// actions are safe to transparently retry after a connection drop, because a
-// retry of a mutating action could re-run it against the reconnected daemon.
-const RETRYABLE_READ_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_READ_ACTIONS = new Set<string>([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
-export function isRetryableReadAction(domain: string, action: string): boolean {
-  if (RETRYABLE_READ_ACTIONS.has(`${domain}.${action}`)) return true;
-  return RETRYABLE_READ_ACTION_PREFIXES.some(
-    (prefix) =>
-      action === prefix ||
-      (action.startsWith(prefix) && /^[A-Z]/.test(action.slice(prefix.length))),
-  );
-}
-
 /**
  * Signal an owned `ade serve` daemon and everything it started.
  *
@@ -1473,6 +1439,11 @@ export class LocalRuntimeConnectionPool {
     return install;
   }
 
+  /** Settles once any service install already running has finished. */
+  async waitForServiceInstall(): Promise<void> {
+    await this.serviceInstallPromise?.catch(() => undefined);
+  }
+
   /**
    * Stop and remove the per-user service login item by spawning
    * `serve --uninstall-service` — the same child-process boundary the
@@ -1795,6 +1766,11 @@ export class LocalRuntimeConnectionPool {
         return cached;
       }
 
+      // A caller still holding a project's folder from before a move (a tab,
+      // a chat pane) reaches the project at its new folder.
+      const movedRoot = resolveMovedProjectRoot(normalizedRoot);
+      if (movedRoot !== normalizedRoot) return await this.ensureProject(movedRoot, registration);
+
       const registrationPromise = this.registerProject(normalizedRoot, registration);
       const nextPending = {
         acceptsMatchingWaiters: true,
@@ -1876,6 +1852,19 @@ export class LocalRuntimeConnectionPool {
     throw lastError ?? new Error("Local ADE service did not return a project record.");
   }
 
+  /**
+   * Removes the project from the brain and drops this pool's cached record of
+   * it, so the next `ensureProject` registers it again instead of handing out
+   * a project id the brain no longer knows.
+   */
+  async removeProject(rootPath: string, projectId: string): Promise<void> {
+    const normalizedRoot = path.resolve(rootPath);
+    this.projectsByRoot.delete(normalizedRoot);
+    const entry = await this.connect();
+    await entry.client.call("projects.remove", { projectId }, { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS });
+    this.projectsByRoot.delete(normalizedRoot);
+  }
+
   async setProjectCatalogVisibility(
     rootPath: string,
     catalogVisibility: "recent" | "system",
@@ -1908,6 +1897,20 @@ export class LocalRuntimeConnectionPool {
     // in-memory turns is not that — it is the keep-awake poll's clock.
     return await this.callSync<RuntimeActivitySummary>(
       "runtime.activitySummary",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
+  }
+
+  /**
+   * The brain's raw `runtime.updateImpact` reply: what restarting this
+   * machine's ADE would stop. Unparsed, because an older brain answers
+   * differently. Bounded like `activitySummary`: it reads live turns from
+   * memory, and the dialog asking must not wait on a wedged brain.
+   */
+  async updateImpact(): Promise<unknown> {
+    return await this.callSync<unknown>(
+      "runtime.updateImpact",
       {},
       { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
     );
@@ -2018,9 +2021,9 @@ export class LocalRuntimeConnectionPool {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // A dropped daemon connection (restart / build-hash recycle) is transient:
-    // the next connect() reconnects to the live daemon. Retry idempotent reads
+    // the next connect() reconnects to the live daemon. Retry a replay-safe call
     // once so the renderer never sees a raw "connection closed" for a refresh.
-    const maxAttempts = isRetryableReadAction(request.domain, request.action) ? 2 : 1;
+    const maxAttempts = isReplaySafeAdeAction(request.domain, request.action) ? 2 : 1;
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {

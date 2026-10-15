@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { PROJECT_SECRET_NAME_PATTERN, PROJECT_SECRET_NAME_RULE } from "../../../shared/projectSecretRequest";
@@ -708,7 +709,17 @@ export function createProjectSecretService(projectRoot: string, options: Project
         filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
       }
       if (fs.existsSync(filePath)) throw new Error("Could not find an unused filename in Downloads.");
-      fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      // Created empty, locked down, then filled: Windows ignores the mode, so
+      // the owner-only ACL has to be in place before any secret is in the
+      // file. A file that could not be secured is never left behind.
+      fs.writeFileSync(filePath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      try {
+        securePrivatePath(filePath);
+        fs.writeFileSync(filePath, formatProjectSecretEnv(secrets), { encoding: "utf8" });
+      } catch (error) {
+        fs.rmSync(filePath, { force: true });
+        throw error;
+      }
       return { filePath, secretCount: secrets.length };
     },
 

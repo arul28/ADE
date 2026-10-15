@@ -18,6 +18,7 @@ import {
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
+  filterVisibleTranscriptRows,
   collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
   countVisibleRowsAppendedSince,
@@ -127,6 +128,27 @@ describe("chatTranscriptRows", () => {
       type: "error",
       errorInfo: "responseStreamDisconnected",
     }));
+  });
+
+  it("keeps the first started time when a repeated compaction start merges", () => {
+    const base = { sessionId: "session-1", timestamp: "2026-07-10T18:18:53.000Z" };
+    const start = (timestamp: string, sequence: number): AgentChatEventEnvelope => ({
+      ...base,
+      timestamp,
+      sequence,
+      event: { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-compact" },
+    });
+    // Claude repeats its `compacting` status every ~30s while one compaction
+    // runs. The row counts its elapsed from this timestamp, so the repeat must
+    // merge into the first row rather than move it forward — that reset is the
+    // "Compacting 42s" clock restarting mid-run.
+    const [row] = collapseChatTranscriptEvents([
+      start("2026-07-10T18:18:53.000Z", 1),
+      start("2026-07-10T18:19:23.000Z", 2),
+    ]);
+
+    expect(row?.timestamp).toBe("2026-07-10T18:18:53.000Z");
+    expect(row?.event).toEqual(expect.objectContaining({ type: "context_compact", state: "started" }));
   });
 
   it("extracts and normalizes localhost URLs from tool output text", () => {
@@ -3003,6 +3025,45 @@ describe("spawn_completed notice folding", () => {
     ]);
   });
 
+  it("draws each child once, at its newest notice, and puts neighbouring children on one line", () => {
+    // What the reader sees: an older notice is out of date once a newer one
+    // for the same child lands, wherever it sits, and its turns still count.
+    const legacy = {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_completed",
+      message: 'Peer "Old lane" turn finished',
+    } satisfies AgentChatEventEnvelope["event"];
+    const rows = filterVisibleTranscriptRows(collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:02.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:03.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:05.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:06.000Z", completion("child-2", "Docs")),
+      // A notice that lost its child id cannot be matched, so it keeps its row.
+      env("2026-06-01T10:00:07.000Z", legacy),
+    ]));
+
+    const childOf = (event: (typeof rows)[number]["event"]) =>
+      event.type === "system_notice" && event.detail && typeof event.detail === "object"
+        ? event.detail.spawnCompletion?.childSessionId ?? null
+        : null;
+    expect(rows.map((row) => ({
+      type: row.event.type,
+      child: childOf(row.event),
+      turns: row.repeatCount ?? 1,
+      sharedWith: (row.spawnCompletionSiblings ?? []).map((sibling) => [sibling.notice.childSessionId, sibling.repeatCount]),
+    }))).toEqual([
+      { type: "text", child: null, turns: 1, sharedWith: [] },
+      { type: "system_notice", child: "child-1", turns: 3, sharedWith: [["child-2", 3]] },
+      { type: "system_notice", child: null, turns: 1, sharedWith: [] },
+    ]);
+    // The line sorts with its newest notice, not the out-of-date ones.
+    expect(rows[1]!.timestamp).toBe("2026-06-01T10:00:04.000Z");
+  });
+
   it("keeps the incremental collapse byte-identical to a full recompute", () => {
     const stream: AgentChatEventEnvelope[] = [
       env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
@@ -5079,6 +5140,41 @@ describe("turn fold (desktop adapter)", () => {
       ]);
       expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
         .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
+    });
+
+    it("keeps a partial answer apart from the narration it shares a message id with", () => {
+      // Codex reuses one message id across consecutive assistant text until a
+      // tool call flushes it, and 0.162 labels a finished-but-not-terminal
+      // answer `partial_answer`. Merging the two would leave the partial answer
+      // wearing the narration's label, which the turn fold then hides.
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "text", text: "The first result is ready. ", turnId: "t1", messageId: "msg-1", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the rest. ", turnId: "t1", messageId: "msg-1", phase: "commentary" }),
+        ev({ type: "text", text: "Both results are in.", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+      ]);
+      expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
+        .toEqual([
+          ["The first result is ready. ", "partial_answer"],
+          ["Checking the rest. ", "commentary"],
+          ["Both results are in.", "final_answer"],
+        ]);
+    });
+
+    it("keeps a partial answer out of the fold at turn end", () => {
+      // The sequence codex 0.162 actually emits (its own
+      // `scenarios_partial_answers` suite): a partial answer, then narration,
+      // then the terminal answer, which restates only its own part. The user
+      // asked for both results, so folding the first one away loses content.
+      const { display } = fold([
+        ev({ type: "user_message", text: "Give me both results.", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "The first result is ready.", turnId: "t1", messageId: "m", phase: "partial_answer" }),
+        ev({ type: "text", text: "Checking the remaining result.", turnId: "t1", messageId: "m", phase: "commentary" }),
+        ev({ type: "text", text: "The second result is ready.", turnId: "t1", messageId: "m", phase: "final_answer" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ]);
+      const shown = display.flatMap((row) => row.event.type === "text" ? [(row.event as { text: string }).text] : []);
+      expect(shown).toEqual(["The first result is ready.", "The second result is ready."]);
     });
   });
 });

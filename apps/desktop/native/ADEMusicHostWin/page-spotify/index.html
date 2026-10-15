@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Scripts only from this page and Spotify's Web Playback SDK, which loads
+     its player in a frame from the same CDN. -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' https://sdk.scdn.co; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>ADE Spotify</title>
+<meta name="color-scheme" content="light">
+</head>
+<body>
+  <!-- ADE's Spotify player page, run by the same host as Apple Music's
+       (`native/ADEMusicHost*`) with its own profile. No UI: ADE drives it over
+       the host's stdio channel. -->
+  <div id="status">Loading Spotify</div>
+  <script src="player.js"></script>
+  <script src="https://sdk.scdn.co/spotify-player.js" async></script>
+</body>
+</html>

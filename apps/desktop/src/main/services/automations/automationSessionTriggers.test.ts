@@ -958,6 +958,25 @@ describe("session.ended_without_pr", () => {
     });
   }
 
+  it("a session.settled rule runs for a settled chat, and only for a provider it names", async () => {
+    const settledRule = makeRule({
+      id: "after-settle",
+      triggers: [{ type: "session.settled", providers: ["claude"] }],
+      trigger: { type: "session.settled", providers: ["claude"] },
+      execution: { kind: "built-in", builtIn: { actions: [{ type: "predict-conflicts", condition: "false" }] } },
+    });
+    const { service, store } = createService({ rules: [settledRule] });
+    const runs = () => store.db.all<{ trigger_type: string; trigger_metadata: string | null }>(
+      "select trigger_type, trigger_metadata from automation_runs",
+    );
+    service.onSessionSettled({ laneId: "lane-1", sessionId: "chat-codex", provider: "codex" });
+    service.onSessionSettled({ laneId: "lane-1", sessionId: "chat-claude", provider: "claude" });
+    await vi.waitFor(() => expect(runs().map((row) => row.trigger_type)).toEqual(["session.settled"]));
+    expect(JSON.stringify(runs())).toContain("chat-claude");
+    expect(JSON.stringify(runs())).not.toContain("chat-codex");
+    service.dispose();
+  });
+
   it("fires when the lane has no open PR", async () => {
     const { service, store } = createService({ rules: [endedRule()] });
     service.onSessionEnded({ laneId: "lane-1", sessionId: "chat-9", provider: "codex" });

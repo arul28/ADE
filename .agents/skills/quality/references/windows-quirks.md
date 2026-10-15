@@ -265,12 +265,60 @@ options argument in a sort comparator is a finding.
 
 ---
 
+## 13. A running process never sees a CLI installed after it started
+
+**Failure.** An installer adds its folder to the *persisted* user PATH in the
+registry. ADE and its long-lived brain keep the PATH they started with, so the
+Cursor, Copilot or Codex CLI the user just installed reads as "not installed"
+until ADE restarts, and its models never load.
+
+**Do instead.** Resolve CLIs through `resolveExecutableFromKnownLocations` in
+`apps/desktop/src/main/services/ai/cliExecutableResolver.ts`. On Windows it
+also searches the persisted machine and user PATH
+(`refreshWindowsPersistedPathDirs`: two `reg.exe` reads off the event loop,
+cached 30 s) and the known install folders, including
+`%LOCALAPPDATA%\cursor-agent`. Never add a per-tool PATH hack next to it.
+
+## 14. `spawnAsync` keeps 10 KB of output and hides why a spawn failed
+
+**Failure.** `agent models` prints 12.9 KB; ADE read the first 10 KB, so 63 of
+259 model rows never reached the picker, on every OS. And a command that
+could not start came back as `status: null` with no text, or, through
+`cmd.exe`, as exit 1 with "is not recognized", which looks like a real failure.
+
+**Do instead.** Pass `maxOutputBytes` whenever the output is a list that can
+grow. Read `error`, `notFound` and `timedOut` on the result of `spawnAsync`
+(`apps/desktop/src/main/services/shared/utils.ts`); a timed-out command
+reports `status: null`. Use `isWindowsCmdCommandNotFound`
+(`services/shared/processExecution.ts`) to tell "not installed" from "failed".
+Log the failure; a silent empty fallback is how this went unseen.
+
+## 15. `stat` and `fstat` disagree about `dev` on some Node versions
+
+**Failure.** On Node 22.13 for Windows, `statSync(path).dev` is 0 while
+`fstatSync(fd).dev` is the volume serial. A guard that compared both threw
+"Path changed during open" on every guarded read (agent file reads, image
+attachments). Electron's Node is not affected, so it only showed in the CLI.
+
+**Do instead.** Compare `ino`, and treat a `dev` of 0 on either side as
+unknown, as `readFileWithinRootSecure` in `services/shared/utils.ts` does.
+
 ## Smaller traps worth knowing
 
 - **Port 8787 is often taken by Tailscale** on Windows; the projectless brain
   falls back across 8787–8999.
 - **PID reuse** is fast. A recorded PID alone is not identity — record process
   start time too (`apps/ade-cli/src/services/sync/syncHostSingleton.ts`).
+- **A file mode is not a permission.** `mode: 0o600` does nothing on Windows.
+  A file that holds secrets needs `securePrivatePath`
+  (`apps/ade-cli/src/lib/trustedWindowsTools.ts`), as the secrets export does.
+- **Paths shown to agents use forward slashes on every OS.** Normalize a
+  relative path before it leaves the process; `path.relative` returns
+  backslashes on Windows.
+- **High refresh rates multiply animation cost.** A stepped CSS animation
+  still ticks on the main thread at the display's rate: one spinner on a
+  240 Hz monitor ran 240 style recalcs a second
+  (`docs/perf/windows-baseline.md`).
 - **PowerShell launcher files need a UTF-8 BOM** or PowerShell 5.1 mis-decodes
   non-ASCII content.
 - **`ps` does not exist.** Resource sampling returns `unsupported-platform` on

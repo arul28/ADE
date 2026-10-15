@@ -242,6 +242,50 @@ export function getPermissionOptions(opts: {
     ];
   }
 
+  // Meta Muse Code. The generic words map onto Muse's own approval modes
+  // (`musePermissionModeFromLegacyPermissionMode`): plan -> denyUnmatched,
+  // edit -> promptUnmatched, default -> onRequest, full-auto -> allowAll.
+  if (opts.isCliWrapped && opts.family === "muse") {
+    return [
+      {
+        value: "plan",
+        label: "Read-only",
+        shortDesc: "Muse refuses unmatched tool calls",
+        detail: "Muse's denyUnmatched mode, plus ADE's plan guidance in chat. Muse refuses any tool call its rules do not already allow.",
+        allows: ["File reads", "Code search", "Plan generation"],
+        gates: ["File writes", "Shell commands"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Ask",
+        shortDesc: "Muse asks before unmatched tool calls",
+        detail: "Muse's promptUnmatched mode. Muse asks before any tool call its rules do not already allow.",
+        allows: ["File reads", "Tool calls your Muse rules allow"],
+        gates: ["Every other tool call"],
+        safety: "semi-auto",
+      },
+      {
+        value: "default",
+        label: "Auto",
+        shortDesc: "Muse's default approval mode",
+        detail: "Muse's onRequest mode: sandboxed work runs, and Muse asks when it needs more.",
+        allows: ["File reads", "Sandboxed edits and commands"],
+        gates: ["Work outside the sandbox"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "Full access",
+        shortDesc: "Muse runs every tool call without asking",
+        detail: "Muse's allowAll mode. Muse never asks for approval.",
+        allows: ["Every tool call"],
+        warning: "\u26a0 Muse never asks. Only safe in trusted, isolated environments.",
+        safety: "danger",
+      },
+    ];
+  }
+
   // Cursor Agent CLI
   if (opts.isCliWrapped && opts.family === "cursor") {
     return [
@@ -479,7 +523,7 @@ export function safetyColors(safety: SafetyLevel) {
   }
 }
 
-export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "acp" | "opencode";
+export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "muse" | "acp" | "opencode";
 
 /**
  * Map a ProviderFamily string to the permission-family key used by
@@ -503,6 +547,7 @@ export function familyToPermissionKey(
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
     if (family === "factory") return "droid";
+    if (family === "muse") return "muse";
     if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }
   return "opencode";
@@ -515,6 +560,7 @@ export function permissionFamilyLabel(key: PermissionFamilyKey): string {
     case "codex": return "Codex workers";
     case "cursor": return "Cursor workers";
     case "droid": return "Droid workers";
+    case "muse": return "Muse workers";
     case "acp": return "Qwen, Kimi, Grok and Copilot workers";
     case "opencode": return "OpenCode workers";
   }

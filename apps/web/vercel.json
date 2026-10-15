@@ -56,6 +56,10 @@
       "destination": "/api/download?kind=app&slug=:slug"
     },
     {
+      "source": "/device",
+      "destination": "/api/device"
+    },
+    {
       "source": "/pair",
       "destination": "/pair/index.html"
     },

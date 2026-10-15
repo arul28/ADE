@@ -2040,14 +2040,18 @@ input.ade-palette-search:focus-visible {
   to { opacity: 0; transform: scaleY(0.96); }
 }
 
-[data-radix-popper-content-wrapper] [data-state="open"],
+/* The wrapper's child only. A descendant selector also caught every nested
+   Radix part that carries `data-state` (each model row's context-menu
+   trigger, switches, tooltip triggers): on every open they faded to nothing
+   and snapped back, and restyled the whole popover on each frame. */
+[data-radix-popper-content-wrapper] > [data-state="open"],
 [data-radix-select-content][data-state="open"],
 [data-radix-dropdown-menu-content][data-state="open"] {
   transform-origin: var(--radix-popper-transform-origin, top);
   animation: ade-popover-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-[data-radix-popper-content-wrapper] [data-state="closed"],
+[data-radix-popper-content-wrapper] > [data-state="closed"],
 [data-radix-select-content][data-state="closed"],
 [data-radix-dropdown-menu-content][data-state="closed"] {
   animation: ade-popover-out 100ms ease-in;
@@ -3204,6 +3208,24 @@ button, [role="button"] {
   text-decoration-color: var(--chat-accent, #8b5cf6);
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
+}
+
+/* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
+   dark text, so neither reads as a code tint or a comment highlight. Diffs
+   repeat these two rules inside their shadow roots (AdeDiffViewer). */
+:root {
+  --ade-find-match: rgba(253, 184, 51, 0.3);
+  --ade-find-current: #eea52b;
+  --ade-find-current-fg: #1a1206;
+}
+
+::highlight(ade-find) {
+  background-color: var(--ade-find-match);
+}
+
+::highlight(ade-find-active) {
+  background-color: var(--ade-find-current);
+  color: var(--ade-find-current-fg);
 }
 
 .ade-liquid-glass-menu {
@@ -5120,7 +5142,7 @@ button, [role="button"] {
   .ade-launch-rail-sheen { animation: none; opacity: 0; }
 }
 
-/* Model reasoning slider: progressive fill, active-tier pulse, and drag state. */
+/* Reasoning effort track: label roll, sliding segment indicator, and drag state. */
 @keyframes ade-reasoning-effort-word-roll-up {
   0% { opacity: 0; transform: translateY(65%) perspective(90px) rotateX(-78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(-4%) perspective(90px) rotateX(6deg); filter: blur(0); }
@@ -5131,12 +5153,6 @@ button, [role="button"] {
   0% { opacity: 0; transform: translateY(-65%) perspective(90px) rotateX(78deg); filter: blur(2px); }
   72% { opacity: 1; transform: translateY(4%) perspective(90px) rotateX(-6deg); filter: blur(0); }
   100% { opacity: 1; transform: translateY(0) perspective(90px) rotateX(0); filter: blur(0); }
-}
-
-@keyframes ade-reasoning-fill-sheen {
-  0% { transform: translateX(-80%); opacity: 0; }
-  35% { opacity: 0.55; }
-  100% { transform: translateX(80%); opacity: 0; }
 }
 
 .ade-reasoning-effort-word {
@@ -5152,28 +5168,20 @@ button, [role="button"] {
   animation: ade-reasoning-effort-word-roll-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.ade-reasoning-slider-fill {
-  background: var(--reasoning-progressive-gradient);
-  clip-path: inset(0 calc(100% - var(--reasoning-slider-fill-position)) 0 0);
-  box-shadow: 0 0 18px rgba(var(--reasoning-fill-rgb), 0.24);
-  transition: clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background 220ms ease, box-shadow 220ms ease;
+/* The indicator takes the current tier's tone; it slides between segments. */
+.ade-reasoning-slider-thumb {
+  background: rgba(var(--reasoning-fill-rgb) / 0.16);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--reasoning-fill-rgb) / 0.34),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease, box-shadow 200ms ease;
 }
 
-.ade-reasoning-slider-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.22) 50%, transparent 78%);
-  animation: ade-reasoning-fill-sheen 700ms ease-out 1;
-}
-
-.ade-reasoning-slider-fill-max {
-  background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.20) 0 0.8px, transparent 1px),
-    var(--reasoning-progressive-gradient);
-  background-size: 4px 4px, 100% 100%;
-  box-shadow: 0 0 24px rgba(167, 139, 250, 0.34);
+/* Permission menu: one highlight follows the pointed mode, tinted by it. */
+.ade-permission-mode-highlight {
+  background: rgba(var(--permission-mode-rgb) / 0.13);
+  box-shadow: inset 0 0 0 1px rgba(var(--permission-mode-rgb) / 0.3);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease, box-shadow 160ms ease;
 }
 
 @keyframes ade-reasoning-ultra-sheen {
@@ -5232,10 +5240,11 @@ button, [role="button"] {
     0 0 42px rgba(34, 211, 238, 0.08);
 }
 
-.ade-reasoning-effort-content-ultra .ade-reasoning-slider-fill-max {
+.ade-reasoning-effort-content-ultra .ade-reasoning-slider-thumb {
   box-shadow:
-    0 0 24px rgba(232, 121, 249, 0.44),
-    0 0 12px rgba(34, 211, 238, 0.24);
+    inset 0 0 0 1px rgba(232, 121, 249, 0.5),
+    0 0 14px rgba(232, 121, 249, 0.36),
+    0 0 8px rgba(34, 211, 238, 0.2);
 }
 
 /* Workflow activity card: one restrained sweep keeps a live orchestration
@@ -5257,7 +5266,6 @@ button, [role="button"] {
   animation: ade-workflow-card-sheen 3.8s steps(114) infinite;
 }
 
-.ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
   transition: none;
 }
@@ -5266,14 +5274,13 @@ button, [role="button"] {
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],
-  .ade-reasoning-slider-fill::after,
-  .ade-reasoning-slider-fill-max,
   .ade-workflow-active-card__sheen,
   .ade-reasoning-effort-trigger-ultra::after,
   .ade-reasoning-effort-content-ultra::after {
     animation: none;
   }
-  .ade-reasoning-slider-fill { transition: none; }
+  .ade-reasoning-slider-thumb,
+  .ade-permission-mode-highlight { transition: none; }
 }
 
 /*

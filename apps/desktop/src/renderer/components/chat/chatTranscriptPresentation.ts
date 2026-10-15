@@ -3,6 +3,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/typ
 import { agentChatLiveAppendOf, foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
+import { userMessageStartsTurn } from "../../../shared/chatTranscript";
 import {
   classifyProviderRetryCause,
   formatLegacyProviderRetryActivityDetail,
@@ -147,8 +148,11 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
       }
       continue;
     }
-    if (row.event.type === "user_message" && row.event.deliveryState !== "queued") {
-      pendingSegment = [];
+    if (row.event.type === "user_message") {
+      // Queued steers live in the composer's staging area, not the turn.
+      if (row.event.deliveryState === "queued") continue;
+      const openTurnId = pendingSegment.findLast((group) => group.turnId)?.turnId ?? null;
+      if (userMessageStartsTurn(row.event, openTurnId)) pendingSegment = [];
       continue;
     }
     if (row.event.type !== "done") continue;
@@ -164,13 +168,8 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
     pendingSegment = [];
   }
 
-  const lastBoundaryIndex = rows.findLastIndex((row) => (
-    row.event.type === "done"
-    || (row.event.type === "user_message" && row.event.deliveryState !== "queued")
-  ));
-  const activeEntries = rows
-    .slice(lastBoundaryIndex + 1)
-    .flatMap((row) => row.event.type === "work_log_group" ? row.event.entries : []);
+  // What is left open after the last turn boundary is the live turn's work.
+  const activeEntries = pendingSegment.flatMap((group) => group.entries);
   return {
     byDoneRowKey,
     activeEntries: dedupeChatToolActivityEntries(activeEntries),

@@ -181,7 +181,7 @@ struct WorkSubagentCapability: Equatable {
 
 func workResolveSubagentCapability(provider: String?) -> WorkSubagentCapability {
   switch providerFamilyKey(provider ?? "") {
-  case "codex", "claude", "opencode", "cursor", "droid", "factory":
+  case "codex", "claude", "opencode", "cursor", "droid", "factory", "muse":
     return WorkSubagentCapability(canList: true)
   default:
     return .none
@@ -465,6 +465,8 @@ func defaultWorkChatTitle(provider: String) -> String {
     return "Codex chat"
   case "pi":
     return "Pi chat"
+  case "muse":
+    return "Muse chat"
   case "opencode":
     return "OpenCode chat"
   case "cursor":
@@ -478,6 +480,7 @@ func toolTypeForProvider(_ provider: String) -> String {
   switch provider.lowercased() {
   case "codex": return "codex-chat"
   case "pi": return "pi-chat"
+  case "muse": return "muse-chat"
   case "opencode": return "opencode-chat"
   case "cursor": return "cursor"
   default: return "claude-chat"
@@ -512,6 +515,7 @@ func providerLabel(_ provider: String) -> String {
   case "cursor": return "Cursor Composer"
   case "droid", "factory": return "Droid"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "google": return "Google"
   case "ollama": return "Ollama"
   case "lmstudio": return "LM Studio"
@@ -539,6 +543,7 @@ func shortProviderLabel(_ toolType: String?) -> String {
   if raw.hasPrefix("claude") { return "Claude" }
   if raw.hasPrefix("codex") { return "Codex" }
   if raw == "pi" || raw.hasPrefix("pi-") || raw.hasPrefix("pi/") { return "Pi" }
+  if raw.hasPrefix("muse") { return "Muse" }
   if raw.hasPrefix("opencode") { return "OpenCode" }
   return raw.replacingOccurrences(of: "-", with: " ").capitalized
 }
@@ -567,6 +572,8 @@ func providerIcon(_ provider: String) -> String {
     return "hammer.fill"
   case "pi":
     return "terminal.fill"
+  case "muse":
+    return "sparkles"
   case "cursor":
     return "cursorarrow"
   case "droid", "factory":
@@ -613,6 +620,8 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderOpenCode"
   case "droid", "factory":
     return "ProviderDroid"
+  case "muse":
+    return "ProviderMuse"
   case "qwen":
     return "ProviderQwen"
   case "kimi":
@@ -646,6 +655,8 @@ func workRailLogoProvider(for catalogGroupKey: String) -> String {
     return "opencode"
   case "pi":
     return "pi"
+  case "muse":
+    return "muse"
   case "ollama":
     return "ollama"
   case "lmstudio":
@@ -832,6 +843,8 @@ func providerTint(_ provider: String?) -> Color {
     return .teal
   case "pi":
     return .orange
+  case "muse":
+    return ADESharedTheme.brandMuse
   case "cursor":
     return .indigo
   case "droid":
@@ -875,6 +888,9 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") {
     return "pi"
   }
+  if raw.hasPrefix("muse") {
+    return "muse"
+  }
   if raw.hasPrefix("opencode") {
     return "opencode"
   }
@@ -907,7 +923,7 @@ func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
 /// Routed Pi models must stay on Pi rather than falling through to Claude.
 func workNormalizedChatProvider(_ provider: String) -> String {
   let family = providerFamilyKey(provider)
-  return ["claude", "codex", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
+  return ["claude", "codex", "muse", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
     ? family
     : "claude"
 }
@@ -1090,6 +1106,16 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
       WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
+  // Muse's own approval modes (`AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS`), plus
+  // ADE's plan mode, which runs on `denyUnmatched` with plan guidance.
+  case "muse":
+    return [
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "denyUnmatched", title: "Read-only"),
+      WorkRuntimeModeOption(id: "promptUnmatched", title: "Ask"),
+      WorkRuntimeModeOption(id: "onRequest", title: "Auto"),
+      WorkRuntimeModeOption(id: "allowAll", title: "Full access"),
+    ]
   // Pi chats gate bash/edit/write behind an approval card, so `default` is the
   // ask-first tier and `plan` is the read-only one — the same split desktop's
   // `piSdkToolPolicyForPermissionMode` applies. A Pi CLI terminal launched with
@@ -1149,6 +1175,14 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "agi": return "AGI"
     default: return "Auto low"
     }
+  case "muse":
+    switch mode {
+    case "plan": return "Plan"
+    case "denyUnmatched", "read-only": return "Read-only"
+    case "promptUnmatched", "edit": return "Ask"
+    case "allowAll", "full-auto": return "Full access"
+    default: return "Auto"
+    }
   case "pi":
     switch mode {
     case "edit": return "Edit access"
@@ -1198,6 +1232,13 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     case "agi": return ADEColor.purpleAccent
     default: return ADEColor.success
     }
+  case "muse":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "allowAll", "full-auto": return ADEColor.danger
+    case "onRequest", "default": return ADEColor.warning
+    default: return ADEColor.success
+    }
   case "pi":
     switch mode {
     case "full-auto": return ADEColor.danger
@@ -1231,6 +1272,7 @@ func workDefaultRuntimeMode(provider: String) -> String {
   case "opencode": return "edit"
   case "cursor": return "default"
   case "droid", "factory": return "auto-low"
+  case "muse": return "onRequest"
   default: return ""
   }
 }
@@ -1245,6 +1287,7 @@ struct WorkRuntimeWireFields {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
 }
 
@@ -1342,6 +1385,32 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
     }
+  case "muse":
+    // Mirrors `musePermissionModeFromLegacyPermissionMode` in
+    // shared/modelPermissions.ts, and plan rides interactionMode the way the
+    // desktop composer sends it.
+    switch mode {
+    case "plan":
+      fields.interactionMode = "plan"
+      fields.musePermissionMode = "denyUnmatched"
+      fields.permissionMode = "plan"
+    case "denyUnmatched", "read-only":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "denyUnmatched"
+      fields.permissionMode = "plan"
+    case "promptUnmatched", "edit":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "promptUnmatched"
+      fields.permissionMode = "edit"
+    case "allowAll", "full-auto":
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "allowAll"
+      fields.permissionMode = "full-auto"
+    default:
+      fields.interactionMode = "default"
+      fields.musePermissionMode = "onRequest"
+      fields.permissionMode = "default"
+    }
   case "pi":
     switch mode {
     case "edit":
@@ -1371,6 +1440,8 @@ func modelSupportsReasoning(modelId: String, provider: String) -> Bool {
   if lower.contains("opus") || lower.contains("sonnet") { return true }
   switch provider.lowercased() {
   case "codex": return true
+  // Every Muse model takes Muse's full effort ladder.
+  case "muse": return true
   case "claude":
     return lower.contains("opus") || lower.contains("sonnet")
   case "pi":
@@ -1395,7 +1466,8 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     cursorModeId: summary.cursorModeIdWasCleared == true
       ? nil
       : (summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot)),
-    droidPermissionMode: summary.droidPermissionMode
+    droidPermissionMode: summary.droidPermissionMode,
+    musePermissionMode: summary.musePermissionMode
   )
 }
 
@@ -1411,7 +1483,8 @@ func workRuntimeMode(
   codexSandbox: String?,
   opencodePermissionMode: String?,
   cursorModeId: String?,
-  droidPermissionMode: String?
+  droidPermissionMode: String?,
+  musePermissionMode: String? = nil
 ) -> String {
   switch providerFamilyKey(provider) {
   case "claude":
@@ -1456,6 +1529,19 @@ func workRuntimeMode(
       droidPermissionMode: droidPermissionMode,
       permissionMode: permissionMode
     ) ?? "auto-low"
+  case "muse":
+    if interactionMode == "plan" { return "plan" }
+    switch musePermissionMode {
+    case "denyUnmatched", "promptUnmatched", "onRequest", "allowAll":
+      return musePermissionMode ?? "onRequest"
+    default:
+      switch permissionMode {
+      case "plan": return "denyUnmatched"
+      case "edit": return "promptUnmatched"
+      case "full-auto": return "allowAll"
+      default: return "onRequest"
+      }
+    }
   case "pi":
     switch permissionMode {
     case "edit": return "edit"

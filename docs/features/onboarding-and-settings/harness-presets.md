@@ -162,6 +162,18 @@ against the new model, because there the old level belonged to a model the user
 just left; the composer's own control keeps working either way, so changing the
 level after the pick wins.
 
+**Switching an open chat.** The picker works the same on a chat that is already
+running. The pick shows on the trigger at once and applies with the next send:
+`chat.updateSession` takes `presetId` to move the chat onto a preset (its
+harness, model and thinking level, with the usual handoff when the harness
+changes; `modelId` is then ignored), and a plain model picked on a preset chat
+sends `presetId: null` with the model, which leaves the preset. A `modelId`
+alone leaves a preset only when it names another model, so a settings save that
+re-sends the current model keeps it. Each launch reads the preset's model over
+the row's, so a chat that kept its preset while naming another model would say
+one model and run the other; `leftLaunchRoute` keeps a left preset from coming
+back from the persisted record.
+
 What a chat runs on is said in the same accent everywhere, and with one mark
 per row:
 
@@ -344,11 +356,17 @@ described under "Subagents and subagent naming" above.
 Pinning Explore, Plan or general-purpose sends an SDK `agents` entry. The SDK
 has no "same agent, different model" overlay — an entry replaces the whole
 definition — so ADE supplies its own copy of Anthropic's prompt and the
-built-in's `disallowedTools` alongside the model. Those copies live in
-`shared/claudeBuiltinAgentPrompts.ts`, stamped with the CLI version they came
-from (`CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION`) and re-extracted from the
-pinned binary whenever the SDK pin moves; a pinned agent stops tracking upstream
-the moment it is used. The wizard says so at the point of the choice.
+built-in's `disallowedTools` and `omitClaudeMd` alongside the model. Those
+copies live in `shared/claudeBuiltinAgentPrompts.ts`, stamped with the CLI
+version they came from (`CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION`) and
+re-extracted from the pinned binary's template source whenever the SDK pin
+moves, compared whole and not only line by line. The templates have holes that
+Claude fills from the tools it gives agents: the shell (Bash, or PowerShell on
+Windows without Git Bash) and whether Glob and Grep exist. ADE fills them from
+the same facts, which Claude reports in each `system/init` tool list
+(`claudeCodeInit.ts`); before a report, macOS and Linux use the Agent SDK's set
+(Bash, no Glob or Grep). A pinned agent stops tracking upstream the moment it
+is used. The wizard says so at the point of the choice.
 
 ### The CLI gate
 

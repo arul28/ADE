@@ -908,6 +908,7 @@ struct WorkCrossMachineHandoffSheet: View {
     if let v = wire.codexConfigSource { args["codexConfigSource"] = v }
     if let v = wire.opencodePermissionMode { args["opencodePermissionMode"] = v }
     if let v = wire.droidPermissionMode { args["droidPermissionMode"] = v }
+    if let v = wire.musePermissionMode { args["musePermissionMode"] = v }
     if let v = wire.cursorModeId { args["cursorModeId"] = v }
     let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedNote.isEmpty { args["continuationPrompt"] = trimmedNote }

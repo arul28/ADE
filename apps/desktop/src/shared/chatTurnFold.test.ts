@@ -588,6 +588,10 @@ describe("deriveTurnFolds — non-answer prose", () => {
     ["a short proof image", "kept", prose("x", "Here it is: ![shot](ade-proof://artifact-1)")],
     ["long commentary", "hidden", prose("x", "C".repeat(600), "commentary")],
     ["commentary embedding proof", "kept", prose("x", "Captured ![shot](ade-proof://artifact-1)", "commentary")],
+    // A partial answer is content the terminal answer does not repeat, so the
+    // length bar that governs unlabelled narration does not apply to it.
+    ["a short partial answer", "kept", prose("x", "The first result is ready.", "partial_answer")],
+    ["a long partial answer", "kept", prose("x", "P".repeat(600), "partial_answer")],
     ["a long word-for-word copy of the answer", "duplicate", prose("x", `\n${ANSWER}  `)],
   ] as const)("%s is %s", (_name, expected, row) => {
     const [fold] = deriveTurnFolds(
@@ -605,5 +609,62 @@ describe("deriveTurnFolds — non-answer prose", () => {
       [user("u"), prose("reply", "R".repeat(450)), prose("answer", ANSWER), done("d")],
       snapshots(),
     )).toEqual([]);
+  });
+});
+
+describe("deriveTurnFolds — a partial answer is content, not narration", () => {
+  // Codex 0.162 emits `partial_answer` for a finished statement it may follow
+  // with more output, then the terminal `final_answer`, which restates only its
+  // own part. The turn fold must not treat the partial answer as narration: the
+  // text it carries is content the terminal answer does not repeat.
+  const prose = (key: string, value: string, phase: TurnFoldRow["phase"] = null): TurnFoldRow => ({
+    key,
+    role: "text",
+    turnId: "t1",
+    phase,
+    text: value,
+  });
+
+  it("keeps the partial answer and folds the narration after it", () => {
+    // The sequence codex's own `scenarios_partial_answers` suite measures.
+    const [fold] = deriveTurnFolds([
+      user("u"),
+      history("tool"),
+      prose("partial", "The first result is ready.", "partial_answer"),
+      prose("narration", "Checking the remaining result.", "commentary"),
+      prose("final", "The second result is ready.", "final_answer"),
+      done("d"),
+    ], snapshots());
+
+    expect(fold!.answerKey).toBe("final");
+    expect([...fold!.hiddenKeys]).toEqual(["tool", "narration"]);
+    expect(fold!.keptKeys).toContain("partial");
+  });
+
+  it("is the answer itself when no final answer follows", () => {
+    const [fold] = deriveTurnFolds([
+      user("u"),
+      history("tool"),
+      prose("partial", "Only the first result arrived.", "partial_answer"),
+      done("d"),
+    ], snapshots());
+
+    expect(fold!.answerKey).toBe("partial");
+    expect([...fold!.hiddenKeys]).toEqual(["tool"]);
+  });
+
+  it("never wins over a final answer that comes first", () => {
+    const [fold] = deriveTurnFolds([
+      user("u"),
+      history("tool"),
+      prose("final", "The second result is ready.", "final_answer"),
+      history("tool2"),
+      prose("partial", "One more result is ready.", "partial_answer"),
+      done("d"),
+    ], snapshots());
+
+    expect(fold!.answerKey).toBe("final");
+    // Rows after the answer never fold, so the later partial answer draws too.
+    expect(fold!.hiddenKeys.has("partial")).toBe(false);
   });
 });

@@ -49,6 +49,31 @@ const SOFT_ASK = new RegExp(
   "i",
 );
 
+/** An opt-in offer does not make the user's answer a prerequisite to progress. */
+const OPTIONAL_OFFER = new RegExp(
+  String.raw`\bif you(?:'d| would)? (?:rather|prefer|want|like)\b`,
+  "i",
+);
+
+const OFFER_QUESTION = /\b(?:would you (?:like|prefer)|do you want) me to\b/i;
+
+/**
+ * A closing that names a blocking prerequisite — work cannot proceed until the
+ * user approves, confirms, or answers. An optional offer elsewhere in the same
+ * block must not suppress it.
+ */
+const BLOCKING_CUE = new RegExp(
+  [
+    String.raw`\bblocked\b`,
+    String.raw`\buntil you (approve|confirm|decide|respond|answer|pick|choose)\b`,
+    String.raw`\b(needs?|requires?|waiting on) your (approval|go-ahead|ok|okay|decision|response|answer|input|call)\b`,
+    String.raw`\bcan'?t (proceed|continue|move forward|start|finish)\b`,
+    String.raw`\bhold(ing)? (until|waiting)\b`,
+    String.raw`\bparked (until|waiting)\b`,
+  ].join("|"),
+  "i",
+);
+
 /** The shapes of "work continues, I'll be back": no answer wanted. */
 const PROGRESS_NOTE = new RegExp(
   [
@@ -156,9 +181,30 @@ export function classifyTurnEndAsk(replyText: string | null | undefined): TurnEn
   const progress = PROGRESS_NOTE.test(closing);
   const closingAsk = askStrength(closing);
   const beforeAsk = askStrength(before);
+  const finalQuestion = questionFrom(closing);
 
-  if (closingAsk === "strong") return { verdict: "ask", question: questionFrom(closing) };
+  // A question-phrased offer ("Would you like me to…?") is only a non-blocking
+  // opt-in when it is the LAST thing asked. If a later sentence asks a genuine
+  // blocking question, that question must classify as the ask — the offer
+  // exception must not swallow it.
+  if (
+    beforeAsk === "none"
+    && OFFER_QUESTION.test(finalQuestion)
+    && !BLOCKING_CUE.test(closing)
+  ) return UNSURE;
+  if (closingAsk === "strong") return { verdict: "ask", question: finalQuestion };
   if (closingAsk === "weak") return UNSURE;
+  // A closing that names a blocking prerequisite ("blocked until you approve")
+  // is a genuine ask even when an optional offer or sign-off surrounds it. A
+  // progress note ("still running…") is exempt — it describes work, not a gate.
+  if (beforeAsk === "none" && BLOCKING_CUE.test(closing) && !progress) {
+    return { verdict: "ask", question: finalQuestion };
+  }
+  // A conditional offer is optional unless the sentence explicitly asks a
+  // question or the previous paragraph already asked for a decision.
+  if (beforeAsk === "none") {
+    if (!closing.includes("?") && OPTIONAL_OFFER.test(closing) && !BLOCKING_CUE.test(closing)) return NOT_ASK;
+  }
   if (SOFT_ASK.test(closing)) {
     // "If you're happy with this, I'll…" usually closes a question asked just
     // above. On its own ("Let me know if anything breaks.") it is often a
@@ -185,9 +231,11 @@ const TURN_END_ASK_REPLY_TAIL_CHARS = 1_500;
 
 export const TURN_END_ASK_SYSTEM_PROMPT = [
   "You read the end of an AI coding agent's reply to its user.",
-  "Decide whether the reply ends by asking the user to answer, choose, approve, or decide something before the agent continues.",
+  "Decide whether the reply ends by asking the user to answer, choose, approve, or decide something that the agent must wait for before continuing.",
   "A progress update (work is running, the agent will report back later) is not an ask, even if it mentions what comes next.",
-  "An offer the user must accept or decline (\"want me to…\", \"if you want X, say so\") is an ask.",
+  "An optional offer (\"I can do X if you want\", \"say the word if you'd rather I do X\") is not an ask when work can continue without the user's answer.",
+  "A genuine blocking choice is an ask when the agent cannot continue until the user decides.",
+  "A request for permission to take a consequential action is blocking even when phrased as 'would you like me to'.",
   'Answer with JSON only: {"asksUser": true} or {"asksUser": false}.',
 ].join(" ");
 

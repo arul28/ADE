@@ -104,6 +104,7 @@ const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: s
   cursor: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   droid: { ring: "ring-orange-400/25", border: "border-orange-400/30" },
   pi: { ring: "ring-orange-500/25", border: "border-orange-500/30" },
+  muse: { ring: "ring-blue-400/25", border: "border-blue-400/30" },
   qwen: { ring: "ring-indigo-400/25", border: "border-indigo-400/30" },
   kimi: { ring: "ring-teal-400/25", border: "border-teal-400/30" },
   grok: { ring: "ring-zinc-300/25", border: "border-zinc-300/30" },
@@ -285,7 +286,12 @@ export function compactionFailLabel(reason?: ContextCompactFailReason): string {
   switch (reason) {
     case "timed_out":
       return "Compaction timed out";
+    // An interrupted compaction was aborted, not broken: Claude Code's own
+    // `/compact` says "Compaction canceled." when it aborts, and an ACP
+    // provider's `cancelled` status maps to this same reason. Saying "failed"
+    // spent the alarm on an outcome the model (or the person's Stop) chose.
     case "interrupted":
+      return "Compaction cancelled";
     case "teardown":
     case "provider_error":
     case "quota":

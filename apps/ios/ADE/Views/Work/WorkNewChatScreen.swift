@@ -506,7 +506,7 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
     .trimmingCharacters(in: .whitespacesAndNewlines)
   guard !normalized.isEmpty else { return [] }
-  let provider = ["claude", "codex", "cursor", "droid", "opencode", "pi"].first {
+  let provider = ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi"].first {
     workRegexContains(normalized, pattern: #"\b\#($0)\b"#)
   } ?? (workRegexContains(normalized, pattern: #"\bopen code\b"#) ? "opencode" : nil)
   guard let provider else { return [] }
@@ -806,7 +806,8 @@ struct WorkNewChatScreen: View {
       codexSandbox: defaults.codexSandbox,
       opencodePermissionMode: defaults.opencodePermissionMode,
       cursorModeId: defaults.cursorModeId,
-      droidPermissionMode: defaults.droidPermissionMode
+      droidPermissionMode: defaults.droidPermissionMode,
+      musePermissionMode: defaults.musePermissionMode
     )
     runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
     checkModelOnMachine()
@@ -1707,6 +1708,7 @@ struct WorkNewChatScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
+        musePermissionMode: wire.musePermissionMode,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
@@ -1860,7 +1862,7 @@ struct WorkNewChatScreen: View {
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
@@ -1897,6 +1899,7 @@ private func workCliToolType(provider: String) -> String {
   case "cursor": return "cursor-cli"
   case "opencode": return "opencode"
   case "pi": return "pi"
+  case "muse": return "muse"
   case "droid": return "droid"
   case "qwen": return "qwen"
   case "kimi": return "kimi"

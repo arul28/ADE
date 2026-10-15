@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   ArrowClockwise,
-  CheckCircle,
   PencilSimple,
   Plugs,
   PlugsConnected,
@@ -20,16 +19,17 @@ import {
   COLORS,
   SANS_FONT,
   outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { HostKeyTrustCard } from "./HostKeyTrustCard";
+import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
+import { UpdateSteps, type MachineUpdatePhase } from "./UpdateSteps";
 import {
   connectionStateLabel,
   formatLastSeen,
-  formatVersionSkewNote,
   isVersionSkewWarning,
+  machineColorKey,
   selectMachineErrorCard,
   type MachineSection,
   type SavedMachineRow as SavedMachineRowModel,
@@ -41,6 +41,7 @@ import {
 } from "./RemoteTargetForm";
 import {
   helperTextStyle,
+  connectButtonStyle,
   iconActionButtonStyle,
   inlineDetailStyle,
   inlineErrorTextStyle,
@@ -51,6 +52,13 @@ import {
 } from "./remoteTargetListStyles";
 
 const CONNECTING_STALE_MS = 20_000;
+
+const ROUTE_KIND_LABELS: Record<string, string> = {
+  lan: "Local network",
+  tailnet: "Tailscale",
+  relay: "ADE relay",
+  ssh: "SSH",
+};
 
 function useStaleConnecting(connecting: boolean): boolean {
   const [stale, setStale] = useState(false);
@@ -88,10 +96,14 @@ type SavedMachineRowProps = {
    */
   updateTargetVersion?: string | null;
   updating?: boolean;
+  /** ADE is asking the machine what an update would stop, before it confirms. */
+  checkingUpdate?: boolean;
+  /** The machine's last power report, from the account directory: a battery means a laptop. */
+  power?: { battery?: unknown } | null;
+  /** Where an update to this machine is right now; null when none is running. */
+  updatePhase?: MachineUpdatePhase | null;
   /** Outcome of the last update run on this machine. */
   updateStatus?: { ok: boolean; message: string } | null;
-  /** ADE version running on this computer, used for the quiet skew note. */
-  localAdeVersion?: string | null;
   onUpdateAndRestart?: (targetVersion: string | null) => void;
   hostKeyTrust: RemoteRuntimeSshHostKeyTrustStatus | null;
   trustingHostKey: boolean;
@@ -126,8 +138,10 @@ export function SavedMachineRow({
   transientStatus = null,
   updateTargetVersion = null,
   updating = false,
+  checkingUpdate = false,
+  updatePhase = null,
+  power = null,
   updateStatus = null,
-  localAdeVersion = null,
   onUpdateAndRestart,
   hostKeyTrust,
   trustingHostKey,
@@ -160,11 +174,7 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
-  const versionNote = formatVersionSkewNote({
-    localVersion: localAdeVersion,
-    remoteVersion: row.version,
-    remoteName: target.name,
-  });
+  const [hovered, setHovered] = useState(false);
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -172,10 +182,8 @@ export function SavedMachineRow({
         : []) ??
       [])
     : (status?.compatibilityWarnings ?? []);
+  // Version skew is the chip's job now; the rest are real warnings.
   const warnings = compatibilityWarnings.filter((warning) => !isVersionSkewWarning(warning));
-  const rawSkewWarning = compatibilityWarnings.find(isVersionSkewWarning) ?? null;
-  const displayedVersionNote = versionNote
-    ?? (localAdeVersion && row.version ? null : rawSkewWarning);
   const errorCard = selectMachineErrorCard({
     errorInfo: status?.state === "error" ? status.lastErrorInfo : null,
     rawError: status?.state === "error" ? status.lastError : null,
@@ -193,98 +201,124 @@ export function SavedMachineRow({
   const pairAgain = errorCard?.failure === "pairing" ? onPairAgain : null;
   const formOpen = formPrefill?.targetId === target.id;
 
+  const presence: "online" | "busy" | "offline" | "error" = updatePhase
+    ? "busy"
+    : row.connected
+      ? "online"
+      : errorCard && section !== "unavailable"
+        ? "error"
+        : targetConnecting && !connectingStale
+          ? "busy"
+          : "offline";
+  const routeLabel = activeRoute?.kind ? ROUTE_KIND_LABELS[activeRoute.kind] ?? null : null;
+  const latency = typeof activeRoute?.latencyMs === "number" ? `${Math.round(activeRoute.latencyMs)} ms` : null;
+  const detailLine = updatePhase === "checking"
+    ? "Checking what's running there…"
+    : updatePhase === "sending"
+      ? "Sending the update…"
+      : updatePhase === "restarting"
+        ? `Restarting on ${updateTargetVersion ?? "the new version"}…`
+        : section === "unavailable" && row.unavailableReason
+          ? row.unavailableReason
+          : row.connected
+            ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
+            : targetConnecting && !connectingStale
+              ? "Connecting…"
+              : target.lastConnectedAt || statusLabel !== "Not connected"
+                ? `${statusLabel} · ${formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen ")}`
+                : formatLastSeen(null);
+  // A machine restarting for an update drops its connection on purpose. That
+  // is a step of the update, not a failure, so its error card stays hidden.
+  const shownErrorCard = updatePhase === "restarting" ? null : errorCard;
+  const showFinalUpdateStatus = Boolean(updateStatus) && !updatePhase;
+  const behind = row.connected && updateTargetVersion != null;
+  const quiet = !hovered && !selected;
+  const iconButton = (disabled: boolean): CSSProperties => ({
+    ...iconActionButtonStyle,
+    opacity: disabled ? 0.35 : quiet ? 0.55 : 1,
+    cursor: disabled ? "not-allowed" : "pointer",
+    transition: "opacity 140ms ease",
+  });
+
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
           ...machineRowStyle,
-          opacity: section === "unavailable" ? 0.62 : 1,
-          borderColor: selected ? COLORS.accent : COLORS.border,
+          opacity: section === "unavailable" ? 0.7 : 1,
         }}
       >
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0,1fr) auto",
+            gridTemplateColumns: "auto minmax(0,1fr) auto",
             gap: 12,
-            alignItems: "start",
+            alignItems: "center",
           }}
         >
-          <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                minWidth: 0,
-              }}
-            >
+          <MachineAvatar
+            colorKey={machineColorKey(target)}
+            name={target.name}
+            platform={machinePlatform(status?.arch, target.lastSeenArch)}
+            formFactor={machineFormFactor({ name: target.name, power })}
+            editable
+            dimmed={section === "unavailable"}
+          />
+          <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
               <span style={nameStyle}>{target.name}</span>
-              {row.connected ? (
-                <CheckCircle size={15} weight="fill" color={COLORS.success} />
-              ) : null}
+              <PresenceDot state={presence} />
             </div>
-            <div style={subTextStyle}>
-              {target.transport === "paired" ? "Paired with this computer" : "Saved SSH connection"}
-            </div>
-            <div style={helperTextStyle}>
-              {section === "unavailable" && row.unavailableReason ? (
-                <span>{row.unavailableReason}</span>
-              ) : row.connected ? (
-                <span>{formatLastSeen(target.lastConnectedAt)}</span>
-              ) : (
-                <span>
-                  {target.lastConnectedAt || statusLabel !== "Not connected"
-                    ? `${statusLabel} · ${formatLastSeen(target.lastConnectedAt)}`
-                    : formatLastSeen(null)}
-                </span>
-              )}
+            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+              <VersionChip
+                version={row.version}
+                target={behind || updatePhase ? updateTargetVersion : null}
+                tone={showFinalUpdateStatus && updateStatus?.ok && !behind ? "success" : "muted"}
+              />
+              <span role={updatePhase ? "status" : undefined} style={subTextStyle}>{detailLine}</span>
             </div>
           </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              flexWrap: "wrap",
-              justifyContent: "flex-end",
-            }}
-          >
-            {row.connected && updateTargetVersion && onUpdateAndRestart ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 2, justifyContent: "flex-end" }}>
+            {behind && onUpdateAndRestart && !updatePhase ? (
               <button
                 type="button"
-                disabled={busy || updating}
+                disabled={busy || updating || checkingUpdate}
                 onClick={() => onUpdateAndRestart(updateTargetVersion)}
-                style={outlineButton({
-                  height: 28,
-                  padding: "0 10px",
-                  fontSize: 11,
-                })}
+                style={{
+                  ...outlineButton({ height: 28, padding: "0 11px", fontSize: 11.5 }),
+                  color: COLORS.accent,
+                  borderColor: COLORS.accentBorder,
+                  marginRight: 4,
+                }}
               >
-                <ArrowClockwise size={14} weight="bold" />
-                {updating ? "Updating…" : "Update & restart"}
+                <ArrowClockwise size={13} weight="bold" />
+                Update
               </button>
             ) : null}
-            {!row.connected && targetConnecting && !connectingStale ? (
-              <span role="status" style={{ ...helperTextStyle, padding: "0 4px" }}>
-                Connecting…
-              </span>
-            ) : null}
-            {!row.connected && targetConnecting ? (
+            {!row.connected && targetConnecting && !updatePhase ? (
               <button
                 type="button"
                 aria-label={`Cancel connecting to ${target.name}`}
                 title="Stop connecting"
                 disabled={busy}
                 onClick={() => onCancelConnect(target.id)}
-                style={outlineButton({
-                  height: 28,
-                  padding: "0 10px",
-                  fontSize: 11,
-                })}
+                style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 11 }), marginRight: 4 }}
               >
                 <X size={13} weight="bold" />
                 Cancel
+              </button>
+            ) : null}
+            {!row.connected && section !== "unavailable" && !updatePhase && (!targetConnecting || connectingStale) ? (
+              <button
+                type="button"
+                disabled={locked}
+                onClick={() => onConnect(target.id)}
+                style={{ ...connectButtonStyle, marginRight: 4, opacity: locked ? 0.5 : 1, cursor: locked ? "not-allowed" : "pointer" }}
+              >
+                <PlugsConnected size={13} weight="bold" />
+                {connectingStale ? "Retry" : "Connect"}
               </button>
             ) : null}
             {row.connected ? (
@@ -294,48 +328,23 @@ export function SavedMachineRow({
                 title="Disconnect"
                 disabled={busy || updating}
                 onClick={() => onDisconnect(target.id)}
-                style={{
-                  ...iconActionButtonStyle,
-                  opacity: busy || updating ? 0.45 : 1,
-                  cursor: busy || updating ? "not-allowed" : "pointer",
-                }}
+                style={iconButton(busy || updating)}
               >
                 <Plugs size={15} />
               </button>
             ) : section !== "unavailable" ? (
-              <>
-                {!targetConnecting || connectingStale ? (
-                  <button
-                    type="button"
-                    disabled={locked}
-                    onClick={() => onConnect(target.id)}
-                    style={primaryButton({
-                      height: 28,
-                      padding: "0 10px",
-                      fontSize: 11,
-                    })}
-                  >
-                    <PlugsConnected size={14} weight="bold" />
-                    {connectingStale ? "Retry" : "Connect"}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  aria-label="Test"
-                  title="Test connection"
-                  aria-controls={`remote-target-test-${target.id}`}
-                  aria-expanded={testOpen}
-                  disabled={busy}
-                  onClick={() => onToggleTest(target.id)}
-                  style={{
-                    ...iconActionButtonStyle,
-                    opacity: busy ? 0.45 : 1,
-                    cursor: busy ? "not-allowed" : "pointer",
-                  }}
-                >
-                  <Pulse size={15} />
-                </button>
-              </>
+              <button
+                type="button"
+                aria-label="Test"
+                title="Test connection"
+                aria-controls={`remote-target-test-${target.id}`}
+                aria-expanded={testOpen}
+                disabled={busy}
+                onClick={() => onToggleTest(target.id)}
+                style={iconButton(busy)}
+              >
+                <Pulse size={15} />
+              </button>
             ) : null}
             {section !== "unavailable" ? (
               <button
@@ -346,11 +355,7 @@ export function SavedMachineRow({
                 aria-expanded={formOpen}
                 disabled={locked}
                 onClick={() => onToggleEdit(target)}
-                style={{
-                  ...iconActionButtonStyle,
-                  opacity: locked ? 0.45 : 1,
-                  cursor: locked ? "not-allowed" : "pointer",
-                }}
+                style={iconButton(locked)}
               >
                 <PencilSimple size={15} />
               </button>
@@ -361,16 +366,16 @@ export function SavedMachineRow({
               title="Delete"
               disabled={busy}
               onClick={() => onRemove(target.id)}
-              style={{
-                ...iconActionButtonStyle,
-                opacity: busy ? 0.45 : 1,
-                cursor: busy ? "not-allowed" : "pointer",
-              }}
+              style={iconButton(busy)}
             >
               <Trash size={15} />
             </button>
           </div>
         </div>
+
+        {updatePhase === "sending" || updatePhase === "restarting" ? (
+          <UpdateSteps phase={updatePhase} targetVersion={updateTargetVersion} />
+        ) : null}
 
         {stageLabel ? (
           <div role="status" style={helperTextStyle}>
@@ -384,7 +389,7 @@ export function SavedMachineRow({
           </div>
         ) : null}
 
-        {updateStatus ? (
+        {showFinalUpdateStatus && updateStatus ? (
           <div
             role="status"
             style={updateStatus.ok ? inlineSuccessTextStyle : inlineErrorTextStyle}
@@ -393,25 +398,15 @@ export function SavedMachineRow({
           </div>
         ) : null}
 
-        {errorCard ? (
+        {shownErrorCard ? (
           <RemoteErrorCard
-            card={errorCard}
+            card={shownErrorCard}
             onRetry={!locked ? () => onConnect(target.id) : undefined}
             retrying={connecting}
             action={pairAgain && !locked
               ? { label: "Pair again", onClick: pairAgain }
               : null}
           />
-        ) : null}
-
-        <ConnectionRouteDetails
-          attempts={routeAttempts}
-          correlationId={routeCorrelationId}
-          omittedAttemptCount={omittedAttemptCount}
-        />
-
-        {displayedVersionNote ? (
-          <div style={helperTextStyle}>{displayedVersionNote}</div>
         ) : null}
 
         {warnings.length > 0 ? (
@@ -436,6 +431,12 @@ export function SavedMachineRow({
             ))}
           </div>
         ) : null}
+
+        <ConnectionRouteDetails
+          attempts={routeAttempts}
+          correlationId={routeCorrelationId}
+          omittedAttemptCount={omittedAttemptCount}
+        />
 
         {selected && hostKeyTrust ? (
           <HostKeyTrustCard

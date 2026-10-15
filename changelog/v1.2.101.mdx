@@ -3,9 +3,37 @@ title: "v1.2.101"
 description: "Release notes for ADE v1.2.101 - October 12, 2026"
 ---
 
-ADE 1.2.101 makes switching between loaded projects faster.
+ADE 1.2.101 adds find in chats and diffs, draws Claude Code mod UI in chat, and makes PRs easier to read. It also fixes multi-machine chats, Claude account balancing, and project data safety.
 
-## Project navigation
+## Chat
 
-- Loaded project tabs switch when you press them, reducing the measured warm switch time from 136–137 ms to 44–51 ms (#1585).
-- Dragging a background project tab brings it to the front. Detaching a tab waits for its pending project switch before closing it in the source window (#1585).
+- Press ⌘F in a chat or any diff to find text across the whole transcript, including folded turns, or across every line of a diff. ⌘K offers "Find in this chat" (#1600).
+- Claude Code mods can draw their status lines, toasts, band and panes in ADE chat. Turn it on in Settings › Chat › Claude mods (#1601).
+- A steered turn keeps its tool list, finished-turn notices no longer pile up, and computer-use rows are tidier (#1602).
+- Pasting a photo copied from Messages works, a finished Work chat keeps its model, and the floating browser preview no longer shows a blank or narrow card (#1598).
+- Voice, terminal logs, sign-in and the session diff now reach the machine that owns the chat when it lives on another computer (#1592).
+
+## Pull requests
+
+- PRs written by agents follow a readable shape, the PRs tab shows what needs you on one line, before and after pictures sit side by side, and "Add to chat" works on any part, comment or picture (#1595).
+- PR Watch wakes the agent when a review bot edits its earlier comment (#1587).
+
+## Accounts and usage
+
+- Sign out of any non-default account, and removing an account signs it out first (#1593, #1599).
+- Idle Claude accounts stay readable, so smart balance spreads chats across them again, and Settings shows each machine's own usage (#1588).
+- Claude accounts can stop a turn that would draw on extra usage (#1587).
+
+## Projects and lanes
+
+- Loaded project tabs switch on press, from 136–137 ms to 44–51 ms (#1585).
+- Switching projects no longer leaves Work or lanes on the previous project's lane, and ADE refuses to open a project whose data was moved instead of creating an empty copy (#1589).
+- A project switch no longer breaks the simulator pane or other reads (#1594).
+- ADE's background git status reads no longer block your own commits with an `index.lock` error (#1587).
+- Automations can run when a chat is settled (#1587).
+
+## Desktop
+
+- Quitting asks in ADE's own dialog and says truthfully that agents keep running in the background service. Settings › ADE adds "Ask before quitting" and a Background service stop (#1591).
+- The Focus grid keeps chats readable on a laptop, with a chats-per-page setting in Settings › Appearance (#1590).
+- Releases build faster and retry the network failures that used to stall them (#1597).

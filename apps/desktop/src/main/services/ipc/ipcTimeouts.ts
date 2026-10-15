@@ -1,5 +1,5 @@
 import { IPC } from "../../../shared/ipc";
-import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
+import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
@@ -17,6 +17,7 @@ import {
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
+import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -119,7 +120,7 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
-  return isRetryableRemoteAction(request.domain, request.action)
+  return isReplaySafeAdeAction(request.domain, request.action)
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }
@@ -139,6 +140,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   if (channel === IPC.accountRepairMachinePairing) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
   if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
+  // A command from an agent on another machine: a `wait` or a sign-in handoff
+  // runs for minutes, and the daemon that sent it waits the same budget.
+  if (channel === IPC.builtInBrowserRunRemoteAgentCall) {
+    const request = args[0] && typeof args[0] === "object" ? args[0] as { method?: unknown; input?: unknown } : {};
+    return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
+  }
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
@@ -201,8 +208,17 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
       return 4 * 60_000;
+    // A project move copies the whole project before it answers; a few hundred
+    // GB to a USB drive takes far more than the 30s default. Progress arrives
+    // on its own channel meanwhile.
+    case IPC.projectMoveStart:
+      return 24 * 60 * 60_000;
     // On the 30s default the renderer showed a raw IPC timeout mid-repair.
     case IPC.recoveryRepair:
+    // Start fresh closes the project and waits for the background service to
+    // drop it; restoring may copy a folder back from another disk's Trash.
+    case IPC.recoveryStartFresh:
+    case IPC.recoveryRestoreProjectData:
       return PROJECT_REPAIR_IPC_TIMEOUT_MS;
     // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
     // merged PR. The 30s default reported a failure while the merge went on.

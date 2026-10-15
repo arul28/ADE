@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedFrom": "apps/ade-cli/package-lock.json",
+  "generatedFrom": "apps/ade-cli/package-lock.json + apps/ade-cli/scripts/muse-release.json",
   "tools": [
     {
       "name": "codex",
@@ -13,33 +13,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@openai/codex-darwin-arm64",
-          "version": "0.161.0-darwin-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-darwin-arm64.tgz",
-          "integrity": "sha512-arxKLYB3uKjewwOpGFo5/MGe8+4JzNB17KIYBmGfF4k3QU+QC4ieXVUwqHmQX2nXrB1BzNMN0gtAgm1AGBTg8w=="
+          "version": "0.162.1-darwin-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-darwin-arm64.tgz",
+          "integrity": "sha512-YVXpg57itBuQxjofay3KDF5UbnZF4Y1ZmNFzUCz0ZQiQN+DndxOjN5V87rnXvPaC4qCPO2El74DzewoBP8JyPQ=="
         },
         "darwin-x64": {
           "package": "@openai/codex-darwin-x64",
-          "version": "0.161.0-darwin-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-darwin-x64.tgz",
-          "integrity": "sha512-svVXwOisMkf/e9BD8Qyp0BQYOTsRnrYErfLq+o7aNMts8Evg06rRsHUfxH6HAiJ99dUgC/4CLr3Rpwh3833TfQ=="
+          "version": "0.162.1-darwin-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-darwin-x64.tgz",
+          "integrity": "sha512-0/WHRhbUnM1wAjfyCO54Q8s4vQRxLVBbqW6XuQf7rZTEMTYPKRIQU9aPeRgjG653ZCSjtBrslWQ+G9urY9CksQ=="
         },
         "linux-arm64": {
           "package": "@openai/codex-linux-arm64",
-          "version": "0.161.0-linux-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-linux-arm64.tgz",
-          "integrity": "sha512-SBu0n4C1Pby9rGKUNA02yHEg/ScbECgiTIiKiKhbYWiUWqGPV1hY0Br7joEntbz0dyNzSWqNPD8uOqxcOry/Fg=="
+          "version": "0.162.1-linux-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-linux-arm64.tgz",
+          "integrity": "sha512-Ss7W/SrKtQFNaMtSojNoiykJgX+iDC8daM+YrcvgmJADtQPk0cd3w6Dna4CYH2CYvf9nQranj69fpcTzZ3sQIQ=="
         },
         "linux-x64": {
           "package": "@openai/codex-linux-x64",
-          "version": "0.161.0-linux-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-linux-x64.tgz",
-          "integrity": "sha512-AVkNzeJWyCHHPyg5vxD8UE6aFsYaOwq0/x6mtmkOKy6LdjvsyxLr7Q7UULlk+Ma3+PnrN8uIxG2/XGPQ936hgA=="
+          "version": "0.162.1-linux-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-linux-x64.tgz",
+          "integrity": "sha512-cjK2mdHIfEepZ1lQ1MX3aTQC+8ncIsvnacl/6vI2dIIcfP8/MrhTQ2+qRlkXFNDzJSj1d36quIszP+3/4CUJWQ=="
         },
         "win32-x64": {
           "package": "@openai/codex-win32-x64",
-          "version": "0.161.0-win32-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.161.0-win32-x64.tgz",
-          "integrity": "sha512-VdNnttGOG3nbwoREvVurVBXci/EJD/kncVJnvtXjpEE+YhC1twvvrVNmtlZcZGEEVi06xLN/ov0d6nxjZ1XLSg=="
+          "version": "0.162.1-win32-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1-win32-x64.tgz",
+          "integrity": "sha512-dfl4MhHuEi0ARKyNmrTxk+RQmsWNCQAoVLUtrYq+yrW1C8P2sg5ziwgHUUACHjYLKuACV7ARH5Nq5pnCz3GlaQ=="
         }
       }
     },
@@ -54,33 +54,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-          "version": "0.3.293",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.293.tgz",
-          "integrity": "sha512-E2rwiiHr3LwYzBuTROVDpJkts4QmYCrW39ZIN1qixVSNQhSEiz5LjaKxzrwq0xgPgQDU0vd2fLMG1k72BgD24w=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.300.tgz",
+          "integrity": "sha512-+pFKo4x5S6j4v+UTVZZFiLoJO7PMLVPNhIUBalk/RvMhcaN33Ubgk4aRAZpJmkxCcGMN6rWCevYhgT0nXkqytg=="
         },
         "darwin-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-darwin-x64",
-          "version": "0.3.293",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.293.tgz",
-          "integrity": "sha512-UJD8kX1XDhMqs/0LLxD012h+S9U3Q8XPbRSNcnPQEMNAoEF+lh898xPbVnkUgPKl3jUOUyqYRwFRwDiUJD+GJg=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.300.tgz",
+          "integrity": "sha512-5mJ0Fdl85HQvFJM6XdFJry68vjEt5XyJ5mVvVO3G6U9R4a8rMJDH7Ypik3jlCW2eaB/mjbJVSI2ffV8ClaYA6A=="
         },
         "linux-arm64": {
           "package": "@anthropic-ai/claude-agent-sdk-linux-arm64",
-          "version": "0.3.293",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.293.tgz",
-          "integrity": "sha512-B3M5gw6pPH/ckMtrLtGg4ZY1adLVnPoXkEV+Ruu0j/gdFzwuLWR64Spa0RCsbo7BXVN6w5NTqkuZk+HBfsPUZA=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.300.tgz",
+          "integrity": "sha512-zTl6mMnIDEaEEWebiwmZw+k3Sgi6zHlZcZDvrb3VlHaX1Ru5iikdWt+PS36tzJtrSnwX0XBV0EO8x1qqC2TmhA=="
         },
         "linux-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-linux-x64",
-          "version": "0.3.293",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.293.tgz",
-          "integrity": "sha512-MtqXROSQiuqOCNXfC4k3/3DVfgTNLEdaT5jp/omaZeiPtnRtfCz2KTtBTVG4IwbEDFaKsqfzPsPFzN7X6avwkg=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.300.tgz",
+          "integrity": "sha512-sd2IUPPTVYiN5YPoC2InyOJy0fEt9HBwBZbtVobhugO0KWACMPzrYefLD/yu1uJsf73+tBnVQRfgb/btXukd8Q=="
         },
         "win32-x64": {
           "package": "@anthropic-ai/claude-agent-sdk-win32-x64",
-          "version": "0.3.293",
-          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.293.tgz",
-          "integrity": "sha512-SVaIDHtpCwM0r0m9jzue1U7yktIZ1eJhR1O3e0UCHYTJluaIXty5m6DzqhG4rjnEoNlEAl9rQLqPigS/R5+IiQ=="
+          "version": "0.3.300",
+          "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.300.tgz",
+          "integrity": "sha512-VXY2/y9/3psK2Dd4H+s9m6J5HfkvC3g0fYH4KGeOdbko2LYWmBmIk8E9NsjUVsKL7oN//G2I82+yAZdie5JuDg=="
         }
       }
     },
@@ -122,6 +122,57 @@
           "version": "2.0.24",
           "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.24.tgz",
           "integrity": "sha512-hYjG7D7Qw5rJTXdxxaZ7ClswXipC1ku5+U08Ph1Rk9XuyzBOcXMFFha1Bd2OQWgRuWEyAHr4ZyMxadejmBcnHQ=="
+        }
+      }
+    },
+    {
+      "name": "muse",
+      "description": "Meta Muse Code CLI native binary, spawned as `muse serve` and in ADE terminals.",
+      "entry": {
+        "kind": "binary",
+        "path": "muse",
+        "windowsPath": "muse.exe"
+      },
+      "targets": {
+        "darwin-arm64": {
+          "format": "file",
+          "package": "muse-code-darwin-arm64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos",
+          "sha256": "87ff5a31b63e30b6ac04d3e8298285517e753c126fb6f3aee80accf28c4562f1",
+          "size": 358892272
+        },
+        "darwin-x64": {
+          "format": "file",
+          "package": "muse-code-darwin-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-macos",
+          "sha256": "6d766da6601a0aae8bd22294c0854970286e1b9ade3009f0d0289b7875a10c58",
+          "size": 380381680
+        },
+        "linux-arm64": {
+          "format": "file",
+          "package": "muse-code-linux-arm64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-linux",
+          "sha256": "48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85",
+          "size": 325916776
+        },
+        "linux-x64": {
+          "format": "file",
+          "package": "muse-code-linux-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-linux",
+          "sha256": "36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518",
+          "size": 363518168
+        },
+        "win32-x64": {
+          "format": "file",
+          "package": "muse-code-win32-x64",
+          "version": "1.4.7-R6101.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-windows.exe",
+          "sha256": "2d1ac7af0a9ea77643cb8690eee70f52f0f8476c46b194f143c831f481aea59d",
+          "size": 467174136
         }
       }
     }

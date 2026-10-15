@@ -174,6 +174,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
+  /// True for a user message that ADE wrote for the user (a wake, a relay).
+  var writtenByAde = false
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -364,6 +366,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "muse": return "Muse"
   case "qwen": return "Qwen"
   case "kimi", "moonshot": return "Kimi"
   case "grok", "xai": return "Grok"
@@ -676,6 +679,11 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "codex":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Codex", interruptContinues: false)
+    case "muse":
+      // `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+      // stages it, and interrupt is `turn/interrupt` then a fresh turn, so it
+      // continues the way Cursor's does.
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Muse", interruptContinues: true)
     case "cursor":
       // Cursor gained `.inline` when `@cursor/sdk` 1.0.31 added `Run.steer()`.
       // `interruptContinues` stays true: its interrupt still cancels the run and
@@ -831,6 +839,7 @@ struct WorkChatStopCapability: Equatable {
     case "cursor": return "Cursor"
     case "droid": return "Droid"
     case "pi": return "Pi"
+    case "muse": return "Muse"
     case "": return "This provider"
     default: return key.prefix(1).uppercased() + key.dropFirst()
     }
@@ -843,8 +852,8 @@ struct WorkChatStopCapability: Equatable {
   static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
     let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let name = providerLabel(provider)
-    let canStopBackground = ["claude", "opencode", "codex"].contains(key)
-    let keepsQueue = ["claude", "opencode", "codex", "cursor", "droid"].contains(key)
+    let canStopBackground = ["claude", "opencode", "codex", "muse"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "muse", "cursor", "droid"].contains(key)
     if stopsBackground(mode) && !canStopBackground {
       return "\(name) can't stop background work its agent started."
     }
@@ -2019,14 +2028,20 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// config notice — still folds with the diagnostics beside it.
   let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
-  /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
-  /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
-  /// spawned a peer gets one notice per sibling turn, and this is the key that
-  /// tells two runs apart. `nil` for every other card, including a completion
+  /// card-build time out of the notice's `detail` JSON. The spawn-completion
+  /// folds read it (`collapseConsecutiveSpawnCompletionEntries`, then
+  /// `workFoldStaleSpawnCompletionEntries`) — a parent that spawned a peer gets
+  /// one notice per sibling turn, and this is the key that tells the child's
+  /// notices apart from another child's. `nil` for every other card, including a completion
   /// notice whose detail lost its `spawnCompletion` (old or truncated
   /// transcript): an unidentified completion folds into nothing and keeps its
   /// own row rather than silently absorbing a different child's.
   let spawnCompletionChildId: String?
+  /// Child turns a `spawn_completed` row stands for. The adjacency fold sets it
+  /// to its run length; `workFoldStaleSpawnCompletionEntries` sums a child's
+  /// whole transcript into its newest row and stamps the `×N` from it. `1` for
+  /// every other card.
+  let spawnCompletionTurns: Int
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
@@ -2062,6 +2077,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
     noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
+    spawnCompletionTurns: Int = 1,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
     taskList: WorkChatTaskListSnapshot? = nil
@@ -2091,6 +2107,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.diagnosticWarnings = diagnosticWarnings
     self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
+    self.spawnCompletionTurns = spawnCompletionTurns
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
     self.taskList = taskList
@@ -2250,6 +2267,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let event: WorkChatEvent
   /// Provider text phase retained beside the normalized event.
   var textPhase: String? = nil
+  /// True for a user message that ADE wrote for the user, not the reader.
+  var userMessageWrittenByAde = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

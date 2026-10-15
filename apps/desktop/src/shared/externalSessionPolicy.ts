@@ -47,6 +47,8 @@ export const PROVIDER_IMPORT_RULES: Record<ExternalSessionProvider, ProviderImpo
   droid: { chatContinue: "root", chatCopy: "any", cliContinue: "home", cliCopy: "any" },
   opencode: { chatContinue: "root", chatCopy: "any", cliContinue: "home", cliCopy: "home" },
   pi: { chatContinue: "root", chatCopy: "any", cliContinue: "home", cliCopy: "home" },
+  // Chat continue resumes the same Muse session over MSP (`museSessionId`).
+  muse: { chatContinue: "root", chatCopy: "any", cliContinue: "home", cliCopy: "none" },
   qwen: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "home" },
   kimi: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "none" },
   grok: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "home" },

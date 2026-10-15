@@ -176,6 +176,7 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         MainActor.assumeIsolated {
+            CrashReporting.capture(error, context: ["area": "push_registration"])
             ProductAnalytics.shared.captureError(.pushRegistration)
             PushNotificationService.shared.didFailToRegisterForRemoteNotifications(error: error)
         }

@@ -456,6 +456,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
+    getClaudePluginUi: {
+      description: "Read what Claude Code mods draw for a chat right now: status lines, the latest toast, the band above the prompt and open panes. User clients only.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.getClaudePluginUi --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    actOnClaudePluginUi: {
+      description: "Press a button, submit a field, pick an option or close a pane that a Claude Code mod drew. Names the generation and the control from getClaudePluginUi. User clients only.",
+      input: "object { sessionId: string, generation: number, kind: \"press\" | \"input\" | \"select\" | \"closePane\", target?: { plugin, handle }, key?, value?, site?: { component: \"AbovePrompt\" } | { component: \"Pane\", paneId }, paneId? }",
+      example: "ade actions run chat.actOnClaudePluginUi --input-json '{\"sessionId\":\"chat-123\",\"generation\":1,\"kind\":\"press\",\"target\":{\"plugin\":\"my-mod\",\"handle\":42}}' --json",
+    },
     listThreadComments: {
       description: "List a chat's pending thread comments (the user's unsent notes on parts of agent replies). User clients only.",
       input: "object { sessionId: string }",
@@ -490,6 +500,26 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
+    },
+    getMcpApp: {
+      description: "Read the MCP App a tool call produced: its HTML page, the network origins it declared, and the tool input and result it replays.",
+      input: "object { sessionId: string, itemId: string }",
+      example: "ade actions run chat.getMcpApp --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\"}' --json",
+    },
+    mcpAppRequest: {
+      description: "User clients only. Pass one request from an MCP App's frame (tools/call or resources/read) to the server the app came from, through the chat's live session. A tool not marked read-only asks the user first.",
+      input: "object { sessionId: string, itemId: string, method: \"tools/call\" | \"resources/read\", params: object }",
+      example: "ade actions run chat.mcpAppRequest --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"method\":\"resources/read\",\"params\":{\"uri\":\"ui://server/page.html\"}}' --json",
+    },
+    listMcpAppGrants: {
+      description: "List the tools the user always allows for the MCP server an app came from, in this project.",
+      input: "object { sessionId: string, itemId: string }",
+      example: "ade actions run chat.listMcpAppGrants --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\"}' --json",
+    },
+    revokeMcpAppGrant: {
+      description: "User clients only. Take back one \"always allow\" answer for a tool of the MCP server an app came from.",
+      input: "object { sessionId: string, itemId: string, tool: string }",
+      example: "ade actions run chat.revokeMcpAppGrant --input-json '{\"sessionId\":\"<chat>\",\"itemId\":\"<tool call id>\",\"tool\":\"add_item\"}' --json",
     },
     resolveSourceFavicons: {
       description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
@@ -928,10 +958,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     remove: {
       description:
-        "Forget a provider account. Nothing on disk is deleted — the config home is returned so the caller can say what is "
-        + "still there. The machine's own login and the current default cannot be removed.",
+        "Forget a provider account, signing it out first (the provider CLI's own logout) so adding it again starts "
+        + "from a fresh sign-in. The config home directory is never deleted and is returned; `signOutError` says when "
+        + "the sign-out failed and the login is still there. The machine's own login and the current default cannot be removed.",
       input: "object { id: string }",
       example: "ade actions run provider_instances.remove --input-json '{\"id\":\"work\"}' --text",
+    },
+    signOut: {
+      description:
+        "Sign one provider account out with the provider CLI's own logout in its config home, keeping the account. "
+        + "Refused for the current default. On the machine's own login this also signs out the terminal's CLI.",
+      input: "object { id: string }",
+      example: "ade actions run provider_instances.signOut --input-json '{\"id\":\"work\"}' --text",
     },
     rename: {
       description: "Rename one provider account. Labels are at most 60 characters.",
@@ -957,8 +995,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.getSettings --input-json '{\"provider\":\"codex\"}' --text",
     },
     setSettings: {
-      description: "Patch the per-provider account settings. Omitted fields keep their current value.",
-      input: "object { provider: \"claude\" | \"codex\", settings: { smartBalance?: boolean, autoStartWindows?: boolean } }",
+      description:
+        "Patch the per-provider account settings. Omitted fields keep their current value. compaction, "
+        + "mainPromptCacheTtl, subagentPromptCacheTtl and onExtraUsage belong to one account and need instanceId; "
+        + "null clears them. mainPromptCacheTtl, subagentPromptCacheTtl and onExtraUsage are Claude only.",
+      input: "object { provider: \"claude\" | \"codex\", instanceId?: string, settings: { smartBalance?: boolean, "
+        + "autoStartWindows?: boolean, compaction?: object | null, mainPromptCacheTtl?: \"5m\" | \"1h\" | null, "
+        + "subagentPromptCacheTtl?: \"1h\" | null, "
+        + "onExtraUsage?: \"stop\" | null } }",
       example: "ade actions run provider_instances.setSettings --input-json '{\"provider\":\"codex\",\"settings\":{\"smartBalance\":true}}' --text",
     },
     loginCommand: {

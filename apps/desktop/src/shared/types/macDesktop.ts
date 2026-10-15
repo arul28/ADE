@@ -22,6 +22,7 @@
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -862,7 +863,7 @@ export type MacDesktopStopStreamArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// Recording, proof, and the turn time-lapse
+// Recording and proof
 // ---------------------------------------------------------------------------
 
 export type MacDesktopRecordingStatus = {
@@ -951,22 +952,6 @@ export type MacDesktopRecordStartArgs = {
   keepIdle?: boolean | null;
   /** Wall-clock cap in seconds, at most five minutes (the default). */
   maxSeconds?: number | null;
-};
-
-/**
- * A short clip of what an agent turn did on the desktop.
- *
- * Context, not proof: it never reaches the broker, and it is built from frames
- * the stream already kept rather than from a second capture.
- */
-export type MacDesktopTimeLapse = {
-  laneId: string;
-  chatSessionId: string;
-  turnId: string;
-  filePath: string;
-  durationMs: number;
-  frameCount: number;
-  createdAt: string;
 };
 
 export type MacDesktopScreenshotArgs = {
@@ -1189,7 +1174,6 @@ export type MacDesktopEventPayload =
   | { type: "stream-stopped"; status: MacDesktopStreamStatus }
   | { type: "stream-error"; status: MacDesktopStreamStatus }
   | { type: "recording-changed"; status: MacDesktopRecordingStatus }
-  | { type: "time-lapse"; timeLapse: MacDesktopTimeLapse }
   /**
    * The driver could not park a window on the lane's display.
    *
@@ -1744,13 +1728,14 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 
 /**
  * True for a pending-input card only the user may answer: the shared-seat
- * consent, the real-input lease, and the private secret card. The answer IS
- * the permission (or the secret), so an agent caller (session-bound, unbound,
- * or the CTO's tools) is refused.
+ * consent, the real-input lease, the private secret card, and an MCP App's
+ * tool call. The answer IS the permission (or the secret), so an agent caller
+ * (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
   return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
     || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
+    || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
     || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
 }
 
@@ -1867,13 +1852,6 @@ export type MacDesktopServiceApi = {
   renewLease(args: { laneId: string; holderId: string }): Promise<MacDesktopLeaseState | null>;
 
   present(args: MacDesktopPresentArgs): Promise<{ moved: number }>;
-
-  /** Called when an agent turn that used the desktop finishes. */
-  noteTurnEnded(args: {
-    laneId: string;
-    chatSessionId: string;
-    turnId: string;
-  }): Promise<MacDesktopTimeLapse | null>;
 
   /** Runs on every platform: a closing chat must drop its lease anywhere. */
   releaseIfOwnedBy(chatSessionId: string | null | undefined): Promise<{ released: boolean }>;

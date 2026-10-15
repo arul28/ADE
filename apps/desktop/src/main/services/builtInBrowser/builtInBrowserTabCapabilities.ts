@@ -76,6 +76,7 @@ import {
 } from "../../../shared/agentObservationNormalizers";
 import { sanitizeObservationPathSegment } from "../../../shared/agentObservation";
 import type { Logger } from "../logging/logger";
+import { normalizeRelative } from "../shared/utils";
 import {
   emptyToNull,
   errorMessage,
@@ -305,6 +306,8 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * attach pass rather than this module reaching into the view.
    */
   onPreviewWatchersChanged?: (tabId: string) => void;
+  /** A device preset changed the size this tab is drawn at, so a parked view must be re-placed. */
+  onTabEmulationChanged?: (tabId: string) => void;
   /**
    * Whether this tab's view currently holds a compositor surface.
    *
@@ -320,6 +323,12 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * produces frames. Resolves once the view is ready to be captured.
    */
   holdCaptureSurface?: (tabId: string) => Promise<() => void>;
+  /**
+   * Move the tab onto the fixed recording viewport and settle the layout before
+   * the first frame is captured, so a recording's opening frame is 1280×800
+   * rather than the pane's size (see `builtInBrowserRecordingViewport.ts`).
+   */
+  prepareRecordingViewport?: (tab: BrowserTabState) => Promise<void>;
   /** The desktop's Chromium demo engine, which makes a recording's video. */
   demoEngine: DemoEngine | null;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
@@ -509,12 +518,17 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     if (!tab.emulation) return;
     const wc = tab.webContents;
     if (wc.isDestroyed() || !wc.debugger.isAttached()) return;
-    void sendEmulationCommands(tab, tab.emulation).catch((error) => {
-      logger()?.debug("built_in_browser.emulation_reapply_failed", {
-        tabId: tab.id,
-        err: errorMessage(error),
-      });
-    });
+    // The applied scale is only known once the override lands, and a parked
+    // view is boxed at that scale, so the view is re-placed after it.
+    void sendEmulationCommands(tab, tab.emulation).then(
+      () => deps.onTabEmulationChanged?.(tab.id),
+      (error) => {
+        logger()?.debug("built_in_browser.emulation_reapply_failed", {
+          tabId: tab.id,
+          err: errorMessage(error),
+        });
+      },
+    );
   };
 
   /** The scale Chromium draws an emulating tab at: what its override last applied. */
@@ -555,6 +569,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       }
       tab.emulation = next;
     });
+    deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
       tabId: tab.id,
@@ -718,11 +733,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // DevTools and the CDP debugger cannot own the same target, so opening
         // DevTools would silently kill an in-flight network log. Recording is
         // unaffected: it captures through getDisplayMedia, not the debugger.
-        // The agent viewport is ADE's own layout pin, not something the
+        // The recording viewport is ADE's own layout pin, not something the
         // person asked for, so it steps aside rather than refusing: the page
         // lays out at its box while DevTools is open, and the service re-pins
-        // it when DevTools closes (`tabUsesAgentViewport`).
-        if (tab.debuggerHolds.has("agent-viewport")) releaseDebuggerHold(tab, "agent-viewport");
+        // it when DevTools closes (`tabUsesRecordingViewport`).
+        if (tab.debuggerHolds.has("recording-viewport")) releaseDebuggerHold(tab, "recording-viewport");
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"
@@ -953,7 +968,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       return {
         tabId: tab.id,
         filePath,
-        relativePath: path.relative(scratchRoot, filePath),
+        relativePath: normalizeRelative(path.relative(scratchRoot, filePath)),
         entryCount: entries.length,
         exportedAt,
       };
@@ -1320,9 +1335,20 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       : () => {};
     // The hold can wait out a warm; a second start that raced us is refused
     // here rather than opening a second recorder on the same tab.
-    if (tab.recording) {
+    if (tab.recording || tab.recordingStarting === true) {
       releaseCaptureHold();
       throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    // The layout has to be fixed before the first frame, or the video opens at
+    // the pane's size and jumps to 1280×800 part-way through.
+    tab.recordingStarting = true;
+    try {
+      await deps.prepareRecordingViewport?.(tab);
+    } catch (error) {
+      tab.recordingStarting = false;
+      releaseCaptureHold();
+      emitStatus();
+      throw error;
     }
     let session: BuiltInBrowserRecordingSession;
     // Begun before the stream is negotiated: an action while it starts is
@@ -1388,11 +1414,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       };
       recordingPlain.set(session, plain);
     } catch (error) {
+      tab.recordingStarting = false;
       demoTrackRegistry.discard(trackKey);
       releaseCaptureHold();
+      emitStatus();
       throw error;
     }
     tab.recording = session;
+    tab.recordingStarting = false;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({
       type: "recording",
@@ -1473,7 +1502,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       tabId: tab.id,
       path: video.path,
       relativePath: observationRelativeBasePath
-        ? path.relative(observationRelativeBasePath, video.path)
+        ? normalizeRelative(path.relative(observationRelativeBasePath, video.path))
         : null,
       durationMs: result.durationMs,
       fps: session.fps,

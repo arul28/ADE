@@ -165,6 +165,8 @@ export function ChatSurfaceShell({
         ref={containerRef}
         data-chat-shell-layout={layoutVariant}
         data-chat-chrome-tint={chromeTint}
+        // ⌘F anywhere in the chat — composer included — finds in its transcript.
+        data-ade-find-scope="chat-pane"
         {...geometryAttr}
         className={cn(
           "relative flex w-full max-w-full flex-col",

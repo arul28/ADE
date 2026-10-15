@@ -1,5 +1,60 @@
 # Storage and recovery
 
+An open project database checks its file's device and inode before each SQLite
+operation. If `.ade/ade.db` disappears or is replaced, ADE pauses database
+operations with `db_path_changed` rather than continuing to query or write the
+moved file. Restore the original `.ade` folder to its original location to
+resume automatically. A replacement database is never adopted by the existing
+connection. This protection is shared by desktop and headless runtime clients,
+including sync and database maintenance.
+
+The desktop also checks each open project's `ade.db` every 5 seconds
+(`services/runtime/openProjectDataWatch.ts`). Only "not found" (ENOENT, or
+ENOTDIR when a parent became a file) counts as missing; other errors (a volume slow to answer) skip the tick. A project
+folder that is itself gone, an unplugged drive included, gets its own wording
+and no Restore or Start fresh, since either would recreate the folder.
+When the file disappears or is swapped, the window shows the project recovery
+screen instead of failing panel by panel (`data_missing` or `data_replaced` in
+`shared/types/recovery.ts`). A failed reopen at launch for the same reason
+shows the screen too; a window asks `recovery.projectDataStatus` when it loads
+and whenever its project changes, so a reload or a second window sees it. The
+screen shows at most two buttons; Restart, Reset and Report are hidden there
+because none of them helps. Repair refuses a project whose data is missing,
+since opening the database would create an empty replacement. From there:
+
+- **Restore from Trash** appears when `findTrashedProjectData`
+  (`services/runtime/projectDataTrash.ts`) finds this project's `.ade` in the
+  Trash, matched by the database file's device and inode from the project-data
+  identity file (a move keeps them), with the database's own `projects` row as
+  a fallback. macOS refuses to list the Trash without Full Disk Access, so it
+  tries the names Finder gives (`.ade`, `.ade 2`, …). On Windows it reads the
+  drive's Recycle Bin: each `$I…` record names the original path of the `$R…`
+  item beside it (`recycleBinRecord.ts`), and a restore removes the record so
+  Explorer does not list a deleted `.ade` that is gone. Restoring merges into any
+  `.ade` that reappeared meanwhile: ADE writes some files (machine keys, for
+  one) while the data is gone, so on a clash the original wins and the newer
+  file is kept as `<name>.created-while-missing`, beside the trashed copy (or
+  in the project when the Trash is on another volume). The
+  database goes back last, after its write-ahead log, and a copy from another
+  volume's Trash lands under a temporary name before it is renamed into place,
+  so a failed restore can be retried. Nothing is deleted. Once the files are
+  back, the window closes the project and the background service drops it,
+  so the reopen starts on fresh database handles; a failed restore keeps the
+  project's record, so the next open still refuses to create empty data.
+- The screen keeps checking, so putting the folder back by hand reopens the
+  project.
+- **Start fresh** (or **Use this copy** for a swapped database) closes the
+  project, has the background service drop it (and the desktop's cached
+  record of it), forgets the database identity, leaves an empty `.ade`, and
+  reopens with new data. The old data stays wherever it went.
+
+When a relocated database is disposed, ADE defers native SQLite close and
+extension finalization. This prevents shutdown or garbage collection from
+checkpointing pending WAL into the moved file. Those handles remain retained
+until the original file returns and another database open reaps them, or until
+process exit releases the OS handles. Normal disposal still finalizes the
+extension and releases its handles immediately, including on Windows.
+
 ## Source file map
 
 | Path | Role |
@@ -15,13 +70,16 @@
 | `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is now the same `drain()`, which is what stops the failure path and the shutdown path from drifting apart the way two hand-maintained lists always did. |
 | `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
-| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
 | `apps/desktop/src/main/services/logging/machineLogger.ts` | The desktop main process's **machine-scoped** logger: same `createFileLogger` and rotation, writing `~/.ade/runtime/desktop-main.jsonl`. Opened in `main.ts`'s first executable statement, so the events that happen before (or without) a project — the launch marker, the `ade://` claim, the single-instance outcome, the CLI auto-install result — are durable rather than `console.log` into a stdout a Finder-launched app does not have. `logMachineEvent` writes the structured line and mirrors it to `console`; `flushMachineMainLog` drains it on the branch that quits immediately. See [logging.md](../../logging.md). |
 | `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account, Diagnostics sharing); exits non-zero on any `fail`. The **Diagnostics sharing** row reads the shared auto-send ledger through `readAutoDiagnosticsState` — never a second parser — and is always `ok`: consent is a preference, not a fault, so it reports `on · N of 3 automatic reports sent today` or `off · no automatic reports are sent` and never colours a healthy machine. `evaluateDoctorRows` is pure and dependency-injected — every row's inputs are read at the edge (`runDoctorCommand`) and handed in — so the verdict is testable without a machine and a second surface can reuse it. Today the CLI is its only caller: the desktop's **Connection doctor** card (`remoteTargets/ConnectionDoctorPanel.tsx` → `remoteRuntime.runDoctor`) is a different check about reaching a *remote* machine, not this one. |
 | `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
+| `apps/desktop/src/main/services/runtime/projectDataTrash.ts` | Finds a project's `.ade` in the Trash (by the recorded database identity, else the database's own `projects` row; cached 5 s) and puts it back, whole or merged, database last. |
+| `apps/desktop/src/main/services/runtime/recycleBinRecord.ts` | Reads a Windows Recycle Bin `$I…` record (versions 1 and 2) for the original path of the `$R…` item it describes. |
+| `apps/desktop/src/main/services/runtime/openProjectDataWatch.ts` | Checks each open project's `ade.db` every 5 seconds and reports `missing` or `replaced` once per change, so the window shows the recovery screen. |
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. On macOS it also reads the launch agent's Background Items verdict (`isBackgroundItemBlocked`, `shared/types/core.ts`) and reports `background_blocked` ahead of every repairable state when "Allow in the Background" is off; an installed brain that is not running with no crash on record is `brain_not_running`, not a crash loop. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button and the brain-down notice's **Fix it** — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer version of ADE is already running. Restart ADE to switch to it."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
@@ -51,7 +109,7 @@
 | `apps/ade-cli/src/commands/triagePlaybook.ts` | Playbook resolution. The maintained copy on `main` is fetched **first** when the network answers inside 3 s; everything else is the fallback. The fetch is pinned to `raw.githubusercontent.com`, refuses redirects outright (a redirect means a captive portal, proxy, or hijacked DNS rewrote the request, and following it would fetch *instructions for a coding agent* from an origin nobody pinned), caps at 512 KiB checked against `content-length` before the body is read, and treats every failure — offline, DNS, TLS interception, timeout — as "use what is on this machine". The local candidates, in order: `ADE_TRIAGE_PLAYBOOK`, the packaged copy under `process.resourcesPath`, the ADE install this CLI was launched from, then the working directory. The install-anchored rung is an **anchored** walk (stop at the first `ade-cli` ancestor, take that install's playbook, containment-check the result via `realpath` on both ends) rather than "try every ancestor", which would climb out of an npm-global install into `$HOME` and let any `~/docs/triage/PLAYBOOK.md` out-rank the shipped copy. Both entry points are walked because neither covers both builds — `__dirname` is absent under an ESM loader, `argv[1]` is what a `tsx src/cli.ts` run has — and both outrank cwd so a checkout the shell happens to sit in cannot win. `embeddedTriagePlaybook()` is the floor: safety rules plus where to read the real thing, deliberately not a second full copy, since a stale duplicate is worse than a short one. `ADE_TRIAGE_NO_FETCH=1` disables the fetch. |
 | `apps/ade-cli/src/commands/triageErrors.ts` | `TriageUsageError` and `TriageCommandError`, in their own module so every triage module can throw them without importing each other. `cli.ts` maps them onto `CliUsageError` / `CliToolError`, which print the message alone; a bare `Error` would reach the catch-all and print a stack trace over the wording, on the one machine whose owner is least able to read one. |
 | `docs/triage/PLAYBOOK.md` | The playbook `ade triage` hands to the agent: safety rules first (read-only diagnosis before mutation, never delete under `.ade/` or `$ADE_HOME`, never kill by name or pattern, exact PIDs only, ask before destructive steps), then one section per failure class keyed to the doctor rows. Fetched from `main` at run time so it can be improved without an ADE release, falling back to the copy on this machine and then to the reduced built-in one; `playbookSource`/`playbookOrigin` record which won and appear in the file's own header and in `--json`. Packaged builds ship it beside the CLI through a single `extraResources` entry — one guessed layout only, because a second would mask a packaging change that should fail loudly — and both `validate-mac-artifacts.mjs` and `validate-win-artifacts.mjs` assert `<Resources>/docs/triage/PLAYBOOK.md` exists, since electron-builder only *warns* on a missing source and a dropped entry would silently degrade triage to its built-in minimum on every installed machine. |
-| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` | The consent flag **and** the spend ledger for automatic uploads, in one file (`<adeHome>/secrets/diagnostics-autosend.json`) that both senders open — the desktop main process and the brain — because "three a day from this computer" is a property of the install, not of a process, and two private ledgers would quietly mean six. Deliberately dependency-free (`node:fs`, no Electron, no logger) for exactly that reason. Owns `AUTO_DIAGNOSTICS_WINDOW_MS` (24 h), `MAX_AUTO_DIAGNOSTICS_PER_CODE` (1), `MAX_AUTO_DIAGNOSTICS_PER_WINDOW` (3), `normalizeAutoDiagnosticsFailureCode` (coerced to the Worker's `FAILURE_CODE_PATTERN`, re-exported rather than rewritten), the mkdir lock — whose `isLockContention` names the Windows delete-pending `EPERM`/`EACCES`/`EBUSY` window as well as `EEXIST` — and the pending-notice queue the toast acknowledgement retires. Consent defaults **on**; an unreadable or locked ledger fails closed. |
+| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` | The consent flag **and** the spend ledger for automatic uploads, in one file (`<adeHome>/secrets/diagnostics-autosend.json`) that both senders open — the desktop main process and the brain — because "three a day from this computer" is a property of the install, not of a process, and two private ledgers would quietly mean six. Deliberately dependency-free (`node:fs`, no Electron, no logger) for exactly that reason. Owns `AUTO_DIAGNOSTICS_WINDOW_MS` (24 h), `MAX_AUTO_DIAGNOSTICS_PER_CODE` (1), `MAX_AUTO_DIAGNOSTICS_PER_WINDOW` (3), `normalizeAutoDiagnosticsFailureCode` (coerced to the Worker's `FAILURE_CODE_PATTERN`, re-exported rather than rewritten), the mkdir lock — whose `isLockContention` names the Windows delete-pending `EPERM`/`EACCES`/`EBUSY` window as well as `EEXIST` — and the pending-notice queue the toast acknowledgement retires. On by default; `DO_NOT_TRACK=1` or a persisted explicit off turns it off. An unreadable or locked ledger fails closed. |
 | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsSend.ts` | `runAutoDiagnosticsSend` — the policy every automatic send obeys, written once. The two senders differ in exactly three things (what they build, how they upload, which analytics surface they report as) and bring those as structural seams; consent, the pre-request reservation, the local copy, silence on failure, the pending flag, the log lines and the analytics dedupe key live here. Also owns the `AutoDiagnosticsOutcome` vocabulary (`completed`, `skipped_disabled`, `skipped_budget`, `skipped_ineligible`, `failed`) and `AUTO_DIAGNOSTICS_ANALYTICS_DEDUPE_MS` (1 h). |
 | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` | The desktop sender: what is specific to this process — how a report gets built (no `diagnoseProject`, since a diagnosis is itself a trigger), that it uploads anonymously, the `onSent` fast path for an open window, and the getter/setter the Settings toggle reads and writes. |
 | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` | The brain's sender, for the failures the desktop never sees — a headless machine whose pairing recovery gave up, a publisher failing for minutes with nobody at the console. It reads the machine credential store, so its reports land attributed rather than anonymous. It has no window, so successful sends stay pending in the shared ledger until a renderer subscribes and acknowledges the toast. |
@@ -59,8 +117,8 @@
 | `apps/desktop/src/shared/diagnosticsUpload.ts` | The one diagnostics upload client, shared by the desktop main process (`autoDiagnosticsService`) and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
 | `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
 | `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button itself, on every error surface. One press assembles, saves, copies, and opens the issue; it reports what actually happened rather than claiming success. |
-| `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The off switch, in Settings → General → Privacy (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the consent lives in a file a browser does not have). It renders `ConsentToggleSection` from `settings/settingsSectionUi.tsx` — the shared consent control it and `ProductAnalyticsSection` both use, which reads the real persisted value instead of rendering optimism and renders disabled when the preload bridge predates the setting. |
-| `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View** / **Turn off**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
+| `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → General → Privacy (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to ADE**, with no toggle. It hides the button on a preload that predates it. |
+| `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
 | `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard: plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression. |
@@ -406,7 +464,18 @@ monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
 breadcrumb (wedged command, blocked ms, threshold, and the latest event-loop,
 memory, and resource snapshot) under the runtime dir, requests a best-effort
 Node diagnostic report, and `SIGKILL`s the brain after a one-second report
-grace so launchd restarts it. The worker also reports any of its own 1 s checks
+grace so launchd restarts it. The wedged command is the name of whichever call
+was running: remote sync commands and local `ade/actions/call` requests both
+register with `trackBrainLoopWatchdogCommand`, and a start or end is sent to
+the worker at once, so a call that blocks the moment it starts is named instead
+of reported as `idle`.
+
+The Node report is written by the main thread, which is the stuck one, so it
+only lands if the loop frees up inside the grace. On macOS the worker therefore
+first runs `/usr/bin/sample` on the brain (2 s, detached) and waits for its
+"Sampling completed" line, or 20 s at most, before the kill. The sample is
+written to `event-loop-wedge-sample.txt` after the brain is gone; its native
+frames name the blocking call. The worker also reports any of its own 1 s checks
 that run 0.5 s or more late, which means the whole process was off the CPU. A
 recovered heartbeat delay of 2 s or more is logged as info `brain.suspend_gap`
 when it used little CPU (at most 2 s, or a tenth of the delay if that is
@@ -419,8 +488,9 @@ more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
 `majorPageFaultsDelta`, so brains that share `brain.jsonl` can be told apart. The kill decision does
 not change.
 
-On the next boot the watchdog promotes any breadcrumb and generated report to
-`last-wedge.json` / `last-wedge-report.json`,
+On the next boot the watchdog promotes any breadcrumb, generated report and
+native sample to `last-wedge.json` / `last-wedge-report.json` /
+`last-wedge-sample.txt` (the breadcrumb's `nativeSamplePath` points at it),
 logs `brain.recovered_from_wedge`, and emits a deduped `ade_brain_recovered`
 analytics event. The recovered wedge is exposed to clients through
 `runtimeInfo.lastWedge` (parsed by `adeRuntimeProtocol.parseRuntimeLastWedge`,
@@ -832,7 +902,7 @@ rides the clipboard.
 
 Those surfaces all share one property: something has already visibly broken. A
 user whose app merely *feels* wrong has nothing to press, so **General → Privacy
-→ Diagnostics sharing** also carries a **Send a report to ADE** button
+→ Send a report to ADE** is a button
 (`renderer/components/settings/DiagnosticsSharingSection.tsx` →
 `IPC.diagnosticsSendManual` → `autoDiagnosticsService.sendManual()`). It builds
 and uploads the same redacted report the error screens do, under surface
@@ -850,9 +920,9 @@ Two things it deliberately does not share with the automatic sender:
   accepted. Neither budget can spend the other: pressing the button cannot
   silence the automatic reports that explain a crash, and a crash loop that has
   burned its three automatic sends cannot lock a user out of asking for help.
-- **Consent.** The toggle governs what ADE sends *by itself*; a deliberate click
-  is not that, so a manual send is allowed with the toggle off — and when it is
-  off, the pane says so next to the button, and the click never flips it back on.
+- **Opt-out.** `DO_NOT_TRACK=1` governs what ADE sends *by itself*. A deliberate
+  click is not that, so a manual send is allowed regardless. There is no switch
+  in the UI that a click could be mistaken for.
 
 Refusals are three separate sentences, because they are three separate
 situations: the local cap ("you've already sent 5 from this computer today"),
@@ -871,7 +941,8 @@ them apart; `uploadDiagnosticReport` reads the body and maps the fleet one to
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open] [--send]` |
 | Headless state check | `ade doctor` → the **Diagnostics sharing** row (consent + today's spend) |
-| Settings toggle | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, default **on**, hidden on hosted web) |
+| Settings entry | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, **Send a report to ADE**, hidden on hosted web). No toggle. |
+| Automatic opt-out | `DO_NOT_TRACK=1`, or an explicit `enabled: false` persisted by an earlier build. Honored silently; no UI. |
 | Automatic sending (desktop) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` |
 | Automatic sending (brain) | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` |
 | Consent flag + the two daily budgets (automatic and manual) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
@@ -1097,10 +1168,9 @@ fleet budget, `503`, a network error — is logged locally and nothing else. No
 toast, no error, no retry. The person is already looking at something broken;
 telling them the thing they did not ask for also did not work is not help.
 
-**Toast and toggle.** Every successful send raises one toast — *"A diagnostic
-report was sent to ADE"* — with **View** and **Turn off**. Settings → General →
-Privacy carries the same switch, *"Share diagnostics with ADE when something
-breaks"*, default **on**.
+**Toast.** Every successful send raises one toast — *"A diagnostic report was
+sent to ADE"* — with **View** to reveal the saved copy. There is no Settings
+switch for automatic sending.
 
 **View** reveals the saved `.md` through a handler scoped to the two
 directories reports are written to — the desktop's

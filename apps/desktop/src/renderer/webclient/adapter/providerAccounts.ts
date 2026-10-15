@@ -40,6 +40,7 @@ export function createProviderAccountsNamespace(call: MiscCall): AdeNamespace<"p
     rename: async (args) => instance(await live("rename", args)),
     setDefault: async (args) => instance(await live("setDefault", args)),
     dismissReplaced: async (args) => instance(await live("dismissReplaced", args)),
+    signOut: async (args) => (await live<{ instance: ProviderInstance | null }>("signOut", args)).instance,
     loginStart: async (args) => login(await live("loginStart", args)),
     loginStatus: async (args) => login(await live("loginStatus", args)),
     loginSubmitCode: async (args) => login(await live("loginSubmitCode", args)),

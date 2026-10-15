@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   CaretLeft,
   CaretRight,
-  DesktopTower,
   Plus,
   TerminalWindow,
   UserCircle,
@@ -44,9 +43,9 @@ import {
   formatRemoteTargetError,
   describeMachineUpdateAttempt,
   isMachineVersionOutdated,
-  machineUpdateAttemptFromResult,
   machineUpdateGraceMs,
-  type MachineUpdateAttempt,
+  machineUpdatePhase,
+  outdatedMachines,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
@@ -57,7 +56,9 @@ import {
   isMachineConnected,
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
+import { MachinesBehindBanner } from "./MachinesBehindBanner";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import { isMachineUpdateBusy, requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -217,28 +218,8 @@ export function RemoteTargetList({
   } = useRowActions();
   // An add/edit form submit is in flight. Locks the forms, never the rows.
   const [saving, setSaving] = useState(false);
-  const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null);
-  const [updateResultByTargetId, setUpdateResultByTargetId] = useState<
-    Record<string, MachineUpdateAttempt>
-  >({});
-  // Re-read once an in-flight update's grace runs out, so a machine that never
-  // came back on the new version gets told so instead of "reconnecting…".
-  const [updateClockMs, setUpdateClockMs] = useState(() => Date.now());
-  useEffect(() => {
-    let nextDeadlineMs: number | null = null;
-    for (const attempt of Object.values(updateResultByTargetId)) {
-      if (!attempt.pendingVersion) continue;
-      const deadlineMs = attempt.startedAtMs + machineUpdateGraceMs(attempt);
-      if (deadlineMs <= updateClockMs) continue;
-      nextDeadlineMs = nextDeadlineMs == null ? deadlineMs : Math.min(nextDeadlineMs, deadlineMs);
-    }
-    if (nextDeadlineMs == null) return;
-    const timer = window.setTimeout(
-      () => setUpdateClockMs(Date.now()),
-      Math.max(0, nextDeadlineMs - Date.now()) + 250,
-    );
-    return () => window.clearTimeout(timer);
-  }, [updateResultByTargetId, updateClockMs]);
+  const machineUpdates = useMachineUpdates();
+  const { attempts: updateResultByTargetId, nowMs: updateClockMs } = machineUpdates;
   const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
@@ -366,18 +347,49 @@ export function RemoteTargetList({
     [connectionSnapshot],
   );
 
-  const sections = useMemo(
-    () =>
-      assignMachineSections({
-        targets,
-        statusById,
-        connectedFallbackId: connected?.target.id ?? null,
-        discoveredMachines,
-        accountMachines: visibleAccountMachines,
-        includeDiscoveredRows: false,
+  // Machines waiting to come back from an update, as a stable key: the clock
+  // moves on every render, and the sections only change when this set does.
+  const restartingKey = Object.entries(machineUpdates.attempts)
+    .filter(([, attempt]) =>
+      attempt.pendingVersion != null
+      && machineUpdates.nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt))
+    .map(([id, attempt]) => `${id}\t${attempt.pendingVersion}`)
+    .sort()
+    .join("\n");
+  const sections = useMemo(() => {
+    const assigned = assignMachineSections({
+      targets,
+      statusById,
+      connectedFallbackId: connected?.target.id ?? null,
+      discoveredMachines,
+      accountMachines: visibleAccountMachines,
+      includeDiscoveredRows: false,
+    });
+    // A machine restarting for an update drops its connection on purpose.
+    // It stays where it was, under Connected, until it is back or the update
+    // gives up, instead of jumping to Available with an error.
+    const pendingById = new Map(
+      (restartingKey ? restartingKey.split("\n") : []).map((entry) => {
+        const [id, version] = entry.split("\t");
+        return [id, version] as const;
       }),
-    [targets, statusById, connected, discoveredMachines, visibleAccountMachines],
-  );
+    );
+    // Once the machine reports the new version the update is over, and a
+    // later disconnect is an ordinary one.
+    const restarting = (row: (typeof assigned.available)[number]): boolean => {
+      if (row.kind !== "saved") return false;
+      const pending = pendingById.get(row.target.id);
+      return pending != null && (!row.version || isMachineVersionOutdated(row.version, pending));
+    };
+    const moved = [...assigned.available, ...assigned.unavailable].filter(restarting);
+    if (moved.length === 0) return assigned;
+    return {
+      ...assigned,
+      connected: [...assigned.connected, ...moved],
+      available: assigned.available.filter((row) => !restarting(row)),
+      unavailable: assigned.unavailable.filter((row) => !restarting(row)),
+    };
+  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -1121,54 +1133,31 @@ export function RemoteTargetList({
     [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
   );
 
-  const updateAndRestartTarget = useCallback(
-    async (targetId: string, targetVersion: string | null, machineName: string) => {
-      if (!window.ade.remoteRuntime.updateAndRestart) return;
-      setUpdatingTargetId(targetId);
-      setUpdateResultByTargetId((current) => {
-        if (!(targetId in current)) return current;
-        const next = { ...current };
-        delete next[targetId];
-        return next;
-      });
-      try {
-        const result = await window.ade.remoteRuntime.updateAndRestart(
-          targetId,
-          targetVersion,
-        );
-        const nowMs = Date.now();
-        setUpdateClockMs(nowMs);
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: machineUpdateAttemptFromResult(
-            result,
-            `${machineName} updated — reconnecting…`,
-            nowMs,
-          ),
-        }));
-      } catch (err) {
-        setUpdateResultByTargetId((current) => ({
-          ...current,
-          [targetId]: {
-            ok: false,
-            message: extractError(err),
-            pendingVersion: null,
-            downloading: false,
-            startedAtMs: Date.now(),
-          },
-        }));
-      } finally {
-        setUpdatingTargetId(null);
-      }
-    },
-    [],
-  );
-
   function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
+    // Connected machines behind the newest ADE this computer knows about.
+    const behindMachines = section === "connected"
+      ? outdatedMachines(
+          rows.flatMap((row) =>
+            row.kind === "saved" && row.connected
+              ? [{ id: row.target.id, name: row.target.name, version: row.version }]
+              : []),
+          newestKnownVersion,
+        )
+      : [];
+    const updateAllBusy = behindMachines.some((machine) =>
+      isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
     return (
       <div style={{ display: "grid", gap: 8 }}>
+        {behindMachines.length > 1 ? (
+          <MachinesBehindBanner
+            count={behindMachines.length}
+            targetVersion={newestKnownVersion}
+            busy={updateAllBusy}
+            onUpdateAll={() => void requestMachineUpdates(behindMachines, newestKnownVersion)}
+          />
+        ) : null}
         <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
         {rows.map((row) => {
           if (row.kind === "saved") {
@@ -1189,6 +1178,11 @@ export function RemoteTargetList({
             const updateStatus = updateAttempt
               ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
               : null;
+            const updatePhase = machineUpdatePhase({
+              checking: machineUpdates.checkingIds.has(row.target.id),
+              sending: machineUpdates.updatingIds.has(row.target.id),
+              status: updateStatus,
+            });
             return (
               <SavedMachineRow
                 key={row.id}
@@ -1220,19 +1214,22 @@ export function RemoteTargetList({
                   accountToastByTargetId.get(row.target.id) ?? null
                 }
                 updateTargetVersion={
-                  row.connected &&
-                  isMachineVersionOutdated(row.version, newestKnownVersion)
-                    ? newestKnownVersion
-                    : null
+                  updatePhase && updateAttempt?.pendingVersion
+                    ? updateAttempt.pendingVersion
+                    : row.connected &&
+                        isMachineVersionOutdated(row.version, newestKnownVersion)
+                      ? newestKnownVersion
+                      : null
                 }
-                updating={updatingTargetId === row.target.id || updateStatus?.inFlight === true}
+                updatePhase={updatePhase}
+                power={pairAgainMachine?.power ?? null}
+                updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
+                checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
                 updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
-                localAdeVersion={updateSnapshot.currentVersion}
                 onUpdateAndRestart={(targetVersion) =>
-                  void updateAndRestartTarget(
-                    row.target.id,
+                  void requestMachineUpdates(
+                    [{ id: row.target.id, name: row.target.name, version: row.version }],
                     targetVersion,
-                    row.target.name,
                   )
                 }
                 hostKeyTrust={
@@ -1406,15 +1403,14 @@ export function RemoteTargetList({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                color: COLORS.textPrimary,
+                color: COLORS.textSecondary,
                 fontFamily: SANS_FONT,
-                fontSize: 15,
-                fontWeight: 700,
+                fontSize: 12,
+                fontWeight: 600,
                 minHeight: 28,
               }}
             >
-              <DesktopTower size={18} weight="regular" color={COLORS.textSecondary} />
-              Machines
+              Your machines
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>

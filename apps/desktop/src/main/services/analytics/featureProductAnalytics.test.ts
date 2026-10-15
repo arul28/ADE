@@ -9,6 +9,7 @@ import {
   captureSessionImportAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
+  captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
@@ -48,12 +49,29 @@ describe("providerAccountAnalyticsCapture", () => {
     });
   });
 
-  it("records a subagent cache choice with closed values that survive the allowlist", () => {
+  it.each([
+    { settings: { subagentPromptCacheTtl: "1h" }, instanceId: "acct-1", action: "subagent_cache_changed", outcome: "enabled" },
+    { settings: { subagentPromptCacheTtl: null }, instanceId: "acct-1", action: "subagent_cache_changed", outcome: "disabled" },
+    { settings: { mainPromptCacheTtl: "5m" }, instanceId: "acct-1", action: "main_cache_changed", outcome: "enabled" },
+    { settings: { mainPromptCacheTtl: null }, instanceId: "acct-1", action: "main_cache_changed", outcome: "disabled" },
+    { settings: { onExtraUsage: "stop" }, instanceId: "acct-1", action: "extra_usage_stop_changed", outcome: "enabled" },
+    { settings: { onExtraUsage: null }, instanceId: "acct-1", action: "extra_usage_stop_changed", outcome: "disabled" },
+    // An account setting with no account changes nothing, so it reports nothing.
+    { settings: { onExtraUsage: "stop" }, instanceId: undefined, action: null, outcome: null },
+  ])("reports a Claude account setting as $action/$outcome, with values that survive the allowlist", (row) => {
     const { analytics, captured } = recorder();
-    providerAccountAnalyticsCapture(analytics, "desktop")("subagent_cache_changed", "enabled", "claude");
+    captureProviderAccountSettingsChange(providerAccountAnalyticsCapture(analytics, "desktop"), {
+      settings: row.settings,
+      provider: "claude",
+      instanceId: row.instanceId,
+    });
+    if (row.action === null) {
+      expect(captured).toEqual([]);
+      return;
+    }
     expect(captured).toHaveLength(1);
     const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
-    expect(properties).toMatchObject({ feature: "provider_accounts", action: "subagent_cache_changed", outcome: "enabled", provider: "claude" });
+    expect(properties).toMatchObject({ feature: "provider_accounts", action: row.action, outcome: row.outcome, provider: "claude" });
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
   });
 
@@ -86,7 +104,8 @@ describe("captureNewLaneLaunchAnalytics", () => {
   it("records one coarse outcome per new-lane launch, deduped per outcome and provider family", () => {
     const { analytics, captured } = recorder();
     captureNewLaneLaunchAnalytics({ analytics, surface: "api", outcome: "cancelled", provider: "codex" });
-    expect(captured).toHaveLength(1);
+    captureNewLaneLaunchAnalytics({ analytics, surface: "api", outcome: "completed", provider: "muse" });
+    expect(captured).toHaveLength(2);
     expect(captured[0]).toMatchObject({
       event: "ade_feature_used",
       surface: "api",
@@ -96,6 +115,16 @@ describe("captureNewLaneLaunchAnalytics", () => {
     // The allowlist keeps every value: nothing is silently dropped at the boundary.
     const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", (captured[0] as { properties: Record<string, unknown> }).properties as never);
     expect(sanitized).toMatchObject({ feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" });
+    // Muse is a closed provider family of its own, not folded into "other".
+    const museProperties = (captured[1] as { properties: Record<string, unknown> }).properties;
+    expect(captured[1]).toMatchObject({
+      dedupeKey: "feature:chat:new_lane_launch:completed:muse",
+      properties: { feature: "chat", action: "new_lane_launch", outcome: "completed", provider: "muse" },
+    });
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", museProperties as never)).toEqual(museProperties);
+    // The daily-usage summary carries the same family through its own allowlist.
+    expect(sanitizeProductAnalyticsProperties("ade_daily_usage_summary", { summary_kind: "model", model_family: "muse" } as never))
+      .toEqual({ summary_kind: "model", model_family: "muse" });
   });
 });
 

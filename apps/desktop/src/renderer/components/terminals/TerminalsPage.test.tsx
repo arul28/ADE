@@ -51,6 +51,7 @@ import {
   macDesktopCardGrantedAt,
   resetMacDesktopCardGrantsForTests,
 } from "../work/macDesktopCardGrants";
+import { resetAppControlCardGrantsForTests } from "../work/appControlCardGrants";
 import {
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
@@ -1026,6 +1027,33 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
   });
 
+  it("selects the lane of a chat the list loads only after select-session asked for it", async () => {
+    // A chat created a moment ago is not in the list yet. The jump refreshes
+    // the list; once the chat renders, its lane is selected — not the lane the
+    // stale pre-refresh list implied (none).
+    mockBrowserEvents();
+    const view = render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: "chat-just-created" },
+      }),
+    );
+    expect(workMocks.fns.refresh).toHaveBeenCalled();
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
+
+    workMocks.currentWork.sessions = [
+      workMocks.makeTerminalSession("chat-just-created", "lane-new", "claude-chat"),
+    ];
+    await act(async () => {});
+    view.rerender(<TerminalsPage />);
+
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-new");
+    expect(workMocks.fns.focusSession).toHaveBeenLastCalledWith("chat-just-created");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenLastCalledWith("chat-just-created");
+  });
+
   it("opens a bindingless foreign select-session target from the union without selecting a local lane", async () => {
     const binding = STUDIO_BINDING;
     const foreign = workMocks.makeTerminalSession("chat-foreign-child", "lane-foreign", "codex-chat");
@@ -1462,6 +1490,19 @@ describe("TerminalsPage chat session activation", () => {
       await screen.findByTestId("work-view-area");
     };
 
+    /*
+     * A float these requests take writes real module state — the card grants
+     * and the chat's companion-UI marker — and the Mac Desktop suite below
+     * reads it. A leftover grant would let its first assertion pass for
+     * nothing, so the same resets it uses run here too.
+     */
+    afterEach(() => {
+      resetMacDesktopCardGrantsForTests();
+      resetAppControlCardGrantsForTests();
+      resetChatCompanionUiStateCacheForTests();
+      window.localStorage.clear();
+    });
+
     /** The pane, as far as a show can tell: the tool mounts when it is written. */
     const paneMountsWhatIsWritten = () => {
       setDocumentVisibleForTests(true);
@@ -1472,20 +1513,14 @@ describe("TerminalsPage chat session activation", () => {
       );
     };
 
-    it("opens the Apple tool, the browser, or Mac Desktop for the chat in front", async () => {
+    it("activates the tool in a pane the person already has open", async () => {
       paneMountsWhatIsWritten();
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-background",
         { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
-      );
-      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
-      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
-        "/repo",
-        "lane-background",
-        expect.objectContaining({ workSidebarTool: "browser" }),
       );
       await expect(answerWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
@@ -1496,15 +1531,90 @@ describe("TerminalsPage chat session activation", () => {
     });
 
     /*
+     * The browser keeps opening the pane, closed or not: `ade browser handoff`
+     * is an agent saying it cannot get past a page and the person has to act
+     * there, and there is no floating player for a page.
+     */
+    it("opens the pane for a browser show even with it closed", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "browser" }),
+      );
+    });
+
+    /*
+     * A screen, app or device show with the pane CLOSED is answered by the
+     * lane's floating player. Whether the pane is open is the person's own
+     * preference, and the surface an agent drives continuously re-opening it
+     * every time they close it is what the owner reported on 2026-10-14.
+     */
+    it.each([
+      ["apple", "floating-apple"],
+      ["mac-desktop", "floating-mac-desktop"],
+    ] as const)("floats %s over the chat instead of opening a closed pane", async (surface, floating) => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      // Nothing activated in a pane, so nothing could have opened one...
+      await expect(answerWorkToolShowRequest(showRequest({ surface })))
+        // ...and the answer names the floating surface, not the pane: that is
+        // what the agent reads and reports to the person.
+        .resolves.toEqual({ status: "shown", shownAs: floating });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    });
+
+    /*
+     * App Control has no session in this harness, so its card never reaches the
+     * screen. The answer is the spent `held` — never a pane, and never a
+     * promise that the surface will turn up on its own later.
+     */
+    it("does not open a closed pane for app-control, and reports the card as not up", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "app-control" })))
+        .resolves.toEqual({ status: "held", opened: true });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    });
+
+    it("opens the pane when the float it would use declines", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      // A lane with no device to float: the player refuses, and the ask would
+      // otherwise be a `held` for a chat whose handler is right here.
+      floatMocks.floatAppleMiniPlayerForChat.mockResolvedValueOnce(false);
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
+      );
+    });
+
+    it("answers an apple show with the pane closed as the floating device", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" })))
+        .resolves.toEqual({ status: "shown", shownAs: "floating-apple" });
+      expect(floatMocks.floatAppleMiniPlayerForChat).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-background", chatSessionId: "chat-1", auto: false }),
+      );
+    });
+
+    /*
      * Regression, 2026-09-23 (chat 13d65dd4): `apple show` printed "shown"
-     * while only the floating player was on screen. "shown" now waits for the
-     * Apple tool to mount in a pane the user can see.
+     * while only the floating player was on screen. The answer must describe
+     * what is really on screen — which is now either the pane the user has
+     * open (this test) or the floating surface the ack names (`shownAs`), never
+     * a pane that stayed shut.
      */
     it("answers shown for the Apple tool only once it is on screen", async () => {
       // The pane does not mount on its own here: this test mounts it.
       workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
       setDocumentVisibleForTests(true);
-      await renderWithChatInFront();
+      await renderWithChatInFront({ workSidebarOpen: true });
       let answer: string | null = "pending";
       const pending = answerWorkToolShowRequest(showRequest({ surface: "apple" }))
         .then((reply) => { answer = reply?.status ?? null; });

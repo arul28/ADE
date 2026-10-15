@@ -41,8 +41,25 @@ jobs:
       webhook-relay: ${{ steps.filter.outputs.webhook-relay }}
       tunnel-relay: ${{ steps.filter.outputs.tunnel-relay }}
       push-relay: ${{ steps.filter.outputs.push-relay }}
+      # The Sentry release every deploy in this run reports under.
+      sentry-release: ${{ steps.release.outputs.release }}
+      sentry-version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags and history, for `git describe` below.
+          fetch-depth: 0
+      - name: Resolve Sentry release
+        id: release
+        # apps/desktop/package.json's version is never bumped; releases are v*
+        # tags. A deploy from main between releases reads as e.g.
+        # 1.2.102-5-g3137fc9 (five commits past v1.2.102), which is also what
+        # tells two deploys' source maps apart.
+        run: |
+          version="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')"
+          [ -n "$version" ] || version="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=ade@$version" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -72,7 +89,28 @@ jobs:
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
       - name: Build web client
+        env:
+          ADE_BUILD_SOURCEMAPS: "1"
+          ADE_WEB_VERSION: ${{ needs.changes.outputs.sentry-version }}
         run: cd apps/desktop && npm run build:webclient
+      - name: Inject Sentry debug ids
+        # Local only, no token: ties each shipped file to its map by content.
+        run: npx --yes @sentry/cli@3.8.0 sourcemaps inject apps/desktop/dist/web-client/assets
+      - name: Upload source maps to Sentry
+        # Never fails the deploy: a missing token or a Sentry outage only means
+        # stack traces stay minified.
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
+            exit 0
+          fi
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-web --release "$SENTRY_RELEASE" --dist web apps/desktop/dist/web-client/assets
+      - name: Keep source maps off the public site
+        run: find apps/desktop/dist/web-client -name '*.map' -delete
       - name: Deploy to Cloudflare Pages
         run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
       - name: Verify live bundle
@@ -89,6 +127,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.account-directory == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -96,7 +136,21 @@ jobs:
           node-version: 22
       - run: cd apps/account-directory && npm ci
       - name: Apply D1 migrations and deploy production Worker
-        run: cd apps/account-directory && npm run deploy:production
+        run: cd apps/account-directory && npm run deploy:production -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+      - name: Upload source maps to Sentry
+        # Never fails the deploy: a missing token or a Sentry outage only means
+        # stack traces stay minified.
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
+            exit 0
+          fi
+          cd apps/account-directory
+          npx wrangler deploy --dry-run --env production --outdir "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-account-directory --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
       - name: Verify health
         run: curl -fsS https://ade-account-directory-production.arulsharma1028.workers.dev/health | grep -q '"ok":true'
 
@@ -104,6 +158,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.webhook-relay == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -111,12 +167,28 @@ jobs:
           node-version: 22
       - run: cd apps/webhook-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/webhook-relay && npm run deploy
+        run: cd apps/webhook-relay && npm run deploy -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+      - name: Upload source maps to Sentry
+        # Never fails the deploy: a missing token or a Sentry outage only means
+        # stack traces stay minified.
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
+            exit 0
+          fi
+          cd apps/webhook-relay
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-github-webhook-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
 
   tunnel-relay:
     needs: changes
     if: needs.changes.outputs.tunnel-relay == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -124,7 +196,21 @@ jobs:
           node-version: 22
       - run: cd apps/tunnel-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA"
+        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+      - name: Upload source maps to Sentry
+        # Never fails the deploy: a missing token or a Sentry outage only means
+        # stack traces stay minified.
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
+            exit 0
+          fi
+          cd apps/tunnel-relay
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-tunnel-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
       - name: Verify deployed protocol and Worker version
         run: |
           for attempt in {1..18}; do
@@ -154,6 +240,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -169,3 +257,17 @@ jobs:
           CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID: ${{ secrets.ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID }}
         run: cd apps/push-relay && npm run deploy:ci
+      - name: Upload source maps to Sentry
+        # Never fails the deploy: a missing token or a Sentry outage only means
+        # stack traces stay minified.
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the Sentry source map upload."
+            exit 0
+          fi
+          cd apps/push-relay
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
+          npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-push-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"

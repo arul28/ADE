@@ -252,9 +252,10 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddBuiltInBrowserContext : undefined}
-        // A chat on another machine cannot reach this desktop's tabs: its
-        // `ade browser claim` runs there.
-        onAttachTab={canInsertContext && runtimePin?.kind !== "remote" ? onAttachBrowserTab : undefined}
+        // A chat on another machine reaches this desktop's tabs through the
+        // desktop its last message came from (`remoteBrowserForwarder`), and
+        // the attached block tells its agent where the tab is.
+        onAttachTab={canInsertContext ? onAttachBrowserTab : undefined}
         onInsertDraft={canInsertContext ? onInsertDraft : undefined}
       />
     </NativePanelFrame>

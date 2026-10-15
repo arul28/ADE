@@ -155,9 +155,10 @@ export function resolveAdeMediaBinary(input: {
 }
 
 /**
- * The Windows Apple Music player host (`native/ADEMusicHostWin`), which ships
- * as a directory: the exe, its WebView2 DLLs and the player page. `null` off
- * win32, where Music has no host yet. `ADE_MUSIC_HOST_PATH` is the developer
+ * The Apple Music player host, which ships as a directory with its player
+ * page: `ade-music-host.exe` on Windows (`native/ADEMusicHostWin`, WebView2),
+ * `ade-music-host` on macOS (`native/ADEMusicHostMac`, WKWebView). `null`
+ * elsewhere, where Music has no host. `ADE_MUSIC_HOST_PATH` is the developer
  * override, honored only when it names a real file.
  */
 export function resolveMusicHostExecutable(input: {
@@ -167,12 +168,14 @@ export function resolveMusicHostExecutable(input: {
   appPath: string;
   env?: NodeJS.ProcessEnv;
 }): string | null {
-  if ((input.platform ?? process.platform) !== "win32") return null;
+  const platform = input.platform ?? process.platform;
+  if (platform !== "win32" && platform !== "darwin") return null;
   const override = (input.env ?? process.env).ADE_MUSIC_HOST_PATH?.trim();
   if (override && fs.existsSync(override)) return override;
+  const name = platform === "win32" ? "ade-music-host.exe" : "ade-music-host";
   return input.isPackaged
-    ? path.join(input.resourcesPath, "native", "ade-music-host", "ade-music-host.exe")
-    : path.join(input.appPath, "resources", "native", "ade-music-host", "ade-music-host.exe");
+    ? path.join(input.resourcesPath, "native", "ade-music-host", name)
+    : path.join(input.appPath, "resources", "native", "ade-music-host", name);
 }
 
 /**

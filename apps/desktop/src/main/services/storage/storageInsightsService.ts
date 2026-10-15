@@ -73,7 +73,7 @@ type LaneLifecycleBackend = {
     isEditProtected: boolean;
     status: { dirty: boolean };
   }>>;
-  getReclaimRisk: (laneId: string) => Promise<{
+  getReclaimRisk: (args: { laneId: string }) => Promise<{
     dirty: boolean;
     activeChatCount: number;
     activePtyCount: number;
@@ -278,6 +278,11 @@ async function walkPath(
         names = await fs.promises.readdir(currentPath);
       } catch (error) {
         if (isEnoentError(error)) return null;
+        // One folder this user cannot list (EPERM/EACCES, common under Windows
+        // temp dirs another process owns) counts as its own size, not as a
+        // failure of the whole storage report.
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        if (code === "EPERM" || code === "EACCES") return { currentPath, stat, children: [] as string[] };
         throw error;
       }
       return { currentPath, stat, children: names.map((name) => path.join(currentPath, name)) };
@@ -423,7 +428,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           [lane.id, projectId],
         );
         if (inPrGroup) continue;
-        const risk = await laneService.getReclaimRisk(lane.id);
+        const risk = await laneService.getReclaimRisk({ laneId: lane.id });
         if (risk.dirty || risk.activeChatCount > 0 || risk.activePtyCount > 0 || risk.activeWatcherCount > 0) continue;
         if (risk.blockedReasons.some((reason) => reason.code === "unmerged_work")) continue;
         const lastActivityMs = latestLaneActivityMs(lane.id, row.created_at);

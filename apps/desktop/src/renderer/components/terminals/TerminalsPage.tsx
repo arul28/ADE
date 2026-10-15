@@ -30,6 +30,7 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import { registerIssueInPlaceHost, subscribeIssueToolRequests } from "../../lib/issueNavigation";
@@ -525,6 +526,32 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
   );
 
+  // Focus a session, reading its lane and pin from the CURRENT session list.
+  // Callers (spawn cards, subagents pane) often don't know the target's lane;
+  // resolving it here lands cross-lane jumps on the right lane instead of
+  // focusing an off-lane session.
+  const applySessionFocus = useLatestCallback((sessionId: string, laneHint: string | null) => {
+    const session = work.sessionsById.get(sessionId) ?? null;
+    const laneId = laneHint ?? session?.laneId ?? null;
+    const runtimePin = resolveSessionRuntimePin(session ?? { id: sessionId, sessionId, laneId });
+    if (laneId && !runtimePin) work.selectLane(laneId);
+    work.focusSession(sessionId);
+    work.openSessionTab(sessionId);
+    work.setSelectedSessionId(sessionId);
+  });
+
+  // A jump to a chat the list had not loaded yet. The refresh resolves before
+  // React renders the new list, so focusing right after it still reads the
+  // old one; this waits for the next list instead, then focuses (and selects
+  // the lane) once — or drops the jump if that list still lacks the chat.
+  const pendingSessionFocusRef = useRef<{ sessionId: string; laneHint: string | null; refreshed: boolean } | null>(null);
+  useEffect(() => {
+    const pending = pendingSessionFocusRef.current;
+    if (!pending?.refreshed) return;
+    pendingSessionFocusRef.current = null;
+    if (work.sessionsById.has(pending.sessionId)) applySessionFocus(pending.sessionId, pending.laneHint);
+  }, [applySessionFocus, work.sessionsById]);
+
   // Jump-to-session bridge for spawned-chat deep links: `onOpenSession`
   // dispatches `ade:work:select-session`; this is the
   // listener that actually focuses the target chat in the Work tab. Without it
@@ -555,36 +582,28 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           binding,
         );
       }
-      // Callers (spawn cards, subagents pane) often don't know the target's
-      // lane. Resolve it from the loaded session list so cross-lane jumps
-      // land on the right lane instead of focusing an off-lane session.
-      const session = work.sessionsById.get(sessionId) ?? null;
-      const laneId = detail.laneId ?? session?.laneId ?? null;
-      const runtimePin = resolveSessionRuntimePin(session ?? {
-        id: sessionId,
-        sessionId,
-        laneId,
-      });
-      const focus = () => {
-        if (laneId && !runtimePin) work.selectLane(laneId);
-        work.focusSession(sessionId);
-        work.openSessionTab(sessionId);
-        work.setSelectedSessionId(sessionId);
-      };
-      focus();
+      const laneHint = detail.laneId ?? null;
+      const loaded = work.sessionsById.has(sessionId);
+      applySessionFocus(sessionId, laneHint);
       // A chat created a moment ago (a cloud agent opened from its panel, often
       // in a lane that is also new) is not in the loaded list yet. Load it,
-      // then focus again so the pane binds to the real session.
-      if (!session) {
+      // then focus again so the pane binds to the real session; the effect
+      // above repeats the focus once the new list renders.
+      if (!loaded) {
+        const pending = { sessionId, laneHint, refreshed: false };
+        pendingSessionFocusRef.current = pending;
         void Promise.all([
           refreshLanes().catch(() => undefined),
           work.refresh({ force: true }).catch(() => undefined),
-        ]).then(focus);
+        ]).then(() => {
+          applySessionFocus(sessionId, laneHint);
+          pending.refreshed = true;
+        });
       }
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [machineRouter, refreshLanes, resolveSessionRuntimePin, work]);
+  }, [applySessionFocus, machineRouter, refreshLanes, work]);
 
   const handleGoToLane = useCallback(
     (
@@ -1187,6 +1206,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     tool: workSidebarTool,
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
+    showTool: showWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
@@ -1214,6 +1234,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     workSidebarVisible,
     workSidebarTool,
     setWorkSidebarTool,
+    showWorkSidebarTool,
   });
 
   useEffect(() => {
@@ -1261,6 +1282,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     browserRemoteBinding,
     setWorkSidebarTool,
   ]);
+
+  // A chat on another machine, shown here: this desktop runs its agent's
+  // browser commands from now on, in the browser the user can see. Registered
+  // once the chat is in front and kept after the user moves to another chat,
+  // because the agent keeps working (`remoteBrowserCallHost`).
+  useServeRemoteBrowserCalls({
+    active,
+    binding: browserRemoteBinding,
+    chatSessionId: activeWorkSession?.id ?? null,
+    laneId: activeWorkSession?.laneId || null,
+    projectRoot: browserCheckoutRoot ?? null,
+  });
 
   // "Open this tool" asked for from outside the Work page — the app shell's
   // browser open-request handler, the command palette. Only this page knows the

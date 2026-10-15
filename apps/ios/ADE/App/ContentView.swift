@@ -63,7 +63,6 @@ struct ContentView: View {
     let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
   }()
-  @State private var analyticsConsentPresented = false
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -180,18 +179,6 @@ struct ContentView: View {
         MachineWakeCard()
           .environmentObject(syncService)
       }
-      .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
-        Button("Don't share", role: .cancel) {
-          ProductAnalytics.shared.setEnabled(false)
-        }
-        Button("Share usage") {
-          ProductAnalytics.shared.setEnabled(true)
-          ProductAnalytics.shared.captureAppOpened(.coldStart)
-          captureCurrentRootScreen()
-        }
-      } message: {
-        Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
-      }
   }
 
   @ViewBuilder
@@ -269,12 +256,10 @@ struct ContentView: View {
       .onAppear {
         mobileLaunchAccess.observeInitialAccountPhase(accountService.phase)
         captureCurrentRootScreen()
-        analyticsConsentPresented = hasMobileAccess && ProductAnalytics.shared.shouldRequestConsent
       }
       .onChange(of: hasMobileAccess) { _, hasAccess in
         guard hasAccess else { return }
         captureCurrentRootScreen()
-        analyticsConsentPresented = ProductAnalytics.shared.shouldRequestConsent
       }
       .onChange(of: accountService.phase) { _, phase in
         mobileLaunchAccess.observeInitialAccountPhase(phase)
@@ -350,7 +335,7 @@ struct ContentView: View {
   }
 
   private var lanesTab: some View {
-    LanesTabView(isActive: selectedTab == .lanes)
+    LanesTabShell(isActive: selectedTab == .lanes)
       .tag(RootTab.lanes)
       .tabItem {
         Label("Lanes", systemImage: "square.stack.3d.up")
@@ -358,7 +343,7 @@ struct ContentView: View {
   }
 
   private var prsTab: some View {
-    PRsTabView(isActive: selectedTab == .prs)
+    PRsTabShell(isActive: selectedTab == .prs)
       .tag(RootTab.prs)
       .tabItem {
         Label("PRs", systemImage: "arrow.triangle.pull")

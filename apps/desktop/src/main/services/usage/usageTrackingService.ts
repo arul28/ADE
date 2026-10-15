@@ -90,7 +90,11 @@ import {
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
-import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
+import {
+  pickInstanceForNewChat,
+  type AccountBalanceResult,
+  type AccountBalanceRotationState,
+} from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
   invalidateCachedClaudeCredentials,
@@ -194,6 +198,8 @@ import {
   pollKimiQuota,
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
+import { createMuseQuotaStore, type MuseQuotaStore } from "./museLiveQuota";
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
@@ -3426,7 +3432,7 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
   return out;
 }
 
-const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
+const USAGE_PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
@@ -3434,6 +3440,7 @@ const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
   grok: "Grok",
   opencode: "OpenCode",
   kimi: "Kimi",
+  muse: PROVIDER_DISPLAY_NAME.muse,
 };
 
 /**
@@ -3748,7 +3755,7 @@ function buildProviderWindows(
     };
   }
 
-  const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
+  const name = USAGE_PROVIDER_LABEL[provider] ?? provider;
   const unauthed = errorKind === "auth" || errors.some((entry) => /no .*credentials/i.test(entry));
   // A 401/403 means we reached the API but auth was rejected (expired token,
   // failed refresh) — that's "reconnect", not "couldn't reach".
@@ -3850,6 +3857,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   pollGrokUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollOpenCodeUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   pollKimiUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
+  pollMuseUsage?: (context?: UsageProviderPollContext) => Promise<UsageProviderPollResult>;
   /**
    * The machine-local per-turn ledger. When present, every published snapshot
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
@@ -4107,6 +4115,7 @@ export function createUsageTrackingService({
   dependencies,
   projectRoot,
   db,
+  museQuota = createMuseQuotaStore(),
 }: {
   logger: Logger;
   pollIntervalMs?: number;
@@ -4114,6 +4123,8 @@ export function createUsageTrackingService({
   dependencies?: UsageTrackingDependencies;
   projectRoot?: string | null;
   db?: AdeDb | null;
+  /** The process's Muse quota store (the chat service records into it). Absent gets a private one. */
+  museQuota?: MuseQuotaStore;
 }) {
   const pollIntervalMs = Math.max(
     MIN_POLL_INTERVAL_MS,
@@ -4235,6 +4246,9 @@ export function createUsageTrackingService({
   const runGrokUsagePoll = dependencies?.pollGrokUsage ?? defaultExtraPoll(pollGrokQuota);
   const runOpenCodeUsagePoll = dependencies?.pollOpenCodeUsage ?? defaultExtraPoll(pollOpenCodeQuota);
   const runKimiUsagePoll = dependencies?.pollKimiUsage ?? defaultExtraPoll(pollKimiQuota);
+  // Muse's reading is pushed by its chat runtime (MSP `usage/read` and
+  // `usage/changed`); the poll only publishes the latest one, no I/O.
+  const runMuseUsagePoll = dependencies?.pollMuseUsage ?? (() => museQuota.poll());
   const providerStrategies: UsageProviderStrategy[] = [
     { provider: "claude", poll: (context) => runClaudeUsagePoll(context) },
     { provider: "codex", poll: (context) => runCodexUsagePoll(context) },
@@ -4243,6 +4257,7 @@ export function createUsageTrackingService({
     { provider: "grok", poll: (context) => runGrokUsagePoll(context) },
     { provider: "opencode", poll: (context) => runOpenCodeUsagePoll(context) },
     { provider: "kimi", poll: (context) => runKimiUsagePoll(context) },
+    { provider: "muse", poll: (context) => runMuseUsagePoll(context) },
   ];
   /**
    * A caller that injects any ledger scanner is a harness isolating the
@@ -4766,6 +4781,8 @@ export function createUsageTrackingService({
    * Cleared by the next decision that picks an account on the numbers.
    */
   const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
+  /** Per-provider Claude rotation; previews read this but only chat creation advances it. */
+  const balanceRotationStates = new Map<ProviderInstanceProvider, AccountBalanceRotationState>();
 
   function providerTitle(provider: ProviderInstanceProvider): string {
     return provider === "claude" ? "Claude" : "Codex";
@@ -4828,6 +4845,19 @@ export function createUsageTrackingService({
    * it, so the account marked "Next chat" is the one a new chat gets.
    */
   function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    return balancedPickWithRotation(provider, snapshot, balanceRotationStates.get(provider));
+  }
+
+  /** Preview the next account without consuming a Claude rotation slot. */
+  function peekBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
+    return balancedPick(provider, lastSnapshot);
+  }
+
+  function balancedPickWithRotation(
+    provider: ProviderInstanceProvider,
+    snapshot: UsageSnapshot,
+    rotationState?: AccountBalanceRotationState | null,
+  ): AccountBalanceResult | null {
     if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
     return pickInstanceForNewChat({
       provider,
@@ -4835,7 +4865,30 @@ export function createUsageTrackingService({
       accounts: snapshot.accounts ?? [],
       windowsByAccountId: windowsByAccount(snapshot.windows),
       nowMs: Date.now(),
+      rotationState,
     });
+  }
+
+  /** Drop a Claude rotation when its account pair or headroom gap is no longer eligible. */
+  function reconcileBalanceRotationStates(snapshot: UsageSnapshot): void {
+    for (const [provider, state] of balanceRotationStates) {
+      try {
+        const result = balancedPickWithRotation(provider, snapshot, state);
+        if (
+          !result?.rotationState
+          || result.rotationState.primaryInstanceId !== state.primaryInstanceId
+          || result.rotationState.reserveInstanceId !== state.reserveInstanceId
+        ) {
+          balanceRotationStates.delete(provider);
+        }
+      } catch (error) {
+        // A transient preview failure must not disturb the next real selection.
+        logger.warn("usage.account_balance_rotation_reconcile_failed", {
+          provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
   }
 
   /**
@@ -4869,7 +4922,14 @@ export function createUsageTrackingService({
     };
   }
 
+  // Cached `balanceNext` may contain a Claude rotation slot from the previous
+  // process. Rotation state is intentionally in-memory and restarts at the
+  // weekly-first account, so refresh the cached marker before this service can
+  // return its initial snapshot.
+  lastSnapshot = withBalanceIssues(lastSnapshot);
+
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+    reconcileBalanceRotationStates(snapshot);
     const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
@@ -5349,7 +5409,7 @@ export function createUsageTrackingService({
                 updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
                 ...(previousStatus.source ? { source: previousStatus.source } : {}),
                 ...(carriedWindows.length === 0
-                  ? { message: `${PROVIDER_DISPLAY_NAME[provider]} usage window expired` }
+                  ? { message: `${USAGE_PROVIDER_LABEL[provider]} usage window expired` }
                   : {}),
               };
             }
@@ -5960,16 +6020,41 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
-  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
+  function publishBalanceIndicators(): boolean {
+    const refreshed = withBalanceIssues(lastSnapshot);
+    const unchanged = JSON.stringify(refreshed.balanceIssues ?? []) === JSON.stringify(lastSnapshot.balanceIssues ?? [])
+      && JSON.stringify(refreshed.balanceNext ?? []) === JSON.stringify(lastSnapshot.balanceNext ?? []);
+    if (unchanged) return false;
+    lastSnapshot = stampRevision(refreshed);
+    emitUpdate(lastSnapshot);
+    return true;
+  }
+
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): boolean {
     const previous = balancePickIssues.get(provider);
-    if (!issue && !previous) return;
-    if (issue && previous?.kind === issue.kind) return;
+    if (!issue && !previous) return false;
+    if (issue && previous?.kind === issue.kind) return false;
     if (issue) balancePickIssues.set(provider, issue);
     else balancePickIssues.delete(provider);
-    // Only the issue list changed: no quota reading for the ledger or the
-    // auto-start scheduler, which `publishSnapshot` would feed again.
-    lastSnapshot = stampRevision(withBalanceIssues(lastSnapshot));
-    emitUpdate(lastSnapshot);
+    // Balance-only updates do not re-run quota polling, the ledger, or the
+    // auto-start scheduler. They also carry the next deterministic chat slot.
+    publishBalanceIndicators();
+    return true;
+  }
+
+  function setBalanceRotationState(
+    provider: ProviderInstanceProvider,
+    state: AccountBalanceRotationState | undefined,
+  ): boolean {
+    const previous = balanceRotationStates.get(provider);
+    if (
+      previous?.primaryInstanceId === state?.primaryInstanceId
+      && previous?.reserveInstanceId === state?.reserveInstanceId
+      && previous?.nextSlot === state?.nextSlot
+    ) return false;
+    if (state) balanceRotationStates.set(provider, state);
+    else balanceRotationStates.delete(provider);
+    return true;
   }
 
   /**
@@ -5984,36 +6069,46 @@ export function createUsageTrackingService({
   function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
       const result = balancedPick(provider, lastSnapshot);
-      if (!result) return null;
+      if (!result) {
+        if (setBalanceRotationState(provider, undefined)) publishBalanceIndicators();
+        return null;
+      }
+      const { rotationState, ...pick } = result;
+      const rotationChanged = setBalanceRotationState(provider, rotationState);
       if (result.skip === "one_account") {
         // Nothing to balance; an issue from an earlier pick no longer applies.
-        setBalancePickIssue(provider, null);
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
         return null;
       }
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
-        setBalancePickIssue(provider, {
+        const issueChanged = setBalancePickIssue(provider, {
           provider,
           kind: "no_usage_data",
           title: `${providerTitle(provider)} balance has no usage data`,
           detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
           at: nowIso(),
         });
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
       } else {
         if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
-        setBalancePickIssue(provider, null);
+        const issueChanged = setBalancePickIssue(provider, null);
+        if (rotationChanged && !issueChanged) publishBalanceIndicators();
       }
-      return result;
+      return pick;
     } catch (error) {
+      const rotationChanged = setBalanceRotationState(provider, undefined);
       const message = getErrorMessage(error);
       logger.error("usage.account_balance_resolve_failed", { error: message, provider });
-      setBalancePickIssue(provider, {
+      const issueChanged = setBalancePickIssue(provider, {
         provider,
         kind: "error",
         title: `${providerTitle(provider)} balance failed`,
         detail: `Smart balance could not choose an account for the last new chat: ${message}`,
         at: nowIso(),
       });
+      if (rotationChanged && !issueChanged) publishBalanceIndicators();
       return null;
     }
   }
@@ -6144,6 +6239,7 @@ export function createUsageTrackingService({
       refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
+      peekBalancedInstance,
       getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
       applyAccountRollups,
@@ -6187,6 +6283,7 @@ export function createUsageTrackingService({
     refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,
+    peekBalancedInstance,
     getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
     applyAccountRollups,

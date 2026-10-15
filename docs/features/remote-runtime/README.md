@@ -396,21 +396,32 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   is also a row in this ADE account's directory (there is otherwise nothing to
   re-adopt); pressing it re-runs `account.pairMachine`. Nothing re-pairs on its
   own.
-- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx` and
-  `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
-  `isMachineVersionOutdated`, `newestKnownAdeVersion`) — the **Update &
-  restart** button on a connected machine that is behind. "Behind" is measured
-  against the newest ADE *this* computer knows about — what it runs, or a newer
-  build it has already seen published — using the shared
+- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx`,
+  `MachineIdentity.tsx`, and `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
+  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `newestKnownAdeVersion`)
+  — one machine row. `MachineIdentity.tsx` draws the computer with its platform's
+  logo in the machine's own color (`machinePlatform`, `machineFormFactor`), on
+  the stable key `machineColorKey` picks, so every device paints the same
+  machine the same color; a hand-picked color overrides it for this computer
+  only (`ade.machineColors.v1`). Beside it sit a presence dot, a version chip
+  that reads `from → to` when the machine is behind, and a detail line naming
+  the winning route ("Local network", "Tailscale", "ADE relay", "SSH") and its
+  latency. The **Update** button appears on a connected machine that is behind.
+  "Behind" is measured against the newest ADE *this* computer knows about — what
+  it runs, or a newer build it has already seen published — using the shared
   `compareUpdateVersions`; a machine level with us gets no button. The click
   calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
   renders the host's step-attributed message in the row, then checks the
   machine's reported version against the reply's `pendingVersion`
-  (`describeMachineUpdateAttempt`) to say whether the update landed.
-- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
-  connected / available / unavailable sections, Pair and SSH entry paths,
-  share-this-machine and connection-doctor cards, saved/discovered machine
-  rows, route and latency status, SSH host-key trust, structured connection
+  (`describeMachineUpdateAttempt`) to say whether the update landed. While it
+  runs, `UpdateSteps.tsx` shows Sending → Restarting → Back on <version>
+  (`machineUpdatePhase`), and the row stays under Connected for the restart even
+  though the update drops its connection on purpose.
+- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel ("Your
+  machines") with connected / available / unavailable sections, Pair and SSH
+  entry paths, share-this-machine and connection-doctor cards, saved/discovered
+  machine rows, machine-identity tiles and colors (`MachineIdentity.tsx`),
+  route and latency status, SSH host-key trust, structured connection
   errors, project picker, and the This-computer
   route-publish health indicator. A connect stopped because the host key still
   has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
@@ -762,22 +773,94 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     oldest evicted first. A request carrying no usable id cannot be arbitrated
     and is let through, so an older daemon's unlabelled request stays answerable.
 
-    Only navigation forwards;
-    `observe` / `click` and the rest act on a specific live tab and still fail,
-    with an error that says where the browser runs.
+    **The browser where the user sits.** The rule since 2026-10-13: an agent's
+    `ade browser` commands run in the browser of the desktop that sent its chat
+    the last message (see "Which desktop shows it" below), when that desktop is
+    not on the agent's machine. A chat on a Windows PC, driven from a Mac
+    Studio, works in the Mac Studio's browser: the user watches it in their own
+    pane, the page uses their sign-ins, and the agent can take a tab they
+    attach. Before this only "show the user" opens crossed over; `observe`,
+    `click` and the rest ran in a browser on the agent's machine that the user
+    could not see and that held none of their tabs, and the agent could only
+    answer "I cannot see what you see".
 
-    **A machine WITH a desktop also reaches the user's other screen.** When the
-    Mac Studio runs ADE Desktop, its bridge takes every browser call, because an
-    agent drives the tab it opened through that bridge (`observe`, `click`). A
-    call that asks to show the user (`showPanel`, which `ade browser panel`
-    sends, or `openPanel: true`, which `ade browser open --panel` sends) is
-    also forwarded as a
+    `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
+    bridge method one route, and the compiler refuses a method without one:
+    `open`, `user-desktop` (acts on a chat's tab), `local-file` (`upload`,
+    `har`, `record`: a file on the agent's machine) or `agent-machine` (its dev
+    servers, a recording's step caption, the pane's own layout). Two paths
+    carry the first two, both chosen by `remoteBrowserForwarder.ts#route`:
+
+    - **Opens** (`navigate`, `createTab`). The agent's own open is sent as a
+      command (below) and loads quietly in a background tab the chat owns, as
+      it does for a chat on the desktop's own machine. A loopback URL cannot
+      load quietly, because its port forward may need a person's yes: the
+      desktop answers `needs_pane`, and the daemon sends the open as a
+      `built_in_browser_remote_request`, which brings the Browser pane and its
+      approval bar up. `showPanel` and `--panel` always take the request path.
+    - **Commands** (`built_in_browser_remote_call`, the methods in
+      `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`): `observe`, `click`, `fill`,
+      `readText`, `claim`, `getStatus`, the element picker, DevTools and the
+      other calls that act on a tab. The daemon publishes the command,
+      addressed to that one desktop, and takes a reply only from that desktop's
+      id. The desktop answers through the `built_in_browser.replyRemoteCall`
+      runtime action twice: `taken` at once, then `done` with the result. A
+      `wait` or a sign-in handoff gets its own time budget
+      (`builtInBrowserRemoteCallDoneTimeoutMs`) on both machines. A result's
+      screenshot is a file on the desktop, so its bytes travel in the reply and
+      the daemon writes them under `.ade/cache/browser-observations/remote/`
+      and points the result at that copy.
+
+    On the desktop, `renderer/lib/remoteBrowserCallHost.ts` answers. It is not
+    a component: the agent keeps working while the user reads another chat or
+    has Git in the tools pane. A chat is registered when the Work page shows it
+    and stays registered; one event subscription per machine, the four most
+    recently shown machines. It swaps the agent's project path (a path on
+    another machine) for the project its own window shows, runs the command
+    through `builtInBrowser.runRemoteAgentCall` (main:
+    `builtInBrowserRemoteCalls.ts`, the same `dispatchBuiltInBrowserAgentCall`
+    the bridge socket uses, so ownership, presence and agent access apply
+    unchanged), and replies on the pinned runtime. Two windows showing the chat
+    are arbitrated by `remoteRequestClaims`, as for an open.
+
+    The agent's own machine is the fallback and the opt-out:
+
+    - No desktop takes a command within 4 s (the laptop is closed): it runs in
+      the browser on the agent's machine, and the chat's commands stay there for
+      60 s before the desktop is asked again.
+    - The last message came from the phone or the CLI: there is no desktop to
+      name, so nothing changes from before.
+    - `--here` on any `ade browser` command, and every isolated sign-in
+      (`--isolated`, `--profile`): the browser on the agent's machine.
+    - `upload`, `har` and `record` read or write a file on the agent's machine.
+      They are refused with a pointer to `--here` while the chat's browser is on
+      the user's computer.
+
+    Every result says where it ran (`browserHost`, printed by `--text` as a
+    first line), so an agent whose command fell back can tell the user why they
+    cannot see its browser.
+
+    Known limits: a tab opened through a tunnel reports its forward port
+    (`127.0.0.1:<ephemeral>`) to the agent rather than the port it asked for; a
+    personal chat on another machine is not served (only chats shown on the
+    Work page are); a download lands on the user's computer.
+
+    On the desktop, three things say where a remote chat's browser is, and no
+    more: the Browser card in the tools picker ends with `chat on <machine>`;
+    the floating preview pictures only a tab that chat owns (it used to fall
+    back to the person's own active tab); and "Attach to chat" works, with a
+    sentence in the attached block telling the agent the tab is on the user's
+    computer.
+
+    **A request to show the user also reaches every screen when nobody can
+    tell.** A call that asks to show the user (`showPanel`, which
+    `ade browser panel` sends, or `openPanel: true`, which
+    `ade browser open --panel` sends) is forwarded as a
     `built_in_browser_remote_request`, addressed to the desktop that sent the
-    chat its last message (see "Which desktop shows it" below). When that
-    desktop is another machine, the Studio's own copy loads without revealing
-    its panel. When nobody can tell where the user is, the request goes to
-    every connected desktop and the Studio's panel opens too. If the addressed
-    desktop does not acknowledge, the request is sent again to every desktop.
+    chat its last message. When nobody can tell where the user is, the request
+    goes to every connected desktop and the agent machine's panel opens too. If
+    the addressed desktop does not acknowledge, the request is sent again to
+    every desktop.
 
     **Links in a chat open the chat machine's `localhost`.** A chat link to
     `http://localhost:4180` carries the chat's pin (`openLinkFromUi(url,
@@ -822,7 +905,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   current binding, tracks the newest open generation, waits for active remote
   opens before retrying read-only project calls, blocks mutating action/sync
   calls with the "Project is switching" error, and avoids refreshing a stale
-  runtime binding. Remote event polling suppresses buffered replay on the first
+  runtime binding. Read or write comes from each action's declaration in
+  `apps/desktop/src/shared/adeActionAccess.ts`, not from its name; chat reads
+  that must reach the chat's own host (drafts, thread comments) wait for the
+  switch to finish. Remote event polling suppresses buffered replay on the first
   live subscription, resets cursors on `eventEpoch` changes, notifies project
   refresh paths on `gap: true`, and backs off when idle; lane preview URLs
   returned by a remote runtime are localized through a local TCP forward before
@@ -1257,9 +1343,9 @@ won the same connection attempt; nothing is wrong.
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
+Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
-- Runtime version mismatch, shown as a quiet Connections-row note from the two versions (`This machine is on ADE X. {name} is on Y. They can still connect — update the older machine when you can.`).
+- Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `beta`, remote runtime advertises `stable`).
 - Missing `machineProjects` capabilities — `browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`. These map to the `projects.*` RPCs the renderer uses for the project picker / new-project / clone flows. Missing capabilities do not block connect, but the connection pool refuses the matching call with a self-describing error when the renderer attempts it (e.g. `Remote ADE service 0.7.2 does not support cloning remote projects.`).
 - The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-beta because .ade did not contain an ADE service for darwin-arm64.`).
@@ -1694,10 +1780,14 @@ inherits the paired/authenticated channel; it is never automatic and never
 silent.
 
 The client names the version it believes is newest (`targetVersion`); the host
-refuses to "update" to the version it is already running and just restarts,
-which is still the useful action for a wedge-adjacent machine. The reply is
-step-attributed — `check`, `apply`, `restart` — so a failure names the step
-instead of saying "something went wrong". The `restart` step comes back
+refuses to "update" to a version it already runs or has passed. A versioned
+request the machine already satisfies installs nothing and restarts nothing — it
+answers "Already on X — nothing to update, nothing restarted"
+(`alreadyCurrentResult`) — because a needless restart stops every agent on that
+machine. A request naming no version is the "fix a stuck machine" button and
+still restarts. The reply is step-attributed — `check`, `apply`, `restart` — so
+a failure names the step instead of saying "something went wrong". The `restart`
+step comes back
 `pending` on purpose: it tears down the process answering the call, so the
 client confirms by reconnecting and reading the version. A brain cannot report
 on its own replacement.
@@ -1729,12 +1819,54 @@ remote one that fell back to the standalone route) writes its progress to
 connection pool treats it as an update window and does not repair the service,
 so an open app cannot put its older runtime back over the new one.
 
-The client does not trust "reconnecting…". It records `pendingVersion` (or,
-from a host that predates it, `targetVersion` for an applied update) and checks
-the machine against it: once the machine reports that version the row says
+The client does not trust "reconnecting…". Before it sends anything it re-reads
+each machine's live version and skips one already on the target (or newer) with
+the same "Already on X — nothing to update, nothing restarted" answer, so a
+stale list cannot stop work on a machine that needs nothing. It then records
+`pendingVersion` (or, from a host that predates it, `targetVersion` for an
+applied update) and checks the machine against it: once the machine reports that
+version the row says
 "Updated to X"; if it has not after 5 minutes (35 for a download) it says
 "Still on Y — the update to X didn't apply" with the version it is actually on.
-The button stays busy until then.
+A call that reconnects the machine after its restart refreshes the recorded
+version (`RemoteConnectionPool.onEntryConnected`), so a finished update is never
+called a failed one. The button stays busy until then.
+
+Nothing restarts without a yes. Before the call, the desktop asks the machine
+what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
+projectless `runtime.updateImpact`) and shows it in the confirmation: the chats
+mid-turn by name, plus counts of the CLI sessions and terminals that are open (a restart closes each one, quiet or not).
+`runtime.updateImpact` is `cto`-gated, reads only projects the brain has already
+booted (it never boots one to answer), and includes personal chats. A machine
+that needs the update is usually too old to have the method, so the desktop
+falls back to `runtime.activitySummary` and says only "Work is running" or
+"Nothing is running". One 3-second deadline covers both asks; a machine that
+has not answered by then (or is no longer saved) reads "Couldn't check what's
+running", never as idle. The IPC never rejects. When two or more connected
+machines are behind, a banner above the section header offers **Update all**
+(`MachinesBehindBanner`, "N machines are behind", naming the target version):
+one confirmation with a block per machine, then the same per-machine update in
+parallel.
+
+The same action is offered where this computer's own update lives: **Update
+other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
+under Updates in Settings > General and under Your computers on the Account
+page. It lists each connected machine with its version, "Update & restart" for
+the ones behind, and "Update all N". Every place that starts or shows one of
+these updates, the install dialog below included, goes through one store
+(`components/remoteTargets/machineUpdates.ts`), so an update started in one
+shows as in flight in the others and its outcome survives leaving the page.
+The words for what is running live in
+`components/remoteTargets/MachineUpdateImpact.tsx`. The
+browser client cannot ask a machine to update, so the section is not rendered
+there.
+
+The same blocks appear in this computer's own install dialog
+(`components/app/autoUpdateInstallAction.tsx`) for connected machines older
+than the version being installed, with an "Update … too" checkbox that is on by
+default (the confirm dialog takes several checkboxes, each answered by key). Those machines update first and this computer installs last, because
+its relaunch ends the run. If one refuses, the dialog names it and asks whether
+to install here anyway.
 
 ### Account state and reachability
 

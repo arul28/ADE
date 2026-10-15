@@ -232,6 +232,12 @@ Apply all three reference files:
    a default requirement (see **Windows parity rules** above), so this file
    applies to every diff, not only obviously path-or-process work.
 
+Also flag, as a correctness finding, any new failure that disappears: a
+`catch` that recovers silently or returns a fallback without `captureError` /
+`captureProblem` or a `logger.warn`/`logger.error` line. ADE only learns about
+those through Sentry (`docs/logging.md`, "Error tracking (Sentry)"); `/test`
+runs the full Sentry gate.
+
 Return prioritized findings. Mark each fix **unambiguous + behavior-preserving**
 (synthesis may auto-apply) or **needs human judgment** (synthesis surfaces it).
 

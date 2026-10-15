@@ -13,8 +13,8 @@ import tailwind from "@tailwindcss/postcss";
  * panel renders see-through with every render test green, and it is exactly
  * what happened: the config defines `surface-raised`, `surface-recessed` and
  * `surface-overlay` but no bare `surface`, so `bg-surface` — on the Mac
- * Desktop video letterbox, its time-lapse card and a TopBar dialog — compiled
- * to nothing and those three panels had no background at all.
+ * Desktop video letterbox and a TopBar dialog — compiled to nothing and those
+ * panels had no background at all.
  *
  * So this compiles the real stylesheet and fails on a dead colour class.
  *

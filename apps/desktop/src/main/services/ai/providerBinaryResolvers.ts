@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveDroidExecutable } from "./droidExecutable";
+import { museBinaryBlocker, resolveMuseExecutable } from "./museExecutable";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import { resolvePiInstallation } from "./piInstallation";
 import type { ShippedProvider } from "../../../shared/providers";
@@ -128,6 +129,29 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
         ? installation.blocker
         : `Pi's SDK package is installed at ${installation.packageRoot}; no \`pi\` CLI is on PATH.`,
     };
+  },
+  /**
+   * Muse runs only from ADE's pinned build in the tools cache. A user's own
+   * `muse` on PATH never counts as installed, because nothing will spawn it;
+   * it is named in `detail` so the status screen does not look wrong to a
+   * user who knows they installed Muse.
+   */
+  muse: (context) => {
+    const target = { env: context.env, platform: context.platform, arch: context.arch };
+    const resolved = resolveMuseExecutable(target);
+    if (resolved.path) {
+      return {
+        path: resolved.path,
+        version: resolved.pinnedVersion,
+        // The pinned build is the version; spawning a 350 MB binary to echo it is waste.
+        skipVersionProbe: resolved.source === "tools-cache",
+      };
+    }
+    const userInstall = context.findOnPath("muse", context.env);
+    const userNote = userInstall
+      ? ` A separate Muse install was found at ${userInstall}; ADE does not use it.`
+      : "";
+    return { path: null, detail: `${museBinaryBlocker(resolved) ?? ""}${userNote}` };
   },
   /**
    * Cursor is two things wearing one name. The chat runtime is the `@cursor/sdk`

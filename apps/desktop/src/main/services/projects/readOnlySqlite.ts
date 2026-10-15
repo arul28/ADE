@@ -7,26 +7,33 @@ type DatabaseSyncConstructor = new (
   options?: { allowExtension?: boolean; readOnly?: boolean },
 ) => DatabaseSyncType;
 
-let databaseSync: DatabaseSyncConstructor | null = null;
+export type NodeSqlite = {
+  DatabaseSync: DatabaseSyncConstructor;
+  backup: (source: DatabaseSyncType, destination: string) => Promise<number>;
+};
+
+let nodeSqlite: NodeSqlite | null = null;
 
 /**
- * `node:sqlite`, loaded on the first open. A static import is rewritten by the
+ * `node:sqlite`, loaded on the first open. Shared by every caller, including
+ * ones that open a database for writing or back one up, so the workaround
+ * below lives in one place. A static import is rewritten by the
  * desktop test bundler into a missing `sqlite` URL, so it is a runtime require.
  * Loading it lazily lets modules that load with every ACP dialect, and the
  * usage ledger worker, import this one without paying for SQLite until a
  * database is actually opened.
  */
-function loadDatabaseSync(): DatabaseSyncConstructor {
-  if (!databaseSync) {
+export function loadNodeSqlite(): NodeSqlite {
+  if (!nodeSqlite) {
     const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-    ({ DatabaseSync: databaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor });
+    nodeSqlite = require("node:sqlite") as NodeSqlite;
   }
-  return databaseSync;
+  return nodeSqlite;
 }
 
 /** Open `dbPath` read-only. Throws when the file cannot be opened. */
 export function openReadOnlyDatabase(dbPath: string): DatabaseSyncType {
-  const DatabaseSync = loadDatabaseSync();
+  const { DatabaseSync } = loadNodeSqlite();
   return new DatabaseSync(dbPath, { readOnly: true });
 }
 

@@ -287,6 +287,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get   machine.updateAndRestart
+runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
@@ -322,6 +323,13 @@ machine-directory action is CTO-only, including `renameMachine` and
 identity (a chat, run, step or attempt), and it refuses without
 `confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
 sends.
+
+`runtime.updateImpact` answers what restarting this machine's ADE would stop:
+the chats mid-turn (by name, with their project) and counts of agent CLI
+sessions and terminals that are open (a restart closes each one, quiet or not), across every booted project and the
+personal-chat runtime. It never boots a project to answer. It is CTO-gated,
+because it names every running chat on the machine; clients show it before an
+update restarts anything.
 
 `machine.updateAndRestart` is the host half of "Update & restart". When this
 machine's desktop app is open it asks that app to install its own update over
@@ -503,12 +511,12 @@ ade sync status --text                    # works with no registered project: th
 ade sync pin generate --text              # pair a phone with a machine that has never opened a project
 ade connect                               # account + login service + account-directory row, idempotent
 ade connect --status --text               # report the three steps without changing anything
-ade connect --headless                    # force the copy-paste device flow
+ade connect --headless                    # sign in from another device: QR code, link, and code
 ade connect --no-login --no-service       # opt out of either half
 ade setup                                 # finish/redo install setup: agent CLIs, account, desktop app, verification, summary
 ade setup --no-desktop --no-prompt        # non-interactive; skips the ~1 GB desktop download
-ade login                                 # loopback OAuth, or device flow on SSH/headless hosts
-ade login --headless                      # print verification URL + user code
+ade login                                 # browser here, plus a QR code + link + code to finish on another device
+ade login --headless                      # open no browser here: QR code + verification URL + user code only
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
@@ -597,11 +605,13 @@ ade history show --id operation-id --text
 ade history commits --lane lane-id --text
 ade history export --lane lane-id --out history.json
 ade diff patch --lane lane-id --path src/file.ts --text
-ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project
+ade search "login redirect" --text                          # active-project search plus bounded chat hits from every registered project (read from each project's index file; no project is loaded)
 ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 when nothing matches
 ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
+ade prs create --lane lane-id --title "Fix checkout flow" --body-file pr.md --text  # uploads proof the text cites; prints what a reader will miss
+ade prs body 123 --body-file pr.md --text                                        # replace the PR text; same upload and notes
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
@@ -625,6 +635,7 @@ ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flak
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --no-parent --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
 ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
 ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain
@@ -680,6 +691,7 @@ ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade proof attach shots/result.png --caption "Checkout complete"
                                                       # every filing command prints a `cite:` snippet for the agent's answer
 ade proof publish --pr 123 --heading "Proof" --note "Checkout flow" artifact-id [artifact-id ...]
+ade proof publish --pr 123 --in-body                                             # upload the proof the PR text cites, in place
                                                       # one PR comment; gh 2.99+ --attach uploads the chosen proof, then a github_pr link is added
 ade proof rm artifact-id
 ade proof broken --text                              # list missing/unimported proof records
@@ -986,6 +998,16 @@ a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
 flag and the runtime rejects it, and calls from another machine's brain are
 refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
 forwarded to a desktop that has this lane pinned.
+
+When the user drives the chat from another computer, the chat's browser is the
+one on that computer: `open`, `observe`, `click`, `fill`, `text`, `claim` and
+the other page commands run in the ADE browser of the desktop that sent the
+chat its last message, and the first line of `--text` output says so
+(`browser: on <machine>, the computer the user sits at`). If that desktop does
+not take a command within 4 s, the command runs in this machine's browser and
+says that instead. `--here` picks this machine's browser on purpose, and
+`upload`, `har` and `record` need it, because their file is on this machine.
+See "The browser where the user sits" in `docs/features/remote-runtime/README.md`.
 
 `ade browser attach` / `detach`, and the page commands of a chat attached to
 the user's own browser, never reach ADE's browser or the desktop, so the

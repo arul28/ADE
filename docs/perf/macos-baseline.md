@@ -57,6 +57,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 |---|---|---|---|
 | Static tabs (Lanes, CTO, History, Settings, Automations, Chats): main-thread work | 3–18 ms/s | 3–26 ms/s | 30 ms/s |
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
+| Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
@@ -88,6 +89,30 @@ streaming in the background, perf runs off.
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 
+### Composer pickers
+
+`SCREENCAST=1 interaction.mjs pickers 8`, warm rounds, two runs, on the Work
+composer of a new chat (dev build, 2026-10-14, on `e3bf1ff82` plus the picker
+redesign). "Before" is the same app session with the pre-redesign pickers.
+`SCREENCAST=1` keeps a covered dev window drawing; without it a hidden window
+draws no frames and every row waits out its cap.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---|---|---|
+| Model picker: open to first frame | `interaction.mjs pickers` | 83–88 ms | 80–82 ms | 110 ms |
+| Model picker: long frames while opening | same | 57–67 ms | 65–66 ms | 85 ms |
+| Model picker: switch provider rail (Cursor, 5 sub-tabs) | same | 59–63 ms | 42 ms | 80 ms |
+| Model picker: switch provider rail (Anthropic) | same | 22–24 ms | 22 ms | 40 ms |
+| Effort picker: open to first frame | same | 25–26 ms | 23 ms | 40 ms |
+| Permission picker: open to first frame | same | 12–15 ms | 13 ms | 30 ms |
+
+Opening the model picker is mostly React mounting the panel in the dev build
+and Radix placing it (two forced layouts). Its rows are a fixed 50 px so the
+virtual list never measures them; rendered rows are kept to one screen plus
+four. A popover's open/close animation applies to the popper wrapper's child
+only: a descendant selector made every nested Radix part with `data-state`
+(each row's context-menu trigger) fade out and back on each open.
+
 ### Brain and services
 
 Run without the app (`scripts/perf/service/`).
@@ -102,6 +127,10 @@ Run without the app (`scripts/perf/service/`).
 | Reading a 10 MB request, Content-Length framed | `rpc-read.bench.mts` | 240 ms | 10.8 ms | 30 ms |
 | Reading a 10 MB request, JSONL | `rpc-read.bench.mts` | 99 ms | 8.7 ms | 30 ms |
 | CLI PATH lookup once its cache has expired | `shell-path.bench.mts` | 1,265 ms | 2–11 ms | 20 ms |
+| Settings › MCP servers: scan of the provider CLI configs (169 KB `~/.claude.json`, 17 KB Codex `config.toml`; runs in Electron main, twice per page open) | one-off `tsx` loop over `scanProviderMcpConfigs`, 20 runs (no bench file yet) | — | 4–6 ms, 18 ms cold | 25 ms |
+| MCP App: file one app with the chat (218 KB page, its record, and the prune of a 40-app chat; `mcpAppStore.write`, runs in the brain once per tool call that has a page) | one-off `tsx` loop, 60 runs (no bench file yet) | — | 0.9–1.7 ms; reading one back 0.1 ms | 10 ms |
+| MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
+| Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 
 ### Open items (measured, over budget or unbudgeted)
 
@@ -112,6 +141,13 @@ Run without the app (`scripts/perf/service/`).
 - **First Work open after launch:** a long chat backfills its older history
   in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
   work, once per chat per session.
+- **Remote browser host, not measured:** a desktop that has shown a chat
+  from another machine keeps one runtime event subscription for that machine
+  after the chat leaves the front, so it can run that chat's browser commands
+  (`remoteBrowserCallHost.ts`, the four most recently shown machines). While
+  the chat is in front the subscription is one the pane already holds. The
+  idle cost with the chat in the background needs two machines to measure and
+  was not measured when this was added (2026-10-13).
 - **GitHub calls:** `pr.getChecks` and `pr.getStatus` take 1–1.5 s each
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
@@ -174,17 +210,20 @@ UI, against a running dev app (`scripts/perf/ui/`):
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
-| `interaction.mjs tabs\|chats\|projects [rounds]` | Per tab, chat or project switch: time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
+| `interaction.mjs tabs\|chats\|projects\|pickers [rounds]` | Per tab, chat or project switch, or composer picker open (`pickers`; `SCREENCAST=1` for a covered window): time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
+| `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
+| `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
+| `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
-`chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+`search-fanout`, `chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
 comparison and not a timing). They read temp copies of state and never write
 to `~/.ade`.
 `chat-transcript` is the chat renderer's own pipeline (live merge, display
@@ -281,6 +320,28 @@ The row and merge numbers are a production-style Node run; the streaming
 numbers are the dev build, where React's own work is two to three times what a
 packaged build pays.
 
+### Find in a chat and in a diff (⌘F)
+
+Measured 2026-10-12 on the dev build in an App Control session: the 5,031-event
+"Mac Desktop Tool Planning" chat and the 1,100-event "Quit Dialog Redesign"
+chat, query `the`. The A/B streaming rows are `npm run bench:webclient
+--skip-build --skip-load`, before = the tree without find, 3 interleaved runs,
+1-minute load average 9-11 (other agents running), so treat ±0.2 ms as noise.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Streaming: script per event, find closed | `bench:webclient` A/B | 5.8 ms | 5.9 ms | 7.5 ms |
+| Streaming: main-thread task per event, find closed | same | 8.7 ms | 8.8 ms | 10 ms |
+| Streaming: React commits per event, find closed | same | 2.3 | 2.3 | 2.8 |
+| Open a long chat to its first rows | same | 340 ms | 350 ms | 360 ms |
+| Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
+| Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
+| Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
+
+Closed, find does no work: its layer is memoized on stable props and
+subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
+it never holds a 240 Hz frame.
+
 ### Desktop dev app
 
 | Metric | How | Before | Baseline | Ceiling |
@@ -301,6 +362,122 @@ mounting the tab, not by anything this pass changed. The heap rows need the
 snapshot file to show a difference; without it both columns read about 130 MB.
 A DevTools window draws 240 frames a second on this display by itself, so
 close it before any idle or GPU number (see the gotchas above).
+
+### Apple Music (the macOS player host and the Music tab)
+
+Measured 2026-10-13 on this Mac Studio, dev build in an App Control session,
+DevTools window closed, baseline at `2b449846f`. Signed out, so playback is a
+30-second catalog preview (the host, MusicKit and the UI do the same work for a
+full track; the FairPlay decode happens in WebKit's GPU process, which is in
+the host rows). The host is new on macOS, so its rows have no before. The tab
+rows are an interleaved A/B in one session, with the old progress-line
+transition put back by an injected style for "before". Other agents were
+running on the machine.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10` | — | 0.5-0.8% | 3% |
+| Same, playing: physical footprint | same | — | 75-81 MB | 120 MB |
+| Same, paused (until the 5-minute unload): CPU / footprint | same | — | 0.0-0.2% / 73-75 MB | 1% / 120 MB |
+| Electron GPU process, playing, Work tab in front | `process-cpu.sh 8` | 21-28% | 1.9-2.5% | 5% |
+| Renderer, playing, Work tab in front | same | 11.3-14.5% | 5.4-7.1% | 10% |
+| Compositor draws, playing, Work tab in front | `gpu-trace.mjs 4` | 240/s | 2/s | 5/s |
+| Electron GPU process, playing, Music tab in front | `process-cpu.sh 8` | 26% | 12% | 15% |
+| Renderer, playing, Music tab in front | same | 10.4% | 4.9-5.0% | 8% |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0.75/s | 0/s | 0.2/s |
+| First playing push after Play, host not running | `music.mjs first-play cold` | — | 0.76-1.15 s | 2 s |
+| Same, host running | `music.mjs first-play warm` | — | 0.16-0.39 s | 0.6 s |
+| Switching to the Music tab: long tasks / idle main thread | `route-sweep.mjs` | — | 0 ms / 0.9-2.3 ms/s | 100 ms / 30 ms/s |
+
+**Library: playlists (paged loading and four-song covers).** Arul's real
+library, 61 playlists, 37 of them with no artwork from Apple; the largest has
+1,804 songs (19 pages). Same app session, signed in, DevTools closed, nothing
+playing; "before" is the tree at `3e0e350fe` (grid rows: the old tile code put
+back by hot reload, interleaved with the new, 3 rounds each). Cold = the main
+process's 60 s Apple cache expired.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Largest playlist, cold: first song rows on screen | `music-library.mjs detail` | 9,483 ms | 516-1,077 ms | 1,500 ms |
+| Largest playlist, cold: full list | same | 9,483 ms | 2,882-3,829 ms | 9,500 ms |
+| Largest playlist: Apple requests / IPC calls | same | 19 / 1 | 19 / 19 | 19 / 20 |
+| Largest playlist: long tasks while it loads | same | 0 ms | 0 ms | 50 ms |
+| Playlists grid, first open: long tasks | `music-library.mjs grid` | 0 ms | 0 ms | 50 ms |
+| Playlists grid, first open: renderer CPU (6 s) | `process-cpu.sh 6`, mean of the runs | 6.2% (5.3-6.8) | 5.3% (3.5-6.2) | 8% |
+| Playlists grid, second open: renderer CPU (6 s) | same | 3.9% (2.8-5.3) | 2.6% (0.2-5.0) | 5% |
+| Playlists grid, first open: IPC calls / Apple requests | `music-library.mjs grid` | 1 / 1 | 17 / 17 (`76dff3d31`; 10 / 10 at `a123eee6a`) | 1 + one per cover tile on screen (17 / 17 in this library) |
+| Playlists grid, second open: IPC calls / Apple requests | same | 1 / 0 | 1 / 0 | 1 / 0 |
+| Playlists grid, first open: artwork requests / KB | same | 39 / 289 | 27-29 / 213-494 (`76dff3d31`) | 60 / 500 |
+| Playlists grid, second open: artwork requests | same | 34-36 | 0-2 (`76dff3d31`) | 5 |
+| Playlists grid, scroll to the end and back: long tasks | `music-library.mjs scroll` | 0 ms | 0 ms | 50 ms |
+| Same scroll, first time: cover reads (limit 4) | same | 0 | 22-38 (`76dff3d31`; 25-28 at `a123eee6a`) | one per cover tile, no repeats (54 in this library) |
+| Renderer JS heap after GC, five largest playlists opened | `music-library.mjs memory` | 102.6 MB | 101.3-102.3 MB | 125 MB |
+| Renderer RSS, same | `ps` | 295 MB | 265-280 MB | 360 MB |
+
+- **Full list:** the old main-process loop read the 19 pages one after
+  another and returned them together. Reading them from the view one at a
+  time measured 14.7-15.0 s (a page waited for the view to update before the
+  next request), so the view reads the first page, then the rest four at a
+  time (Apple reports the total) and appends them in order.
+- **Covers** cost one `tracks` read with limit 4 per cover tile that comes on
+  screen, at most four at a time, never while the window is hidden (verified:
+  0 reads while hidden, 9 once visible), then nothing: a bounded LRU (300)
+  serves later opens. Each cell requests Apple's artwork at its own pixel size
+  (96 px here). Since `76dff3d31` a cover tile is any playlist whose artwork
+  the renderer cannot load: 54 of the 61 here, 37 with none from Apple and 17
+  with an uploaded cover on `*.blobstore.apple.com`, which the CSP blocks. A
+  first open reads the 16 on screen and a scroll reads the rest (22-38 across
+  runs, depending on how much the first open reached; every read was a
+  different playlist, checked by playlist id). The blocked cover requests are
+  gone: 34 per open at `a123eee6a`, 0 now.
+- **`76dff3d31` re-bench** (2026-10-13, interleaved with `a123eee6a`, 3 rounds,
+  main cache cold before each): long tasks 0 on open and scroll for both.
+  Renderer CPU over 6 s, first open 8.0% (6.2-9.0) at `a123eee6a` vs 7.0%
+  (2.7-11.5) now; second open 6.6% (4.2-8.0) vs 7.0% (4.8-10.5): no difference
+  within the noise. The whole session ran hotter than the baseline run (the
+  old tiles measured 6.6% on second open, against the recorded 3.9%), so the
+  CPU rows above keep their baselines.
+- **Ceilings raised, approved by Arul on 2026-10-13:** the first-open
+  IPC/Apple row (was 14 / 14) and the scroll cover-read row (was 37) were set
+  from the `a123eee6a` numbers, before uploaded-cover playlists got covers.
+  `76dff3d31` reads one more page per newly covered tile (17 on first open, up
+  to 38 on scroll in this library), and removes the 34 blocked artwork
+  requests per open, so total requests fall and CPU is unchanged. The ceilings
+  are now per tile: 1 + one read per cover tile on screen, and one read per
+  cover tile over a full scroll, never repeated.
+- **Not done:** a playlist's own uploaded cover (`*.blobstore.apple.com`) is
+  still not shown. Allowing it would load each as a fixed 1200x1200 JPEG with
+  no size parameter, under a signature that changes on every library read
+  (after the 60 s cache).
+
+The scripts default to CDP port 9222; an App Control launch picks its own, so
+pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
+`gpu-trace.mjs` and `route-sweep.mjs`, which pin 9222).
+
+- **The tab's progress line** restarted a 1 s linear transition on every
+  position tick, so Chromium drew the whole window at display rate for as
+  long as a song played, on every tab. It now steps once a second.
+- **State pushes:** the host ticks the position once a second, and the main
+  process forwarded each tick to every window. Renderers interpolate the
+  position, so a tick that agrees with that within 1.25 s is now dropped
+  (MusicKit reports whole seconds), as is a broadcast equal to the last one.
+- **The host** is a WKWebView with no window on screen, which WebKit throttles
+  like a background tab; 73-81 MB across the host, its WebContent, Networking
+  and GPU processes. The Windows host (WebView2) measured 141 MB private.
+- **The Windows Spotify host** (same `ade-music-host.exe`, `--page page-spotify`,
+  Spotify's Web Playback SDK instead of MusicKit) measured on 2026-10-15 at
+  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to ADE's
+  own Connect device: 3.5% CPU and 237.7 MB private across the host and its 9
+  WebView2 children; 0.2% and 237.2 MB paused. The memory is 1.7x the Apple
+  Music host's 141 MB because the SDK runs its player in an `sdk.scdn.co`
+  iframe and Widevine decodes in its own process, so the tree has more
+  renderers; `--renderer-process-limit=1` does not cover either. Ceiling:
+  6% CPU playing, 320 MB private.
+- **Open item:** while the playing song's row is on screen, its three
+  equalizer bars (a CSS `steps()` animation) make Chromium update style and
+  draw every frame (243 style updates/s on this 240 Hz display). Driving the
+  same steps from Web Animations or from a timer cut style updates to 53-62/s
+  but did not lower renderer or GPU process CPU in an A/B, so the CSS stays.
 
 ### Hosted web client
 
@@ -488,3 +665,138 @@ Open items from this pass:
 - The view cache keeps a chat until 128 MB of cached events are held. A
   session that visits many long chats holds all of them up to that limit; the
   heap row above is 16 chats.
+
+### Project database identity guard
+
+Measured on macOS arm64, Node 26.7.0, warm interleaved medians across seven
+runs of 20,000 SQLite operations; implementation commit `b34127f77`
+(baseline `96e4a0de6`):
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| 100-row KV list query | 32.64 μs | 35.17 μs | Existing 25% regression rule |
+| Device/inode guard incremental cost per operation | — | 2.53 μs | 5 μs |
+
+The representative query increases 7.75%. A trivial one-row KV read increases
+5.48 → 8.34 μs (+2.86 μs); this small query pays the full identity-check cost.
+Checks run per operation to avoid a polling window that can write to a moved
+file. These service measurements do not establish Electron idle, GPU, typing,
+or memory numbers. Full desktop scenarios were not measured for this change.
+
+The desktop main process also checks each open project's `ade.db` every
+5 seconds (`openProjectDataWatch.ts`); no renderer work until it fires. While
+the recovery screen waits on missing data it diagnoses every 2 seconds; the
+Trash lookup inside is cached for 5 seconds per project. Measured with an
+ad-hoc Node loop (`fs.promises.stat(…, { bigint: true })`, 200 warm-up calls,
+then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
+
+| Metric | Before | After | Budget |
+|---|---|---|---|
+| Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |
+
+## iOS app: Lanes and PRs (simulator)
+
+The iOS app is measured on its own columns: a simulator on the Mac Studio
+(Mac16,9, M4 Max, 36 GB, macOS 27.0), iPhone 17 Pro on iOS 26.3, Debug
+build, paired to that Mac's brain with the ADE repository open (8 lanes,
+7 open / 1,247 merged / 186 closed PRs). Measured 2026-10-13 against main
+`3137fc9b9`, other agents and builds running on the Mac.
+
+How: launch with field diagnostics on
+(`xcrun simctl spawn <udid> defaults write com.ade.ios adeScrollDiagnostics -bool YES`),
+open the project, then run
+`apps/ios/Scripts/bench-lanes-prs.sh <udid> "<lane name>" <pr number>`. It
+drives a fixed ~70 s path (Lanes tab, scroll, open two lanes, PRs tab,
+scroll, Merged, open a PR, its Checks and Files tabs, back) and summarizes
+`Documents/scroll-diagnostics.jsonl` per step: host commands, main-thread
+stalls (frames of 100 ms or more), scroll hitches, body evaluations and ready
+times. "Before" is one run; "after" is the mean of two. Host latency
+(GitHub through the brain) swings run to run, so ready times that wait on a
+host call are context, not ceilings.
+
+| Scenario / metric | Before | After | Ceiling |
+| --- | ---: | ---: | ---: |
+| Relaunch to Lanes/PRs rows (cached project) | never (stuck on skeletons) | ~1 s | 3 s |
+| Main-thread stalls ≥100 ms, whole path (count) | 41 | 33 | 40 |
+| Main-thread stall time, whole path (ms) | 6,432 | 5,290 | 6,600 |
+| Lanes root body evaluations, whole path | 191 | 39 | 60 |
+| PR list body evaluations, whole path | 106 | 30 | 45 |
+| Network-discovery main-thread time per browse (ms) | 63–74 (×2 per ~30 s) | <50 (not logged) | 50 |
+| Lane detail: cached content after open (ms) | 92 / 318 | 94 / 53 | 150 |
+| Lane detail: fresh host detail after open (ms) | 466 / 299 | 459–574 | — (host) |
+| PR detail: snapshot ready (ms) | 1,616 | 2,395–2,532 | — (host: `prs.getMobileGithubDetail` 1.3–2.2 s) |
+| Host commands, whole path | 28 | 31–34 | 40 |
+
+- Relaunch: the cached project id and the machine's id for the same checkout
+  flipped back and forth during the first hydration; each flip cancelled the
+  refreshes in flight and left every domain on "syncing initial data".
+- Body evaluations: Lanes and PRs now take a narrowed `Equatable` input
+  struct (the Work tab's pattern), so a hidden tab no longer re-renders on
+  every sync publish.
+- Discovery: Bonjour alternately resolving the Mac with and without its IPv6
+  addresses re-saved the paired profile on every browse (46 ms) and
+  republished it to every screen.
+- Host commands rose by a few `prs.getGitHubSnapshot` reads that follow the
+  host's own revision bumps; switching to Merged still reads it three times,
+  which is the next thing to trim.
+
+### Spotify (playing inside ADE)
+
+Measured 2026-10-14 on this Mac Studio, dev build in an App Control session,
+signed in with Premium, DevTools closed, other agents running. Spotify's Web
+Playback SDK runs in the same macOS host as Apple Music (`page-spotify`, its own
+WebKit profile). Apple Music's rows above are the comparison; Spotify has no
+before. "Play accepted" is from the command to the first playing state, which
+Spotify's service sets when Spotify accepts the play, not when audio starts.
+
+| Metric | How | Apple Music | Spotify | Ceiling |
+|---|---|---:|---:|---:|
+| Player host and its WebKit processes, playing: CPU | `music-host.sh 10`, 4 runs | 0.5-0.8% | 0.6-1.1% | 3% |
+| Same, playing: physical footprint | same | 75-81 MB | 77-82 MB | 120 MB |
+| Same, paused: CPU / footprint | same, 3 runs | 0.0-0.2% / 73-75 MB | 0.1-0.2% / 75 MB | 1% / 120 MB |
+| Music state pushes to each window, steady playback | `music.mjs pushes 12` | 0/s | 0/s | 0.2/s |
+| Tab opened, then play 2.5 s later (the player starts with the tab) | `cdp.mjs eval`: `unload`, `warm`, wait, `playItems`, 5 runs | — | 0.15-0.35 s (was 1.2-1.5 s before the player started with the tab) | 0.6 s |
+| Play accepted, player not running (play the instant it starts) | `music.mjs first-play cold`, 4 runs | 0.76-1.15 s | 1.19-1.61 s | 2 s |
+| Same, player running | `music.mjs first-play warm`, 3 runs | 0.16-0.39 s | 0.16-0.17 s | 0.6 s |
+| Tab closed: player processes / audio output | `pgrep`, `pmset -g assertions` | 0 / none | 0 / none | 0 / none |
+
+- `music.mjs first-play` plays five songs of a search for Spotify (it has no
+  charts).
+- A cold start is about 0.25 s to launch the host, 0.2 s to load the SDK,
+  0.2 s until the SDK asks for a token, then 0.4-0.8 s for Spotify to register
+  the device over the network. None of it can be skipped, so the player starts
+  when the tab opens (like Apple Music's host) and stops after five minutes
+  without playing.
+- While ADE's own player plays, the Web API is read once a minute instead of
+  every 15 s: the SDK reports track, pause and position changes itself.
+- The service's request budget (`spotifyService.test.ts`, fake time): a closed
+  tab makes 0 requests; a device other than ADE playing 200-second songs makes
+  at most 46 reads and 6 pushes per ten minutes.
+- Windows (WebView2, Widevine) is measured separately; see the Windows numbers
+  in the PR.
+
+### Focus attention inference (2026-10-15)
+
+Service measurement on the baseline MacBook Pro, Node 22.23.2: four representative
+reply endings, 20,000 classifications per round, six interleaved warm rounds.
+Baseline source: `c01b80fd2`; candidate: the Focus lifecycle fix. This measures
+local classification only, excluding the optional model request.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Reply-ending classification, median per call | 0.00131 ms | 0.00136 ms | Existing 25% regression rule |
+
+Warm service polling was measured separately with the same baseline and
+candidate (`1d3b6389e`, plus query type annotations): 1,000 already-handled PRs,
+no pending origins, an in-memory native SQLite database, 100 polls per round,
+eight interleaved rounds with the first two discarded.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Handled PR snapshot, median per poll | 1.31 ms | 1.40 ms | Existing 25% regression rule |
+
+The polling increase is about 7%, within the budget. The classification
+difference is within measurement noise. The reported optional offer is
+now decided locally, so that case does not make a model request. These service
+numbers do not establish Electron idle, GPU, typing, or memory performance;
+those desktop scenarios were not measured for this change.

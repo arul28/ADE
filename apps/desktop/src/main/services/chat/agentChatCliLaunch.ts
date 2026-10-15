@@ -123,6 +123,7 @@ export async function launchAgentChatCli(
     ...((provider === "codex" || provider === "claude" || provider === "opencode") && (arg.fastMode ?? arg.codexFastMode) !== undefined
       ? { fastMode: arg.fastMode ?? arg.codexFastMode }
       : {}),
+    ...(provider === "codex" && arg.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
     ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
@@ -154,6 +155,7 @@ export async function launchAgentChatCli(
     model: trackedPreset?.model || arg.model || null,
     reasoningEffort: arg.reasoningEffort ?? null,
     fastMode: arg.fastMode ?? arg.codexFastMode ?? null,
+    ...(provider === "codex" && arg.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(instance ? { instanceId: instance.id } : {}),
     ...(arg.presetId ? { presetId: arg.presetId } : {}),
     ...(arg.credentialId ? { credentialId: arg.credentialId } : {}),

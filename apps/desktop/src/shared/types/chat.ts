@@ -21,6 +21,8 @@ import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
+import type { ClaudePromptCache } from "../claudePromptCache";
+import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -75,6 +77,7 @@ export type AgentChatProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -176,7 +179,7 @@ export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_re
 export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
 
 /** Providers whose compactions ADE records. */
-export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | AcpChatProvider;
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "muse" | AcpChatProvider;
 
 /**
  * `provider` means the runtime reported the compaction itself. `inferred`
@@ -338,6 +341,8 @@ export type AgentChatClaudePlugin = {
   source: "local";
   description?: string;
   version?: string;
+  /** True when the plugin has a hooks module: a mod, which may draw in the chat. */
+  isMod?: boolean;
 };
 export type AgentChatClaudePluginsArgs = {
   sessionId?: string;
@@ -371,6 +376,38 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/**
+ * Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. The
+ * value is sent verbatim as `approvalMode` on `session/start` and
+ * `session/setApprovalMode`; Muse defines each mode, ADE only selects one.
+ */
+export type AgentChatMusePermissionMode = "denyUnmatched" | "promptUnmatched" | "onRequest" | "allowAll";
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES = [
+  "denyUnmatched",
+  "promptUnmatched",
+  "onRequest",
+  "allowAll",
+] as const satisfies readonly AgentChatMusePermissionMode[];
+export const DEFAULT_MUSE_PERMISSION_MODE: AgentChatMusePermissionMode = "onRequest";
+
+/** Shared copy for every Muse permission picker (chat, handoff, and CLI launch). */
+export const AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS: Record<
+  AgentChatMusePermissionMode,
+  { label: string; detail: string }
+> = {
+  denyUnmatched: { label: "Read-only", detail: "Muse refuses any tool call its rules do not already allow." },
+  promptUnmatched: { label: "Ask", detail: "Muse asks before any tool call its rules do not already allow." },
+  onRequest: { label: "Auto", detail: "Muse's default: sandboxed work runs, and Muse asks when it needs more." },
+  allowAll: { label: "Full access", detail: "Muse runs every tool call without asking." },
+};
+
+/** Muse's CLI only knows three approval words; the two cautious wire modes share `untrusted`. */
+export function museCliApprovalFlag(mode: AgentChatMusePermissionMode): "untrusted" | "on-request" | "never" {
+  if (mode === "allowAll") return "never";
+  if (mode === "onRequest") return "on-request";
+  return "untrusted";
+}
+
 /** Public Droid-native permission values accepted by chat creation surfaces. */
 export const AGENT_CHAT_DROID_PERMISSION_MODE_VALUES = [
   "read-only",
@@ -440,6 +477,49 @@ export type AgentChatSpawnCompletion = {
  */
 export function spawnCompletedNoticeMessage(childTitle: string): string {
   return `Chat "${childTitle}" finished its turn`;
+}
+
+/** What a `spawn_completed` notice reports: the child chat, and where it ran. */
+export type SpawnCompletedNotice = {
+  /** Null when the notice's detail lost its completion (an old or truncated transcript). */
+  childSessionId: string | null;
+  childTitle: string;
+  childMachineName: string | null;
+};
+
+/**
+ * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
+ * completion, in EITHER wording: the current sentence, and the pre-rename
+ * `Peer "<title>" turn finished` that persisted transcripts still hold and are
+ * never re-emitted. One anchored match with a capture group, so a message that
+ * is not a completion notice fails to match instead of coming back mangled.
+ */
+const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
+
+/**
+ * The one reader of a `spawn_completed` notice, for every surface that draws
+ * or groups it. Null for any other event.
+ */
+export function readSpawnCompletedNotice(event: AgentChatEvent): SpawnCompletedNotice | null {
+  if (event.type !== "system_notice" || event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
+  const completion = event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
+  return {
+    childSessionId: completion?.childSessionId?.trim() || null,
+    childTitle: completion?.childTitle?.trim()
+      || SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim()
+      || "Chat",
+    childMachineName: completion?.childMachineName?.trim() || null,
+  };
+}
+
+/**
+ * The voice conversation a notice reports, or null. One reader so the chat row,
+ * and anything else that wants the numbers, key on the same discriminator the
+ * producer sets instead of probing the shape of `detail`.
+ */
+export function readVoiceSessionNotice(event: AgentChatEvent): AgentChatVoiceSession | null {
+  if (event.type !== "system_notice" || event.status !== "voice_session") return null;
+  return event.voiceSession ?? null;
 }
 
 /** One-line notice when a child can no longer report to a deleted parent chat. */
@@ -516,6 +596,28 @@ export type AgentChatNoticeDetailMetric = {
 export type AgentChatNoticeDetailSection = {
   title: string;
   items: Array<string | AgentChatNoticeDetailMetric>;
+};
+
+/**
+ * A voice conversation that has ended, as the chat's own card reads it.
+ *
+ * Carried on the notice itself rather than inside `detail`. `detail` is what
+ * every other surface prints, and iOS renders an object `detail` as
+ * pretty-printed JSON — so `detail` keeps the readable transcript and the
+ * structured numbers ride beside it, where a decoder that does not know the
+ * field simply ignores it.
+ */
+export type AgentChatVoiceSession = {
+  durationMs: number;
+  /** Spoken turns the user took. */
+  requests: number;
+  /** Requests that actually reached the agent; a refused route is not one. */
+  handoffs: number;
+  /** True when the user asked for the call to end instead of pressing End. */
+  endedByVoice: boolean;
+  /** Why the call ended, when it was not the user ending it. */
+  error?: string | null;
+  transcript: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
 export type AgentChatNoticeDetail = {
@@ -959,7 +1061,8 @@ export type CodexThreadGoalStatus =
 export type CodexThreadGoal = {
   objective?: string | null;
   tokenBudget?: number | null;
-  status?: CodexThreadGoalStatus;
+  /** Muse sends status strings ADE does not name yet; the card shows those as active. */
+  status?: CodexThreadGoalStatus | (string & {});
   tokensUsed?: number | null;
   timeUsedSeconds?: number | null;
   createdAt?: string | null;
@@ -1017,7 +1120,21 @@ export type AgentChatDevinCloudConfig = {
   pinned?: boolean;
 };
 
-export type AgentChatTextPhase = "commentary" | "final_answer";
+/**
+ * The provider's own label for a piece of assistant text, when it sends one.
+ *
+ * - `commentary` — mid-turn narration (preamble, progress). Never the answer.
+ * - `partial_answer` — stable answer text that more output may follow. This is
+ *   *content*, not narration: codex emits it for a result it has finished
+ *   stating while it goes on to produce another, so the turn's terminal answer
+ *   does not repeat it.
+ * - `final_answer` — the turn's declared terminal answer.
+ *
+ * Only Codex labels these, and not for every model; absent means unknown and
+ * the reader falls back to position. See `chatTurnFold.ts` for how each one is
+ * treated at turn end.
+ */
+export type AgentChatTextPhase = "commentary" | "partial_answer" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
 export type AgentChatImportProvider = ExternalSessionProvider;
@@ -1565,6 +1682,8 @@ export type AgentChatEvent =
         cacheWrite1hTokens?: number | null;
         /** Model requests made during the turn, when the runtime counts them. */
         requestCount?: number | null;
+        /** When the turn's last model request started (Claude times its prompt cache from here). */
+        lastRequestStartedAt?: string | null;
       };
       costUsd?: number | null;
       /**
@@ -2044,6 +2163,8 @@ export type AgentChatEvent =
       status?: string;
       message: string;
       detail?: string | AgentChatNoticeDetail;
+      /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
+      voiceSession?: AgentChatVoiceSession;
       steerId?: string;
       turnId?: string;
     }
@@ -2227,6 +2348,8 @@ export type AgentChatEvent =
       title?: string;
       manuallyNamed?: boolean;
       claudeTag?: string | null;
+      /** What Claude mods draw for this chat right now, whole. Never stored. */
+      claudePluginUi?: ClaudePluginUiSnapshot;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
       /**
@@ -2249,6 +2372,7 @@ export type AgentChatEvent =
       codexConfigSource?: AgentChatCodexConfigSource;
       opencodePermissionMode?: AgentChatOpenCodePermissionMode;
       droidPermissionMode?: AgentChatDroidPermissionMode;
+      musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -2698,7 +2822,7 @@ export type AgentChatAcpPermissionMode = "plan" | "default" | "auto-edit" | "aut
  * is `session/request_permission` in every dialect, so a card cannot tell them
  * apart and does not need to.
  */
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "acp" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "acp" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {
@@ -2809,6 +2933,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   /** Cursor Cloud service tier; absent/null means let Cursor choose. */
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
@@ -2864,7 +2994,10 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Native Pi JSONL session pointer used for SDK resume and CLI handoff. */
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -2921,6 +3054,8 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; live-only and cleared when idle. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   archivedAt?: string | null;
   threadId?: string;
   continuityRecovery?: AgentChatContinuityRecovery;
@@ -2992,6 +3127,8 @@ export type AgentChatRuntimeOwnerRef = {
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   compactionIdleMode?: "ask" | "always" | "never";
+  /** The Compact first floor for a Claude chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
+  compactFirstMinTokens?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;
   laneId: string;
@@ -3021,6 +3158,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
@@ -3047,7 +3190,10 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   /** True when the host explicitly cleared Cursor's mode with `null`. */
@@ -3100,6 +3246,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
+  /** Claude only. The chat's prompt cache after its last turn; absent until a turn writes one. */
+  promptCache?: ClaudePromptCache | null;
   startedAt: string;
   endedAt: string | null;
   archivedAt?: string | null;
@@ -3617,6 +3765,7 @@ export type AgentChatModelCatalog = {
 export type AgentChatModelCatalogRefreshProvider =
   | "opencode"
   | "pi"
+  | "muse"
   | "cursor"
   | "droid"
   | "lmstudio"
@@ -3865,6 +4014,12 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
@@ -3898,7 +4053,10 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   piModelId?: string | null;
   piSessionId?: string | null;
   piSessionFile?: string | null;
+  /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
+  museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;
@@ -4053,6 +4211,7 @@ export type AgentChatCliLaunchProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -4067,6 +4226,8 @@ export type AgentChatCliLaunchProvider =
  * launch. Provider/model/permission build the startup command server-side.
  */
 export type AgentChatLaunchCliArgs = {
+  /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+  fastTier?: "ultrafast" | null;
   laneId: string;
   provider: AgentChatCliLaunchProvider;
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
@@ -4131,7 +4292,7 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * from one of them is brief-only. Adding one here would promise a copied thread
  * that no dialect can produce.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor", "muse"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
@@ -4149,7 +4310,8 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
 }
 
 /**
- * Droid can fork locally, but its session index is machine-local, so the
+ * Droid and Muse fork locally (Muse with MSP `session/fork`), but their
+ * session stores are machine-local (Muse's under `<museHome>/sessions`), so the
  * relocated-file resume path is not portable across ADE machines yet. Cursor's
  * fork is an ADE-side transcript replay with no transportable provider artifact
  * at all, so there is nothing to package for another machine. Derived from the
@@ -4157,7 +4319,7 @@ export function providerForkReplaysTranscript(provider: AgentChatProvider | null
  * silently leave the other behind.
  */
 export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid" && !providerForkReplaysTranscript(provider));
+  .filter((provider) => provider !== "droid" && provider !== "muse" && !providerForkReplaysTranscript(provider));
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -4192,6 +4354,8 @@ export type AgentChatHandoffArgs = {
    */
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -4200,6 +4364,7 @@ export type AgentChatHandoffArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4229,12 +4394,15 @@ export type AgentChatCrossMachineTargetConfig = {
   targetModelId: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4770,6 +4938,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
+  // Muse: `turn/steer` joins the live turn, `turn/start` with `ifBusy: queue`
+  // stages it, and interrupt is `turn/interrupt` then a fresh turn.
+  muse: ["inline", "queue", "interrupt"],
   cursor: ["inline", "queue", "interrupt"],
   opencode: ["inline", "queue"],
   qwen: ["queue"],
@@ -4811,11 +4982,12 @@ export function activeTurnDispatchModes(
 /**
  * True when ADE itself holds `provider`'s staged queue and can change its
  * order. Codex keeps follow-ups in its app-server queue keyed by message id,
- * and OpenCode in its own inbox; neither has a move operation. iOS mirrors
+ * OpenCode in its own inbox, and Muse in its host queue (`turn/unqueue`);
+ * none has a move operation. iOS mirrors
  * this by hand beside `ACTIVE_TURN_DISPATCH_MODES`.
  */
 export function queuedSteersCanReorder(provider: AgentChatProvider | null | undefined): boolean {
-  return provider !== "codex" && provider !== "opencode";
+  return provider !== "codex" && provider !== "opencode" && provider !== "muse";
 }
 
 /** Pre-selected mode for a fresh session on `provider`. */
@@ -4873,7 +5045,7 @@ export function activeTurnInlineAttachmentBlock(
  * needs it. iOS mirrors it by hand alongside the table.
  */
 export function activeTurnInterruptContinues(provider: AgentChatProvider | null | undefined): boolean {
-  return provider === "cursor";
+  return provider === "cursor" || provider === "muse";
 }
 
 /**
@@ -5217,6 +5389,7 @@ export type AgentChatLaunchDefaults = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -5294,6 +5467,57 @@ export type AgentChatStopTaskResult = {
   sessionId: string;
   taskId: string;
   stopped: boolean;
+  reason?: string;
+};
+
+/**
+ * Send a note to one subagent (`taskId` as the subagent row names it). A
+ * running subagent folds it in; one that already finished takes it as a
+ * follow-up task. Runtimes without per-subagent messaging refuse it.
+ */
+export type AgentChatMessageSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  text: string;
+};
+
+export type AgentChatMessageSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  delivered: boolean;
+  /** `message` for a running subagent, `followup` for one that had finished. */
+  mode?: "message" | "followup";
+  reason?: string;
+};
+
+/**
+ * Per-subagent and per-workflow controls beyond Stop (`chat.stopTask`):
+ * interrupt the current step, resume, reopen or close a subagent; pause or
+ * resume a workflow run; skip or retry one workflow child (`childId` +
+ * `attempt`, as the workflow item reports them).
+ */
+export type AgentChatSubagentControlAction =
+  | "interrupt"
+  | "resume"
+  | "reopen"
+  | "close"
+  | "pause"
+  | "skip_child"
+  | "retry_child";
+
+export type AgentChatControlSubagentArgs = {
+  sessionId: string;
+  taskId: string;
+  action: AgentChatSubagentControlAction;
+  childId?: string;
+  attempt?: number;
+  reason?: string;
+};
+
+export type AgentChatControlSubagentResult = {
+  sessionId: string;
+  taskId: string;
+  applied: boolean;
   reason?: string;
 };
 
@@ -5384,6 +5608,8 @@ export type AgentChatCodexGetGoalArgs = {
 export type AgentChatCodexSetGoalArgs = {
   sessionId: string;
   objective: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 /**
@@ -5438,10 +5664,14 @@ export type AgentChatCodexRealtimeState = {
 export type AgentChatCodexSetGoalStatusArgs = {
   sessionId: string;
   status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
 };
 
 export type AgentChatCodexResetMemoryArgs = {
@@ -5533,8 +5763,20 @@ export type AgentChatUpdateSessionArgs = {
   /** Persist that the takeover banner was shown and answered or dismissed. */
   subagentTakeoverPromptShown?: boolean;
   modelId?: ModelId;
+  /**
+   * Move the chat onto a saved preset (its harness and its model; `modelId` is
+   * then ignored), or `null` to leave the one it runs on. A `modelId` alone
+   * leaves a preset only when it names another model.
+   */
+  presetId?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
+   * catalog offers it) or absent/null for plain Fast. Only read when fastMode
+   * is on and the model lists the tier; otherwise Fast is plain Fast.
+   */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
@@ -5546,6 +5788,7 @@ export type AgentChatUpdateSessionArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;

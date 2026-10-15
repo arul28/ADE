@@ -1,0 +1,364 @@
+/**
+ * MCP servers the provider CLIs already have on this computer.
+ *
+ * Each CLI keeps its own list in its own file and format. This reads them all
+ * into one shape so the settings page can offer "these exist here but not in
+ * ADE" and import one without the user retyping it.
+ *
+ * Main process only, and deliberately split in two: {@link scanProviderMcpConfigs}
+ * returns definitions WITH their env and header values, for the import path
+ * that moves them into the vault; {@link toFoundServers} is what may be sent to
+ * the renderer, and carries names only.
+ *
+ * Every read is best-effort. A file that is missing, unreadable, or not the
+ * shape expected contributes nothing; it never fails the scan.
+ */
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { ADE_RESERVED_MCP_SERVER_NAMES } from "../../../shared/callerMcpServers";
+import { isValidMcpRegistryName, normalizeMcpRegistryServer } from "../../../shared/mcpRegistry";
+import { mcpServerDefinitionFromConfig, type McpServerDefinition } from "../../../shared/mcpServerImport";
+import { parseJsonc } from "../../../shared/theme/jsonc";
+import type { McpConfigProvider, McpFoundServer, McpRegistryScan } from "../../../shared/types/mcpRegistry";
+import { pathsEqual } from "../shared/pathCompare";
+
+export type ScannedMcpServer = McpServerDefinition & { providers: McpConfigProvider[] };
+
+export type ProviderMcpScan = {
+  servers: ScannedMcpServer[];
+  skipped: string[];
+};
+
+export type ProviderMcpScanArgs = {
+  /** The open project, for the provider configs that are filed per project. */
+  projectRoot?: string | null;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A config file may be a megabyte of chat history (`~/.claude.json`); cap what is read. */
+const MAX_CONFIG_BYTES = 32 * 1024 * 1024;
+
+function readText(filePath: string): string | null {
+  try {
+    if (fs.statSync(filePath).size > MAX_CONFIG_BYTES) return null;
+    // A BOM is common on files written by Windows tools and breaks JSON.parse.
+    return fs.readFileSync(filePath, "utf8").replace(/^﻿/, "");
+  } catch {
+    return null;
+  }
+}
+
+function readJson(filePath: string): Record<string, unknown> | null {
+  const text = readText(filePath);
+  if (text == null) return null;
+  try {
+    const parsed = parseJsonc(text);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Codex: ~/.codex/config.toml
+// ---------------------------------------------------------------------------
+
+/**
+ * The one walk over a piece of TOML that knows what a string is. Calls `visit`
+ * for every character outside a string that is not a bracket, with how deep in
+ * lists and inline tables it sits; `visit` answers true to stop. Returns the
+ * depth where the walk ended.
+ *
+ * A basic string (`"..."`) has backslash escapes, a literal one (`'...'`) has
+ * none: a Windows path in single quotes ends at its closing quote.
+ */
+function scanTomlOutsideStrings(text: string, visit: (char: string, index: number, depth: number) => boolean): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (quote) {
+      if (char === "\\" && quote === "\"") index += 1;
+      else if (char === quote) quote = null;
+    } else if (char === "\"" || char === "'") {
+      quote = char;
+    } else if (char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === "]" || char === "}") {
+      depth -= 1;
+    } else if (visit(char, index, depth)) {
+      break;
+    }
+  }
+  return depth;
+}
+
+/** Where the first `target` outside a string is, or -1. */
+function findOutsideTomlStrings(text: string, target: string): number {
+  let found = -1;
+  scanTomlOutsideStrings(text, (char, index) => {
+    if (char !== target) return false;
+    found = index;
+    return true;
+  });
+  return found;
+}
+
+function stripTomlComment(line: string): string {
+  const hash = findOutsideTomlStrings(line, "#");
+  return hash < 0 ? line : line.slice(0, hash);
+}
+
+/** Splits a dotted TOML key (`mcp_servers."my.server".env`) into its segments. */
+function splitTomlKey(key: string): string[] {
+  const segments: string[] = [];
+  const pattern = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(?:\.|$)/y;
+  let match: RegExpExecArray | null;
+  let consumed = 0;
+  while (consumed < key.length && (match = pattern.exec(key)) !== null) {
+    segments.push(match[1] ?? match[2] ?? match[3] ?? "");
+    consumed = pattern.lastIndex;
+  }
+  return consumed >= key.length ? segments : [];
+}
+
+/**
+ * A TOML value, for the few kinds an MCP server entry uses: strings, booleans,
+ * numbers, lists of those, and one-line inline tables. Anything else is
+ * `undefined` and the key is skipped.
+ */
+function parseTomlValue(raw: string): unknown {
+  const text = raw.trim();
+  if (!text.length) return undefined;
+  if (text.startsWith("\"")) {
+    try {
+      // A TOML basic string and a JSON string share their escapes.
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  if (text.startsWith("'") && text.endsWith("'") && text.length >= 2) return text.slice(1, -1);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^[+-]?\d[\d_]*(\.\d+)?$/.test(text)) return Number(text.replace(/_/g, ""));
+  if (text.startsWith("[") && text.endsWith("]")) {
+    return splitTomlList(text.slice(1, -1)).map(parseTomlValue).filter((entry) => entry !== undefined);
+  }
+  if (text.startsWith("{") && text.endsWith("}")) {
+    const table: Record<string, unknown> = {};
+    for (const part of splitTomlList(text.slice(1, -1))) {
+      const equals = findTomlEquals(part);
+      if (equals < 0) continue;
+      const key = splitTomlKey(part.slice(0, equals).trim());
+      const value = parseTomlValue(part.slice(equals + 1));
+      if (key.length === 1 && value !== undefined) table[key[0]!] = value;
+    }
+    return table;
+  }
+  return undefined;
+}
+
+/** Splits on top-level commas: not inside a string, a list or an inline table. */
+function splitTomlList(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  scanTomlOutsideStrings(text, (char, index, depth) => {
+    if (char === "," && depth === 0) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+    return false;
+  });
+  parts.push(text.slice(start));
+  return parts.map((part) => part.trim()).filter((part) => part.length > 0);
+}
+
+function findTomlEquals(line: string): number {
+  return findOutsideTomlStrings(line, "=");
+}
+
+/** True while a list opened on an earlier line has not closed yet. */
+function tomlListIsOpen(value: string): boolean {
+  return scanTomlOutsideStrings(value, () => false) > 0;
+}
+
+/**
+ * The `[mcp_servers.<name>]` tables of a Codex config, each as a plain object
+ * with its sub-tables (`env`, `http_headers`, `env_http_headers`) nested.
+ *
+ * Not a TOML parser: it reads table headers and `key = value` lines under
+ * `mcp_servers`, which is how Codex itself writes them. A server declared only
+ * through an inline `mcp_servers = { ... }` table is not read.
+ */
+export function parseCodexMcpServers(configText: string): Record<string, Record<string, unknown>> {
+  const servers: Record<string, Record<string, unknown>> = {};
+  let target: Record<string, unknown> | null = null;
+  const lines = configText.replace(/\r\n?/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    let line = stripTomlComment(lines[index]!).trim();
+    if (!line.length) continue;
+    const header = line.match(/^\[\[?\s*(.*?)\s*\]\]?$/);
+    if (header && findTomlEquals(line) < 0) {
+      const segments = splitTomlKey(header[1] ?? "");
+      target = null;
+      if (segments[0] !== "mcp_servers" || segments.length < 2 || segments.length > 3) continue;
+      const server = (servers[segments[1]!] ??= {});
+      if (segments.length === 2) {
+        target = server;
+      } else {
+        const existing = server[segments[2]!];
+        const sub: Record<string, unknown> = isRecord(existing) ? existing : {};
+        server[segments[2]!] = sub;
+        target = sub;
+      }
+      continue;
+    }
+    if (!target) continue;
+    const equals = findTomlEquals(line);
+    if (equals < 0) continue;
+    // A list may run over several lines; join them before reading the value.
+    while (tomlListIsOpen(line.slice(equals + 1)) && index + 1 < lines.length) {
+      index += 1;
+      line += ` ${stripTomlComment(lines[index]!).trim()}`;
+    }
+    const key = splitTomlKey(line.slice(0, equals).trim());
+    const value = parseTomlValue(line.slice(equals + 1));
+    if (key.length === 1 && value !== undefined) target[key[0]!] = value;
+  }
+  return servers;
+}
+
+/**
+ * Codex names the env variable a token is read from instead of storing the
+ * token. The registry stores values, so read the variable here; a variable
+ * this process does not have leaves the header named and its value missing.
+ */
+function codexEntryAsConfig(entry: Record<string, unknown>, env: NodeJS.ProcessEnv): Record<string, unknown> {
+  const headers: Record<string, string> = {};
+  if (isRecord(entry.env_http_headers)) {
+    for (const [header, variable] of Object.entries(entry.env_http_headers)) {
+      if (typeof variable === "string") headers[header] = env[variable] ?? "";
+    }
+  }
+  if (typeof entry.bearer_token_env_var === "string" && entry.bearer_token_env_var.trim()) {
+    const token = env[entry.bearer_token_env_var.trim()];
+    headers.Authorization = token ? `Bearer ${token}` : "";
+  }
+  return {
+    ...entry,
+    http_headers: { ...headers, ...(isRecord(entry.http_headers) ? entry.http_headers : {}) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The scan
+// ---------------------------------------------------------------------------
+
+type RawSource = { provider: McpConfigProvider; table: unknown };
+
+function rawSources(args: Required<Pick<ProviderMcpScanArgs, "env" | "homeDir">> & { projectRoot: string | null }): RawSource[] {
+  const { env, homeDir, projectRoot } = args;
+  const sources: RawSource[] = [];
+
+  // Claude Code: one JSON file. User servers at the top, and one more table
+  // per project path for the servers added "for this project only".
+  const claudeDir = env.CLAUDE_CONFIG_DIR?.trim();
+  const claude = readJson(path.join(claudeDir || homeDir, ".claude.json"));
+  if (claude) {
+    sources.push({ provider: "claude", table: claude.mcpServers });
+    if (projectRoot && isRecord(claude.projects)) {
+      for (const [projectPath, entry] of Object.entries(claude.projects)) {
+        if (isRecord(entry) && pathsEqual(projectPath, projectRoot)) {
+          sources.push({ provider: "claude", table: entry.mcpServers });
+        }
+      }
+    }
+  }
+
+  const codexHome = env.CODEX_HOME?.trim() || path.join(homeDir, ".codex");
+  const codexText = readText(path.join(codexHome, "config.toml"));
+  if (codexText != null) {
+    const table: Record<string, unknown> = {};
+    for (const [name, entry] of Object.entries(parseCodexMcpServers(codexText))) {
+      table[name] = codexEntryAsConfig(entry, env);
+    }
+    sources.push({ provider: "codex", table });
+  }
+
+  sources.push({ provider: "cursor", table: readJson(path.join(homeDir, ".cursor", "mcp.json"))?.mcpServers });
+
+  // OpenCode follows the XDG layout on every platform, Windows included.
+  const openCodeDir = path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "opencode");
+  for (const file of ["opencode.json", "opencode.jsonc"]) {
+    sources.push({ provider: "opencode", table: readJson(path.join(openCodeDir, file))?.mcp });
+  }
+
+  sources.push({ provider: "droid", table: readJson(path.join(homeDir, ".factory", "mcp.json"))?.mcpServers });
+  return sources;
+}
+
+/**
+ * Every server the provider configs on this computer declare, one per name.
+ *
+ * The same name in two providers is one row: the first definition found is the
+ * one kept (Claude, Codex, Cursor, OpenCode, Droid, in that order) and the rest
+ * only add their provider to `providers`.
+ */
+export function scanProviderMcpConfigs(args: ProviderMcpScanArgs = {}): ProviderMcpScan {
+  const env = args.env ?? process.env;
+  const homeDir = args.homeDir ?? os.homedir();
+  const byName = new Map<string, ScannedMcpServer>();
+  const skipped: string[] = [];
+  for (const source of rawSources({ env, homeDir, projectRoot: args.projectRoot?.trim() || null })) {
+    if (!isRecord(source.table)) continue;
+    for (const [rawName, entry] of Object.entries(source.table)) {
+      const name = rawName.trim();
+      // ADE starts these itself; importing one would shadow ADE's own server.
+      if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) continue;
+      const existing = byName.get(name);
+      if (existing) {
+        if (!existing.providers.includes(source.provider)) existing.providers.push(source.provider);
+        continue;
+      }
+      const definition = mcpServerDefinitionFromConfig(name, entry);
+      const usable = definition != null && isValidMcpRegistryName(name) && normalizeMcpRegistryServer({
+        ...definition,
+        envNames: Object.keys(definition.env),
+        headerNames: Object.keys(definition.headers),
+      }) != null;
+      if (!definition || !usable) {
+        if (name && !skipped.includes(name)) skipped.push(name);
+        continue;
+      }
+      byName.set(name, { ...definition, providers: [source.provider] });
+    }
+  }
+  const servers = [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
+  return { servers, skipped: skipped.filter((name) => !byName.has(name)).sort((left, right) => left.localeCompare(right)) };
+}
+
+/** The scan as the renderer may see it: every value dropped, names kept. */
+export function toFoundServers(scan: ProviderMcpScan): McpRegistryScan {
+  return {
+    servers: scan.servers.map((server): McpFoundServer => ({
+      name: server.name,
+      transport: server.transport,
+      ...(server.command ? { command: server.command } : {}),
+      ...(server.args?.length ? { args: [...server.args] } : {}),
+      ...(server.url ? { url: server.url } : {}),
+      envNames: Object.keys(server.env),
+      headerNames: Object.keys(server.headers),
+      providers: [...server.providers],
+    })),
+    skipped: [...scan.skipped],
+  };
+}

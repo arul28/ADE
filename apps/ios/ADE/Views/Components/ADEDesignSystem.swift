@@ -133,6 +133,7 @@ enum ADEColor {
     case "deepseek": return brandDeepSeek
     case "xai", "grok": return brandXAI
     case "groq": return brandGroq
+    case "muse": return ADESharedTheme.brandMuse
     case "qwen": return ADESharedTheme.brandQwen
     case "kimi", "moonshot", "moonshotai": return ADESharedTheme.brandKimi
     case "copilot", "github-copilot": return ADESharedTheme.brandCopilot
@@ -445,6 +446,7 @@ enum ADEColor {
     "factory": 0xD46C2E,
     "opencode": 0x739CEE,
     "pi": 0x181C25,
+    "muse": 0x0866FF,
     "google": 0xF59E0B,
     "gemini": 0xF59E0B,
     "mistral": 0xF97316,

@@ -179,8 +179,6 @@ describe("parseSceneHostMessage", () => {
   it("carries a usable nonce through and drops an unusable one", () => {
     expect(parseSceneHostMessage({ __adeScene: 1, type: "settled", nonce: "doc-7", payload: {} }))
       .toEqual({ nonce: "doc-7", type: "settled", payload: { height: undefined } });
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", nonce: "doc-7", payload: { name: "go" } }))
-      .toMatchObject({ nonce: "doc-7", type: "emit" });
     // Neither a wrong type nor an empty string may look like a real nonce.
     expect(parseSceneHostMessage({ __adeScene: 1, type: "ready", nonce: 7, payload: {} }))
       .not.toHaveProperty("nonce");
@@ -192,8 +190,7 @@ describe("parseSceneHostMessage", () => {
     expect(long?.nonce?.length).toBe(120);
   });
 
-  it("drops an emit with no name and truncates a long error", () => {
-    expect(parseSceneHostMessage({ __adeScene: 1, type: "emit", payload: {} })).toBeNull();
+  it("truncates a long error", () => {
     const err = parseSceneHostMessage({ __adeScene: 1, type: "error", payload: { message: "e".repeat(900) } });
     expect(err?.type).toBe("error");
     expect(err && "message" in err.payload ? err.payload.message.length : 0).toBe(500);

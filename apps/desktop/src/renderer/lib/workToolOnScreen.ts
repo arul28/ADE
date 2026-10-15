@@ -59,23 +59,11 @@ function subscribeMountChanges(listener: () => void): () => void {
  * Whether a surface's element is mounted, kept current across mounts.
  *
  * Mounted, not measured: this answers "is the pane showing it", which a
- * surface that must never duplicate the pane (the Mac Desktop's floating
- * player, the turn's time-lapse) needs even while the pane slides open.
+ * surface that must never duplicate the pane — the Mac Desktop's floating
+ * player, App Control's — needs even while the pane slides open.
  */
 export function useWorkSurfaceElementMounted(key: string | null): boolean {
   const snapshot = () => (key ? isWorkSurfaceElementMounted(key) : false);
-  return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
-}
-
-/**
- * Whether a surface is showing: laid out in the tools pane, or floating over
- * the chat. `useWorkSurfaceElementMounted` answers only the first, so a card
- * that must not duplicate the floating player — the turn's time-lapse — needs
- * this one. A floating surface is never laid out in the pane, so its key only
- * ever appears in the `floating` map.
- */
-export function useWorkSurfaceMounted(key: string | null): boolean {
-  const snapshot = () => (key ? isWorkSurfaceMounted(key) : false);
   return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
 }
 
@@ -89,9 +77,9 @@ export function useWorkSurfaceMountRef<T extends Element>(key: string | null): (
 }
 
 /**
- * A floating surface (the Mac Desktop card) is not laid out in the tools pane,
- * and in picture in picture it has no box at all, so only its own "I am
- * showing" and the window count. The return value is its unshow.
+ * A floating surface (the Mac Desktop or App Control player) is not laid out
+ * in the tools pane, and in picture in picture it has no box at all, so only
+ * its own "I am showing" and the window count. The return value is its unshow.
  */
 export function noteFloatingWorkSurfaceShown(key: string): () => void {
   floating.set(key, (floating.get(key) ?? 0) + 1);
@@ -105,10 +93,6 @@ export function noteFloatingWorkSurfaceShown(key: string): () => void {
     else floating.delete(key);
     notifyMountChange();
   };
-}
-
-export function isWorkSurfaceMounted(key: string): boolean {
-  return (mounted.get(key)?.size ?? 0) > 0 || (floating.get(key) ?? 0) > 0;
 }
 
 /** The window is showing, so anything laid out in it can be seen. */

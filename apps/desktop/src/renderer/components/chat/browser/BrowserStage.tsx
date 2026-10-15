@@ -87,7 +87,7 @@ export type BrowserStageProps = {
   launchpadGroups: BrowserLaunchpadGroup[];
   letterboxed: boolean;
   emulation: BuiltInBrowserEmulationState | null;
-  /** The fixed layout of an agent-owned or recording tab, when no preset is on. */
+  /** The fixed layout of a recording tab, when no preset is on. */
   agentViewport?: { width: number; height: number } | null;
   busy: string | null;
   onRotateEmulation: () => void;

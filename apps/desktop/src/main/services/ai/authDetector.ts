@@ -9,6 +9,7 @@ import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   invalidateExecutableLookupCache,
+  refreshWindowsPersistedPathDirs,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
@@ -25,6 +26,7 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
   | "claude"
@@ -72,7 +74,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: "claude" | "codex" | "cursor" | "droid" | AcpCliName;
+      cli: "claude" | "codex" | "cursor" | "droid" | "muse" | AcpCliName;
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -400,6 +402,9 @@ async function inspectCliAuthentication(
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
+      // A missing binary answers no probe; the remaining ones would only
+      // spawn more `cmd.exe` "not recognized" exits on Windows.
+      if (result.notFound) break;
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
       const normalized = output.toLowerCase();
 
@@ -485,6 +490,7 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
+      if (result.notFound) break;
       const stdout = result.stdout ?? "";
       const normalized = `${stdout}\n${result.stderr ?? ""}`.trim().toLowerCase();
 
@@ -1242,6 +1248,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     cachedCliAuth = null;
     cachedLocalProviders = null;
     invalidateExecutableLookupCache();
+  }
+  // Windows: pick up CLIs whose installer only touched the persisted PATH
+  // since ADE started. Cached for 30 s, so a non-forced pass usually costs
+  // nothing; the forced pass (Settings "re-check") always rereads it. Folding
+  // it into process.env as well means provider CLIs spawned from here on (and
+  // their own children) resolve the same tools. On Windows that merge spawns
+  // nothing; elsewhere it runs a login shell, so it stays force-only there.
+  await refreshWindowsPersistedPathDirs({ force: options?.force === true });
+  if (options?.force || process.platform === "win32") {
     await refreshProcessPathFromShell();
   }
 
@@ -1365,6 +1380,23 @@ export async function detectAllAuth(
         });
       }
     }
+  }
+
+  // Muse is not a PATH CLI: ADE runs only its pinned build from the tools
+  // cache, so it is reported from there, signed in when META_API_KEY, a key
+  // saved in ADE, or Muse's auth.json is present. Never from a `muse` on PATH.
+  const musePath = resolveMuseExecutable().path;
+  if (musePath) {
+    // Lazy, like every other key-store read in this file.
+    const { inspectMuseCredentials } = await import("./museAuth");
+    const museCredentials = inspectMuseCredentials();
+    results.push({
+      type: "cli-subscription",
+      cli: "muse",
+      path: musePath,
+      authenticated: museCredentials.source != null,
+      verified: false,
+    });
   }
 
   // 2. API keys from config + secure local store.

@@ -106,20 +106,28 @@ struct LanesAcrossMachinesPreviewHost: View {
               .foregroundStyle(ADEColor.textMuted)
               .frame(maxWidth: .infinity, alignment: .leading)
             ForEach([studio, macbook, windows], id: \.first?.id) { group in
-              LaneTreeView(
-                snapshots: group,
-                pinnedLaneIds: [],
-                openLaneIds: ["s-sync"],
-                allLaneSnapshots: group,
-                lanePrTagsByLaneId: [:],
-                transitionNamespace: nil,
-                selectedLaneId: nil,
-                onRefreshRoot: {},
-                onContextMenu: { _ in AnyView(EmptyView()) },
-                onTogglePin: { _ in },
-                onSelectLane: { _ in },
-                machineChips: chips
-              )
+              VStack(spacing: 0) {
+                ForEach(group) { snapshot in
+                  if snapshot.id != group.first?.id {
+                    Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
+                  }
+                  LaneTreeRow(
+                    snapshot: snapshot,
+                    depth: laneTreeDisplayDepth(for: snapshot.lane),
+                    pullRequest: nil,
+                    isPinned: false,
+                    isOpen: snapshot.lane.id == "s-sync",
+                    transitionNamespace: nil,
+                    isSelectedTransitionSource: false,
+                    onContextMenu: { _ in AnyView(EmptyView()) },
+                    onSelectLane: { _ in },
+                    onOpen: {},
+                    machine: chips.chip(forLaneId: snapshot.lane.id),
+                    showsMachineChip: laneTreeDisplayDepth(for: snapshot.lane) == 0
+                  )
+                }
+              }
+              .adeKitCard(padding: nil)
             }
           }
         }

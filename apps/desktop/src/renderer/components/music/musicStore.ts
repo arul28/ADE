@@ -23,18 +23,21 @@ import { isWebClientMode } from "../../lib/webClientMode";
  * - `musicActions`: transport, queue, Connect, and `open()` for the Music tab.
  *
  * One IPC subscription serves every component, opened the first time any of
- * them mounts. The main process pushes state on change and once a second while
- * playing; the position hook interpolates between pushes.
+ * them mounts. The main process pushes state when it changes; while a song
+ * plays steadily nothing is pushed, and the position hook interpolates from the
+ * last push.
  */
 
 type Store = {
   state: MusicState | null;
   lastError: string | null;
+  /** `lastError` is a failed Connect, so "Try again" connects again instead of re-reading state. */
+  lastErrorFromConnect: boolean;
   /** Love state per rating id, shared by every Love button. */
   likes: Record<string, boolean | null>;
 };
 
-const useMusicStore = create<Store>(() => ({ state: null, lastError: null, likes: {} }));
+const useMusicStore = create<Store>(() => ({ state: null, lastError: null, lastErrorFromConnect: false, likes: {} }));
 
 /** The last state the main process sent. `state` is this, unless a dev preview is on. */
 let realState: MusicState | null = null;
@@ -50,15 +53,16 @@ function sameNowPlaying(a: MusicNowPlaying | null, b: MusicNowPlaying | null): b
     a.durationMs === b.durationMs &&
     a.library === b.library &&
     a.catalogId === b.catalogId &&
+    a.externalUrl === b.externalUrl &&
     a.artwork?.url === b.artwork?.url &&
     a.artwork?.bgColor === b.artwork?.bgColor
   );
 }
 
 /**
- * Keep the previous objects for the parts that did not change. The main process
- * pushes a fresh state once a second while playing; reusing `nowPlaying` and
- * `host` keeps selectors on them stable, so only position readers re-render.
+ * Keep the previous objects for the parts that did not change. Every push is a
+ * fresh object; reusing `nowPlaying` and `host` keeps selectors on them stable,
+ * so a position re-anchor re-renders only position readers.
  */
 function share(prev: MusicState | null, next: MusicState | null): MusicState | null {
   if (!prev || !next) return next;
@@ -95,7 +99,7 @@ function ensureSubscription(): void {
       realState = state;
       publish();
     },
-    () => {},
+    (error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false }),
   );
   if (import.meta.env.DEV) installDevPreview();
 }
@@ -103,6 +107,11 @@ function ensureSubscription(): void {
 function musicBridge() {
   if (typeof window === "undefined" || isWebClientMode()) return null;
   return window.ade?.music ?? null;
+}
+
+/** The provider for event handlers that do not use React hooks. */
+export function currentMusicProvider(): "apple" | "spotify" {
+  return realState?.provider ?? "apple";
 }
 
 /** Music exists in this window (desktop app with the bridge). */
@@ -117,6 +126,11 @@ export function useMusicState<T>(selector: (state: MusicState | null) => T): T {
 
 export function useMusicLastError(): string | null {
   return useMusicStore((s) => s.lastError);
+}
+
+/** The last error right now, for a step that must stop when the one before it failed. */
+export function readMusicLastError(): string | null {
+  return useMusicStore.getState().lastError;
 }
 
 export type MusicNowPlayingView = {
@@ -169,6 +183,12 @@ export function useMusicPosition(intervalMs = 500): number {
  */
 export function friendlyMusicError(raw: string | null | undefined): string | null {
   if (!raw) return null;
+  const providerName = realState?.provider === "spotify" ? "Spotify" : "Apple Music";
+  if (providerName === "Spotify") {
+    const clean = raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim();
+    return /[{}<>]|\bat \S+ \(|^TypeError|^Error:|exception/i.test(clean) || clean.length > 300
+      ? "Something went wrong with Spotify. Try again." : clean;
+  }
   const text = raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim();
   const rules: Array<[RegExp, string]> = [
     [/safeStorage|decrypt|ciphertext|credential/i, "ADE couldn't read your saved Apple Music sign-in. Connect again to fix it."],
@@ -199,7 +219,7 @@ async function run(command: MusicCommand): Promise<MusicCommandResult> {
     ok: false as const,
     error: error instanceof Error ? error.message : String(error),
   }));
-  useMusicStore.setState({ lastError: result.ok ? null : friendlyMusicError(result.error) });
+  useMusicStore.setState({ lastError: result.ok ? null : friendlyMusicError(result.error), lastErrorFromConnect: false });
   return result;
 }
 
@@ -209,7 +229,35 @@ export function setMusicTabOpener(opener: (() => void) | null): void {
   openMusicTab = opener;
 }
 
+async function updateMusic(action: () => Promise<unknown>, returnsState = false): Promise<void> {
+  try {
+    const result = await action();
+    realState = returnsState ? result as MusicState : await musicBridge()!.getState();
+    useMusicStore.setState({ likes: {}, lastError: null, lastErrorFromConnect: false });
+    likeReads.clear();
+    publish();
+  } catch (error) {
+    useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false });
+  }
+}
+
+/** Counts provider picks, so a slower earlier one cannot overwrite a later one. */
+let selectSeq = 0;
+
 export const musicActions = {
+  selectProvider: (provider: "apple" | "spotify") => {
+    // Two quick picks: only the last one's answer may set the state.
+    const seq = ++selectSeq;
+    return updateMusic(async () => {
+      if (devPreview) { devPreview = null; try { window.localStorage.removeItem(DEV_PREVIEW_KEY); } catch { /* Optional storage. */ } }
+      const next = await musicBridge()!.selectProvider(provider);
+      return seq === selectSeq ? next : musicBridge()!.getState();
+    }, true);
+  },
+  configureSpotify: (clientId: string) => updateMusic(async () => {
+    const result = await musicBridge()!.configureSpotify({ clientId: clientId || null });
+    if (!result.ok) throw new Error(result.error);
+  }),
   toggle: () => run({ type: "toggle" }),
   play: () => run({ type: "play" }),
   pause: () => run({ type: "pause" }),
@@ -233,7 +281,8 @@ export const musicActions = {
       error: error instanceof Error ? error.message : String(error),
       cancelled: false,
     }));
-    useMusicStore.setState({ lastError: result.ok || result.cancelled ? null : friendlyMusicError(result.error) });
+    const failed = !result.ok && !result.cancelled;
+    useMusicStore.setState({ lastError: failed ? friendlyMusicError(result.error) : null, lastErrorFromConnect: failed });
     return result;
   },
   /** Bring Apple's sign-in window to the front (it can open behind ADE). */
@@ -249,23 +298,28 @@ export const musicActions = {
     void musicBridge()?.unload().catch(() => {});
   },
   disconnect: async () => {
-    await musicBridge()?.disconnect();
+    await updateMusic(() => musicBridge()!.disconnect());
   },
   /** Start the player ahead of a play. Cheap when it is already running. */
   warm: () => {
-    void musicBridge()?.warm();
+    void musicBridge()?.warm().catch((error: unknown) => useMusicStore.setState({ lastError: friendlyMusicError(error instanceof Error ? error.message : String(error)), lastErrorFromConnect: false }));
   },
   /** Show the Music tab. */
   open: () => {
     openMusicTab?.();
   },
-  clearError: () => useMusicStore.setState({ lastError: null }),
+  clearError: () => useMusicStore.setState({ lastError: null, lastErrorFromConnect: false }),
+  /** "Try again" on the error banner: Connect again after a failed Connect, otherwise re-read the state. */
+  retry: () => {
+    const fromConnect = useMusicStore.getState().lastErrorFromConnect;
+    useMusicStore.setState({ lastError: null, lastErrorFromConnect: false });
+    void (fromConnect ? musicActions.connect() : musicActions.refresh());
+  },
   /** Re-read the state (re-checks availability after a sign-in or a fixed connection). */
   refresh: async () => {
     const bridge = musicBridge();
     if (!bridge) return;
-    realState = await bridge.getState();
-    publish();
+    await updateMusic(() => Promise.resolve());
   },
 };
 
@@ -311,11 +365,12 @@ const likeReads = new Set<string>();
 function loadLike(id: string, library: boolean): void {
   if (likeReads.has(id) || devPreview) return;
   likeReads.add(id);
+  const provider = currentMusicProvider();
   musicBridge()
     ?.rating({ id, library })
     .then(
       (value) => {
-        if (!(id in useMusicStore.getState().likes)) setLike(id, value);
+        if (provider === currentMusicProvider() && !(id in useMusicStore.getState().likes)) setLike(id, value);
       },
       () => likeReads.delete(id),
     );

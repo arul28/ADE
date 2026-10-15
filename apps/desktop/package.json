@@ -19,11 +19,12 @@
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media",
+    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media && npm run build:music-host:mac",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
     "build:music-host:win": "node ./scripts/build-music-host-win.mjs",
+    "build:music-host:mac": "node ./scripts/build-music-host-mac.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
@@ -85,12 +86,12 @@
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.293",
+    "@anthropic-ai/claude-agent-sdk": "0.3.300",
     "@cursor/sdk": "1.0.36",
     "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.161.0",
+    "@openai/codex": "0.162.1",
     "@opencode/cli": "2.0.24",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
@@ -108,6 +109,7 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
+    "@electron/notarize": "2.5.0",
     "@electron/rebuild": "^4.0.1",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
@@ -116,6 +118,7 @@
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
+    "@muse-code/sdk": "1.4.7",
     "@opencode/client": "2.0.24",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.1.21",
@@ -124,6 +127,8 @@
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-tabs": "^1.1.13",
+    "@sentry/electron": "8.2.0",
+    "@sentry/react": "11.7.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/react-virtual": "^3.13.21",
     "@testing-library/dom": "^10.4.1",
@@ -154,7 +159,7 @@
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^41.5.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "framer-motion": "^12.34.2",
@@ -178,6 +183,7 @@
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
     "shiki": "^4.0.2",
     "sql.js": "^1.13.0",
     "tailwind-merge": "^3.4.0",
@@ -185,6 +191,7 @@
     "three": "^0.186.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
+    "unified": "^11.0.5",
     "vite": "^8.0.3",
     "vitest": "^0.34.6",
     "wait-on": "^7.2.0",
@@ -198,6 +205,7 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
       "electron.cjs",
       "package.json",
       "vendor/**/*",
@@ -349,7 +357,12 @@
         "to": "NOTICE"
       }
     ],
+    "beforePack": "./scripts/sentry-before-pack.cjs",
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
+    "afterSign": "./scripts/after-sign-notarize.cjs",
+    "toolsets": {
+      "nsis": "1.2.1"
+    },
     "publish": {
       "provider": "github",
       "owner": "arul28",
@@ -466,7 +479,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "provisioningProfile": "build/ade-desktop.provisionprofile",
-      "notarize": true,
+      "notarize": false,
       "mergeASARs": false,
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,transcribe-cli}{,/**}",
       "artifactName": "ADE-${version}-${arch}.${ext}",
@@ -482,6 +495,15 @@
         {
           "from": "resources/native/ade-desktop-driver",
           "to": "native/ade-desktop-driver"
+        },
+        {
+          "from": "resources/native/ade-music-host",
+          "to": "native/ade-music-host",
+          "filter": [
+            "ade-music-host",
+            "page/**/*",
+            "page-spotify/**/*"
+          ]
         }
       ]
     },

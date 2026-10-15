@@ -78,6 +78,9 @@ struct LaneDetailGitActionsPane: View {
         }
         .padding(EdgeInsets(top: 12, leading: 0, bottom: 20, trailing: 0))
       }
+      // Scroll under the home indicator instead of stopping short of it.
+      .contentMargins(.bottom, 24, for: .scrollContent)
+      .ignoresSafeArea(.container, edges: .bottom)
     }
     .onAppear { applyAutoDisclosure() }
     .onChange(of: stagedFiles.count) { _, _ in applyAutoDisclosure() }
@@ -103,18 +106,10 @@ struct LaneDetailGitActionsPane: View {
 
   private var headerSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        WorkLaneLogoMark(color: laneAccentColor, laneIcon: snapshot.lane.icon, size: 15)
-        Text(snapshot.lane.name)
-          .font(.system(size: 22, weight: .bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-
-      branchBadge
-
-      LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
+      // The name is in the screen's top bar; the branch leads the fact row.
+      LaneChipFlowLayout(spacing: 8, lineSpacing: 6) {
+        branchBadge
+          .frame(minHeight: 18)
         cleanBadge
         if snapshot.lane.status.ahead > 0 || snapshot.lane.status.behind > 0 {
           Text("↑\(snapshot.lane.status.ahead) ↓\(snapshot.lane.status.behind) vs base")
@@ -136,24 +131,20 @@ struct LaneDetailGitActionsPane: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      if let conflictStatus = detail.conflictStatus {
+      if let conflictStatus = detail.conflictStatus, !conflictSummary(conflictStatus).isEmpty {
         Text(conflictSummary(conflictStatus))
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .lineLimit(2)
       }
     }
-    .padding(EdgeInsets(top: 4, leading: 2, bottom: 14, trailing: 0))
+    .padding(EdgeInsets(top: 2, leading: 2, bottom: 12, trailing: 0))
   }
 
   private func applyAutoDisclosure() {
     filesDisclosure.syncAuto(hasContent: !(stagedFiles.isEmpty && unstagedFiles.isEmpty))
     stashesDisclosure.syncAuto(hasContent: !detail.stashes.isEmpty)
     historyDisclosure.syncAuto(hasContent: !detail.recentCommits.isEmpty)
-  }
-
-  private var laneAccentColor: Color {
-    laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent
   }
 
   private var branchBadge: some View {
@@ -202,20 +193,24 @@ struct LaneDetailGitActionsPane: View {
 
   private var actionToolbar: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .bottom, spacing: 8) {
-        TextField("Commit message", text: $commitMessage, axis: .vertical)
-          .lineLimit(1...3)
-          .font(.system(size: 14))
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity, minHeight: 36)
-          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .focused($commitFieldFocused)
-          .disabled(!canRunLiveActions || busyAction != nil)
-        Button("Commit") { onCommit() }
-          .buttonStyle(ADEKitButtonStyle(prominent: true))
-          .frame(minHeight: 36)
-          .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
+      // The message field only when there is something to commit (or an
+      // amend): a clean lane's toolbar is its sync actions alone.
+      if hasCommittableWork {
+        HStack(alignment: .bottom, spacing: 8) {
+          TextField("Commit message", text: $commitMessage, axis: .vertical)
+            .lineLimit(1...3)
+            .font(.system(size: 14))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($commitFieldFocused)
+            .disabled(!canRunLiveActions || busyAction != nil)
+          Button("Commit") { onCommit() }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .frame(minHeight: 36)
+            .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
+        }
       }
       HStack(spacing: 6) {
         Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }
@@ -244,6 +239,10 @@ struct LaneDetailGitActionsPane: View {
     }
     .adeKitCard(padding: 12)
     .padding(.bottom, 4)
+  }
+
+  private var hasCommittableWork: Bool {
+    amendCommit || !stagedFiles.isEmpty || !unstagedFiles.isEmpty || !commitMessage.isEmpty
   }
 
   private var shouldPull: Bool {
@@ -302,6 +301,7 @@ struct LaneDetailGitActionsPane: View {
       disclosureHeader(
         title: "Files",
         badge: stagedFiles.count + unstagedFiles.count,
+        emptyLabel: "No changes",
         expanded: filesDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { filesDisclosure.toggle() } }
       ) {
@@ -393,6 +393,7 @@ struct LaneDetailGitActionsPane: View {
       disclosureHeader(
         title: branchChanges.map { "Branch vs \($0.baseRef)" } ?? "Branch",
         badge: branchChanges?.files.count ?? 0,
+        emptyLabel: branchChanges == nil ? nil : "No changes",
         expanded: branchDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { branchDisclosure.toggle() } }
       )
@@ -458,6 +459,7 @@ struct LaneDetailGitActionsPane: View {
       disclosureHeader(
         title: "Stashes",
         badge: detail.stashes.count,
+        emptyLabel: "None",
         expanded: stashesDisclosure.expanded,
         onToggle: { withAnimation(.smooth(duration: 0.2)) { stashesDisclosure.toggle() } }
       )
@@ -641,6 +643,7 @@ struct LaneDetailGitActionsPane: View {
   private func disclosureHeader<Trailing: View>(
     title: String,
     badge: Int,
+    emptyLabel: String? = nil,
     expanded: Bool,
     onToggle: @escaping () -> Void,
     @ViewBuilder trailing: () -> Trailing = { EmptyView() }
@@ -660,6 +663,10 @@ struct LaneDetailGitActionsPane: View {
           if badge > 0 {
             Text("\(badge)")
               .font(.adeMono(11.5))
+              .foregroundStyle(ADEColor.textMuted)
+          } else if let emptyLabel {
+            Text(emptyLabel)
+              .font(.system(size: 12))
               .foregroundStyle(ADEColor.textMuted)
           }
         }

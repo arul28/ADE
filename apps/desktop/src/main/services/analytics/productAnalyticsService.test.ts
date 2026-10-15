@@ -179,6 +179,20 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it.each(["project_data_restore", "project_data_start_fresh", "project_move"])("accepts the project storage %s fact with only its coarse fields", (action) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "storage_doctor", action, outcome: "completed", root_path: "/Users/someone/project" },
+      projectId: null,
+      dedupeKey: `${action}:completed`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({ feature: "storage_doctor", action, outcome: "completed" });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("root_path");
+  });
+
   it("accepts the connections brain_repair fact and strips anything beyond the coarse enums", () => {
     const harness = makeHarness();
     expect(harness.service.capture({
@@ -222,6 +236,30 @@ describe("productAnalyticsService", () => {
       action: "brain_repair",
       outcome: "sign_in_required",
     });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it.each(["completed", "rejected", "failed"])("accepts the connections background_service_stop fact (%s) with only the coarse enums", (outcome) => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "background_service_stop",
+        outcome,
+        error_text: "launchctl bootout failed for /Users/someone/Library/LaunchAgents",
+      },
+      projectId: null,
+      dedupeKey: `background_service_stop:${outcome}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "background_service_stop",
+      outcome,
+    });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("error_text");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
@@ -2023,6 +2061,30 @@ describe("product analytics producers", () => {
       action,
       outcome: `${outcome.split("_")[0]}_spreadsheet`,
     })).toEqual({ feature: "home", action });
+  });
+
+  it.each([
+    "chat_shortcut",
+    "chat_palette",
+    "chat_palette_hit",
+    "diff_shortcut",
+  ])("keeps the find-opened outcome %s and nothing about the query, chat, or diff", (outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome,
+      source: "renderer_route",
+      // None of these is on `ade_feature_used`'s key list.
+      query: "the words typed",
+      chat_id: "chat-1",
+      match_count: 12,
+    })).toEqual({ feature: "find", action: "find_opened", outcome, source: "renderer_route" });
+    // An outcome nobody registered is dropped, not widened.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "find",
+      action: "find_opened",
+      outcome: "find_query_text",
+    })).toEqual({ feature: "find", action: "find_opened" });
   });
 
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {

@@ -680,7 +680,7 @@ struct WorkModelPickerSheet: View {
   private func refreshCatalog(for groupKey: String) async {
     let refreshProvider: String?
     switch groupKey {
-    case "opencode", "cursor", "droid", "pi", "lmstudio", "ollama",
+    case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
          "qwen", "kimi", "grok", "copilot":
       refreshProvider = groupKey
     default:
@@ -1813,12 +1813,18 @@ final class ModelPickerStore: ObservableObject {
   }
 
   func refresh(syncService: SyncService) async {
+    let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     async let favTask = try? await syncService.getModelFavorites()
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
     if let fav { favorites = fav }
-    if let rec { recents = rec }
+    if let rec {
+      recents = rec
+      // The `@` menu ranks by the same recents; only the host's answer is
+      // mirrored, so a stale local list never overwrites a newer `@` pick.
+      WorkModelMentionDirectory.shared.record(recents: rec, ifRevision: directoryRevision)
+    }
     isLoading = false
   }
 
@@ -1854,6 +1860,7 @@ final class ModelPickerStore: ObservableObject {
       do {
         let updated = try await syncService.pushModelRecent(trimmed)
         self?.recents = updated
+        WorkModelMentionDirectory.shared.record(recents: updated)
       } catch {
         self?.recents = previous
       }

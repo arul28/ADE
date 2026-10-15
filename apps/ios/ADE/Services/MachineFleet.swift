@@ -63,6 +63,12 @@ final class MachineFleet: ObservableObject {
   /// Paired machines in total, the focused one included.
   @Published private(set) var pairedMachineCount = 0
 
+  /// The machines with a live link, by key, sorted: a stable key for work
+  /// that reruns when a machine's link comes or goes.
+  var liveMachineKeys: [String] {
+    machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+  }
+
   private weak var syncService: SyncService?
   private var connections: [String: MachineConnection] = [:]
   private var appActive = false

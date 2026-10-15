@@ -9,10 +9,11 @@ import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/pro
  * The player host: a separate process that runs MusicKit JS in the OS web
  * engine and speaks newline-delimited JSON over stdio.
  *
- * Every platform implements the same `MusicHost`. Windows runs
- * `ade-music-host.exe` (WebView2, `native/ADEMusicHostWin`). macOS has no host
- * yet: `resolveMusicHostExecutable` (`native/nativeHelperPaths.ts`) returns null there and the Music tab says
- * Music on Mac is coming. A WKWebView helper only has to speak this protocol.
+ * Every platform implements the same `MusicHost` and runs the same player page
+ * (`native/ADEMusicHostWin/page`). Windows runs `ade-music-host.exe` (WebView2,
+ * `native/ADEMusicHostWin`); macOS runs `ade-music-host` (WKWebView,
+ * `native/ADEMusicHostMac`). `resolveMusicHostExecutable`
+ * (`native/nativeHelperPaths.ts`) returns null on other platforms.
  *
  * Protocol (see `native/ADEMusicHostWin/page/player.js`):
  *   → {"rid":"r1","cmd":"<name>",...}         one line per command
@@ -50,13 +51,15 @@ export function startMusicHost(args: {
   userDataDir: string;
   logger?: { info: (event: string, data?: Record<string, unknown>) => void; warn: (event: string, data?: Record<string, unknown>) => void };
   show?: boolean;
+  /** The page folder beside the executable: `page` (Apple Music) or `page-spotify`. */
+  page?: "page" | "page-spotify";
 }): MusicHost {
   fs.mkdirSync(args.userDataDir, { recursive: true });
   const child: ChildProcessWithoutNullStreams = spawn(
     args.executable,
     [
       "--udf", args.userDataDir,
-      "--page", path.join(path.dirname(args.executable), "page"),
+      "--page", path.join(path.dirname(args.executable), args.page ?? "page"),
       "--parent-pid", String(process.pid),
       ...(args.show ? ["--show"] : []),
       // The host runs without a GPU process (half the memory). Escape hatch if

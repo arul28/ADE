@@ -32,8 +32,13 @@ struct WorkContextCompactDivider: View {
     if failed {
       let detail = field("failure") ?? ""
       let reason = detail.localizedCaseInsensitiveContains("weekly limit") ? "weekly limit" : detail.localizedCaseInsensitiveContains("usage limit") ? "usage limit" : nil
-      // Matches desktop compactionFailLabel: only a timeout gets its own label.
-      let base = field("failReason") == "timed_out" ? "Compaction timed out" : "Compaction failed"
+      // Matches desktop compactionFailLabel: a timeout gets its own label, and
+      // an aborted compaction says "cancelled" (Claude Code's own word), not
+      // "failed".
+      let failReason = field("failReason")
+      let base = failReason == "timed_out" ? "Compaction timed out"
+        : failReason == "interrupted" ? "Compaction cancelled"
+        : "Compaction failed"
       return base + (reason.map { " · " + $0 + (field("account").map { " on " + $0 } ?? "") } ?? "")
     }
     if isInProgress {

@@ -1,6 +1,6 @@
+import { resolveAdeCacheFile } from "../shared/adeCacheFile";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { OpenCodeClient } from "@opencode/client";
 import type { Logger } from "../logging/logger";
@@ -174,8 +174,6 @@ type PersistedInventoryFile = {
   entries: Record<string, PersistedInventoryEntry>;
 };
 
-type ElectronLikeApp = { app?: { getPath(name: string): string } };
-
 let persistPathOverride: string | null = null;
 let persistedInventoryMemo: PersistedInventoryFile | null = null;
 
@@ -183,18 +181,7 @@ function resolvePersistedInventoryPath(): string {
   if (persistPathOverride) return persistPathOverride;
   const envOverride = process.env.ADE_OPENCODE_INVENTORY_CACHE_FILE?.trim();
   if (envOverride) return path.resolve(envOverride);
-  try {
-    const electron = require("electron") as ElectronLikeApp;
-    const userDataPath = electron.app?.getPath?.("userData");
-    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
-      return path.resolve(userDataPath, "opencode-inventory-cache.json");
-    }
-  } catch {
-    // Not running inside Electron (e.g. unit tests) — fall through.
-  }
-  const homeDir = os.homedir().trim();
-  const baseDir = homeDir.length > 0 ? path.resolve(homeDir, ".ade") : os.tmpdir();
-  return path.resolve(baseDir, "opencode-inventory-cache.json");
+  return resolveAdeCacheFile("opencode-inventory-cache.json");
 }
 
 function isStringArray(value: unknown): value is string[] {

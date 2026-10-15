@@ -86,15 +86,17 @@ progress — poll the run and keep working.
 
 Stay serial only for:
 
-1. Docs merge → green `ci-pass` on that SHA → desktop `v*` tag. Tagging
-   before `ci-pass` fails `verify`.
+1. Docs merge → desktop `v*` tag. When the release commit changes only
+   release notes (`CHANGELOG.md`, `changelog/*.mdx`, `docs.json`), tag at once:
+   `verify` accepts the parent's green `ci-pass`. Any other change in that
+   commit still needs its own green `ci-pass` first.
 2. Draft asset verification → `--draft=false`. npm versions are immutable.
 3. iOS IPA inspect / `altool --validate-app` → upload → `asc builds wait` →
    group attach.
 4. A Windows release host cannot archive iOS. Keep desktop and Cloudflare
    in flight and say iOS needs a macOS host. Do not call the release done.
 
-### During the `ci-pass` wait (docs PR just landed)
+### Right after the docs commit lands
 
 - Cloudflare: `deploy-web.yml` is already running for that SHA. Start
   Phase 5.5 verification. Do not wait for a desktop tag.
@@ -475,6 +477,32 @@ Commit and land the docs/release metadata on `main` before tagging. The desktop
 release tag must point at the final `main` commit that includes the
 changelog. An SDK-docs-only commit does not get a `v*` tag.
 
+## Sentry in the release (all tiers)
+
+Every release build uploads what Sentry needs for readable stack traces, and
+none of it can fail or block a release:
+
+- **Desktop** (`release-core.yml`): the two "Build signed" steps set
+  `ADE_BUILD_SOURCEMAPS=1`; the electron-builder `beforePack` hook
+  (`apps/desktop/scripts/sentry-before-pack.cjs`) injects debug ids; maps are
+  excluded from the package (`!dist/**/*.map`); an upload step after packaging
+  sends them to `ade-desktop` and `ade-brain` as release `ade@<tag without v>`
+  with dist `win-x64` / `mac-arm64` / `mac-x64`
+  (`scripts/sentry/sentry-release.mjs`). `release-publish.yml` records the
+  release's commits from the checkout's git history, and
+  `publish-runtime-packages.yml` finalizes the Sentry release on publish.
+- **Web client and Workers** (`deploy-web.yml`): release
+  `ade@<git describe>`, maps uploaded to `ade-web` / `ade-workers`, and the
+  web client's maps deleted before the Pages deploy.
+- **iOS** (TestFlight workflow): dSYMs uploaded to `ade-ios` after the bump.
+
+All of it needs the `SENTRY_AUTH_TOKEN` repository secret (a Sentry
+organization token, set 2026-10-13). Without it each step logs one "skipping"
+line. After a release, confirm in the workflow logs that the upload steps ran
+and did not warn, then `sentry release view ade@<version>`; a warning there is
+a follow-up, never a reason to stop or re-run the release. Standalone runtime
+binaries (`build:static`) are not symbolicated.
+
 ## Phase 4: Desktop GitHub Workflow Release
 
 Do this only if desktop scope is `yes`. If iOS or Cloudflare is also in
@@ -488,15 +516,16 @@ commands such as `release:mac:local`, `dist:mac:universal:signed`,
 
 ### Create the release tag
 
-**The tag must point at a commit that already has a green `ci-pass` check run.**
-`release-core.yml`'s `verify` job is fail-closed on it: it looks up the `ci-pass`
-check run for the tagged SHA and exits 1 with
-`No ci-pass check run was found for <sha>. Run CI before releasing.` when the
-check is absent, still running, or red. Merging the release-docs PR and tagging
-immediately is exactly how you hit this — the squash-merge creates a brand-new
-commit on `main` whose CI has not started yet.
+**The tag must point at a commit with green CI, its own or borrowed.**
+`release-core.yml`'s `verify` job looks up `ci-pass` for the tagged SHA. When
+that check is missing, still running, or cancelled, and the commit changes only
+`CHANGELOG.md`, `changelog/*.mdx` and `docs.json`, it walks to the parent (up to
+five such commits) and accepts the first green `ci-pass` it finds. So the
+release-docs commit does **not** wait for its own CI: run
+`node scripts/validate-docs.mjs` locally before pushing it, then tag right away.
 
-Wait for it before tagging:
+`verify` still fails when the tagged commit's `ci-pass` is red, or when a commit
+that changes anything else has no green `ci-pass` yet. In that case wait:
 
 ```bash
 RELEASE_SHA=$(git rev-parse origin/main)
@@ -504,10 +533,22 @@ gh api "repos/arul28/ADE/commits/$RELEASE_SHA/check-runs" \
   --jq '.check_runs[] | select(.name=="ci-pass") | {status,conclusion,html_url}'
 ```
 
-Tag only when that prints `completed` / `success`. An empty result means CI has
-not reported on the commit yet.
+**When the CI you need is red or stuck, get to green the fastest way.** Speed
+matters here; each step below came from a release that waited on CI.
 
-After release docs are committed on `main` and `ci-pass` is green:
+- **A flaky job failed** (a timeout in a job the release commits did not touch):
+  rerun only that job once the run finishes
+  (`gh run rerun "$RUN_ID" --failed`). GitHub refuses the rerun while any job
+  in the run is still going, so in parallel start a fresh CI run on `main`'s
+  head, which is the release-notes commit:
+  `gh workflow run ci.yml --repo arul28/ADE --ref main`. A green `ci-pass` on
+  either commit lets the tag through; tag on whichever lands first.
+- **The run is queued behind other CI:** cancel runs the release does not need,
+  such as open PRs' CI and the release-notes commit's own push run (the tag
+  borrows its parent's result). Restart the PR runs after the tag.
+- **A job fails on a real error:** stop and fix it; never tag past it.
+
+After release docs are committed on `main`:
 
 ```bash
 git fetch origin --tags --prune
@@ -523,7 +564,7 @@ git push origin "v<VERSION>"
 
 If you tagged early and `verify` failed, the tag is still correct and nothing
 was published — do **not** delete or move it. Wait for `ci-pass` to go green on
-the same SHA, then rerun only the failed job:
+the same SHA (or its release-notes-only parent), then rerun only the failed job:
 
 ```bash
 gh run rerun "$RUN_ID" --repo arul28/ADE --failed
@@ -564,7 +605,10 @@ gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
 Expected shape:
 
 - runtime/resource jobs run first
-- `arm64 mac release` and `x64 mac release` build/sign/notarize independently
+- `arm64 mac release` and `x64 mac release` build, sign and notarize the app
+  independently, both on Apple Silicon; `smoke-mac-x64` then runs the x64
+  validator on an Intel runner, and the macOS result counts only when it passes.
+  DMGs are not notarized separately; the stapled app inside them is.
 - `build-win-release` builds/signs/validates Windows independently, in parallel
   with the mac jobs, when `platforms` includes `win`. With the gate off it is
   skipped, and a skipped Windows job does not block the mac release.
@@ -779,8 +823,8 @@ treat a failed tap bump as a desktop-leg failure.
 
 ## Phase 5: iOS TestFlight Build and Distribution
 
-Do this only if iOS scope is `yes`. Start it after the shared `ci-pass` +
-tag gate (or immediately on an iOS-only release). Do **not** wait for the
+Do this only if iOS scope is `yes`. Start it after the docs commit and
+tag (or immediately on an iOS-only release). Do **not** wait for the
 desktop draft, undraft, npm publish, or brew tap — see **Parallel schedule**.
 
 Preflight:
@@ -1270,6 +1314,15 @@ What each entry point actually guards, so you know what you lose by bypassing it
 
 The `--tag` on tunnel-relay is load-bearing: `CF_VERSION_METADATA` is what makes
 `/health` able to prove *which* code is live rather than merely that something is.
+
+**A deploy job that stopped on a preflight because something else was not live
+yet** (on 2026-10-13 the account directory refused to deploy because the
+website's new `/device` page was not out yet, so phone sign-in sat undeployed)
+is rerun once that dependency is live: check the preflight's own condition by
+hand, then `gh run rerun <deploy-web run> --failed`. That reruns the same
+guarded entry point on the same code. Do not wait for the next push to `main`
+to deploy it; check every in-scope surface's last `deploy-web.yml` result, not
+only the run for the release commit.
 
 ### Step 6: Post-deploy verification
 

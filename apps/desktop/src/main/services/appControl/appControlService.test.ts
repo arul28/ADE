@@ -16,6 +16,13 @@ type FakeCdpTarget = {
 
 const mockState = vi.hoisted(() => ({
   httpResponses: [] as Array<FakeCdpTarget[] | Promise<FakeCdpTarget[]>>,
+  /**
+   * What `/json/list` answers once `httpResponses` runs out. Unset, that is
+   * "no targets": the app quit. A connected test sets it so the real-time
+   * health poll (every 2s) still sees its app on a slow runner, instead of
+   * reading the empty queue as a crash mid-test.
+   */
+  steadyTargets: undefined as FakeCdpTarget[] | undefined,
   sockets: [] as Array<{ url: string; sent: string[]; emitMessage: (payload: unknown) => void }>,
   runtimeValues: [] as unknown[],
   cdpResults: [] as Array<{ method: string; result: unknown }>,
@@ -35,7 +42,7 @@ vi.mock("node:http", async () => {
           if (error) request.emit("error", error);
         };
         request.setTimeout = () => {};
-        const responseTargets = mockState.httpResponses.shift();
+        const responseTargets = mockState.httpResponses.shift() ?? mockState.steadyTargets;
         queueMicrotask(async () => {
           try {
             const targets = await responseTargets;
@@ -150,6 +157,7 @@ describe("appControlService", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockState.httpResponses.length = 0;
+    mockState.steadyTargets = undefined;
     mockState.sockets.length = 0;
     mockState.runtimeValues.length = 0;
     mockState.cdpResults.length = 0;
@@ -989,6 +997,7 @@ describe("appControlService agent actions", () => {
 
   beforeEach(() => {
     mockState.httpResponses.length = 0;
+    mockState.steadyTargets = undefined;
     mockState.sockets.length = 0;
     mockState.runtimeValues.length = 0;
     mockState.cdpResults.length = 0;
@@ -1001,6 +1010,7 @@ describe("appControlService agent actions", () => {
 
   async function connectedService() {
     mockState.httpResponses.push([target("a")]);
+    mockState.steadyTargets = [target("a")];
     const service = createAppControlService({ projectRoot, logger: createLogger() });
     await service.connect({ laneId: "lane-1", cdpPort: 12345, projectRoot, force: true });
     return service;

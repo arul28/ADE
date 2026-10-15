@@ -30,6 +30,7 @@ import {
   getModelById,
   modelSupportsFastMode,
   resolveProviderGroupForModel,
+  type FastTier,
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
@@ -105,6 +106,7 @@ export function CrossMachineHandoffModal({
   reasoningEffort,
   onReasoningEffortChange,
   fastMode,
+  fastTier = null,
   onFastModeChange,
   nativeControls,
   onNativeControlsChange,
@@ -139,7 +141,9 @@ export function CrossMachineHandoffModal({
   reasoningEffort?: string | null;
   onReasoningEffortChange?: (effort: string | null) => void;
   fastMode?: boolean;
-  onFastModeChange?: (next: boolean) => void;
+  /** Fast's tier ("ultrafast" on Codex models that offer it). */
+  fastTier?: FastTier | null;
+  onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   nativeControls?: NativeControlState;
   onNativeControlsChange?: (next: NativeControlState) => void;
   onOpenSignIn?: (family?: ProviderFamily) => void;
@@ -582,6 +586,7 @@ export function CrossMachineHandoffModal({
           {...(mode === "fork" ? { filter: forkModelFilter } : {})}
           {...(onOpenSignIn ? { onOpenSignIn } : {})}
           fastMode={Boolean(fastMode)}
+          fastTier={fastTier}
           fastModeSupported={destinationFastModeSupported}
           {...(onFastModeChange ? { onFastModeChange } : {})}
         />

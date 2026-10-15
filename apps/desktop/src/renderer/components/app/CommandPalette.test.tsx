@@ -1527,8 +1527,8 @@ describe("CommandPalette", () => {
   });
 
   it("matches a setting by keyword when its label does not contain the query", async () => {
-    // Keywords widen matching without being rendered, so "telemetry" reaches
-    // "Product analytics".
+    // Keywords widen matching without being rendered, so "crash" reaches
+    // "Send a report to ADE".
     seedStore();
     render(
       <MemoryRouter>
@@ -1539,9 +1539,9 @@ describe("CommandPalette", () => {
     const input = await screen.findByPlaceholderText(
       "Search commands, projects, and threads…",
     );
-    fireEvent.change(input, { target: { value: "telemetry" } });
+    fireEvent.change(input, { target: { value: "crash" } });
 
-    expect(await screen.findByText("Product analytics")).toBeTruthy();
+    expect(await screen.findByText("Send a report to ADE")).toBeTruthy();
   });
 
   it("creates a project and opens Work without a success interstitial", async () => {
@@ -1822,6 +1822,38 @@ describe("CommandPalette", () => {
 
       expect(await rowIsThread("browser", 0)).toBe(true);
       await expectKeyboardOrderMatchesRenderOrder("browser");
+    });
+
+    it("runs the row the arrow keys land on when its group is filed earlier than it was pushed", async () => {
+      // "Restart agent session" is pushed after Debug but filed under Actions,
+      // so it renders above "Select Next Lane", which this query also matches.
+      // Resolving the arrow index against the filtered list would land on that
+      // lane row instead and never reach Restart.
+      const restartSession = vi.fn(async () => ({ backgroundJobsStopped: 0 }));
+      (globalThis.window.ade as unknown as Record<string, unknown>).agentChat = { restartSession };
+      seedThreads(
+        [makeSession({ id: "chat-1", title: "a plan", toolType: "claude-chat" })],
+        { activeItemId: "chat-1" },
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+      const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
+      fireEvent.change(input, { target: { value: "ne" } });
+      const restart = await screen.findByText("Restart agent session");
+      const rowIndex = paletteRows().findIndex((row) => row.contains(restart));
+
+      expect(rowIndex).toBeGreaterThan(0);
+      expect(restartSession).not.toHaveBeenCalled();
+      for (let step = 0; step < rowIndex; step += 1) {
+        fireEvent.keyDown(input, { key: "ArrowDown" });
+      }
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(restartSession).toHaveBeenCalledTimes(1));
+      expect(restartSession).toHaveBeenCalledWith({ sessionId: "chat-1" });
     });
   });
 });

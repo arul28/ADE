@@ -128,6 +128,17 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  // The project recovery screen's choices when a project's ADE data went
+  // missing or was swapped: put it back from the Trash, or open with new data
+  // (Start fresh, Use this copy). completed | failed.
+  "project_data_restore",
+  "project_data_start_fresh",
+  // Settings → General → Project location → Move…: whether people move a
+  // project at all, and how often a move fails. completed | failed.
+  "project_move",
+  // Settings → Background service → "Stop and quit ADE": whether people turn
+  // the always-on service off at all. completed | rejected (a guard refused) | failed.
+  "background_service_stop",
   "machine_reconnect",
   "mention_expanded",
   "hooks_ignored",
@@ -212,10 +223,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the event.
   "account_created",
   "account_removed",
+  "account_signed_out",
   "default_selected",
   "balance_changed",
   "auto_start_changed",
   "subagent_cache_changed",
+  "main_cache_changed",
+  "extra_usage_stop_changed",
   "credential_stored",
   "credential_removed",
   "preset_created",
@@ -255,11 +269,16 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // failed. Never the title, the body, the link, or which phones got it.
   "notification_sent",
   // The dev home. Which machine-level top tab was opened, which widget was
-  // added to the home page, and how connecting Apple Music ended. Never a URL,
-  // a tab, a song, a layout, an account, or a widget's settings.
+  // added to the home page, and how connecting Apple Music or Spotify ended.
+  // Never a URL, a tab, a song, a layout, an account, or a widget's settings.
   "tab_opened",
   "widget_added",
   "music_connected",
+  "spotify_connected",
+  // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
+  // Whether an installation opens find, on which surface, and whether the
+  // palette's words get used. Never the query, the chat, the diff, or a match.
+  "find_opened",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -370,6 +389,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // The dev home: which machine-level tabs (Browser, Music) and home widgets
     // an installation uses, and whether Apple Music gets connected.
     "home",
+    // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
+    "find",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -457,11 +478,16 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "widget_projects", "widget_running", "widget_activity", "widget_limits", "widget_prs", "widget_clock",
     "widget_pomodoro", "widget_clipboard", "widget_machine", "widget_heatmap", "widget_shipped", "widget_feed",
     "widget_now_playing",
+    // Where find was opened: ⌘F in a chat, the ⌘K "Find … in this chat" row, a
+    // chat opened from a ⌘K message hit with the words handed off, or ⌘F in a
+    // diff. Prefixed like the other renderer surfaces so none can be confused
+    // with another action's outcome. A fifth spelling is dropped, not widened.
+    "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
   ]),
-  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
+  provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
     "gpt_5", "openai_reasoning", "claude_sonnet", "claude_opus", "claude_haiku", "cursor", "gemini",
-    "grok", "local", "other",
+    "grok", "muse", "local", "other",
   ]),
   duration_bucket: new Set(["under_10s", "under_1m", "under_5m", "under_30m", "under_2h", "over_2h"]),
   // Bucketed, never a raw count: a fleet that fails to stop must not become a

@@ -1,3 +1,5 @@
+import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
+import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -258,6 +260,7 @@ import {
 } from "../../desktop/src/shared/appleDeviceSettings";
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
+import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
@@ -865,6 +868,7 @@ export async function createAdeRuntime(args: {
     throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
+  assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
@@ -901,6 +905,9 @@ export async function createAdeRuntime(args: {
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
+    // The app and the brain's project scope record it too, so a project used
+    // only from the CLI is protected the same way as one opened in the app.
+    recordLocalProjectDatabaseIdentity(projectRoot, logger);
   } catch (error) {
     // The path corroborates a bare errno: SQLite failures often carry no
     // `syscall`, and without a path the classifier refuses to call them
@@ -1006,6 +1013,7 @@ export async function createAdeRuntime(args: {
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
       }));
+    setSentryUserResolver(() => productAnalyticsService.getDistinctId());
     productAnalyticsForProxy = productAnalyticsService;
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,
@@ -1130,6 +1138,8 @@ export async function createAdeRuntime(args: {
         settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Read at call time: the automation service is built later.
+      onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
       listSubagentLinks: async (parentSessionIds) =>
         settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
     });
@@ -1985,7 +1995,6 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
-        isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
         // A lane may not claim another lane's App Control app onto its screen.
         appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
           appControlService?.laneForAppProcess(pid) ?? null,
@@ -2024,6 +2033,7 @@ export async function createAdeRuntime(args: {
           emitEvent: (payload) => pushEvent("runtime", payload),
           logger,
           resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
+          receivedFilesDir: path.join(paths.cacheDir, "browser-observations", "remote"),
         }),
         userBrowserAttachService: createUserBrowserAttachService({
           projectRoot,
@@ -2272,6 +2282,8 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        // The MCP registry's secret values: the generic vault kind, account-wide.
+        readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         runtimeBudget: chatRuntimeBudget,
         releaseChatBrowser,
         projectRoot,
@@ -2309,16 +2321,13 @@ export async function createAdeRuntime(args: {
         getUsageService: () => usageTrackingServiceRef,
         conflictService,
         computerUseArtifactBrokerService,
-        // One line of system prompt and the per-turn time-lapse clip, both
-        // behind the same synchronous gate: the send path must not await a
-        // service to decide to say nothing, so it reads the in-memory display
-        // registry, and an idle lane pays nothing.
-        macDesktopTurnRecorder: macDesktopService
+        // One line of system prompt, behind a synchronous gate: the send path
+        // must not await a service to decide to say nothing, so it reads the
+        // in-memory display registry, and an idle lane pays nothing.
+        macDesktopRuntime: macDesktopService
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
             supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
-            beginTurn: (args) => macDesktopService.beginTurn(args),
-            noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
           }
           : null,
         laneService,
@@ -2930,6 +2939,7 @@ export async function createAdeRuntime(args: {
     });
     const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
       db,
+      projectId,
       sessionService,
       emitEvent: emitPrEvent,
       logger,

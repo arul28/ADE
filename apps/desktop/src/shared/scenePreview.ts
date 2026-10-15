@@ -107,7 +107,7 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
     add("Storage and cookies throw in a sandboxed scene. Keep state in variables.");
   }
   if (/\b(?:alert|confirm|prompt)\s*\(/.test(source)) {
-    add("alert/confirm/prompt are blocked. A scene shows; it never asks (use a mosaic card to ask).");
+    add("alert/confirm/prompt are blocked. To ask, use a data-reply button or form, or ade.reply(text).");
   }
   // `var` anywhere in a top-level script is global; let/const only at the top.
   const shadow = /\bvar\s+(top|parent|opener|frames|self)\b/.exec(source)
@@ -117,6 +117,16 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
   }
   if (/<(?:iframe|object|embed)\b/i.test(source)) {
     add("Nested frames and plugins are blocked.");
+  }
+  // The two mistakes that make a scene look wrong rather than break. Run
+  // `ade scene guide` for the rules behind them.
+  const drawsAxesByHand = (source.match(/<(?:rect|line|path|polyline)\b/gi)?.length ?? 0) >= 8
+    && /<text\b/i.test(source) && !/\bade\.chart\s*\(/.test(source);
+  if (drawsAxesByHand) {
+    add("This looks like a chart drawn by hand in SVG. ade.chart(el, { type, labels, series }) draws bar, line, area, donut and spark charts with gridlines, a legend and a hover tip.");
+  }
+  if (/(?:^|[\s;{])(?:color|background(?:-color)?|fill|stroke)\s*:\s*#[0-9a-f]{3,8}\b/i.test(source)) {
+    add("A hex color is fixed for every theme, and the user may be on a light one. Use the variables: --fg, --fg-muted, --surface, --border, --accent, --chart-1 to --chart-6.");
   }
   const bytes = new TextEncoder().encode(source).length;
   if (bytes > SCENE_LIMITS.maxSourceBytes) {

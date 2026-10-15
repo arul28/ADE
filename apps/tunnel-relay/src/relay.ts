@@ -1,6 +1,7 @@
 import { TunnelDurableObject } from "./tunnelDo";
+import type { SentryEnv } from "./sentry";
 
-export type TunnelRelayEnv = {
+export type TunnelRelayEnv = SentryEnv & {
   /** Durable Object namespace; one instance per machineKey via idFromName. */
   TUNNEL: DurableObjectNamespace;
   /** Safe deployment identity exposed by Cloudflare's version metadata binding. */

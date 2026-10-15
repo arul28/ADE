@@ -531,19 +531,24 @@ describe("ChatView", () => {
     expect(frame).not.toContain("prompt_too_long");
   });
 
-  it("renders queued steer messages as staged instead of normal sent bubbles", () => {
+  it("renders each queued message as one line marked with its place in the queue, not as a sent bubble", () => {
+    const queued = (sequence: number, steerId: string, text: string) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
+      sequence,
+      event: { type: "user_message", text, steerId, deliveryState: "queued", turnId: "turn-active" },
+    });
     const frame = renderEvents([
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "user_message", text: "follow this after the tool finishes", steerId: "steer-1", deliveryState: "queued", turnId: "turn-active" },
-      },
-    ], { width: 80 });
+      queued(1, "steer-1", "follow this after the tool finishes"),
+      queued(2, "steer-2", "then run the tests"),
+    ] as AgentChatEventEnvelope[], { width: 80 });
 
-    expect(frame).toContain("staged message");
-    expect(frame).toContain("sends after turn");
-    expect(frame).toContain("follow this after the tool finishes");
+    const lines = frame.split("\n");
+    const firstLine = lines.find((line) => line.includes("follow this after the tool finishes"));
+    const secondLine = lines.find((line) => line.includes("then run the tests"));
+    expect(firstLine).toContain("sends next");
+    expect(secondLine).toContain("queued");
+    expect(secondLine).not.toContain("sends next");
     expect(frame).not.toMatch(/[╭╮╯╰]/);
   });
 
@@ -564,7 +569,6 @@ describe("ChatView", () => {
     ], { width: 80 });
 
     expect(frame).not.toContain("queued version");
-    expect(frame).not.toContain("staged message");
     expect(frame).toContain("delivered version");
     expect(frame).toContain("Sent after turn");
   });
@@ -1809,34 +1813,6 @@ describe("ChatView", () => {
     expect(text).not.toContain("newer messages");
   });
 
-  it("collapses a valid ```mosaic fence to one dim summary line (interactive card is desktop-only)", () => {
-    const card = JSON.stringify({
-      v: 1,
-      title: "Pick a runtime",
-      elements: [
-        { type: "select", id: "runtime", label: "Runtime", options: [{ value: "claude" }, { value: "codex" }] },
-        { type: "approval", id: "go", label: "Proceed" },
-      ],
-    });
-    const events: AgentChatEventEnvelope[] = [
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "text", text: `Here is a card:\n\n\`\`\`mosaic\n${card}\n\`\`\`` },
-      },
-    ];
-    const frame = renderEvents(events, { width: 80 });
-    // Summary line renders with the card title and the "answer on desktop" hint,
-    // and the raw JSON body never leaks into the transcript.
-    expect(frame).toContain("Interactive card: Pick a runtime");
-    expect(frame).toContain("answer on desktop");
-    expect(frame).not.toContain('"v": 1');
-    expect(frame).not.toContain("multiselect");
-    // No code-fence rail glyphs for the collapsed card.
-    expect(frame).not.toMatch(/┌─\s*mosaic/);
-  });
-
   it("collapses a ```scene fence to one line (the frame is desktop-only)", () => {
     const scene = [
       '<!-- @scene title="Merged pull requests" -->',
@@ -1882,19 +1858,4 @@ describe("ChatView", () => {
     expect(frame).not.toContain("<div");
   });
 
-  it("renders a malformed ```mosaic fence as a normal code block, not a summary line", () => {
-    const events: AgentChatEventEnvelope[] = [
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "text", text: "Broken:\n\n```mosaic\n{ not valid json\n```" },
-      },
-    ];
-    const frame = renderEvents(events, { width: 80 });
-    // Parse failure falls back to the plain fenced code block (rail + raw body).
-    expect(frame).toContain("{ not valid json");
-    expect(frame).not.toContain("Interactive card");
-    expect(frame).not.toContain("answer on desktop");
-  });
 });

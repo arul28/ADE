@@ -678,7 +678,9 @@ function exactOrRegistryPrice(model: string): { price: TokenPrice; source: Token
   const historical = HISTORICAL_REGISTRY_PRICES[pricingName];
   if (historical) return { price: tokenPrice(historical.input, historical.output), source: "fallback" };
   const registryPrice = getModelListPrice(pricingName);
-  return registryPrice ? { price: tokenPrice(registryPrice.input, registryPrice.output), source: "fallback" } : null;
+  return registryPrice
+    ? { price: tokenPrice(registryPrice.input, registryPrice.output, registryPrice.cacheRead), source: "fallback" }
+    : null;
 }
 
 /**

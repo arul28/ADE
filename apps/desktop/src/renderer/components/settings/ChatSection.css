@@ -209,3 +209,53 @@
 @container chatmain (max-width: 400px) {
   .ade-voice-fields { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Claude mods: a small picture of the dock on the prompt box. */
+.ade-cs-mods-art {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--kit-panel-edge, var(--kit-rule));
+  border-radius: var(--radius-lg, 12px);
+  background: var(--kit-panel-bg, transparent);
+}
+.ade-cs-mods-dock {
+  border: 1px solid var(--kit-rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ade-cs-mods-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 20px;
+  padding: 0 10px;
+}
+.ade-cs-mods-head .kit-eyebrow { font-size: 8.5px; }
+.ade-cs-mods-band {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 9px;
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-cs-mods-row { display: flex; align-items: center; gap: 8px; }
+.ade-cs-mods-line { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 22%, transparent); }
+.ade-cs-mods-meter { width: 12%; height: 5px; border-radius: 2px; background: var(--kit-track); overflow: hidden; }
+.ade-cs-mods-meter > i { display: block; height: 100%; background: var(--kit-ok); }
+.ade-cs-mods-stack { display: flex; height: 6px; border-radius: 2px; background: var(--kit-track); overflow: hidden; }
+.ade-cs-mods-stack > i { display: block; height: 100%; }
+.ade-cs-mods-stack > i:nth-child(1) { background: color-mix(in srgb, var(--color-fg) 62%, transparent); }
+.ade-cs-mods-stack > i:nth-child(2) { background: color-mix(in srgb, var(--color-fg) 40%, transparent); }
+.ade-cs-mods-stack > i:nth-child(3) { background: color-mix(in srgb, var(--color-fg) 24%, transparent); }
+.ade-cs-mods-prompt {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--kit-rule);
+  border-radius: 10px;
+  background: var(--kit-hover);
+}

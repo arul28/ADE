@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { build } from "esbuild";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -231,6 +234,157 @@ afterEach(async () => {
 });
 
 describe("openKvDb SQL binding", () => {
+  // Windows holds SQLite's open files against rename; this relocation is a
+  // POSIX failure mode. The native-boundary identity guard is cross-platform.
+  it.skipIf(process.platform === "win32").each([false, true])("pauses a moved database and resumes after restoration (replacement: %s)", async (replacement) => {
+    const fixtureParent = path.join(process.cwd(), "node_modules", ".cache");
+    fs.mkdirSync(fixtureParent, { recursive: true });
+    const projectRoot = fs.mkdtempSync(path.join(fixtureParent, "ade-kvdb-relocation-"));
+    const adePath = path.join(projectRoot, ".ade");
+    const movedPath = path.join(projectRoot, "moved-ade");
+    const dbPath = path.join(adePath, "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => {
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    });
+    db.setJson("relocation:probe", "original");
+    db.flushNow();
+    fs.renameSync(adePath, movedPath);
+    if (replacement) {
+      fs.mkdirSync(adePath);
+      fs.copyFileSync(path.join(movedPath, "ade.db"), dbPath);
+    }
+    const movedContents = fs.readFileSync(path.join(movedPath, "ade.db"));
+    const operations = [
+      () => db.setJson("relocation:probe", "unsafe"),
+      () => db.getJson("relocation:probe"),
+      () => db.run("delete from kv"),
+      () => db.runChanged("delete from kv"),
+      () => db.get("select * from kv"),
+      () => db.all("select * from kv"),
+      () => db.flushNow(),
+      () => db.maintenance!.prunePrSnapshots(),
+    ];
+    for (const operation of operations) {
+      expect(operation).toThrowError(expect.objectContaining({ code: "db_path_changed" }));
+    }
+    await expect(db.maintenance!.pruneEventLogs()).rejects.toMatchObject({ code: "db_path_changed" });
+    if (db.sync?.isAvailable?.()) {
+      expect(() => db.sync!.exportChangesSince(0)).toThrowError(expect.objectContaining({ code: "db_path_changed" }));
+    }
+    expect(fs.readFileSync(path.join(movedPath, "ade.db"))).toEqual(movedContents);
+    expect(fs.existsSync(path.join(movedPath, "ade.db-wal")) && fs.statSync(path.join(movedPath, "ade.db-wal")).size).toBe(0);
+    if (replacement) fs.rmSync(adePath, { recursive: true });
+    fs.renameSync(movedPath, adePath);
+    expect(db.getJson("relocation:probe")).toBe("original");
+    db.setJson("relocation:probe", "resumed");
+    expect(db.getJson("relocation:probe")).toBe("resumed");
+  });
+
+  // Exercise a native storage boundary that checkpoints on close, even on
+  // SQLite builds whose own moved-file detection normally prevents it.
+  // A child process also proves GC/exit safety without disturbing its locks
+  // by reading the database bytes in the same process that owns the handle.
+  it.skipIf(process.platform === "win32").each(["exit", "restore"])("preserves pending WAL through relocated shutdown and GC (%s)", async (mode) => {
+    const fixtureParent = path.join(process.cwd(), "node_modules", ".cache");
+    fs.mkdirSync(fixtureParent, { recursive: true });
+    const projectRoot = fs.mkdtempSync(path.join(fixtureParent, "ade-kvdb-shutdown-"));
+    activeDisposers.push(async () => fs.rmSync(projectRoot, { recursive: true, force: true }));
+    const workerPath = path.join(projectRoot, "shutdown.cjs");
+    await build({
+      stdin: {
+        resolveDir: process.cwd(),
+        contents: `
+          import fs from "node:fs";
+          import path from "node:path";
+          import { DatabaseSync } from "node:sqlite";
+          import { openKvDb } from "./src/main/services/state/kvDb";
+          (async () => {
+            const root = process.argv[2];
+            const adeDir = path.join(root, ".ade");
+            const moved = path.join(root, "moved");
+            const logger = { debug() {}, info() {}, warn() {}, error() {} };
+            let db = await openKvDb(path.join(adeDir, "ade.db"), logger);
+            db.flushNow();
+            db.setJson("shutdown:pending", "committed");
+            const nativeClose = DatabaseSync.prototype.close;
+            DatabaseSync.prototype.close = function () {
+              if (fs.existsSync(moved)) {
+                const checkpoint = new DatabaseSync(path.join(moved, "ade.db"));
+                checkpoint.exec("pragma wal_checkpoint(TRUNCATE)");
+                nativeClose.call(checkpoint);
+              }
+              return nativeClose.call(this);
+            };
+            fs.renameSync(adeDir, moved);
+            const wait = () => new Promise((resolve) => process.once("message", resolve));
+            process.send("ready");
+            await wait();
+            db.close();
+            const disposed = process.argv[3] === "restore" ? db : null;
+            db = null;
+            global.gc();
+            global.gc();
+            if (disposed) {
+              process.send("paused");
+              await wait();
+              fs.renameSync(moved, adeDir);
+              const restored = await openKvDb(path.join(adeDir, "ade.db"), logger);
+              let released = false;
+              try { disposed.getJson("shutdown:pending"); } catch { released = true; }
+              if (!released) throw new Error("Restored handle was not released");
+              if (restored.getJson("shutdown:pending") !== "committed") throw new Error("Lost pending changes");
+              restored.close();
+            }
+          })().catch((error) => { console.error(error); process.exitCode = 1; })
+            .finally(() => process.disconnect());
+        `,
+      },
+      bundle: true,
+      platform: "node",
+      format: "cjs",
+      outfile: workerPath,
+      logLevel: "silent",
+    });
+    const child = spawn(process.execPath, ["--expose-gc", workerPath, projectRoot, mode], { cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let stderr = "";
+    child.stderr?.on("data", (data) => { stderr += String(data); });
+    const exit = once(child, "exit");
+    try {
+      const nextMessage = () => Promise.race([
+        once(child, "message"),
+        exit.then(() => { throw new Error(`Child exited before its receipt: ${stderr}`); }),
+      ]);
+      await nextMessage();
+      const moved = path.join(projectRoot, "moved");
+      const before = ["ade.db", "ade.db-wal"].map((file) => fs.readFileSync(path.join(moved, file)));
+      expect(before[1]!.length).toBeGreaterThan(0);
+      const paused = mode === "restore" ? nextMessage() : null;
+      child.send("shutdown");
+      if (paused) await paused;
+      else expect((await exit)[0], stderr).toBe(0);
+      for (const [index, file] of ["ade.db", "ade.db-wal"].entries()) {
+        expect(fs.readFileSync(path.join(moved, file)).equals(before[index]!)).toBe(true);
+      }
+      if (paused) {
+        child.send("restore");
+        expect((await exit)[0], stderr).toBe(0);
+      }
+      const recovered = new DatabaseSync(path.join(projectRoot, mode === "exit" ? "moved" : ".ade", "ade.db"));
+      try {
+        expect(recovered.prepare("select value from kv where key = ?").get("shutdown:pending")).toEqual({ value: '"committed"' });
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await exit;
+      }
+    }
+  });
+
   it("binds boolean params and reports unsupported param types with context", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-bind-values-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

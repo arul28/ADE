@@ -234,24 +234,6 @@ describe("macDesktopObservations out paths", () => {
   });
 });
 
-describe("macDesktopObservations turn clips", () => {
-  it("finds and ends a lane's clip whichever chat opened it", () => {
-    const store = createMacDesktopObservations({ projectRoot: makeRoot() });
-    store.beginTurnRecording({
-      laneId: "lane-1",
-      chatSessionId: "chat-1",
-      turnId: "turn-1",
-      filePath: "/tmp/a.mp4",
-    });
-    // The helper has one recorder per lane, so "is a clip running here" is a
-    // lane question, not a chat question.
-    expect(store.findTurnRecordingForLane("lane-1")).toMatchObject({ turnId: "turn-1" });
-    expect(store.findTurnRecordingForLane("lane-2")).toBeNull();
-    expect(store.endTurnRecordingsForLane("lane-1").map((entry) => entry.turnId)).toEqual(["turn-1"]);
-    expect(store.findTurnRecordingForLane("lane-1")).toBeNull();
-  });
-});
-
 describe("macDesktopObservations frames", () => {
   it("writes frames into the one root the Work tools mirror serves from", () => {
     const projectRoot = makeRoot();
@@ -344,18 +326,3 @@ describe("macDesktopObservations proof", () => {
   });
 });
 
-describe("macDesktopObservations turn clips", () => {
-  it("keeps at most one frame a second and caps the clip", () => {
-    let clock = 1_000;
-    const store = createMacDesktopObservations({ projectRoot: makeRoot(), now: () => clock });
-    store.beginTurnRecording({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1", filePath: "/tmp/x.mp4" });
-    expect(store.noteTurnFrame("lane-1", "chat-1")).toBe(true);
-    expect(store.noteTurnFrame("lane-1", "chat-1")).toBe(false);
-    clock += 1_500;
-    expect(store.noteTurnFrame("lane-1", "chat-1")).toBe(true);
-    expect(store.getTurnRecording("lane-1", "chat-1")?.frameCount).toBe(2);
-    const ended = store.endTurnRecording("lane-1", "chat-1");
-    expect(ended?.turnId).toBe("turn-1");
-    expect(store.getTurnRecording("lane-1", "chat-1")).toBeNull();
-  });
-});

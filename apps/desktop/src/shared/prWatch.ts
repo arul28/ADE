@@ -51,6 +51,12 @@ export type PrWatchRemark = {
   line?: number | null;
   url?: string | null;
   createdAt: string | null;
+  /**
+   * When the comment was last edited. Only a review bot's edit is news: such bots
+   * report a new review of a push by editing their old summary comment, and a
+   * person who fixes a typo must not wake the agent. See `remarkAt`.
+   */
+  editedAt?: string | null;
   kind: "comment" | "review" | "review_comment";
   /** Set on a submitted review. */
   reviewState?: "approved" | "changes_requested" | "commented" | "dismissed" | "pending" | null;
@@ -158,6 +164,12 @@ function isAgentReviewer(remark: PrWatchRemark): boolean {
   return classifyPrAuthor(remark.author, remark.authorIsBot).role === "agent-reviewer";
 }
 
+/** The instant a remark last said something: a review bot's edit when it has one. */
+function remarkAt(remark: PrWatchRemark): string | null {
+  if (!remark.editedAt || !isAgentReviewer(remark)) return remark.createdAt;
+  return timeMs(remark.editedAt) > timeMs(remark.createdAt) ? remark.editedAt : remark.createdAt;
+}
+
 function timeMs(iso: string | null | undefined): number {
   const value = iso ? Date.parse(iso) : Number.NaN;
   return Number.isFinite(value) ? value : 0;
@@ -177,8 +189,9 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
       const names = new Set(existing.failed.map((check) => check.name));
       out[index] = { kind: "checks_failed", failed: [...existing.failed, ...change.failed.filter((check) => !names.has(check.name))] };
     } else if (existing.kind === "remarks" && change.kind === "remarks") {
-      const ids = new Set(existing.remarks.map((remark) => remark.id));
-      out[index] = { kind: "remarks", remarks: [...existing.remarks, ...change.remarks.filter((remark) => !ids.has(remark.id))] };
+      // A remark that comes in again was edited: its newer body replaces the held one.
+      const incomingIds = new Set(change.remarks.map((remark) => remark.id));
+      out[index] = { kind: "remarks", remarks: [...existing.remarks.filter((remark) => !incomingIds.has(remark.id)), ...change.remarks] };
     } else {
       out[index] = change;
     }
@@ -203,16 +216,16 @@ function readFreshRemarks(
   const fresh = remarks.filter((remark) => {
     if (ignored.has(remark.id)) return false;
     if (!isPrWatchRemarkAuthorRelevant(remark.author, remark.authorIsBot)) return false;
-    const at = timeMs(remark.createdAt);
+    const at = timeMs(remarkAt(remark));
     // GitHub times are per second; remarks on the boundary are told apart by id.
     return at > through || (at === through && !previous.remarkIds.includes(remark.id));
-  }).sort((left, right) => timeMs(left.createdAt) - timeMs(right.createdAt));
+  }).sort((left, right) => timeMs(remarkAt(left)) - timeMs(remarkAt(right)));
   if (fresh.length === 0) return unchanged;
-  const latest = Math.max(through, ...fresh.map((remark) => timeMs(remark.createdAt)));
-  const atLatest = fresh.filter((remark) => timeMs(remark.createdAt) === latest);
+  const latest = Math.max(through, ...fresh.map((remark) => timeMs(remarkAt(remark))));
+  const atLatest = fresh.filter((remark) => timeMs(remarkAt(remark)) === latest);
   return {
     fresh,
-    remarksThrough: latest === through ? previous.remarksThrough : (atLatest[0]?.createdAt ?? previous.remarksThrough),
+    remarksThrough: (latest !== through && atLatest[0] ? remarkAt(atLatest[0]) : null) ?? previous.remarksThrough,
     remarkIds: latest === through
       ? [...previous.remarkIds, ...atLatest.map((remark) => remark.id)]
       : atLatest.map((remark) => remark.id),
@@ -316,7 +329,7 @@ export function evaluatePrWatch(args: {
       && args.checks.every((check) => check.status === "completed");
     const botsHeard = headSeenAt !== null && held.some((change) =>
       change.kind === "remarks" && change.remarks.some((remark) =>
-        isAgentReviewer(remark) && timeMs(remark.createdAt) >= timeMs(headSeenAt)));
+        isAgentReviewer(remark) && timeMs(remarkAt(remark)) >= timeMs(headSeenAt)));
     // A conflict blocks CI from ever settling, so it never waits.
     const urgent = held.some((change) => change.kind === "conflicting");
     const release = held.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));
@@ -404,6 +417,14 @@ export function summarizePrWatchChanges(changes: readonly PrWatchChange[]): stri
 }
 
 /**
+ * The rule that keeps a PR's list of open work true. ADE shows every
+ * unresolved thread as work that waits for a person, so a thread an agent
+ * handled and left open is a false alarm on every later visit.
+ */
+export const PR_THREAD_CLOSEOUT_RULE =
+  "Close out every review thread you handle, in the same turn. Fixed it: reply with what changed (`ade prs reply <pr> --thread <id> --body \"...\"`) and resolve it (`ade prs resolve-thread <pr> --thread <id>`). Not changing it: reply with the reason and resolve it. Leave a thread open only when a person must decide, and say what you need from them in the reply.";
+
+/**
  * Standing instructions for Ship. Written for any repository — it names no
  * skill, script, or bot this repo happens to use.
  */
@@ -412,7 +433,7 @@ export const PR_SHIP_STANDING_BRIEF = [
   "1. Read every failing check (open its log) and every new review comment before changing anything. Fix CI failures and valid review findings together, then commit and push once.",
   "2. Verify each fix with the narrowest check that proves it — the failing test file, the touched package's typecheck or lint. Do not run the whole suite.",
   "3. Rebase or merge the base branch only when the PR has a real conflict, then re-run the affected checks.",
-  "4. Reply to each review thread you addressed, or explain why a comment is wrong, and resolve the threads you fixed.",
+  `4. ${PR_THREAD_CLOSEOUT_RULE}`,
   "5. When the required checks pass and nothing is left unaddressed, merge the PR with the repository's usual merge method (`gh pr merge` or `ade prs land`).",
   "ADE wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
 ].join("\n");
@@ -473,7 +494,7 @@ function closingLine(ctx: PrWatchWakeContext): string {
     default:
       return ctx.mode === "ship"
         ? "Follow your shipping instructions. ADE keeps watching and wakes you on the next change."
-        : "Look into each item and act on it as your task requires. ADE keeps watching and wakes you on the next change, so end your turn when you are done. Run `ade prs unwatch` when you no longer need updates.";
+        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}ADE keeps watching and wakes you on the next change, so end your turn when you are done. Run \`ade prs unwatch\` when you no longer need updates.`;
   }
 }
 

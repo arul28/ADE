@@ -353,6 +353,15 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     case "agi": return "Droid orchestrator mode."
     default: return "Switch this session to \(mode.capitalized)."
     }
+  // Copy mirrors AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS in shared/types/chat.ts.
+  case "muse":
+    switch mode {
+    case "plan": return "Read-only Muse turns for planning, with ADE's plan guidance."
+    case "denyUnmatched": return "Muse refuses any tool call its rules do not already allow."
+    case "promptUnmatched": return "Muse asks before any tool call its rules do not already allow."
+    case "allowAll": return "Muse runs every tool call without asking."
+    default: return "Muse's default: sandboxed work runs, and Muse asks when it needs more."
+    }
   case "pi":
     switch mode {
     case "default", "plan", "read-only": return "Read-only Pi tools; review changes before enabling access."

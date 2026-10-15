@@ -104,7 +104,11 @@ describe("contextCompaction", () => {
       failReason: "timed_out",
     })!;
     expect(compactionFailLabel(timedOut.failReason)).toBe("Compaction timed out");
-    expect(compactionFailLabel("interrupted")).toBe("Compaction failed");
+    // An aborted compaction was cancelled, not broken — Claude Code's own
+    // `/compact` prints "Compaction canceled.", and ACP maps a cancelled
+    // compaction to this same reason.
+    expect(compactionFailLabel("interrupted")).toBe("Compaction cancelled");
+    expect(compactionFailLabel("teardown")).toBe("Compaction failed");
   });
 
   it("uses compactionId as the merge key when present", () => {

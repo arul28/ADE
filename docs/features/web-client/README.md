@@ -54,6 +54,7 @@ Build and static host:
   output root. It relies on Rollup's normal graph splitting instead of forcing
   the desktop renderer's heavy vendor groups into eager module preloads; the
   shared renderer's dynamic imports remain the feature-loading boundaries.
+- `apps/desktop/src/renderer/public/scene-frame.html` - the page a chat scene loads in on the hosted client. `_headers` gives it the scene policy in place of the app's (and lifts `X-Frame-Options`), because a `blob:` scene document inherits the app's policy and its scripts never run. `SceneFrame` posts the scene document to it on request.
 - `apps/desktop/scripts/check-webclient-entry.mjs` - post-build regression
   guard for the first-load graph. It collects local entry scripts and
   `modulepreload` links from the generated `index.html`, rejects eagerly linked
@@ -790,8 +791,8 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web startup event.
   It sends only normalized inputs through `window.ade.analytics`; the browser
-  client never talks to PostHog directly. There is no in-app consent prompt;
-  Settings carries the opt-out.
+  client never talks to PostHog directly. There is no in-app consent prompt and
+  no Settings control; a browser opt-out stored earlier is still honored.
 
 Machine runtime and sync host:
 
@@ -962,9 +963,9 @@ Tests:
   it in favor of the browser's socket state alone. Transport-open and
   authenticated-hello deadlines are intentionally separate so slow token/DPoP
   preparation and a dead network route produce different failures.
-- **Analytics collection is on by default and opted out browser-locally.** No
-  consent prompt is shown; the browser collects until someone turns it off in
-  Settings, which writes `"false"` to the local-storage preference. The host
+- **Analytics collection is on by default and honors a browser-local opt-out.**
+  No consent prompt is shown and no Settings control writes the preference; a
+  `"false"` in local storage from an earlier build still disables collection. The host
   keeps an in-memory consent bit for that paired socket and starts it
   disabled, so every adapter connection must reassert the local preference
   before capture. An opt-out is still fail-closed: a failed disable

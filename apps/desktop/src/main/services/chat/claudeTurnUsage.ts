@@ -14,10 +14,12 @@ export type ClaudeTurnRequestTally = {
   requestCount: number;
   /** Input side (uncached input + cache read + cache write) of the last request. */
   contextTokens: number | null;
+  /** When the last request started: Claude times the prompt cache from here. */
+  lastRequestStartedAt: string | null;
 };
 
 export function createClaudeTurnRequestTally(): ClaudeTurnRequestTally {
-  return { requestCount: 0, contextTokens: null };
+  return { requestCount: 0, contextTokens: null, lastRequestStartedAt: null };
 }
 
 /** Counts one main-thread `message_start` and keeps its input side. */
@@ -26,6 +28,7 @@ export function recordClaudeRequestStart(
   usage: Record<string, unknown> | null | undefined,
 ): void {
   tally.requestCount += 1;
+  tally.lastRequestStartedAt = new Date().toISOString();
   const input = finiteNumberOrNull(usage?.input_tokens);
   const cacheRead = finiteNumberOrNull(usage?.cache_read_input_tokens);
   const cacheWrite = finiteNumberOrNull(usage?.cache_creation_input_tokens);
@@ -43,6 +46,7 @@ type ClaudeDoneUsage = {
   contextTokens?: number | null;
   contextWindow?: number | null;
   requestCount?: number | null;
+  lastRequestStartedAt?: string | null;
 };
 
 /**
@@ -60,6 +64,7 @@ export function withClaudeTurnRequestUsage<T extends ClaudeDoneUsage>(
     ...(usage ?? {}),
     ...(tally.contextTokens != null ? { contextTokens: tally.contextTokens } : {}),
     ...(tally.requestCount > 0 ? { requestCount: tally.requestCount } : {}),
+    ...(tally.lastRequestStartedAt ? { lastRequestStartedAt: tally.lastRequestStartedAt } : {}),
     ...(contextWindow != null && contextWindow > 0 ? { contextWindow } : {}),
   } as T & ClaudeDoneUsage;
 }

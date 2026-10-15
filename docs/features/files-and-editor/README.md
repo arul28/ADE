@@ -70,8 +70,8 @@ targets for the legacy IPC path.
   project through Finder / OS open-file events or renderer drag-and-drop.
 - `apps/desktop/src/main/services/shared/treeWatcher.ts` — `watchTree`,
   the tree watcher under the file watcher and the automation file trigger.
-  chokidar off macOS; on macOS one recursive native watch per root (see
-  "File watching").
+  One recursive native watch per root on macOS and Windows; chokidar on
+  Linux (see "File watching").
 - `apps/desktop/src/main/services/files/fileWatchLedger.ts` — the watches a
   client still holds, so the stops a vanished page never sent can be sent
   for it.
@@ -240,7 +240,8 @@ Renderer:
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers, and an
   **Ignore whitespace** toggle); editable working-tree diffs delegate to
-  `MonacoDiffView`. Also used from `LaneDiffPane`,
+  `MonacoDiffView`. ⌘F opens its find bar (`useDiffFind.ts`, see
+  [editor surfaces](./editor-surfaces.md#find-in-a-diff)). Also used from `LaneDiffPane`,
   `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
   view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
   chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
@@ -482,8 +483,8 @@ watcher if the mode changed. When all ref counts hit zero, an idle
 timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
 
 `watchTree` (`services/shared/treeWatcher.ts`) reports chokidar's events
-(`add`, `change`, `unlink`, `addDir`, `unlinkDir`) on every platform. Off
-macOS it is chokidar. On macOS it is one recursive native watch per root: the
+(`add`, `change`, `unlink`, `addDir`, `unlinkDir`) on every platform. On
+Linux it is chokidar. On macOS and Windows it is one recursive native watch per root: the
 native event says where to look, and the path is read again and compared with
 a snapshot of the tree to decide what happened, so a new directory is walked
 and a removed one is reported entry by entry, as chokidar reports them.
@@ -496,6 +497,15 @@ is reported as a delete and creates, where the poller reported one `change`.
 (A file written in pieces may get a `change` after its `add` from either
 watcher, depending on timing.)
 `scripts/perf/service/tree-watcher-parity.mts` compares the two.
+
+Windows adds two rules of its own. When Windows drops events it sends one
+event with no file name, and the watcher re-reads the whole tree, so a burst
+that changed thousands of files is not reported as one. A Windows watch
+follows a moved folder and cannot see its root deleted or recreated, so the
+root's parent is watched too and the root's watch is reopened when the root
+comes back. On this repository the watcher is ready in about 90 ms, where
+chokidar's one-watch-per-directory mode took 2.5-3.4 s and blocked the event
+loop for about 200 ms (`docs/perf/windows-baseline.md`).
 
 A watch is one reference and a stop releases one. A page that goes away
 without its cleanup (a reload, a dead renderer, a closed window, the app

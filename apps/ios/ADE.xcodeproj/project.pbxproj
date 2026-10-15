@@ -191,6 +191,13 @@
 		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
 		E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */; };
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
+		E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE1 /* WorkSceneDocument.swift */; };
+		E20000000000000000005CE2 /* WorkSceneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE2 /* WorkSceneView.swift */; };
+		E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE5 /* WorkMcpAppDocument.swift */; };
+		E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE6 /* WorkMcpAppView.swift */; };
+		E20000000000000000005CE9 /* WorkSceneContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE9 /* WorkSceneContainerView.swift */; };
+		E20000000000000000005CE8 /* WorkSandboxedWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE8 /* WorkSandboxedWebView.swift */; };
+		E20000000000000000005CE3 /* SceneShell.html in Resources */ = {isa = PBXBuildFile; fileRef = D20000000000000000005CE3 /* SceneShell.html */; };
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
 		E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F82 /* SyncService+SessionHandoff.swift */; };
@@ -314,6 +321,9 @@
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
 		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
+		E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE01 /* DeviceSignInApproval.swift */; };
+		E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */; };
+		E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */; };
 		AD0000000000000000000B03 /* AccountSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A03 /* AccountSignInView.swift */; };
 		AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A04 /* AccountConnectionsSection.swift */; };
 		AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */; };
@@ -334,6 +344,7 @@
 		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
+		G10000000000000000000A06 /* PrsRootInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000A06 /* PrsRootInputs.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
 		G10000000000000000000033 /* PrDetailHeaderComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000033 /* PrDetailHeaderComponents.swift */; };
@@ -346,7 +357,7 @@
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F20 /* PrRemoteMachines.swift */; };
-		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
+		B10000000000000000000017 /* LaneTreeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeRow.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
@@ -418,6 +429,8 @@
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
+		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
+		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -595,6 +608,13 @@
 		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
 		D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNavigationAndTranscriptHelpers.swift; path = ADE/Views/Work/WorkNavigationAndTranscriptHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE1 /* WorkSceneDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneDocument.swift; path = ADE/Views/Work/WorkSceneDocument.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE2 /* WorkSceneView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneView.swift; path = ADE/Views/Work/WorkSceneView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE5 /* WorkMcpAppDocument.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppDocument.swift; path = ADE/Views/Work/WorkMcpAppDocument.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE6 /* WorkMcpAppView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMcpAppView.swift; path = ADE/Views/Work/WorkMcpAppView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE9 /* WorkSceneContainerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSceneContainerView.swift; path = ADE/Views/Work/WorkSceneContainerView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE8 /* WorkSandboxedWebView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSandboxedWebView.swift; path = ADE/Views/Work/WorkSandboxedWebView.swift; sourceTree = "<group>"; };
+		D20000000000000000005CE3 /* SceneShell.html */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.html; name = SceneShell.html; path = ADE/Resources/SceneShell.html; sourceTree = "<group>"; };
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000F82 /* SyncService+SessionHandoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+SessionHandoff.swift"; path = "ADE/Services/SyncService+SessionHandoff.swift"; sourceTree = "<group>"; };
@@ -772,6 +792,9 @@
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE01 /* DeviceSignInApproval.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApproval.swift; path = ADE/Services/DeviceSignInApproval.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApprovalSheet.swift; path = ADE/Views/Account/DeviceSignInApprovalSheet.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WebAuthPresentationAnchor.swift; path = ADE/Views/Components/WebAuthPresentationAnchor.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A03 /* AccountSignInView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountSignInView.swift; path = ADE/Views/Account/AccountSignInView.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A04 /* AccountConnectionsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountConnectionsSection.swift; path = ADE/Views/Account/AccountConnectionsSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountEmailAuthFlow.swift; path = ADE/Services/AccountEmailAuthFlow.swift; sourceTree = "<group>"; };
@@ -792,6 +815,7 @@
 		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000A06 /* PrsRootInputs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootInputs.swift; path = ADE/Views/PRs/PrsRootInputs.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000008 /* PrDetailOverviewTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewTab.swift; path = ADE/Views/PRs/PrDetailOverviewTab.swift; sourceTree = "<group>"; };
 		G20000000000000000000033 /* PrDetailHeaderComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailHeaderComponents.swift; path = ADE/Views/PRs/PrDetailHeaderComponents.swift; sourceTree = "<group>"; };
@@ -804,7 +828,7 @@
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000F20 /* PrRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRemoteMachines.swift; path = ADE/Views/PRs/PrRemoteMachines.swift; sourceTree = "<group>"; };
-		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* LaneTreeRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeRow.swift; path = ADE/Views/Lanes/LaneTreeRow.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
@@ -859,6 +883,7 @@
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
+		5E0000000000000000000C01 /* CrashReporting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CrashReporting.swift; path = ADE/Services/CrashReporting.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -875,6 +900,7 @@
 			files = (
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
 				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
+				5E0000000000000000000B01 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -953,6 +979,7 @@
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				D20000000000000000000F30 /* ADEFlat.swift */,
 				D20000000000000000000F3A /* ADEKit.swift */,
+				D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
 				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
@@ -985,7 +1012,7 @@
 				A1000000000000000000000F /* LaneManageSheet.swift */,
 				A1000000000000000000001C /* LaneRootStateViews.swift */,
 				A10000000000000000000011 /* LaneStackGraphSheet.swift */,
-				A10000000000000000000017 /* LaneTreeView.swift */,
+				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
@@ -1075,6 +1102,7 @@
 				D20000000000000000000F41 /* PrFlatPreviews.swift */,
 				D20000000000000000000F40 /* PrConversationDigest.swift */,
 				G20000000000000000000006 /* PrsRootScreen.swift */,
+				G20000000000000000000A06 /* PrsRootInputs.swift */,
 				D20000000000000000000F34 /* PrLaneSheets.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
@@ -1225,6 +1253,12 @@
 				D10000000000000000000032 /* WorkTranscriptParser.swift */,
 				D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */,
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
+				D20000000000000000005CE1 /* WorkSceneDocument.swift */,
+				D20000000000000000005CE2 /* WorkSceneView.swift */,
+				D20000000000000000005CE5 /* WorkMcpAppDocument.swift */,
+				D20000000000000000005CE6 /* WorkMcpAppView.swift */,
+				D20000000000000000005CE9 /* WorkSceneContainerView.swift */,
+				D20000000000000000005CE8 /* WorkSandboxedWebView.swift */,
 				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
 				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
 				D10000000000000000000F81 /* WorkSessionHandoffSheets.swift */,
@@ -1250,6 +1284,7 @@
 				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
 				C5A000000000000000000009 /* MobileAccessGateView.swift */,
 				C5A00000000000000000000A /* MobileAccessGateSheet.swift */,
+				D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */,
 			);
 			name = Account;
 			sourceTree = "<group>";
@@ -1292,6 +1327,7 @@
 				D20000000000000000000C2F /* ChatThread */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
+				5E0000000000000000000C01 /* CrashReporting.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
@@ -1320,6 +1356,7 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
 				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
 				C5A000000000000000000002 /* SSHBootstrapModels.swift */,
@@ -1488,6 +1525,7 @@
 				A90100000000000000000011 /* PrivacyInfo.xcprivacy */,
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
 				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
+				D20000000000000000005CE3 /* SceneShell.html */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -1616,6 +1654,7 @@
 				DD10000000000000000000B1 /* SwiftTerm */,
 				DD10000000000000000000C2 /* ClerkKit */,
 				C5C000000000000000000002 /* Citadel */,
+				5E0000000000000000000A02 /* Sentry */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -1748,6 +1787,7 @@
 				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */,
 				C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
+				5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -1785,6 +1825,7 @@
 				63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */,
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
 				CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */,
+				E20000000000000000005CE3 /* SceneShell.html in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1876,6 +1917,7 @@
 				8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */,
 				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
 				A90000000000000000000001 /* ProductAnalytics.swift in Sources */,
+				5E0000000000000000000B02 /* CrashReporting.swift in Sources */,
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
@@ -1997,6 +2039,9 @@
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
+				E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */,
+				E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */,
 				AD0000000000000000000B03 /* AccountSignInView.swift in Sources */,
 				AD0000000000000000000B04 /* AccountConnectionsSection.swift in Sources */,
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
@@ -2017,6 +2062,7 @@
 				E20000000000000000000F41 /* PrFlatPreviews.swift in Sources */,
 				E20000000000000000000F40 /* PrConversationDigest.swift in Sources */,
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
+				G10000000000000000000A06 /* PrsRootInputs.swift in Sources */,
 				E20000000000000000000F34 /* PrLaneSheets.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
 				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
@@ -2030,7 +2076,7 @@
 				E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
-				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
+				B10000000000000000000017 /* LaneTreeRow.swift in Sources */,
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
@@ -2136,6 +2182,12 @@
 				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
 				E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */,
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
+				E20000000000000000005CE1 /* WorkSceneDocument.swift in Sources */,
+				E20000000000000000005CE2 /* WorkSceneView.swift in Sources */,
+				E20000000000000000005CE5 /* WorkMcpAppDocument.swift in Sources */,
+				E20000000000000000005CE6 /* WorkMcpAppView.swift in Sources */,
+				E20000000000000000005CE9 /* WorkSceneContainerView.swift in Sources */,
+				E20000000000000000005CE8 /* WorkSandboxedWebView.swift in Sources */,
 				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
 				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
 				E10000000000000000000F82 /* SyncService+SessionHandoff.swift in Sources */,
@@ -2742,6 +2794,14 @@
 				version = 0.12.1;
 			};
 		};
+		5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 9.30.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -2759,6 +2819,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;
+		};
+		5E0000000000000000000A02 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

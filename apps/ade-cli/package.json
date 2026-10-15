@@ -22,17 +22,18 @@
     "package:native-deps": "node ./scripts/package-native-deps.mjs",
     "tools:manifest": "node ./scripts/generate-tools-manifest.mjs",
     "tools:manifest:check": "node ./scripts/generate-tools-manifest.mjs --check",
+    "tools:muse-pin": "node ./scripts/pin-muse-release.mjs",
     "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "pretest": "npm run tools:manifest:check",
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.293",
+    "@anthropic-ai/claude-agent-sdk": "0.3.300",
     "@cursor/sdk": "1.0.36",
     "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.161.0",
+    "@openai/codex": "0.162.1",
     "@opencode/cli": "2.0.24",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
@@ -54,7 +55,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@muse-code/sdk": "1.4.7",
     "@opencode/client": "2.0.24",
+    "@sentry/node": "11.7.0",
     "@types/node": "^20.11.30",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",

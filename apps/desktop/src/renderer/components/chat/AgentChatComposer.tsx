@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatContextTokens } from "./usage/contextUsageModel";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { linearIssueRef } from "../../../shared/issueRefs";
-import type { CompactFirstOffer } from "../../../shared/compactFirst";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -19,6 +19,7 @@ import {
   type AgentChatCursorConfigOption,
   type AgentChatCursorModeSnapshot,
   type AgentChatDroidPermissionMode,
+  type AgentChatMusePermissionMode,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
@@ -64,6 +65,7 @@ import {
   modelSupportsFastMode,
   resolveOpenCodeFastEffortSelection,
   type ProviderFamily,
+  type FastTier,
 } from "../../../shared/modelRegistry";
 import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
@@ -137,6 +139,7 @@ import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFe
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
@@ -233,6 +236,7 @@ import {
 } from "./chatAttachmentStaging";
 import {
   DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
 } from "../../lib/nativeLaunchControls";
 
 export type ComposerDraftEditIntent = {
@@ -593,6 +597,7 @@ export type ParallelComposerControlSlot = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
   onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
@@ -607,6 +612,7 @@ export type ParallelComposerControlSlot = {
   onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
+  onMusePermissionModeChange: (mode: AgentChatMusePermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
 };
@@ -636,6 +642,21 @@ function PendingApprovalDetail({
       </pre>
     </div>
   );
+}
+
+/**
+ * Drafts set aside while a question card holds the editor, by chat. Module
+ * state on purpose: it has to outlive a switch to another chat, and it is only
+ * ever a handful of short strings.
+ */
+const draftsSetAsideForQuestion = new Map<string, string>();
+function rememberDraftSetAside(sessionId: string, text: string): void {
+  // Bounded: a chat deleted with a card still open would otherwise stay here.
+  if (draftsSetAsideForQuestion.size >= 32) {
+    const oldest = draftsSetAsideForQuestion.keys().next().value;
+    if (oldest !== undefined) draftsSetAsideForQuestion.delete(oldest);
+  }
+  draftsSetAsideForQuestion.set(sessionId, text);
 }
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
@@ -1347,6 +1368,19 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
+/** Muse's approval modes plus ADE's plan mode, which runs on `denyUnmatched`. */
+type MusePermissionPickerValue = AgentChatMusePermissionMode | "plan";
+const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, Pick<PermissionModePickerOption<MusePermissionPickerValue>, "triggerLabel" | "tone" | "icon">> = {
+  denyUnmatched: { triggerLabel: "Read-only", tone: "green", icon: "manual" },
+  promptUnmatched: { tone: "green", icon: "edit" },
+  onRequest: { tone: "amber", icon: "auto" },
+  allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
+};
+const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
+  { value: "plan", label: "Plan", detail: "Read-only Muse turns for planning, with ADE's plan guidance.", tone: "purple", icon: "plan" },
+  ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
+];
+
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
   return snapshot.configOptions.find((option) => option.id === snapshot.modeConfigId || option.category === "mode") ?? null;
@@ -1362,6 +1396,8 @@ function PendingSteerItem({
   onInterrupt,
   reorder,
   attachmentTray,
+  statusLabel,
+  statusHint,
 }: {
   steer: {
     steerId: string;
@@ -1378,15 +1414,22 @@ function PendingSteerItem({
   reorder?: PendingSteerReorder;
   /** The message's files and context, as the composer's own tray draws them. */
   attachmentTray?: React.ReactNode;
+  /** Where the message stands in the queue ("Sends next", "Queued"). */
+  statusLabel: string;
+  /** What the user can do with it, and why it waits; shown on the status tag. */
+  statusHint: string;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
   const rowRef = useRef<HTMLDivElement | null>(null);
   return (
     <div
       ref={rowRef}
+      role="listitem"
+      // The hint tooltip opens on pointer hover only; assistive tech reads it here.
+      aria-description={statusHint}
       data-testid="pending-steer-item"
       className={cn(
-        "group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5 transition-opacity",
+        "group relative flex items-center gap-2 rounded-[10px] bg-fg/[0.035] px-2.5 py-1.5 transition-[background-color,opacity] hover:bg-fg/[0.055] focus-within:bg-fg/[0.055]",
         reorder?.dragging && "opacity-40",
         reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
         reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
@@ -1413,7 +1456,7 @@ function PendingSteerItem({
             data-testid="pending-steer-reorder-handle"
             aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
             aria-keyshortcuts="ArrowUp ArrowDown Home End"
-            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-[var(--chat-accent)]/45 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-fg/30 hover:text-fg/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
             onDragStart={(event) => {
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
@@ -1437,25 +1480,33 @@ function PendingSteerItem({
           </button>
         </SmartTooltip>
       ) : (
-        <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+        <Clock size={12} weight="bold" className="shrink-0 text-fg/30" aria-hidden />
       )}
       <div className="flex-1 min-w-0">
-        <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
-          Sends after turn
-        </div>
-        <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
-          {steer.text}
-        </div>
+        {/* The hint sits on the text: the status tag hides under the actions on hover. */}
+        <SmartTooltip forceEnabled content={{ label: statusLabel, description: statusHint }} wrapperStyle={{ display: "flex", minWidth: 0 }}>
+          <div className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.5] text-fg/80">
+            {steer.text}
+          </div>
+        </SmartTooltip>
         {attachmentTray}
       </div>
+      <span
+        data-testid="pending-steer-status"
+        className="shrink-0 rounded-full bg-fg/[0.05] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45 [@media(hover:hover)]:group-hover:hidden [@media(hover:hover)]:group-focus-within:hidden"
+      >
+        {statusLabel}
+      </span>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
           control invisible on mobile and ADE Web. Both rules sit inside the
           same media query and `group-hover` outranks the base class on
-          specificity, so the reveal never depends on stylesheet order. */}
+          specificity, so the reveal never depends on stylesheet order. With a
+          pointer the actions sit over the status tag, which hides on hover, so
+          every tag lines up at the row's right edge. */}
       <div
         data-testid="pending-steer-actions"
-        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
+        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:absolute [@media(hover:hover)]:right-2 [@media(hover:hover)]:top-1/2 [@media(hover:hover)]:-translate-y-1/2 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
       >
           {onSendNow ? (
             <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
@@ -1955,12 +2006,11 @@ export function AgentChatComposer({
   reasoningEffort,
   effectiveReasoningEffort,
   fastMode = false,
+  fastTier = null,
+  effectiveFastTier = null,
   cursorCloudServiceTier = null,
   usageViewModel = null,
   compactionPulse = false,
-  compactFirstOffer = null,
-  compactFirstEnabled = false,
-  onCompactFirstChange,
   onCompactContext,
   compactSessionProvider,
   draft,
@@ -1991,6 +2041,7 @@ export function AgentChatComposer({
   codexConfigSource,
   opencodePermissionMode,
   droidPermissionMode,
+  musePermissionMode,
   cursorModeSnapshot,
   iosElementContextItems = [],
   appControlContextItems = [],
@@ -2037,6 +2088,7 @@ export function AgentChatComposer({
   onCodexConfigSourceChange,
   onOpenCodePermissionModeChange,
   onDroidPermissionModeChange,
+  onMusePermissionModeChange,
   onCursorModeChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
@@ -2152,12 +2204,17 @@ export function AgentChatComposer({
    */
   effectiveReasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Fast's tier for the selected model ("ultrafast" on Codex models that offer it). */
+  fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast, when it has
+   * reported one. Reaches the picker's selected row so a declined request is
+   * visible; see `ModelListRow`.
+   */
+  effectiveFastTier?: string | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  compactFirstOffer?: CompactFirstOffer | null;
-  compactFirstEnabled?: boolean;
-  onCompactFirstChange?: (value: boolean) => void;
   /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
   onCompactContext?: () => void;
   /**
@@ -2210,6 +2267,7 @@ export function AgentChatComposer({
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -2233,7 +2291,7 @@ export function AgentChatComposer({
    */
   onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
-  onFastModeChange?: (enabled: boolean) => void;
+  onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
   onDraftChange: (value: string, editIntent?: ComposerDraftEditIntent) => void;
   /** Persisted display labels keyed by their canonical mention token. */
@@ -2287,6 +2345,8 @@ export function AgentChatComposer({
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
+  /** Muse's plan rung is an interaction mode plus `denyUnmatched`, so both travel in one change. */
+  onMusePermissionModeChange?: (mode: AgentChatMusePermissionMode, interactionMode: AgentChatInteractionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
   onComputerUsePolicyChange?: (policy: unknown) => void;
@@ -2350,7 +2410,7 @@ export function AgentChatComposer({
   } | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
-  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean }>;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean; fastTier?: FastTier | null }>;
   parallelConfiguringIndex?: number | null;
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
@@ -2361,7 +2421,7 @@ export function AgentChatComposer({
     options?: { fastMode: boolean },
   ) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
-  onParallelSlotFastModeChange?: (index: number, enabled: boolean) => void;
+  onParallelSlotFastModeChange?: (index: number, enabled: boolean, tier?: FastTier) => void;
   parallelLaunchBusy?: boolean;
   parallelLaunchStatus?: string | null;
   parallelControlSlot?: ParallelComposerControlSlot | null;
@@ -2707,6 +2767,8 @@ export function AgentChatComposer({
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
   describeChipModelRef.current = describeChipModel;
+  // The model picker's synced recents (desktop, TUI, iOS); the `@` menu leads with them.
+  const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
     const ids = mentionModelIds ?? availableModelIds ?? [];
@@ -3048,7 +3110,7 @@ export function AgentChatComposer({
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
-  const userShellChipRange = sessionProvider === "codex"
+  const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
@@ -3462,22 +3524,34 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async () => {
+  /**
+   * Attach the clipboard's image through the host, which fits an oversized one
+   * under the ceiling. `fallbackFiles` are what the paste event carried: when
+   * the clipboard holds no bitmap after all (a file copied in Finder, say),
+   * they go through the normal path, which says why it refuses one.
+   */
+  const addNativeClipboardImageAttachment = async (fallbackFiles?: File[]) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
-    if (!canAttach) return;
+    if (!canAttach) {
+      // The normal path is the one that says why attaching is blocked.
+      if (fallbackFiles?.length) void addFileAttachments(fallbackFiles);
+      return;
+    }
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = composerMachineBinding;
+    let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
         dropPendingImageAttachment(pendingImage.id);
+        clipboardWasEmpty = true;
         return;
       }
       const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
@@ -3496,11 +3570,15 @@ export function AgentChatComposer({
       rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       dropPendingImageAttachment(pendingImage.id);
-    } catch {
+    } catch (error) {
       dropPendingImageAttachment(pendingImage.id);
-      setAttachError("Unable to attach clipboard image.");
+      // The host's reason (a clipboard image it could not fit under the
+      // ceiling, say) is the useful part; a bare "Unable to attach" hid it.
+      const reason = error instanceof Error ? stripElectronErrorWrapper(error.message) : "";
+      setAttachError(reason || "Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
+      if (clipboardWasEmpty && fallbackFiles?.length) void addFileAttachments(fallbackFiles);
     }
   };
 
@@ -4855,6 +4933,7 @@ export function AgentChatComposer({
   const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
   const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
   const dpmUse = slot?.droidPermissionMode ?? droidPermissionMode ?? "auto-low";
+  const mpmUse = slot?.musePermissionMode ?? musePermissionMode ?? "onRequest";
   const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
   const fastModeModelId =
     parallelChatMode && parallelConfiguringIndex != null
@@ -5124,6 +5203,28 @@ export function AgentChatComposer({
       );
     }
 
+    if (sp === "muse") {
+      const applyMuseMode = (value: MusePermissionPickerValue) => {
+        const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
+        const mode: AgentChatMusePermissionMode = value === "plan" ? "denyUnmatched" : value;
+        if (parallelControlSlot) {
+          parallelControlSlot.onInteractionModeChange(interaction);
+          parallelControlSlot.onMusePermissionModeChange(mode);
+          return;
+        }
+        onMusePermissionModeChange?.(mode, interaction);
+      };
+      return (
+        <PermissionModePicker
+          ariaLabel="Muse approval mode"
+          selectedValue={im === "plan" ? "plan" : mpmUse}
+          options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
+          disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
+          onSelect={applyMuseMode}
+        />
+      );
+    }
+
     const cursorModeOption = resolveCursorModeOption(cmsUse);
     if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
@@ -5178,9 +5279,12 @@ export function AgentChatComposer({
     onInteractionModeChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
+    onMusePermissionModeChange,
     onOpenCodePermissionModeChange,
     cmsUse,
     dpmUse,
+    mpmUse,
+    im,
     sp,
     opmUse,
     parallelControlSlot,
@@ -5503,6 +5607,49 @@ export function AgentChatComposer({
   }, [writeAnswerDraft]);
 
   /**
+   * What the user had typed before a question card took the editor over.
+   *
+   * The card re-homes this composer's editor as its answer field, and the
+   * answer is cleared once it is sent or declined. A message the user was in
+   * the middle of writing would become the "answer" and then be thrown away,
+   * so it is set aside when the card opens and put back when it closes.
+   *
+   * Kept per chat and outside the component (`draftsSetAsideForQuestion`): one
+   * composer serves every chat in the pane, so a switch away while the card is
+   * up must leave the text waiting for that chat, not drop it.
+   */
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const questionOwnerId = sessionId ?? null;
+  const questionOwnerSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!questionOwnerId) return;
+    // The first pass for a chat that just came into this composer: the pane
+    // may still be showing the previous chat's draft, so nothing is captured
+    // from it. A card that was already up when the chat was opened keeps the
+    // old behaviour for that one visit.
+    const cameIntoView = questionOwnerSeenRef.current !== questionOwnerId;
+    questionOwnerSeenRef.current = questionOwnerId;
+    if (askQuestionActive) {
+      // Several questions in a row keep the first set-aside text.
+      if (draftsSetAsideForQuestion.has(questionOwnerId)) return;
+      if (cameIntoView) {
+        draftsSetAsideForQuestion.set(questionOwnerId, "");
+        return;
+      }
+      rememberDraftSetAside(questionOwnerId, latestDraftRef.current);
+      if (latestDraftRef.current.length) writeAnswerDraft("");
+      return;
+    }
+    const saved = draftsSetAsideForQuestion.get(questionOwnerId);
+    if (saved === undefined) return;
+    draftsSetAsideForQuestion.delete(questionOwnerId);
+    // Never over text that is there now (an answer whose delivery failed, or
+    // something new).
+    if (saved.length && !latestDraftRef.current.length) writeAnswerDraft(saved);
+  }, [askQuestionActive, questionOwnerId, writeAnswerDraft]);
+
+  /**
    * Keyboard for the editor in its question-card home.
    *
    * Enter sends the ANSWER. It cannot fall through to `handleKeyDown`'s send:
@@ -5709,6 +5856,25 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
+    // A photo copied out of Messages or Photos arrives as a PNG the browser
+    // re-encoded from the bitmap, often 3–10x the file that was sent, and over
+    // the pasted-bytes ceiling. The desktop clipboard reader fits it under the
+    // ceiling instead of refusing it, so an oversized pasted image goes there.
+    // The web adapter's reader does no fitting, so the web keeps the old path.
+    const [onlyFile] = collected;
+    // A file copied in Finder has a path on disk, which the normal path
+    // streams at the full ceiling; only an in-memory bitmap needs fitting.
+    const oversizedClipboardImage = collected.length === 1
+      && onlyFile != null
+      && onlyFile.type.startsWith("image/")
+      && onlyFile.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
+      && !window.ade?.project?.getDroppedPath?.(onlyFile)
+      && !isWebClientMode()
+      && typeof window.ade?.app?.readClipboardImage === "function";
+    if (oversizedClipboardImage) {
+      void addNativeClipboardImageAttachment(collected);
+      return;
+    }
     void addFileAttachments(collected);
   };
 
@@ -5835,6 +6001,8 @@ export function AgentChatComposer({
         restoreTextareaCaret(next.caret);
       }
     } else if (item.type === "model" && commandMenuTrigger) {
+      // Shared with the model picker's Recents, so the next `@` leads with it.
+      recordModelRecent(item.model.modelId);
       const mention = initialModelMention(item.model);
       const token = formatModelMentionToken(mention);
       if (useRichComposer) {
@@ -5900,7 +6068,7 @@ export function AgentChatComposer({
       }
     }
     closeCommandMenu();
-  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, recordModelRecent, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -5937,7 +6105,9 @@ export function AgentChatComposer({
   }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
-  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+  // A running turn already has its model, and the picker is locked mid-turn:
+  // steering it must not wait on a model the composer has not loaded yet.
+  const singleModelReady = (Boolean(modelId) || turnActive) && !singleModelBlockedMessage;
 
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
@@ -5990,11 +6160,12 @@ export function AgentChatComposer({
       case "claude": return claudeSelectionMode;
       case "opencode": return opmUse ?? null;
       case "droid": return dpmUse ?? null;
+      case "muse": return im === "plan" ? "plan" : mpmUse ?? null;
       // Cursor's control is a whole config snapshot rather than one mode name,
       // so there is no single value to freeze here; the chat keeps its own.
       default: return null;
     }
-  }, [claudeSelectionMode, dpmUse, opmUse, sp]);
+  }, [claudeSelectionMode, dpmUse, im, mpmUse, opmUse, sp]);
 
   const scheduleTargets = useMemo((): DraftScheduleTargets => ({
     sessionId: sessionId ?? null,
@@ -6248,7 +6419,7 @@ export function AgentChatComposer({
       if (cloudSendBlock) return cloudSendBlock.reason;
       return `Send to ${cloudTargetLabel}`;
     }
-    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (!modelId && !turnActive) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
@@ -6429,7 +6600,6 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
-      <CodexVoiceBar voice={codexVoice} />
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -6443,6 +6613,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      voiceBar={<CodexVoiceBar voice={codexVoice} />}
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
@@ -7081,8 +7252,9 @@ export function AgentChatComposer({
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(onParallelSlotFastModeChange
                     ? {
-                        onFastModeChange: (next: boolean) =>
-                          onParallelSlotFastModeChange(parallelConfiguringIndex, next),
+                        fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
+                        onFastModeChange: (next: boolean, tier?: FastTier) =>
+                          onParallelSlotFastModeChange(parallelConfiguringIndex, next, tier),
                       }
                     : {})}
                 />
@@ -7126,6 +7298,8 @@ export function AgentChatComposer({
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
+                  fastTier={fastTier}
+                  effectiveFastTier={effectiveFastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {
@@ -7208,11 +7382,6 @@ export function AgentChatComposer({
             );
           })() : null}
 
-          {!parallelChatMode && compactFirstOffer ? <SmartTooltip forceEnabled side="top" content={{ label: "Compact first", description: `The cache expired after an hour. Compacting first re-sends about ${formatContextTokens(compactFirstOffer.estimatedPostTokens)} tokens instead of ${formatContextTokens(compactFirstOffer.contextTokens)}.` }}>
-            <button type="button" aria-pressed={compactFirstEnabled} onClick={() => onCompactFirstChange?.(!compactFirstEnabled)} className={cn("rounded-full px-2 py-1 text-[10px] transition-colors", compactFirstEnabled ? "bg-accent/10 text-accent" : "bg-fg/5 text-fg/50 hover:bg-fg/10")}>
-              Compact first · {formatContextTokens(compactFirstOffer.contextTokens)}
-            </button>
-          </SmartTooltip> : null}
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
               usage={usageViewModel}
@@ -7587,6 +7756,7 @@ export function AgentChatComposer({
               onMentionSearch={onSearchMentions}
               onPrSearch={onSearchPullRequests}
               modelOptions={modelMentionOptions}
+              recentModelIds={modelRecents}
               anchor={commandMenuAnchor}
               onSelect={handleCommandMenuSelect}
               onClose={closeCommandMenu}
@@ -7888,33 +8058,36 @@ export function AgentChatComposer({
           );
         }
 
+        // The one thing the tags cannot say, kept visible because tooltips
+        // never show on a touch pointer: why a message has to wait.
+        const queueLimitNote = !pendingSteers.length ? null
+          : activeTurnSendCapability.modes.every((mode) => mode === "queue")
+            ? `${activeTurnSendCapability.agentLabel} cannot take a message mid-turn, so ${pendingSteers.length === 1 ? "it sends" : "they send"} when the turn ends.`
+            : onDispatchSteerInline ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null : null;
+        const firstSteerLabel = usageViewModel?.state === "compacting" ? "After compaction" : "Sends next";
         return (
           <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
-        <div className="border-b border-fg/[0.06] bg-fg/[0.02] px-3 py-2 space-y-1.5">
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-fg/30">
-              Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
-            </span>
-            <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {stagedSteerHint({
-                capability: activeTurnSendCapability,
-                canSendNow: Boolean(onDispatchSteerInline)
-                  && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
-                canInterrupt: Boolean(onDispatchSteerInterrupt),
-                canReorder: canReorderSteers,
-                inlineBlockedReason: onDispatchSteerInline
-                  ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
-                  : null,
-              })}
-            </span>
-          </div>
+        <div className="px-2 pb-1 pt-2">
+        <div
+          className="space-y-1"
+          role="list"
+          aria-label={pendingSteers.length === 1 ? "Queued message" : `${pendingSteers.length} queued messages`}
+        >
           {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              statusLabel={index > 0 ? "Queued" : firstSteerLabel}
+              statusHint={stagedSteerHint({
+                capability: activeTurnSendCapability,
+                canSendNow: Boolean(onDispatchSteerInline) && !stagedSteerInlineBlock(steer),
+                canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
+                inlineBlockedReason: onDispatchSteerInline ? stagedSteerInlineBlock(steer) ?? null : null,
+              })}
               attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
                 <ChatAttachmentTray
                   attachments={steer.attachments}
@@ -7938,6 +8111,10 @@ export function AgentChatComposer({
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}
+        </div>
+          {queueLimitNote ? (
+            <p className="px-1 pt-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">{queueLimitNote}</p>
+          ) : null}
         </div>
       ) : null}
 

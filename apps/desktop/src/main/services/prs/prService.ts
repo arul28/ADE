@@ -165,6 +165,7 @@ import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/t
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
 import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
 import { classifyPrAuthor } from "../../../shared/prBotIdentity";
+import { PR_BRIEF_HEADINGS, PR_BRIEF_PLACEHOLDERS } from "../../../shared/prBrief";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
@@ -5107,6 +5108,13 @@ export function createPrService({
         laneId: lane.id,
         prUrlOrNumber: preflight.githubUrl,
       });
+      // A lane imported from this PR carries one explicit, machine-local
+      // origin for its first agent chat. The chat service consumes it after a
+      // successful ordinary session create; later chats stay unlinked unless
+      // the user links them explicitly.
+      if (!chatLinks.rememberLanePrChatOrigin({ prId: pr.id, laneId: lane.id })) {
+        throw new Error(`Could not save PR #${preflight.githubPrNumber}'s chat origin for lane "${lane.name}".`);
+      }
       return { preflight, lane, pr };
     } catch (error) {
       if (!lane) throw error;
@@ -7366,6 +7374,14 @@ export function createPrService({
     };
   };
 
+  /** The parts of a drafted description: the Brief's, without the optional one. */
+  const PR_BRIEF_DRAFT_HEADINGS = [
+    PR_BRIEF_HEADINGS.why,
+    PR_BRIEF_HEADINGS.changed,
+    PR_BRIEF_HEADINGS.evidence,
+    PR_BRIEF_HEADINGS.not_checked,
+  ];
+
   const draftDescription = async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
     const { laneId, reasoningEffort } = args;
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
@@ -7451,7 +7467,9 @@ export function createPrService({
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
-        "The body must be GitHub-flavored markdown with sections: Summary, What Changed, Validation, Risks.",
+        `The body must be GitHub-flavored markdown with these sections, in this order: ${PR_BRIEF_DRAFT_HEADINGS.join(", ")}.`,
+        "Write for a person who has two minutes and did not see the work. Use plain words. Explain a technical term in the sentence where it first appears. Keep file and function names out of Why and What changed.",
+        "Evidence says how the change was checked and what was seen; write only what the context shows, and never invent a test run. Not checked says what was not checked.",
         "If Linear issue context is present, include the primary Linear issue identifier in the title and include Linear references in the body.",
         "",
         "PR Context JSON:",
@@ -7495,21 +7513,21 @@ export function createPrService({
 
     // Guest/CLI fallback: deterministic content.
     const lines: string[] = [];
-    lines.push("## Summary");
+    lines.push(`## ${PR_BRIEF_HEADINGS.why}`);
     lines.push("");
-    lines.push("_Describe the change._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.why);
     lines.push("");
-    lines.push("## What Changed");
+    lines.push(`## ${PR_BRIEF_HEADINGS.changed}`);
     lines.push("");
-    lines.push("_Key files and behaviors._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.changed);
     lines.push("");
-    lines.push("## Validation");
+    lines.push(`## ${PR_BRIEF_HEADINGS.evidence}`);
     lines.push("");
-    lines.push("_How you tested._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.evidence);
     lines.push("");
-    lines.push("## Risks");
+    lines.push(`## ${PR_BRIEF_HEADINGS.not_checked}`);
     lines.push("");
-    lines.push("_Anything to watch._");
+    lines.push(PR_BRIEF_PLACEHOLDERS.not_checked);
     if (template) {
       lines.push("");
       lines.push("---");
@@ -12613,6 +12631,17 @@ export function createPrService({
       });
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * Claim a lane's one-shot PR origin for a newly created chat. This is an
+     * internal service seam for agentChatService, not a renderer runtime action.
+     * `linked` means a new edge was inserted; only that case emits an update.
+     */
+    claimLanePrChatOrigin(args: { laneId: string; sessionId: string }) {
+      const linked = chatLinks.claimLanePrChatOrigin(args);
+      if (linked.status === "linked") emitPrsUpdated();
+      return linked;
     },
 
     unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {

@@ -7,12 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.106] - 2026-10-15
+
+### Desktop and web
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+### iOS
+
+- The compaction timer counts once, and a cancelled compaction says so (#1637).
+
+## [1.2.105] - 2026-10-15
+
+### Desktop and web
+
+- Voice narrates the work while it happens (#1631).
+- Model picker redesign, Codex Ultrafast, and @ menu recents (#1627).
+- Balance Claude five-hour capacity across accounts (#1629).
+- Spotify alongside Apple Music (#1624).
+- Move a project safely to a new drive (#1633).
+- Plan mode ends after approval, and Compact first queues your message (#1622, #1621).
+- Machine updates never restart a current machine (#1626).
+- PR reviews and attention states stay in sync (#1635).
+
+### iOS
+
+- Chats that work but show nothing are reported to Sentry (#1630).
+
+## [1.2.104] - 2026-10-14
+
+### Desktop and web
+
+- Meta Muse Code as a first-class provider, chat and CLI (#1614).
+- The resume after an install waits for the install to finish (#1618).
+- Windows: live model lists, browser timeouts and chat reopening; Sentry on every surface (#1612).
+- Apple Inspect selects the element you click (#1619).
+
+## [1.2.103] - 2026-10-13
+
+### Desktop and web
+
+- Scenes can ask for a reply; Settings > MCP servers and MCP Apps (#1609).
+- Apple Music plays on macOS, and playback resumes where it stopped (#1611).
+- The update dialog says what a restart stops, and other machines can update from here (#1613).
+- Claude chats follow the real prompt cache time; clearer compaction line (#1608).
+- Browser commands use the browser on your machine; a cross-project search no longer freezes ADE (#1615).
+- The Windows installer is built with NSIS 3.12 to stop a first-install crash (#1605).
+
+## [1.2.102] - 2026-10-13
+
+### Desktop and web
+
+- Send a message into a running turn without a loaded model, and keep a chat's model across pane remounts (#1606).
+- Sign a machine in from your phone with a QR code (#1603).
+- Videos play in PRs, and the phone shows a PR description's pictures (#1604).
+
 ## [1.2.101] - 2026-10-12
 
 ### Desktop and web
 
-- Loaded project tabs switch on press; warm switching measured 44–51 ms, down from 136–137 ms (#1585).
-- Tab detachment waits for the pending project switch before closing the source tab (#1585).
+- Find in a chat or any diff with ⌘F, plus "Find in this chat" in ⌘K (#1600).
+- Claude Code mod UI (status lines, toasts, band, panes) in ADE chat, opt-in (#1601).
+- Readable agent-written PRs, a "needs you" line, side-by-side proof, and Add to chat in the PRs tab (#1595).
+- Chat fixes: steered turns keep their tool list, photo paste, kept chat models, browser preview sizing (#1598, #1602).
+- Multi-machine chats: voice, terminal logs, sign-in and session diffs reach the owning machine (#1592).
+- Sign out of non-default accounts; remove signs out first (#1593, #1599).
+- Idle Claude accounts stay readable for smart balance; option to stop turns on extra usage (#1587, #1588).
+- Project switching keeps the right lane, protects moved project data, and no longer breaks the simulator pane (#1589, #1594).
+- Background git status no longer blocks your commits; PR Watch wakes on bot comment edits; chat-settled automation trigger (#1587).
+- ADE-styled quit prompt and a Background service stop; readable Focus grid with a chats-per-page setting (#1590, #1591).
+- Project tabs switch on press, 44–51 ms warm (#1585).
 
 ## [1.2.100] - 2026-10-11
 
@@ -2448,7 +2512,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.101...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.106...HEAD
+[1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
+[1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
+[1.2.104]: https://github.com/arul28/ADE/compare/v1.2.103...v1.2.104
+[1.2.103]: https://github.com/arul28/ADE/compare/v1.2.102...v1.2.103
+[1.2.102]: https://github.com/arul28/ADE/compare/v1.2.101...v1.2.102
 [1.2.101]: https://github.com/arul28/ADE/compare/v1.2.100...v1.2.101
 [1.2.100]: https://github.com/arul28/ADE/compare/v1.2.99...v1.2.100
 [1.2.99]: https://github.com/arul28/ADE/compare/v1.2.98...v1.2.99

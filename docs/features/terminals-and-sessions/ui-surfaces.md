@@ -1416,11 +1416,18 @@ click away from taking the pane back.
 The box follows the picture, not a fixed per-tool rectangle. The width is
 the user's (default 288 px, 200–560, never more than half the column); the
 height is `width / aspect`, capped at ~340 px, and the width is shrunk to keep
-the aspect when the cap hits. The aspect comes from the source's own natural
-size — the browser `<img>`'s `naturalWidth/Height`, the App Control frame, the
-simulator `<video>`'s `videoWidth/Height`, the `macDesktopFrame` — and falls
-back to the tool's default (16:10, or 3:4 for the simulator) until the first
-frame arrives. Every tool draws with `object-fit: contain`; nothing is cropped.
+the aspect when the cap hits. The 200 px width floor beats that soft cap, so a
+tall picture (a phone-size device preset) is a 200 px card taller than 340 px;
+the column's own height beats the floor, so in a short window that card
+narrows below 200 px rather than not fitting and disappearing. The aspect comes
+from the source's own natural size — the browser `<img>`'s
+`naturalWidth/Height`, the App Control frame, the simulator `<video>`'s
+`videoWidth/Height`, the `macDesktopFrame` — for every tool, the browser
+included: a parked tab is laid out at a usable size (see
+[Corner card and parked preview views](../chat/README.md#the-corner-card-and-parked-preview-views)),
+so a tall browser picture is a real page and gets a tall card. It falls back to
+the tool's default (16:10, or 3:4 for the simulator) until the first frame
+arrives. Every tool draws with `object-fit: contain`; nothing is cropped.
 A bottom-right handle resizes the width (the aspect stays locked) and the width
 is persisted project-scoped beside the position. It asks its source for frames
 at the card's width in *device* pixels, so a Retina card is not fed a
@@ -1456,6 +1463,12 @@ dismissal undone by the event it caused would never stick.
   shown and its feed is torn down. The card does not take part in the players'
   placement, so stepping aside is what keeps it off a player. A tool the user
   floated by hand still shows.
+- **It steps aside while the browser page has failed to load.** Chromium
+  paints a failed main-frame load (a stopped dev server, a bad URL) as plain
+  white, so the card would float a white box. While the tab's status carries
+  `loadError`, the browser is not offered to the card at all, even when the
+  chat floated it by hand; the float is kept, and the card returns as soon as
+  the tab loads again.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
@@ -1766,7 +1779,12 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
     alias caused the TUI to drop straight into auto-approval and was
     surprising in the Work tab). `full-auto` keeps the explicit
     `--dangerously-bypass-approvals-and-sandbox` flag, and `config-toml`
-    mode defers to `.codex/config.toml`. ADE does not rewrite
+    mode defers to `.codex/config.toml`. Fast adds `-c
+    service_tier="fast"` (or `"ultrafast"` when Fast is set to Codex
+    Ultrafast) plus `-c features.fast_mode=true`; Fast off writes
+    `service_tier="default"`. A resume that overrides Fast itself means plain
+    Fast, so it does not inherit the launch's `ultrafast` tier. ADE does not
+    rewrite
     `mcp_servers` for Codex CLI launches; Codex config remains
     host-owned so ADE does not synthesize partial MCP tables that the
     CLI rejects during config validation.

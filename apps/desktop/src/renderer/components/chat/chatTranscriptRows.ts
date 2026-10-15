@@ -39,6 +39,7 @@ import {
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -584,8 +585,9 @@ export type ChatTranscriptRenderEnvelope = {
   timestamp: string;
   event: ChatTranscriptRenderEvent;
   /**
-   * How many folded events this row stands for. Set only by the adjacency fold
-   * for `spawn_completed` notices, which the chip renders as a trailing `×N`.
+   * How many folded events this row stands for. Set only for `spawn_completed`
+   * notices (the adjacency fold, then `foldSpawnCompletionLines`), which the
+   * line renders as a trailing `×N`.
    * Render-side only: nothing persists it and no emitter produces it.
    */
   repeatCount?: number;
@@ -595,6 +597,12 @@ export type ChatTranscriptRenderEnvelope = {
    * row per file. Render-side only, like `repeatCount`.
    */
   imageViewSiblings?: CodexImageViewRenderEvent[];
+  /**
+   * Other children's `spawn_completed` rows drawn on this one's line, in
+   * transcript order. Set only by `foldSpawnCompletionLines`. Render-side
+   * only, like `repeatCount`.
+   */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
   /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
@@ -636,6 +644,8 @@ export type ChatTranscriptGroupedEnvelope = {
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
   imageViewSiblings?: CodexImageViewRenderEvent[];
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `spawnCompletionSiblings`. */
+  spawnCompletionSiblings?: SpawnCompletionSibling[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
@@ -1969,26 +1979,6 @@ function resolveSubagentCardRowIndex(
 
   state.rowIndex = null;
   return null;
-}
-
-/**
- * The child a `spawn_completed` system notice reports on, or `null` for
- * anything else — including a notice whose detail lost its `spawnCompletion`
- * (an old or truncated transcript). An unidentified completion folds into
- * nothing, so it keeps its own row rather than silently absorbing a different
- * child's.
- *
- * Takes the RENDER event type, not `AgentChatEvent`: the fold compares an
- * incoming event against one already stored on a row, and a row holds the
- * render union. Narrowing on `type` rejects the synthetic render-only members
- * anyway, so widening the parameter costs nothing and removes a cast.
- */
-function readSpawnCompletionChildId(event: ChatTranscriptRenderEvent): string | null {
-  if (event.type !== "system_notice") return null;
-  if (event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
-  const detail = event.detail;
-  if (!detail || typeof detail === "string") return null;
-  return detail.spawnCompletion?.childSessionId?.trim() || null;
 }
 
 function repairSubagentRowPositionsAfterSplice(
@@ -3375,7 +3365,13 @@ export function appendCollapsedChatTranscriptEvent(
       if (previous) {
         rows[actualIndex] = {
           ...rows[actualIndex]!,
-          timestamp: envelope.timestamp,
+          // Two "started" rows are one compaction still running (an older peer
+          // repeats Claude's `compacting` status every ~30s). The row counts
+          // its elapsed from this timestamp, so a repeat must not move it
+          // forward — that is what restarted the "Compacting 42s" clock.
+          timestamp: previous.state === "started" && incoming.state === "started"
+            ? rows[actualIndex]!.timestamp
+            : envelope.timestamp,
           event: toContextCompactChatEvent(mergeNormalizedContextCompact(previous, incoming)),
         };
         return;
@@ -3424,14 +3420,15 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // ── Spawned-chat turn completions: ONE chip per adjacent run ──
+  // ── Spawned-chat turn completions: ONE row per adjacent run ──
   // A parent that spawned a peer gets one `spawn_completed` notice per sibling
   // TURN, which stacks identical rows. Fold an incoming notice into the LAST
   // row when that row is a completion for the SAME child, carrying a
-  // `repeatCount` the chip renders as `×N`. Adjacency-only on purpose:
-  // anything the parent said or did in between separates the runs, and
+  // `repeatCount` the line renders as `×N`. Adjacency-only on purpose:
   // consulting only the row just appended is what keeps the incremental and
-  // full collapses byte-identical.
+  // full collapses byte-identical. Folding across other rows (and dropping a
+  // child's out-of-date notices) happens later, on the visible rows, in
+  // `foldSpawnCompletionLines`.
   const spawnCompletionChildId = readSpawnCompletionChildId(event);
   if (spawnCompletionChildId) {
     const last = rows[rows.length - 1];
@@ -4002,19 +3999,22 @@ export function groupChatTranscriptRows(
   return groupChatTranscriptRowsCore(rows, previousRows);
 }
 
+function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
+  if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
+  if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
+  return true;
+}
+
 /**
- * Rows that never mount a visible transcript item are dropped before grouping.
- * Anchor lookup must use the same filter so stable row keys agree with the
- * rendered transcript.
+ * Rows that never mount a visible transcript item are dropped before grouping,
+ * and "finished its turn" notices are folded to one line per run (see
+ * `foldSpawnCompletionLines`). Anchor lookup must use the same filter so
+ * stable row keys agree with the rendered transcript.
  */
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return rows.filter(({ event }) => {
-    if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
-    if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
-    return true;
-  });
+  return foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

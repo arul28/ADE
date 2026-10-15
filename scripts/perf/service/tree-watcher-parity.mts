@@ -3,7 +3,7 @@
 // tree, performs file operations one at a time (STEPS, SEED, ONLY=<op>), and compares the
 // events each reports. Exit 1 on a difference. One difference is known and intended: a file
 // replaced by a directory of the same name, which the poller reports as one wrong `change`.
-// That operation (`fileToDir`) runs only with FILE_TO_DIR=1. macOS only.
+// That operation (`fileToDir`) runs only with FILE_TO_DIR=1. macOS and Windows.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,9 +30,10 @@ for (let d = 0; d < 12; d++)
     w(path.join(root, `d${d}`, d % 3 === 0 ? `sub${f % 3}` : "", `f${f}.txt`));
 w(path.join(root, "node_modules", "pkg", "index.js"));
 w(path.join(root, ".git", "HEAD"));
-fs.symlinkSync(path.join(root, "d1"), path.join(root, "link-in"));
+// A junction on Windows (a directory symlink needs privileges there); the type is ignored elsewhere.
+fs.symlinkSync(path.join(root, "d1"), path.join(root, "link-in"), "junction");
 w(path.join(outside, "ext", "e0.txt"));
-fs.symlinkSync(path.join(outside, "ext"), path.join(root, "link-out"));
+fs.symlinkSync(path.join(outside, "ext"), path.join(root, "link-out"), "junction");
 const options = { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 120, pollInterval: 50 }, ignored: [/(^|[/\\])\.git($|[/\\])/, /(^|[/\\])node_modules($|[/\\])/] };
 const log = { a: new Set<string>(), b: new Set<string>() };
 const kinds = ["add", "change", "unlink", "addDir", "unlinkDir"] as const;

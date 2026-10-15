@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../../../desktop/src/shared/providers";
 import React from "react";
 import { Box, Text, type DOMElement } from "ink";
 import { theme } from "../../theme";
@@ -115,6 +116,7 @@ const PROVIDER_MARKS: Record<string, ProviderMark> = {
   openrouter: { label: "OpenRouter", short: "OR", terminal: "⇄", color: "#6566F1", svgPath: OPENROUTER_PATH },
   opencode: { label: "OpenCode", short: "OC", terminal: "▣", color: "#F0F0F2", svgPath: OPENCODE_PATH },
   pi: { label: "Pi", short: "Pi", terminal: "π", color: "#F97316" },
+  muse: { label: PROVIDER_DISPLAY_NAME.muse, short: "Mu", terminal: "◉", color: "#0866FF" },
   droid: { label: "Droid", short: "DR", terminal: "✺", color: "#06B6D4", svg: DROID_SVG },
   factory: { label: "Droid", short: "DR", terminal: "✺", color: "#06B6D4", svg: DROID_SVG },
   cursor: { label: "Cursor", short: "CU", terminal: "⬢", color: "#0EA5E9", svg: CURSOR_SVG },
@@ -153,6 +155,7 @@ const ROW_MARKS: Record<string, ProviderMark> = {
   openrouter: PROVIDER_MARKS.openrouter!,
   opencode: PROVIDER_MARKS.opencode!,
   pi: PROVIDER_MARKS.pi!,
+  muse: PROVIDER_MARKS.muse!,
   droid: PROVIDER_MARKS.droid!,
   factory: PROVIDER_MARKS.factory!,
   cursor: PROVIDER_MARKS.cursor!,

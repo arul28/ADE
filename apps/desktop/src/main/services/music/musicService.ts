@@ -16,6 +16,7 @@ import type {
   MusicSearchScope,
   MusicState,
 } from "../../../shared/types/music";
+import { musicPositionNow } from "../../../shared/types/music";
 import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
@@ -39,6 +40,12 @@ import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } f
  */
 
 export const IDLE_UNLOAD_MS = 5 * 60_000;
+/**
+ * How far the host's position may drift from the renderers' interpolation
+ * before it is pushed. MusicKit reports whole seconds, so a steady song already
+ * differs from the interpolation by up to a second either way.
+ */
+const POSITION_DRIFT_S = 1.25;
 export const MUSIC_USER_TOKEN_KEY = "music.appleMusic.userToken";
 const AUTHORIZE_TIMEOUT_MS = 10 * 60_000;
 
@@ -129,7 +136,7 @@ const errorMessage = (error: unknown): string =>
 export type MusicService = ReturnType<typeof createMusicService>;
 
 export function createMusicService(args: {
-  /** Null when this platform has no player host (macOS today). */
+  /** Null when this platform has no player host (anything but Windows and macOS). */
   hostExecutable: string | null;
   isPackaged: boolean;
   userDataDir: string;
@@ -156,7 +163,7 @@ export function createMusicService(args: {
 
   const state: MusicState = {
     availability: args.hostExecutable ? "ready" : "unsupported",
-    message: args.hostExecutable ? null : "Music on Mac is coming. Apple Music plays in ADE on Windows today.",
+    message: args.hostExecutable ? null : "Apple Music plays in ADE on Windows and macOS.",
     authorized: false,
     connecting: false,
     host: { status: "stopped", pid: null, unloadAt: null },
@@ -178,12 +185,18 @@ export function createMusicService(args: {
 
   const snapshotState = (): MusicState => JSON.parse(JSON.stringify(state)) as MusicState;
 
-  // Coalesce bursts (MusicKit fires several events per transition) into one IPC message.
+  // Coalesce bursts (MusicKit fires several events per transition) into one IPC
+  // message, and send nothing when the state is what every window already has.
+  let lastBroadcast = "";
   const emit = () => {
     if (broadcastTimer) return;
     broadcastTimer = setTimeout(() => {
       broadcastTimer = null;
-      if (!disposed) args.broadcast(snapshotState());
+      if (disposed) return;
+      const json = JSON.stringify(state);
+      if (json === lastBroadcast) return;
+      lastBroadcast = json;
+      args.broadcast(JSON.parse(json) as MusicState);
     }, 30);
   };
 
@@ -236,7 +249,7 @@ export function createMusicService(args: {
       setUnavailable(
         args.isPackaged
           ? "ADE's music player is missing from this install. Reinstall ADE."
-          : "The music player isn't built. Run `npm run build:music-host:win` in apps/desktop.",
+          : `The music player isn't built. Run \`npm run build:music-host:${process.platform === "darwin" ? "mac" : "win"}\` in apps/desktop.`,
       );
       return;
     }
@@ -252,15 +265,28 @@ export function createMusicService(args: {
     }
   };
 
-  const applyHostState = (s: HostState | null | undefined) => {
+  /**
+   * Take the host's position when `force` says it is news (play/pause, a new
+   * state, an explicit seek) or when it has drifted from what the renderers
+   * interpolate. True when the position was re-anchored.
+   */
+  const reanchorPosition = (time: unknown, force: boolean): boolean => {
+    if (typeof time !== "number") return false;
+    const p = state.playback;
+    if (!force && Math.abs(musicPositionNow(p) - time) <= POSITION_DRIFT_S) return false;
+    p.position = time;
+    p.positionAt = Date.now();
+    return true;
+  };
+
+  const applyHostState = (s: HostState | null | undefined, options?: { positionIsNews?: boolean }) => {
     if (!s || s.ready === false) return;
     const p = state.playback;
+    const prevState = p.state;
+    const prevPlaying = p.isPlaying;
     if (typeof s.state === "string") p.state = PLAYBACK_STATES.has(s.state as MusicPlaybackState) ? (s.state as MusicPlaybackState) : "none";
     if (typeof s.isPlaying === "boolean") p.isPlaying = s.isPlaying;
-    if (typeof s.time === "number") {
-      p.position = s.time;
-      p.positionAt = Date.now();
-    }
+    reanchorPosition(s.time, Boolean(options?.positionIsNews) || p.state !== prevState || p.isPlaying !== prevPlaying);
     if (typeof s.duration === "number" && s.duration > 0) p.duration = s.duration;
     if (typeof s.queuePosition === "number") p.queuePosition = s.queuePosition;
     if (typeof s.queueLength === "number") p.queueLength = s.queueLength;
@@ -302,17 +328,23 @@ export function createMusicService(args: {
         applyHostState(event.state as HostState);
         break;
       case "time": {
+        // The host ticks once a second while playing. Renderers interpolate the
+        // position from `position` + `positionAt`, so a tick that agrees with
+        // that is not news and is not pushed; one that does not (a stall, a
+        // seek, a new duration, play/pause) re-anchors every window.
         const p = state.playback;
-        if (typeof event.time === "number") {
-          p.position = event.time;
-          p.positionAt = Date.now();
+        let news = false;
+        if (typeof event.duration === "number" && event.duration > 0 && event.duration !== p.duration) {
+          p.duration = event.duration;
+          news = true;
         }
-        if (typeof event.duration === "number" && event.duration > 0) p.duration = event.duration;
         if (typeof event.isPlaying === "boolean" && event.isPlaying !== p.isPlaying) {
           p.isPlaying = event.isPlaying;
           scheduleIdleUnload();
+          news = true;
         }
-        emit();
+        if (reanchorPosition(event.time, news)) news = true;
+        if (news) emit();
         break;
       }
       case "queueChanged":
@@ -415,6 +447,9 @@ export function createMusicService(args: {
         await stopHost(h, 1_000).catch(() => {});
         state.host = { status: snapshot ? "suspended" : "failed", pid: null, unloadAt: null };
         state.message = errorMessage(error);
+        // The host refuses an OS it cannot run on (macOS before 14): the tab
+        // says so and stops offering to play, like a platform with no host.
+        if (error instanceof MusicHostError && error.code === "unsupported_os") state.availability = "unsupported";
         emit();
         throw error;
       }
@@ -466,18 +501,33 @@ export function createMusicService(args: {
     emit();
   };
 
+  // The restore in flight. Every caller waits for it, so a command sent while
+  // the Music tab's warm-up is still putting the queue back runs after it, not
+  // alongside it.
+  let restoring: Promise<void> | null = null;
+
   /** A host that is running, with the unloaded queue put back if there was one. */
   const ensurePlayer = async (restore: boolean): Promise<MusicHost> => {
     const h = await ensureHost();
+    if (restoring) await restoring;
     if (restore && snapshot) {
       const s = snapshot;
       snapshot = null;
+      const run = (async () => {
+        try {
+          // The reply carries the song and the second it continues from.
+          applyHostState(await h.request<HostState>("playItems", { ids: s.ids, index: s.index, position: s.position, play: false }));
+          if (s.repeat) await h.request("repeat", { mode: s.repeat });
+          args.logger?.info("music.queue_restored", { items: s.ids.length, index: s.index, position: s.position });
+        } catch (error) {
+          args.logger?.warn("music.queue_restore_failed", { error: errorMessage(error) });
+        }
+      })();
+      restoring = run;
       try {
-        await h.request("playItems", { ids: s.ids, index: s.index, position: s.position, play: false });
-        if (s.repeat) await h.request("repeat", { mode: s.repeat });
-        args.logger?.info("music.queue_restored", { items: s.ids.length, index: s.index, position: s.position });
-      } catch (error) {
-        args.logger?.warn("music.queue_restore_failed", { error: errorMessage(error) });
+        await run;
+      } finally {
+        if (restoring === run) restoring = null;
       }
     }
     return h;
@@ -569,7 +619,8 @@ export function createMusicService(args: {
             break;
         }
         if (state.message?.startsWith("Playback failed")) state.message = null;
-        applyHostState(result);
+        // A seek's reply is the new position even when it is a small step.
+        applyHostState(result, { positionIsNews: cmd.type === "seek" });
         return { ok: true } as const;
       });
     } catch (error) {
@@ -582,13 +633,15 @@ export function createMusicService(args: {
     if (state.connecting) return { ok: false, error: "A sign-in window is already open." };
     state.connecting = true;
     emit();
+    let h: MusicHost | null = null;
+    let signedIn = false;
     try {
-      const h = await ensureHost();
+      h = await ensureHost();
       // MusicKit's promise can hang when the user closes Apple's window, so the
       // window closing (with no answer shortly after) also ends the wait.
       let offClosed: () => void = () => {};
       const closed = new Promise<{ cancelled: true }>((resolve) => {
-        offClosed = h.onEvent((event) => {
+        offClosed = h!.onEvent((event) => {
           if (event.event === "authWindow" && event.state === "closed") {
             setTimeout(() => resolve({ cancelled: true }), 2_500);
           }
@@ -606,6 +659,7 @@ export function createMusicService(args: {
       api.clearCache();
       state.authorized = true;
       state.message = null;
+      signedIn = true;
       args.logger?.info("music.connected");
       return { ok: true };
     } catch (error) {
@@ -614,6 +668,9 @@ export function createMusicService(args: {
       const cancelled = /cancel|unauthori|AUTHORIZATION_ERROR/i.test(message);
       return { ok: false, error: cancelled ? "Sign-in was cancelled." : message, cancelled };
     } finally {
+      // A sign-in that timed out or failed leaves Apple's window open; it would
+      // sit there with nothing waiting on it.
+      if (!signedIn && h === host) h?.send({ cmd: "closeAuth" });
       state.connecting = false;
       scheduleIdleUnload();
       emit();
@@ -668,7 +725,9 @@ export function createMusicService(args: {
       await loadUserToken();
       if (!userToken || !args.hostExecutable) return;
       try {
-        await withBusy(() => ensurePlayer(false));
+        // Put an unloaded queue back (paused) so the tab shows the song and
+        // the second it will continue from, not MusicKit's empty start.
+        await withBusy(() => ensurePlayer(true));
       } catch {
         // State carries the message.
       }
@@ -682,7 +741,7 @@ export function createMusicService(args: {
     library: (input: { kind: MusicLibraryKind; offset?: number; limit?: number }): Promise<MusicPage> =>
       browse(() => api.library(input)),
     recent: (): Promise<MusicRecent> => browse(() => api.recent()),
-    tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean }): Promise<MusicItem[]> =>
+    tracks: (input: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }): Promise<MusicPage> =>
       browse(() => api.tracks(input)),
     rating: (input: { id: string; library: boolean }) => browse(() => api.rating(input)),
     charts: () => browse(() => api.charts()),

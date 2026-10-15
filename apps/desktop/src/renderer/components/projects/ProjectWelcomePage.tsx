@@ -1,8 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
-import { AppleMusicAppIcon } from "../music/musicParts";
-import { musicActions } from "../music/musicStore";
+import { HomeAppButton, openMusicApp } from "../music/musicApps";
 import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
@@ -155,6 +154,7 @@ export function ProjectWelcomePage() {
   // window), so the hero's buttons end where the cards end.
   const packedGridWidth = useHomeGridMetrics((s) => s.packedWidth);
   const editingHome = useHomeLayoutStore((s) => s.editing);
+  const hiddenApps = useHomeLayoutStore((s) => s.layout.hiddenApps);
   const setEditingHome = useHomeLayoutStore((s) => s.setEditing);
   const homeAppearance = useHomeLayoutStore((s) => s.layout.appearance);
   useEffect(() => {
@@ -711,13 +711,10 @@ export function ProjectWelcomePage() {
       onSelect: () => setEditingHome(true),
     });
     if (musicAvailable) {
-      entries.push({
-        kind: "item",
-        key: "music",
-        label: "Open Apple Music",
-        icon: MusicNotes,
-        onSelect: musicActions.open,
-      });
+      entries.push(
+        { kind: "item", key: "apple-music", label: "Open Apple Music", icon: MusicNotes, onSelect: () => openMusicApp("appleMusic") },
+        { kind: "item", key: "spotify", label: "Open Spotify", icon: MusicNotes, onSelect: () => openMusicApp("spotify") },
+      );
     }
     if (browserAvailable) {
       entries.push({
@@ -865,17 +862,8 @@ export function ProjectWelcomePage() {
                   <Globe size={17} aria-hidden />
                 </button>
               ) : null}
-              {musicAvailable ? (
-                <button
-                  type="button"
-                  className="ade-home-apple-music"
-                  aria-label="Apple Music"
-                  title="Apple Music"
-                  onClick={musicActions.open}
-                >
-                  <AppleMusicAppIcon size={34} />
-                </button>
-              ) : null}
+              {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
+              {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
               {showSide ? (
                 <button
                   type="button"

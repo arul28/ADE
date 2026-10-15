@@ -358,3 +358,14 @@ jobs:
             echo "::error::Draft release asset inventory differs from the exact validated set."
             exit 1
           fi
+
+      # Links the Sentry release ade@<version> (ade-desktop, ade-brain) to its
+      # commits for suspect-commit hints. Needs the Sentry GitHub integration;
+      # skips without SENTRY_AUTH_TOKEN and never fails the publish. The source
+      # maps were uploaded by the build jobs in release-core.yml.
+      - name: Associate commits with the Sentry release
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs set-commits --version "$RELEASE_TAG"

@@ -108,8 +108,8 @@ func workChatManualSteerDispatchModes(
 }
 
 /// iOS half of desktop `queuedSteersCanReorder`: ADE holds the staged queue
-/// (and can reorder it) for every provider except Codex and OpenCode, which
-/// keep their own.
+/// (and can reorder it) for every provider except Codex, OpenCode and Muse,
+/// which keep their own.
 func workChatQueuedSteersCanReorder(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
@@ -117,7 +117,7 @@ func workChatQueuedSteersCanReorder(
   guard let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType) else {
     return false
   }
-  return provider != "codex" && provider != "opencode"
+  return provider != "codex" && provider != "opencode" && provider != "muse"
 }
 
 /// iOS half of desktop `cursorSessionRunsInCloud`.
@@ -1143,6 +1143,9 @@ struct WorkSessionDestinationView: View {
       .task(id: pollingKey) {
         await pollIfNeeded()
       }
+      .task(id: sessionId) {
+        await runEmptyThreadProbe()
+      }
       .task(id: threadCommentsRefreshKey) {
         guard isLiveAndReachable, syncService.supportsThreadComments(sessionId: sessionId) else { return }
         // Best effort: the live `session_meta_updated` path keeps it current.
@@ -1866,9 +1869,11 @@ struct WorkSessionDestinationView: View {
     // registry and would spin up that project's runtime just to look.
     // A chat on another machine is the exception: the command goes to that
     // machine (where the chat is live), and without it the composer shows no
-    // access mode, or a wrong one.
+    // access mode, or a wrong one. A Claude chat is the other one: only its
+    // summary says whether its cache expired, so without it the Compact first
+    // chip never shows.
     let onOtherMachine = isRemoteMachineChat || syncService.isRemoteMachineChat(sessionId: sessionId)
-    guard !isCrossProject || onOtherMachine else { return }
+    guard !isCrossProject || onOtherMachine || subagentProvider == "claude" else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
@@ -1885,6 +1890,7 @@ struct WorkSessionDestinationView: View {
     // chat that lives on another one.
     guard !personalChat,
           !onOtherMachine,
+          !isCrossProject,
           let laneId = (session ?? initialSession)?.laneId,
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),
@@ -2320,6 +2326,105 @@ struct WorkSessionDestinationView: View {
       }
       try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 3_000_000_000 : 1_700_000_000)
     }
+  }
+}
+
+// MARK: - Empty-thread probe
+
+/// Why a chat that is working shows nothing, or nil when it is fine. Field
+/// reports showed chats on another machine streaming live activity under
+/// "No chat messages yet" until the user sent a message.
+func workChatEmptyThreadAnomaly(
+  shownTimelineCount: Int,
+  isStreamingTurn: Bool,
+  sessionDeleted: Bool,
+  loadState: WorkChatTranscriptLoadState,
+  diagnostics: ChatThreadIngestDiagnostics,
+  isLiveAndReachable: Bool
+) -> String? {
+  // Only the idle empty state claims "No chat messages yet"; loading shows a
+  // skeleton and a failure shows Retry, which are different reports.
+  guard isLiveAndReachable, !sessionDeleted, shownTimelineCount == 0, loadState == .idle else { return nil }
+  guard isStreamingTurn || diagnostics.liveEventCount > 0 else { return nil }
+  if diagnostics.awaitingBoundaryPage { return "held_for_boundary_page" }
+  if diagnostics.snapshotCount == 0 { return "no_snapshot" }
+  if diagnostics.lastSnapshotEventCount == 0 { return "empty_snapshot" }
+  return "snapshot_not_rendered"
+}
+
+extension WorkSessionDestinationView {
+  /// While the chat is open, look every 10 s for the empty-thread state and
+  /// report it to Sentry once per appearance, with the stream trace that says
+  /// where the history went. Reading a frame costs nothing; the report is rare.
+  @MainActor
+  func runEmptyThreadProbe() async {
+    let openedAt = Date()
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: 10_000_000_000)
+      guard !Task.isCancelled, let threadModel else { continue }
+      let shown = threadModel.frame
+      let latest = await threadModel.engine.currentFrame
+      guard !Task.isCancelled, let reference = latest ?? shown else { continue }
+      guard let kind = workChatEmptyThreadAnomaly(
+        shownTimelineCount: shown?.presentation.timelineCount ?? 0,
+        isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
+        sessionDeleted: reference.sessionDeleted,
+        loadState: reference.loadState,
+        diagnostics: reference.ingestDiagnostics,
+        isLiveAndReachable: isLiveAndReachable
+      ) else { continue }
+      reportEmptyThread(kind: kind, shown: shown, latest: latest, openedAt: openedAt)
+      return
+    }
+  }
+
+  @MainActor
+  private func reportEmptyThread(kind: String, shown: ChatThreadFrame?, latest: ChatThreadFrame?, openedAt: Date) {
+    let ingest = (latest ?? shown)?.ingestDiagnostics ?? ChatThreadIngestDiagnostics()
+    var context = syncService.chatStreamDiagnostics(sessionId: sessionId)
+    context["area"] = "chat.empty_thread.\(kind)"
+    context["kind"] = kind
+    context["sessionId"] = sessionId
+    context["machineKey"] = threadKey?.machineKey ?? "nil"
+    // The scope kind only: a cross-project key carries the project's root path.
+    context["threadScope"] = threadKey.map {
+      switch $0.scope {
+      case .project: return "project"
+      case .personal: return "personal"
+      case .crossProject: return "crossProject"
+      }
+    } ?? "nil"
+    context["isRemoteMachineChat"] = String(isRemoteMachineChat)
+    context["isCrossProject"] = String(isCrossProject)
+    context["personalChat"] = String(personalChat)
+    context["provider"] = composerChatSummary?.provider ?? "nil"
+    context["secondsOpen"] = String(Int(Date().timeIntervalSince(openedAt)))
+    context["shownRevision"] = shown.map { String($0.revision) } ?? "nil"
+    context["engineRevision"] = latest.map { String($0.revision) } ?? "nil"
+    context["shownTimeline"] = shown.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTimeline"] = latest.map { String($0.presentation.timelineCount) } ?? "nil"
+    context["engineTranscript"] = latest.map { String($0.transcript.count) } ?? "nil"
+    context["loadState"] = (latest ?? shown).map { String(describing: $0.loadState).prefix(40).description } ?? "nil"
+    context["cacheOrigin"] = (latest ?? shown).map { String(describing: $0.cacheOrigin) } ?? "nil"
+    context["engineSnapshots"] = String(ingest.snapshotCount)
+    context["engineLastSnapshotEvents"] = String(ingest.lastSnapshotEventCount)
+    context["engineLastSnapshotResumed"] = String(ingest.lastSnapshotResumed)
+    context["engineLastSnapshotResumeKind"] = ingest.lastSnapshotResumeKind ?? "nil"
+    context["engineLastSnapshotGap"] = String(ingest.lastSnapshotGap)
+    context["engineLastSnapshotTruncated"] = String(ingest.lastSnapshotTruncated)
+    context["engineLastSnapshotChatLogV2"] = String(ingest.lastSnapshotHostSupportsChatLogV2)
+    context["engineLiveEvents"] = String(ingest.liveEventCount)
+    context["engineLiveSinceSnapshot"] = String(ingest.liveEventsSinceSnapshot)
+    context["engineDiskRows"] = String(ingest.hasDiskRows)
+    context["engineAwaitingBoundaryPage"] = String(ingest.awaitingBoundaryPage)
+    CrashReporting.capture(
+      NSError(
+        domain: "ADE.ChatEmptyThread",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Working chat shows no messages (\(kind))"]
+      ),
+      context: context
+    )
   }
 }
 

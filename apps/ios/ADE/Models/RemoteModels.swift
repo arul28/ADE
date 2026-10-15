@@ -1113,8 +1113,19 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
   }
 }
 
+/// `ttl` is "5m" or "1h"; `since` is when Claude started that lifetime (the
+/// start of the turn's last request), absent when the host did not see one.
+struct AgentChatPromptCache: Codable, Equatable {
+  var ttl: String
+  var since: String?
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
+  /// Claude only: the chat's prompt cache after its last turn.
+  var promptCache: AgentChatPromptCache? = nil
+  /// Sent only by a brain started with a lowered Compact first limit (testing).
+  var compactFirstMinTokens: Int? = nil
   var manualCompactAvailable: Bool? = nil
   var id: String { sessionId }
   /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
@@ -1164,6 +1175,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool? = nil
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
@@ -1256,6 +1268,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.compactionIdleMode == rhs.compactionIdleMode
+      && lhs.promptCache == rhs.promptCache
+      && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
       && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId
       && lhs.provider == rhs.provider
@@ -1284,6 +1298,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
+      && lhs.musePermissionMode == rhs.musePermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
@@ -1351,6 +1366,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var codexEffectiveCollaborationModeWasCleared: Bool = false
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   /// True when the event carried `cursorModeId: null` (an intentional clear the
   /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
@@ -1389,6 +1405,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case codexEffectiveCollaborationMode
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
@@ -1422,6 +1439,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     }
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try c.decodeIfPresent(String.self, forKey: .musePermissionMode)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
     // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
     // present-but-null key means the host cleared the cursor mode.
@@ -1480,6 +1498,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || codexEffectiveCollaborationModeWasCleared
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
+      || musePermissionMode != nil
       || cursorModeId != nil
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
@@ -1515,6 +1534,7 @@ extension AgentChatSessionSummary {
     }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
+    if let v = update.musePermissionMode { musePermissionMode = v }
     if let v = update.cursorModeId {
       cursorModeId = v
       cursorModeIdWasCleared = false
@@ -1591,6 +1611,7 @@ extension AgentChatSessionSummary {
     }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
+    if let v = other.musePermissionMode { musePermissionMode = v }
     if other.cursorModeIdWasCleared == true {
       cursorModeId = nil
       cursorModeIdWasCleared = true
@@ -2057,6 +2078,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -2100,6 +2122,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case codexConfigSource
     case opencodePermissionMode
     case droidPermissionMode
+    case musePermissionMode
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -2144,6 +2167,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
     opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    musePermissionMode = try container.decodeIfPresent(String.self, forKey: .musePermissionMode)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -2187,6 +2211,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
     try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
     try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
+    try container.encodeIfPresent(musePermissionMode, forKey: .musePermissionMode)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -2933,6 +2958,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// `AgentChatEvent.toolResult` already carries seven associated values that
   /// every construction site in the app and the tests would have to restate.
   var toolResultFullBytes: Int?
+  /// True for a `user_message` that ADE wrote for the user (a board move, a
+  /// wake, a relay, a continuation, a resume): its `metadata` carries one of
+  /// the markers in `agentChatAdeAuthoredMetadataKeys`. Kept beside the event
+  /// so `AgentChatEvent.userMessage` does not grow. A scene reads it: only a
+  /// message the reader wrote answers a scene.
+  var userMessageWrittenByAde: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3006,8 +3037,18 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var accountLabel: String?
     var failDetail: String?
     var summary: String?
+    var metadataMarksAdeAuthor = false
+
+    private struct MetadataKey: CodingKey {
+      var stringValue: String
+      var intValue: Int? { nil }
+      init(_ name: String) { stringValue = name }
+      init?(stringValue: String) { self.stringValue = stringValue }
+      init?(intValue: Int) { return nil }
+    }
 
     private enum CodingKeys: String, CodingKey {
+      case metadata
       case type
       case apiErrorStatus
       case apiErrorStatusSnake = "api_error_status"
@@ -3041,6 +3082,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+      if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
+        metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
+          let key = MetadataKey(name)
+          return metadata.contains(key) && (try? metadata.decodeNil(forKey: key)) == false
+        }
+      }
     }
   }
 
@@ -3105,6 +3152,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
+    userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -3556,6 +3604,13 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     )
   }
 }
+
+/// The `metadata` markers of a `user_message` that ADE wrote for the user.
+/// The same list as desktop `isReaderAuthoredMessage`; keep the two the same.
+let agentChatAdeAuthoredMetadataKeys = [
+  "boardMove", "prWatchWake", "scheduledWake", "spawnCompletion",
+  "agentRelay", "hostContinuation", "usageLimitResume",
+]
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?
@@ -4730,6 +4785,7 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   var updatedAt: String
 }
@@ -4946,6 +5002,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var codexConfigSource: String?
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
+  var musePermissionMode: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
@@ -8518,7 +8575,7 @@ struct AgentChatCrossMachineHandoffOptions: Decodable, Equatable {
 
 /// Providers whose fork can travel to another machine. Mirrors
 /// `providerSupportsCrossMachineHandoffFork` in `shared/types/chat.ts`:
-/// `HANDOFF_FORK_PROVIDERS` minus droid (machine-local session index) and
+/// `HANDOFF_FORK_PROVIDERS` minus droid and muse (machine-local session stores) and
 /// cursor (an ADE-side transcript replay with nothing to package).
 func workProviderSupportsCrossMachineHandoffFork(_ provider: String?) -> Bool {
   guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }

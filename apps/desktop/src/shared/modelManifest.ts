@@ -173,13 +173,14 @@ function isNonNegativeNumber(value: unknown): value is number {
  * the registry imports this module; a test pins it to MODEL_PROVIDER_GROUPS.
  */
 export const MODEL_MANIFEST_PROVIDER_GROUPS = [
-  "claude", "codex", "cursor", "opencode", "pi", "copilot", "grok", "droid", "kimi", "qwen", "devin",
+  "claude", "codex", "muse", "cursor", "opencode", "pi", "copilot", "grok", "droid", "kimi", "qwen", "devin",
 ] as const satisfies readonly ModelProviderGroup[];
 
 /** Every route a manifest may use, with the only CLI that route may launch. */
 export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
   "claude-cli": "claude",
   "codex-cli": "codex",
+  "muse-cli": "muse",
   "cursor-sdk": "cursor",
   "droid-cli": "droid",
   "copilot-acp": "copilot",
@@ -191,7 +192,7 @@ export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
 /** Routes whose runtime is an SDK rather than a wrapped CLI; every other route is CLI-wrapped. */
 export const MODEL_MANIFEST_SDK_ROUTES: ReadonlySet<string> = new Set(["cursor-sdk"]);
 const ALLOWED_FAMILIES = new Set([
-  "anthropic", "openai", "google", "mistral", "deepseek", "xai", "cursor", "factory", "qwen", "moonshot", "github-copilot", "devin",
+  "anthropic", "openai", "google", "mistral", "deepseek", "xai", "cursor", "factory", "qwen", "moonshot", "github-copilot", "devin", "muse",
 ]);
 const ALLOWED_AUTH_TYPES = new Set(["cli-subscription", "api-key", "oauth"]);
 const ALLOWED_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]);

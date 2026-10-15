@@ -1,3 +1,4 @@
+import { createBrowserMockMusic } from "./browserMockMusic";
 /**
  * Browser-safe mock for `window.ade`.
  * Injected only when the Electron preload bridge is absent (i.e. opening the
@@ -62,6 +63,7 @@ import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch"
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
+import { mcpSecretVaultKey, mcpSecretVaultKeyPrefix } from "../shared/mcpRegistry";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -108,6 +110,7 @@ import {
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type { ProviderCompactionSettings } from "../shared/compactionSettings";
+import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -842,6 +845,8 @@ const mockProviderInstances: Array<{
   sameLoginAs?: string;
   replacedAccount?: { email: string; plan?: string; replacedAt: string };
   subagentPromptCacheTtl?: "1h";
+  mainPromptCacheTtl?: "5m" | "1h";
+  onExtraUsage?: "stop";
   compaction?: ProviderCompactionSettings;
 }> = [
   {
@@ -1907,7 +1912,7 @@ function isMockChatToolType(toolType: unknown): boolean {
 
 function inferMockChatProvider(
   session: any,
-): "claude" | "codex" | "cursor" | "droid" | "opencode" {
+): "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode" {
   const metadataProvider = String(session?.resumeMetadata?.provider ?? "")
     .trim()
     .toLowerCase();
@@ -1916,6 +1921,7 @@ function inferMockChatProvider(
     metadataProvider === "codex" ||
     metadataProvider === "cursor" ||
     metadataProvider === "droid" ||
+    metadataProvider === "muse" ||
     metadataProvider === "opencode"
   ) {
     return metadataProvider;
@@ -1927,6 +1933,7 @@ function inferMockChatProvider(
   if (toolType.startsWith("codex")) return "codex";
   if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
   if (toolType === "droid-chat" || toolType.startsWith("droid")) return "droid";
+  if (toolType.startsWith("muse")) return "muse";
   return "opencode";
 }
 
@@ -2082,22 +2089,24 @@ function latestMockDoneEvent(events: any[]): any | null {
 }
 
 function fallbackMockModelForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return "sonnet";
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "auto";
   if (provider === "droid") return "claude-opus-4-6";
+  if (provider === "muse") return "muse-spark-1.3";
   return "opencode/mock";
 }
 
 function fallbackMockModelIdForProvider(
-  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+  provider: "claude" | "codex" | "cursor" | "droid" | "muse" | "opencode",
 ): string {
   if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "cursor/auto";
   if (provider === "droid") return "droid/claude-opus-4-6";
+  if (provider === "muse") return "muse/muse-spark-1.3";
   return "opencode/mock";
 }
 
@@ -2146,6 +2155,8 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    musePermissionMode:
+      session.resumeMetadata?.musePermissionMode ?? undefined,
     instanceId: session.resumeMetadata?.instanceId ?? undefined,
     presetId: session.resumeMetadata?.presetId ?? undefined,
     credentialId: session.resumeMetadata?.credentialId ?? undefined,
@@ -3843,7 +3854,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const BROWSER_MOCK_PROVIDER_CONNECTION = (
-    provider: "claude" | "codex" | "cursor" | "droid",
+    provider: "claude" | "codex" | "cursor" | "droid" | "muse",
   ) => ({
     provider,
     // Detected-but-not-authed, which is what makes the demo quota fixture below
@@ -3896,6 +3907,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
       cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
       droid: BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
+      muse: BROWSER_MOCK_PROVIDER_CONNECTION("muse"),
     },
   };
 
@@ -4814,6 +4826,62 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return { ok: true as const, value: null };
         },
         sync: async () => ({ ok: true as const, value: null }),
+      };
+    })(),
+    // Settings > MCP servers, in memory. Values given to `setSecret` are kept
+    // only as "held" flags, as the real bridge never hands one back either.
+    mcpRegistry: (() => {
+      const held = new Set<string>();
+      const secretKey = (ref: { server: string; field: string; name: string }) =>
+        mcpSecretVaultKey(ref.server, ref.field === "header" ? "header" : "env", ref.name);
+      const found = [
+        { name: "linear", transport: "http" as const, url: "https://mcp.linear.app/mcp", envNames: [], headerNames: [], providers: ["codex" as const, "droid" as const] },
+        {
+          name: "posthog",
+          transport: "stdio" as const,
+          command: "npx",
+          args: ["-y", "mcp-remote@latest", "https://mcp.posthog.com/sse"],
+          envNames: ["POSTHOG_AUTH_HEADER"],
+          headerNames: [],
+          providers: ["codex" as const],
+        },
+      ];
+      return {
+        context: async () => ({ deviceOffKey: "device.browser-mock.mcp.off", repoScope: "repo:github.com/ade/browser-preview", cached: null }),
+        check: async (args: { servers: Array<{ name: string; transport: string; command?: string; envNames: string[]; headerNames: string[] }> }) => ({
+          ok: true as const,
+          value: {
+            heldSecretKeys: [...held],
+            missingCommands: args.servers
+              .filter((server) => server.transport === "stdio" && server.command === "missing-command")
+              .map((server) => server.name),
+          },
+        }),
+        setSecret: async (args: { server: string; field: string; name: string; value: string }) => {
+          held.add(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        removeSecret: async (args: { server: string; field: string; name: string }) => {
+          held.delete(secretKey(args));
+          return { ok: true as const, value: null };
+        },
+        pruneSecrets: async (args: { server: string; keep: { envNames: string[]; headerNames: string[] } | null }) => {
+          const keep = new Set([
+            ...(args.keep?.envNames ?? []).map((name) => secretKey({ server: args.server, field: "env", name })),
+            ...(args.keep?.headerNames ?? []).map((name) => secretKey({ server: args.server, field: "header", name })),
+          ]);
+          for (const key of [...held]) {
+            if (key.startsWith(mcpSecretVaultKeyPrefix(args.server)) && !keep.has(key)) held.delete(key);
+          }
+          return { ok: true as const, value: null };
+        },
+        scan: async () => ({ servers: found, skipped: [] }),
+        import: async (args: { name: string }) => {
+          const server = found.find((entry) => entry.name === args.name);
+          if (!server) return { ok: false as const, rejected: true as const, message: "That server is no longer in a provider's settings on this computer." };
+          const { providers: _providers, ...definition } = server;
+          return { ok: true as const, value: { ...definition, enabled: true } };
+        },
       };
     })(),
     app: {
@@ -6695,6 +6763,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             codexConfigSource: args.codexConfigSource,
             opencodePermissionMode: args.opencodePermissionMode,
             droidPermissionMode: args.droidPermissionMode,
+            musePermissionMode: args.musePermissionMode,
             permissionMode: args.permissionMode,
             cursorModeId: args.cursorModeId,
           },
@@ -7046,6 +7115,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       resolveSourceFavicons: async () => ({ icons: {} }),
+      getMcpApp: async () => ({ status: "unavailable" as const, reason: "Apps do not run in the browser preview." }),
+      mcpAppRequest: async () => ({ ok: false as const, error: { code: -32000, message: "Apps do not run in the browser preview." } }),
+      listMcpAppGrants: async () => ({ server: null, tools: [] }),
+      revokeMcpAppGrant: async () => ({ server: null, tools: [] }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
@@ -7837,6 +7910,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         login.state = "cancelled";
         return { ...login };
       },
+      signOut: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.account;
+        instance.signedIn = false;
+        return instance;
+      },
       dismissReplaced: async (args: { id: string }) => {
         const instance = mockProviderInstanceById(args.id);
         delete instance.replacedAccount;
@@ -7853,7 +7932,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setSettings: async (args: {
         provider: "claude" | "codex";
         instanceId?: string;
-        settings: { smartBalance?: boolean; autoStartWindows?: boolean; subagentPromptCacheTtl?: "1h" | null; compaction?: ProviderCompactionSettings | null };
+        settings: ProviderInstanceSettingsPatch;
       }) => {
         const current = mockProviderInstanceSettings[args.provider];
         const account = args.instanceId ? mockProviderInstances.find((entry) => entry.id === args.instanceId) : undefined;
@@ -7864,6 +7943,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (account && args.settings && Object.hasOwn(args.settings, "subagentPromptCacheTtl")) {
           if (args.settings.subagentPromptCacheTtl === "1h") account.subagentPromptCacheTtl = "1h";
           else delete account.subagentPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "mainPromptCacheTtl")) {
+          if (args.settings.mainPromptCacheTtl) account.mainPromptCacheTtl = args.settings.mainPromptCacheTtl;
+          else delete account.mainPromptCacheTtl;
+        }
+        if (account && args.settings && Object.hasOwn(args.settings, "onExtraUsage")) {
+          if (args.settings.onExtraUsage === "stop") account.onExtraUsage = "stop";
+          else delete account.onExtraUsage;
         }
         if (typeof args.settings?.smartBalance === "boolean") current.smartBalance = args.settings.smartBalance;
         if (typeof args.settings?.autoStartWindows === "boolean") {
@@ -8899,12 +8986,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateSetPreferences: async (
       preferences: AutoUpdatePreferences,
     ): Promise<AutoUpdatePreferences> => preferences,
-    updateGetInstallImpact: resolved({ connectedPhones: [], interruptedChats: [] }),
+    updateGetInstallImpact: resolved({ checked: true, chats: [], cliSessions: 0, terminals: 0, connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
     updateRelaunchApp: resolved(false),
     onUpdateEvent: noop,
+    music: createBrowserMockMusic(),
     // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`; see
     // browserMockRecovery.ts for every recovery and brain-down preview URL).
     ...createBrowserMockRecoveryBridges(),

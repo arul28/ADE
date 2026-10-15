@@ -26,6 +26,7 @@ export type ThreadPointerFields = {
   cursorSdkAgentId?: string | null;
   cursorCloudAgentId?: string | null;
   acpSessionId?: string | null;
+  museSessionId?: string | null;
 };
 
 export type PersistedPointerState = {
@@ -63,6 +64,8 @@ export function persistedPointerState(state: ThreadPointerFields): PersistedPoin
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.droidSdkSessionId) };
     case "pi":
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.piSessionId ?? state.piSessionFile) };
+    case "muse":
+      return { provider: state.provider, pointer: normalizedPersistedPointer(state.museSessionId) };
     case "cursor":
       return {
         provider: state.provider,

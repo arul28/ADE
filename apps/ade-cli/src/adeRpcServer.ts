@@ -2,12 +2,14 @@ import {
   clampGenericPermissionMode,
   permissionFieldsForLevel,
   permissionLevelForDroid,
+  permissionLevelForMuse,
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -83,7 +85,10 @@ import {
   ACTION_NOT_CALLABLE_CODE,
   ACTION_NOT_EXPOSED_CODE,
   encodeCodedErrorMessage,
+  parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
+import { isExpectedFailure, isExpectedOutcome } from "../../desktop/src/shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -121,7 +126,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatMusePermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -129,10 +134,14 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import { BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
+} from "./services/builtInBrowser/desktopBridgeMethods";
 import { USER_BROWSER_ROUTE_PARAM, isUserBrowserRuntimeMethod } from "./services/builtInBrowser/userBrowserRouting";
 import {
   ctoCallerInitializeParams,
@@ -151,8 +160,10 @@ import {
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
@@ -263,12 +274,15 @@ type SessionState = {
   };
 };
 
-/**
- * Thread comments are the user's unsent review of an agent's reply. Only a
- * user client may read or change them, or send them (`includeThreadComments`);
- * an agent that could would be editing what the user is about to tell it.
- */
-const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
+/** Chat actions only a user client may call; an agent caller is refused. */
+const USER_ONLY_CHAT_ACTIONS: ReadonlySet<string> = new Set([
+  // Thread comments are the user's unsent review of an agent's reply. Only a
+  // user client may read or change them, or send them (`includeThreadComments`);
+  // an agent that could would be editing what the user is about to tell it.
+  ...THREAD_COMMENT_ACTION_NAMES,
+  // What a mod draws is for the person at the chat; a press runs plugin code on the host.
+  ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
+]);
 const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
 
 function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
@@ -448,9 +462,10 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
+        musePermissionMode: { type: "string", enum: [...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] },
         title: { type: "string" },
         initialInput: { type: "string" },
         cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
@@ -1902,6 +1917,34 @@ function projectLaneLinearIssueLink(value: unknown): LaneLinearIssueLink | null 
   };
 }
 
+/** Caller mistakes, answered to the caller; not failures of the brain. */
+const CALLER_ERROR_CODES = new Set<number>([
+  JsonRpcErrorCode.invalidParams,
+  JsonRpcErrorCode.methodNotFound,
+  JsonRpcErrorCode.policyDenied,
+]);
+
+/**
+ * One Sentry issue per action and error code for a failed `ade/actions/call`.
+ * The endpoint turns every failure into an `ok: false` reply, which is right
+ * for the caller and left nothing behind for anyone else.
+ */
+function reportFailedAction(actionName: string, error: unknown): void {
+  if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
+  if (isExpectedFailure(error)) return;
+  if (isExpectedOutcome(error)) {
+    forwardLogToSentry("warn", `runtime_action.expected.${actionName}`, {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  const code = parseCodedErrorMessage(error).code ?? null;
+  captureError(error, {
+    tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
+    fingerprint: ["runtime-action", actionName, code ?? (error instanceof Error ? error.name : "unknown")],
+  });
+}
+
 function assertNonEmptyString(value: unknown, field: string): string {
   const text = asTrimmedString(value);
   if (!text.length) {
@@ -1946,6 +1989,16 @@ function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermi
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
     "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi",
+  );
+}
+
+function parseCliSessionMusePermissionMode(value: unknown): AgentChatMusePermissionMode | undefined {
+  const mode = asTrimmedString(value);
+  if (!mode) return undefined;
+  if ((AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES as readonly string[]).includes(mode)) return mode as AgentChatMusePermissionMode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    `musePermissionMode must be one of ${AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.join(", ")}`,
   );
 }
 
@@ -3349,6 +3402,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Messaging or controlling one subagent acts on the chat that owns it.
+  "messageSubagent",
+  "controlSubagent",
   // Restarting tears down the target's runtime (and stops its turn with
   // stopFirst); holding background work arms wakes on its terminals. Both act
   // on a chat the way `interrupt` does, so a bound agent aims them at itself.
@@ -3371,6 +3427,13 @@ const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
   "launchHeadless",
   "startLaunch",
   "launchCli",
+  // The Codex goal RPCs record whether a person or the harness mutated the
+  // goal, and `ade chat goal` reaches the same method the chat's goal controls
+  // use. Without the actor an agent's call would be indistinguishable from the
+  // user's and would claim their authorization.
+  "setCodexGoal",
+  "setCodexGoalStatus",
+  "clearCodexGoal",
 ]);
 
 /**
@@ -5552,7 +5615,7 @@ async function runTool(args: {
       );
     }
     const agentCaller = !isUserClientSession(session);
-    if (domain === "chat" && agentCaller && THREAD_COMMENT_ACTIONS.has(action)) {
+    if (domain === "chat" && agentCaller && USER_ONLY_CHAT_ACTIONS.has(action)) {
       scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
     }
     // Stripped here, at the source, because the chat scoping below rebuilds
@@ -5904,7 +5967,13 @@ async function runTool(args: {
       );
     } else if (
       domain === "built_in_browser"
-      && action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+      && (
+        action === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD
+        // The same gate for a desktop's answer to a browser command this
+        // machine sent it: an agent must not be able to write the result its
+        // own `ade browser` call is about to read.
+        || action === BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD
+      )
     ) {
       // Not a browser action. This machine has no desktop attached, so a
       // `browser open` here was published to whichever desktop holds a remote
@@ -6259,6 +6328,13 @@ async function runTool(args: {
         "droidPermissionMode is only supported for Droid CLI sessions.",
       );
     }
+    const requestedMusePermissionMode = parseCliSessionMusePermissionMode(toolArgs.musePermissionMode);
+    if (requestedMusePermissionMode && provider !== "muse") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "musePermissionMode is only supported for Muse CLI sessions.",
+      );
+    }
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
@@ -6275,14 +6351,29 @@ async function runTool(args: {
     const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));
     // An agent's CLI child never runs above the agent, or above its parent.
     const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
-    const permissionMode = cliCeiling
-      ? clampGenericPermissionMode(requestedPermissionMode, cliCeiling) as AgentChatPermissionMode
+    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    const parentLevel = orchestrationParentSessionId
+      ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
+      : null;
+    const defaultPermissionMode = spawnKind === "subagent"
+      && parentLevel === "full-auto"
+      && !asOptionalTrimmedString(toolArgs.permissionMode)
+      && !requestedDroidPermissionMode
+      && !requestedMusePermissionMode
+      ? "full-auto"
       : requestedPermissionMode;
+    const permissionMode = cliCeiling
+      ? clampGenericPermissionMode(defaultPermissionMode, cliCeiling) as AgentChatPermissionMode
+      : defaultPermissionMode;
     const droidPermissionMode = cliCeiling && requestedDroidPermissionMode
       && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
       ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
       : requestedDroidPermissionMode;
-    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    // Same ceiling rule as Droid: an agent's Muse child never runs above it.
+    const musePermissionMode = cliCeiling && requestedMusePermissionMode
+      && permissionLevelRank(permissionLevelForMuse(requestedMusePermissionMode)) > permissionLevelRank(cliCeiling)
+      ? permissionFieldsForLevel("muse", cliCeiling).musePermissionMode
+      : requestedMusePermissionMode;
     // A parentless CLI launched by a bound agent records who launched it. This
     // is a passive fact: it does not nest the session or wake the launcher.
     // The CTO is not an agent launcher, so it records nothing here.
@@ -6372,6 +6463,7 @@ async function runTool(args: {
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+        ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
@@ -6474,6 +6566,7 @@ async function runTool(args: {
       title,
       permissionMode,
       droidPermissionMode: droidPermissionMode ?? null,
+      musePermissionMode: musePermissionMode ?? null,
       model: provider === "claude" ? model ?? null : null,
       ptyId: created.ptyId,
       sessionId: created.sessionId,
@@ -8517,12 +8610,21 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/actions/call") {
       const actionName = assertNonEmptyString(params.name, "name");
       const actionArgs = safeObject(params.arguments);
+      // Name the call for the loop watchdog, so a wedge a local `ade` command
+      // causes is reported as that command instead of "idle". Only remote sync
+      // commands were tracked before.
+      const domain = typeof actionArgs.domain === "string" ? actionArgs.domain : null;
+      const domainAction = typeof actionArgs.action === "string" ? actionArgs.action : null;
+      const stopTrackingCommand = trackBrainLoopWatchdogCommand(
+        domain && domainAction ? `${domain}.${domainAction}` : actionName,
+      );
       try {
         const result = await callAction(actionName, actionArgs);
         noteFileWatchAction(actionName, actionArgs, result);
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        reportFailedAction(actionName, error);
         return {
           ok: false,
           error: {
@@ -8533,6 +8635,8 @@ export function createAdeRpcRequestHandler(args: {
               : {}),
           },
         };
+      } finally {
+        stopTrackingCommand();
       }
     }
 

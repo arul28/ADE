@@ -1,3 +1,4 @@
+import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
@@ -28,6 +29,7 @@ import {
   type AgentChatRecoverContinuityArgs,
   type AgentChatCursorConfigValue,
   type AgentChatDroidPermissionMode,
+  type AgentChatMusePermissionMode,
   type AgentChatExecutionMode,
   type AgentChatEvent,
   type AgentChatEventEnvelope,
@@ -60,6 +62,7 @@ import {
   type AgentChatSessionSummary,
   type AgentChatLaunchDefaults,
   type CodexThreadGoal,
+  type CodexThreadGoalStatus,
   type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
   type ComputerUseArtifactView,
@@ -89,7 +92,10 @@ import {
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
   queuedSteersCanReorder,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
 } from "../../../shared/types/chat";
+import { musePermissionModeFromLegacyPermissionMode } from "../../../shared/modelPermissions";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
@@ -138,6 +144,7 @@ import {
   getModelById,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
+  modelSupportsUltrafast,
   parseLocalProviderFromModelId,
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
@@ -147,6 +154,7 @@ import {
   type LocalProviderFamily,
   type ModelDescriptor,
   type ProviderFamily,
+  type FastTier,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS, foldLegacyCursorFastConfigValue } from "../../../shared/cursorModes";
@@ -165,6 +173,9 @@ import {
   setThreadComments,
   useThreadComments,
 } from "./threadCommentsStore";
+import { ClaudeModUi } from "./ClaudeModUi";
+import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -178,10 +189,10 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
-import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -195,8 +206,8 @@ import {
   AgentChatMessageList,
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
+import { SceneReplyContext } from "./SceneFrame";
 import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
-import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
@@ -372,6 +383,7 @@ import {
   pickNewerCrossMachineHandoffRecord,
 } from "../../../shared/crossMachineHandoff";
 import { showToast } from "../app/toast/toastStore";
+import { summarizeInlineText } from "./chatTranscriptRows";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
@@ -1637,6 +1649,8 @@ type LastLaunchConfig = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast is set to Codex Ultrafast; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
@@ -1650,6 +1664,8 @@ type ComposerDraftStorageSnapshot = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when Fast is set to Codex Ultrafast; absent/null is plain Fast. */
+  fastTier?: "ultrafast" | null;
   cursorCloudServiceTier: CursorCloudServiceTier | null;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
@@ -1748,6 +1764,8 @@ type ParallelModelRowState = NativeControlState & {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** "ultrafast" when this slot's Fast is Codex Ultrafast. */
+  fastTier?: "ultrafast" | null;
   executionMode: AgentChatExecutionMode;
 };
 
@@ -1913,6 +1931,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
       codexConfigSource: "flags",
       opencodePermissionMode: "full-auto",
       droidPermissionMode: "auto-high",
+      musePermissionMode: "allowAll",
       cursorModeId: "full-auto",
       cursorConfigValues: {},
     };
@@ -1925,6 +1944,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     droidPermissionMode: "auto-low",
+    musePermissionMode: "onRequest",
     cursorModeId: "agent",
     cursorConfigValues: {},
   };
@@ -1933,6 +1953,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
 type ChatRuntimeProviderKey =
   | "claude"
   | "codex"
+  | "muse"
   | "cursor"
   | "droid"
   | "opencode"
@@ -1961,7 +1982,7 @@ function isDeferredComposerModelSelection(
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
-  if (desc.family === "cursor" || desc.family === "openai" || desc.family === "factory") {
+  if (desc.family === "cursor" || desc.family === "openai" || desc.family === "factory" || desc.family === "muse") {
     return desc.providerModelId || registryModelId;
   }
   return desc.shortId ?? registryModelId;
@@ -1977,6 +1998,7 @@ function cloneParallelSlotFromComposer(args: {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  fastTier?: FastTier | null;
   executionMode: AgentChatExecutionMode;
 }): ParallelModelRowState {
   return {
@@ -1985,6 +2007,7 @@ function cloneParallelSlotFromComposer(args: {
     modelId: args.modelId,
     reasoningEffort: args.reasoningEffort,
     fastMode: args.fastMode,
+    fastTier: args.fastMode && args.fastTier === "ultrafast" ? "ultrafast" : null,
     executionMode: args.executionMode,
   };
 }
@@ -2170,6 +2193,9 @@ const HANDOFF_OPENCODE_MODES: Array<{ value: AgentChatOpenCodePermissionMode; la
   { value: "config-toml", label: "Config" },
 ];
 
+const HANDOFF_MUSE_MODES: Array<{ value: AgentChatMusePermissionMode; label: string }> = AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES
+  .map((value) => ({ value, label: AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value].label }));
+
 const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
   { value: "read-only", label: "Read-only" },
   { value: "auto-low", label: "Auto low" },
@@ -2213,6 +2239,36 @@ function readLastUsedModelId(): string | null {
     // ignore
   }
   return migrateOldPrefs();
+}
+
+/**
+ * Backoff for re-reading a locked chat's summary after a read came back empty.
+ * The last delay repeats: a finished chat gets no events that would ask again,
+ * so giving up would leave it on "New chat" with no model while it stays open.
+ */
+const LOCKED_SUMMARY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const;
+/**
+ * How long "not found" has to persist before the held summary is dropped. A
+ * chat can be briefly unknown while a project opens or a handoff lands, so one
+ * empty answer is not proof it was deleted.
+ */
+const LOCKED_SUMMARY_MISSING_CONFIRM_MS = 60_000;
+
+/**
+ * Last summary read for each locked chat, kept across pane mounts. The summary
+ * is the composer's only source of the chat's model, and a fresh mount (a chat
+ * switch, a Focus grid page) starts empty; on a busy brain the first read can
+ * fail for a while, which left a running chat on "Select model".
+ */
+const lastLockedSessionSummaryById = new Map<string, AgentChatSessionSummary>();
+const LAST_LOCKED_SESSION_SUMMARY_LIMIT = 200;
+function rememberLockedSessionSummary(summary: AgentChatSessionSummary): void {
+  lastLockedSessionSummaryById.delete(summary.sessionId);
+  lastLockedSessionSummaryById.set(summary.sessionId, summary);
+  if (lastLockedSessionSummaryById.size > LAST_LOCKED_SESSION_SUMMARY_LIMIT) {
+    const oldest = lastLockedSessionSummaryById.keys().next().value;
+    if (oldest != null) lastLockedSessionSummaryById.delete(oldest);
+  }
 }
 
 /** Last-used model, then the app-wide default, then whatever is listed first. */
@@ -2294,12 +2350,14 @@ function resolveAssistantLabel(
 ): string {
   if (model?.family === "cursor" || model?.cliCommand === "cursor") return "Cursor";
   if (model?.family === "factory" || model?.cliCommand === "droid") return "Droid";
+  if (model?.family === "muse" || model?.cliCommand === "muse") return PROVIDER_DISPLAY_NAME.muse;
   if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
   if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
   if (sessionProvider === "claude") return "Claude";
   if (sessionProvider === "codex") return "Codex";
   if (sessionProvider === "cursor") return "Cursor";
   if (sessionProvider === "droid") return "Droid";
+  if (sessionProvider === "muse") return PROVIDER_DISPLAY_NAME.muse;
   return "Assistant";
 }
 
@@ -2608,6 +2666,7 @@ const CODEX_SANDBOXES: readonly AgentChatCodexSandbox[] = ["read-only", "workspa
 const CODEX_CONFIG_SOURCES: readonly AgentChatCodexConfigSource[] = ["flags", "config-toml"];
 const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto", "config-toml"];
 const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
+const MUSE_PERMISSION_MODES: readonly AgentChatMusePermissionMode[] = AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES;
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
 const APP_CONTROL_PROVIDERS: readonly AppControlContextItem["provider"][] = ["cdp", "os-accessibility", "computer-use", "external", "coordinate-fallback"];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
@@ -2730,6 +2789,7 @@ type LaunchConfigSessionSource = Pick<
   | "modelId"
   | "reasoningEffort"
   | "fastMode"
+  | "fastTier"
   | "cursorCloudServiceTier"
   | "executionMode"
   | "permissionMode"
@@ -2740,6 +2800,7 @@ type LaunchConfigSessionSource = Pick<
   | "codexConfigSource"
   | "opencodePermissionMode"
   | "droidPermissionMode"
+  | "musePermissionMode"
   | "cursorModeSnapshot"
   | "cursorModeId"
   | "cursorConfigValues"
@@ -2792,6 +2853,11 @@ function nativeControlsFromLaunchSource(
       DROID_PERMISSION_MODES,
       legacyPermissionModeToDroidPermissionMode(source.permissionMode) ?? defaults.droidPermissionMode,
     ),
+    musePermissionMode: pickStringEnum(
+      source.musePermissionMode,
+      MUSE_PERMISSION_MODES,
+      musePermissionModeFromLegacyPermissionMode(source.permissionMode) ?? defaults.musePermissionMode,
+    ),
     cursorModeId: source.cursorModeId !== undefined
       ? source.cursorModeId
       : source.cursorModeSnapshot?.currentModeId ?? defaults.cursorModeId,
@@ -2835,6 +2901,7 @@ function buildLastLaunchConfig(
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
     fastMode,
+    ...(fastMode && source.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2860,6 +2927,7 @@ function launchConfigFromMachineDefaults(
     codexConfigSource: defaults.codexConfigSource ?? undefined,
     opencodePermissionMode: defaults.opencodePermissionMode ?? undefined,
     droidPermissionMode: defaults.droidPermissionMode ?? undefined,
+    musePermissionMode: defaults.musePermissionMode ?? undefined,
     cursorModeId: defaults.cursorModeId ?? undefined,
     cursorConfigValues: defaults.cursorConfigValues ?? undefined,
   }, controlDefaults, defaults.updatedAt);
@@ -2884,6 +2952,7 @@ function normalizeStoredLaunchConfig(
       ? value.reasoningEffort.trim()
       : null,
     fastMode,
+    ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2980,6 +3049,7 @@ function rememberLaunchConfig(
     codexConfigSource: controls.codexConfigSource,
     opencodePermissionMode: controls.opencodePermissionMode,
     droidPermissionMode: controls.droidPermissionMode,
+    musePermissionMode: controls.musePermissionMode,
     cursorModeId: controls.cursorModeId,
     cursorConfigValues: controls.cursorConfigValues,
   }, defaults);
@@ -3138,6 +3208,7 @@ function normalizeStoredComposerDraft(
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode,
+    ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -3208,7 +3279,7 @@ function stripComposerDraftScreenshots(snapshot: ComposerDraftStorageSnapshot): 
 }
 
 function resolveCliRegistryModelId(
-  provider: "codex" | "claude" | "cursor" | "droid",
+  provider: "codex" | "claude" | "cursor" | "droid" | "muse",
   value: string | null | undefined,
   catalogScopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): string | null {
@@ -3227,6 +3298,12 @@ function resolveCliRegistryModelId(
     const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^droid\//, ""), "droid");
     if (dynamic && dynamic.family === "factory") return dynamic.id;
     return null;
+  }
+  if (provider === "muse") {
+    // Live Muse models are not in MODEL_REGISTRY; the provider lookup finds
+    // curated and live rows alike.
+    const muse = resolveModelDescriptorForProvider(normalized.replace(/^muse\//, ""), "muse");
+    return muse && muse.family === "muse" ? muse.id : null;
   }
   const family = provider === "codex" ? "openai" : "anthropic";
   const match = MODEL_REGISTRY.find(
@@ -3362,15 +3439,6 @@ export function buildParallelLaunchPrompt(args: {
     return { sendText: "", displayText: "" };
   }
   return { sendText: displayText, displayText };
-}
-
-/** Deterministic djb2 hash → stable, collision-resilient mosaic card key suffix. */
-function djb2Hash(input: string): string {
-  let hash = 5381;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
-  }
-  return (hash >>> 0).toString(36);
 }
 
 export type ParallelLaunchCleanupIssue = {
@@ -4045,6 +4113,9 @@ export function AgentChatPane({
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const { getReasoningForFamily } = useReasoningByFamily();
   const [fastMode, setFastMode] = useState(false);
+  /** Fast's tier while Fast is on; null is plain Fast. Mirrored in `fastTierRef`. */
+  const [fastTier, setFastTier] = useState<FastTier | null>(null);
+  const fastTierRef = useRef<FastTier | null>(null);
   const [cursorCloudServiceTier, setCursorCloudServiceTier] = useState<CursorCloudServiceTier | null>(null);
   /**
    * Synchronous mirror of `fastMode`.
@@ -4074,6 +4145,13 @@ export function AgentChatPane({
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
+  /* A running chat's model pick, held until Send applies it. It names the
+     preset the pick came from, or none for a plain model. The trigger reads it
+     so a pick shows at once instead of the chat's old preset, and Send reads
+     it because leaving a preset is a change even when the model id is not. */
+  const [sessionRoutePick, setSessionRoutePick] = useState<{ sessionId: string; presetId: string | null } | null>(null);
+  const sessionRoutePickRef = useRef(sessionRoutePick);
+  sessionRoutePickRef.current = sessionRoutePick;
   // Root store: the preset list is account-scoped (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((s) => s.harnessPresets);
   const harnessPresetsRef = useRef(harnessPresets);
@@ -4085,9 +4163,14 @@ export function AgentChatPane({
     () => resolveHarnessLaunchTarget(draftHarnessPresetId, harnessPresets, modelCatalogScopeKey),
     [draftHarnessPresetId, harnessPresets, modelCatalogScopeKey],
   );
-  const setFastModeState = useCallback((enabled: boolean) => {
+  // The tier is part of the same write: every caller that sets Fast without
+  // naming a tier (a reset, a model the tier does not apply to) means plain Fast.
+  const setFastModeState = useCallback((enabled: boolean, tier: FastTier | null = null) => {
+    const nextTier = enabled && tier === "ultrafast" ? "ultrafast" : null;
     fastModeRef.current = enabled;
+    fastTierRef.current = nextTier;
     setFastMode(enabled);
+    setFastTier(nextTier);
   }, []);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
@@ -4117,6 +4200,7 @@ export function AgentChatPane({
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
   const [droidPermissionMode, setDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(initialNativeControls.droidPermissionMode);
+  const [musePermissionMode, setMusePermissionMode] = useState<AgentChatMusePermissionMode>(initialNativeControls.musePermissionMode);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
   const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(seedAiStatus);
@@ -4125,6 +4209,7 @@ export function AgentChatPane({
     codex: AiProviderConnectionStatus | null;
     cursor: AiProviderConnectionStatus | null;
     droid: AiProviderConnectionStatus | null;
+    muse: AiProviderConnectionStatus | null;
   } | null>(() =>
     seedAiStatus
       ? {
@@ -4132,6 +4217,7 @@ export function AgentChatPane({
           codex: seedAiStatus.providerConnections?.codex ?? null,
           cursor: seedAiStatus.providerConnections?.cursor ?? null,
           droid: seedAiStatus.providerConnections?.droid ?? null,
+          muse: seedAiStatus.providerConnections?.muse ?? null,
         }
       : null,
   );
@@ -4460,6 +4546,11 @@ export function AgentChatPane({
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
   const [handoffFastMode, setHandoffFastMode] = useState(false);
+  const [handoffFastTier, setHandoffFastTier] = useState<FastTier | null>(null);
+  const handleHandoffFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
+    setHandoffFastMode(enabled);
+    setHandoffFastTier(enabled && tier === "ultrafast" ? "ultrafast" : null);
+  }, []);
   const [handoffClaudePermissionMode, setHandoffClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(
     initialNativeControls.claudePermissionMode,
   );
@@ -4475,6 +4566,9 @@ export function AgentChatPane({
   );
   const [handoffDroidPermissionMode, setHandoffDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(
     initialNativeControls.droidPermissionMode,
+  );
+  const [handoffMusePermissionMode, setHandoffMusePermissionMode] = useState<AgentChatMusePermissionMode>(
+    initialNativeControls.musePermissionMode,
   );
   const [handoffCursorModeId, setHandoffCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [handoffCursorConfigValues, setHandoffCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(
@@ -4693,12 +4787,35 @@ export function AgentChatPane({
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
+  /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
+  const lockedSummaryRetryRef = useRef<{ attempt: number; missingSince: number | null; timer: number | null }>({
+    attempt: 0,
+    missingSince: null,
+    timer: null,
+  });
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
+  /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
+  const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
+  /**
+   * User messages in a chat with one of these texts, from five minutes before
+   * `sentAt` (slack for the chat machine's clock) on. A long chat paged out of
+   * memory keeps its live events aside, so both stores count.
+   */
+  const countSentMessages = useCallback((sessionId: string, texts: string[], sentAt: string): number => {
+    const since = Date.parse(sentAt) - 5 * 60_000;
+    return [
+      ...(eventsBySessionRef.current[sessionId] ?? []),
+      ...(detachedLiveEventsBySessionRef.current[sessionId] ?? []),
+    ].filter(({ event, timestamp }) =>
+      event.type === "user_message"
+      && Date.parse(timestamp) >= since
+      && texts.some((text) => text === event.text.trim() || text === event.displayText?.trim())).length;
+  }, []);
   // `selectedSessionId` trails a prop-driven chat switch by one render. Resolve
   // the visible session before deriving either its events or its runtime pin so
   // Retry can never send the incoming session id to the outgoing machine.
@@ -4785,6 +4902,15 @@ export function AgentChatPane({
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !personalScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
+  // Mod UI is for a readable Claude project chat (the thread-comments gate)
+  // in the desktop window: the hosted client draws none, and a subagent view
+  // is another agent's transcript.
+  const claudeModUiSessionId = selectedSession?.provider === "claude" && !subagentView && !isWebClientMode()
+    ? threadCommentsSessionId
+    : null;
+  // The offer reads the setting and the plugins of this tab's own project, so a
+  // chat pinned to another runtime (another machine, another open project) gets none.
+  useClaudeModsPrompt(chatRuntimePin ? null : claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -5095,7 +5221,7 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache);
   const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
@@ -5843,7 +5969,7 @@ export function AgentChatPane({
   }, []);
   const setCodexGoalStatusFromPanel = useCallback(async (
     sessionId: string,
-    status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">,
+    status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">,
   ) => {
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
@@ -6106,6 +6232,9 @@ export function AgentChatPane({
     case "droid":
       activeProviderConnection = providerConnections?.droid ?? null;
       break;
+    case "muse":
+      activeProviderConnection = providerConnections?.muse ?? null;
+      break;
     default:
       activeProviderConnection = null;
       break;
@@ -6257,6 +6386,7 @@ export function AgentChatPane({
       activeProviderConnection.blocker
       || activeProviderConnection.provider === "cursor"
       || activeProviderConnection.provider === "droid"
+      || activeProviderConnection.provider === "muse"
     ),
   );
   const cliRuntimeTitle = activeProviderConnection?.provider === "claude"
@@ -6265,16 +6395,21 @@ export function AgentChatPane({
       ? "Cursor runtime"
       : activeProviderConnection?.provider === "droid"
         ? "Droid runtime"
+      : activeProviderConnection?.provider === "muse"
+        ? "Muse runtime"
       : "Codex runtime";
   // The same provider split as the title, as a ProviderLogo family.
   const cliRuntimeLogoFamily = activeProviderConnection?.provider === "claude"
     || activeProviderConnection?.provider === "cursor"
     || activeProviderConnection?.provider === "droid"
+    || activeProviderConnection?.provider === "muse"
     ? activeProviderConnection.provider
     : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
       ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
+      : activeProviderConnection?.provider === "muse"
+        ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `" + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
       : activeProviderConnection?.provider === "cursor"
         ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
       : null);
@@ -6327,6 +6462,8 @@ export function AgentChatPane({
 
   useEffect(() => () => {
     paneMountedRef.current = false;
+    for (const timer of sendRecoveryTimersRef.current) window.clearTimeout(timer);
+    sendRecoveryTimersRef.current.clear();
   }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
@@ -6486,6 +6623,7 @@ export function AgentChatPane({
       codexConfigSource: row.codexConfigSource,
       opencodePermissionMode: row.opencodePermissionMode,
       droidPermissionMode: row.droidPermissionMode,
+      musePermissionMode: row.musePermissionMode,
       cursorModeSnapshot: parallelSlotCursorSnapshot,
       onInteractionModeChange: (mode) => patchParallelSlot(idx, { interactionMode: mode }),
       onClaudeModeChange: (mode) => patchParallelSlot(idx, {
@@ -6503,6 +6641,7 @@ export function AgentChatPane({
       onCodexConfigSourceChange: (source) => patchParallelSlot(idx, { codexConfigSource: source }),
       onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
+      onMusePermissionModeChange: (mode) => patchParallelSlot(idx, { musePermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
@@ -6530,7 +6669,9 @@ export function AgentChatPane({
       { reasoningEffort: config.reasoningEffort, fastMode: config.fastMode },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
-    setFastModeState(reconciledControls.fastMode);
+    // The stored tier is kept as chosen: the catalog that says whether this
+    // model offers Ultrafast may not have loaded yet, and send time checks it.
+    setFastModeState(reconciledControls.fastMode, config.fastTier ?? null);
     setCursorCloudServiceTier(config.cursorCloudServiceTier ?? null);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
@@ -6540,6 +6681,7 @@ export function AgentChatPane({
     setCodexConfigSource(config.controls.codexConfigSource);
     setOpenCodePermissionMode(config.controls.opencodePermissionMode);
     setDroidPermissionMode(config.controls.droidPermissionMode);
+    setMusePermissionMode(config.controls.musePermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
   }, [setFastModeState]);
@@ -6566,6 +6708,7 @@ export function AgentChatPane({
       setCodexConfigSource(initialNativeControls.codexConfigSource);
       setOpenCodePermissionMode(initialNativeControls.opencodePermissionMode);
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
+      setMusePermissionMode(initialNativeControls.musePermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
       setFastModeState(false);
@@ -6577,6 +6720,9 @@ export function AgentChatPane({
       && deferredComposerSessionIdRef.current !== session.sessionId
     ) {
       deferredComposerSessionIdRef.current = null;
+    }
+    if (sessionRoutePickRef.current && sessionRoutePickRef.current.sessionId !== session.sessionId) {
+      setSessionRoutePick(null);
     }
     const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current);
     if (isDeferredComposerModelSelection(
@@ -6594,7 +6740,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
-    setFastModeState(session.fastMode === true);
+    setFastModeState(session.fastMode === true, session.fastTier === "ultrafast" ? "ultrafast" : null);
     setCursorCloudServiceTier(session.cursorCloudServiceTier ?? null);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
@@ -6611,6 +6757,11 @@ export function AgentChatPane({
       session.droidPermissionMode
         ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
         ?? initialNativeControls.droidPermissionMode,
+    );
+    setMusePermissionMode(
+      session.musePermissionMode
+        ?? musePermissionModeFromLegacyPermissionMode(session.permissionMode)
+        ?? initialNativeControls.musePermissionMode,
     );
     const cursorModeWasExplicitlyCleared = session.cursorModeId === null
       || session.cursorModeIdWasCleared === true;
@@ -6655,7 +6806,9 @@ export function AgentChatPane({
   const sendsElsewhereTo = crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff)?.targetMachineName ?? null;
   const effectiveMessagePlaceholder = projectTransitionBlocksChat
     ? "Project is switching..."
-    : sendsElsewhereTo
+    : subagentView && selectedSubagentCapability.canMessage
+      ? `Message ${subagentNameForView ?? "this subagent"}…`
+      : sendsElsewhereTo
       ? `Message the chat on ${sendsElsewhereTo}…`
       : messagePlaceholder;
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
@@ -7018,6 +7171,7 @@ export function AgentChatPane({
     codexConfigSource: handoffCodexConfigSource,
     opencodePermissionMode: handoffOpenCodePermissionMode,
     droidPermissionMode: handoffDroidPermissionMode,
+    musePermissionMode: handoffMusePermissionMode,
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
   }), [
@@ -7028,6 +7182,7 @@ export function AgentChatPane({
     handoffCodexConfigSource,
     handoffOpenCodePermissionMode,
     handoffDroidPermissionMode,
+    handoffMusePermissionMode,
     handoffCursorModeId,
     handoffCursorConfigValues,
   ]);
@@ -7044,6 +7199,7 @@ export function AgentChatPane({
     setHandoffCodexConfigSource(next.codexConfigSource);
     setHandoffOpenCodePermissionMode(next.opencodePermissionMode);
     setHandoffDroidPermissionMode(next.droidPermissionMode);
+    setHandoffMusePermissionMode(next.musePermissionMode);
     setHandoffCursorModeId(next.cursorModeId);
     setHandoffCursorConfigValues(next.cursorConfigValues);
   }, []);
@@ -7088,7 +7244,12 @@ export function AgentChatPane({
     // fast-capable Claude model shows a live control that never reaches the
     // capsule, and the destination silently inherits the source's tier.
     ...(remoteHandoffTargetDescriptor && modelSupportsFastMode(remoteHandoffTargetDescriptor)
-      ? { fastMode: handoffFastMode }
+      ? {
+        fastMode: handoffFastMode,
+        fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(remoteHandoffTargetDescriptor)
+          ? "ultrafast" as const
+          : null,
+      }
       : {}),
     claudePermissionMode: handoffClaudePermissionMode,
     codexApprovalPolicy: handoffCodexApprovalPolicy,
@@ -7096,6 +7257,7 @@ export function AgentChatPane({
     codexConfigSource: handoffCodexConfigSource,
     opencodePermissionMode: handoffOpenCodePermissionMode,
     droidPermissionMode: handoffDroidPermissionMode,
+    musePermissionMode: handoffMusePermissionMode,
     ...(remoteHandoffNativePermissionMode != null ? { permissionMode: remoteHandoffNativePermissionMode } : {}),
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
@@ -7108,6 +7270,8 @@ export function AgentChatPane({
     handoffCursorModeId,
     handoffDroidPermissionMode,
     handoffFastMode,
+    handoffFastTier,
+    handoffMusePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
     remoteHandoffModelId,
@@ -7119,6 +7283,7 @@ export function AgentChatPane({
     provider: selectedSession?.provider ?? null,
     status: selectedSession?.status ?? null,
     idleSinceAt: selectedSession?.idleSinceAt,
+    cache: selectedSession?.promptCache,
     awaitingInput: selectedSessionAwaitingInput,
   });
 
@@ -7129,6 +7294,7 @@ export function AgentChatPane({
       codex: status.providerConnections?.codex ?? null,
       cursor: status.providerConnections?.cursor ?? null,
       droid: status.providerConnections?.droid ?? null,
+      muse: status.providerConnections?.muse ?? null,
     });
     const orderedAvailable = orderAvailableModelIds(deriveConfiguredModelIds(status, { includeDroid: true }));
     setAvailableModelIds(orderedAvailable);
@@ -7211,11 +7377,12 @@ export function AgentChatPane({
     }
 
     try {
-      const [codexModels, claudeModels, cursorModels, droidModels, openCodeModels] = await Promise.all([
+      const [codexModels, claudeModels, cursorModels, droidModels, museModels, openCodeModels] = await Promise.all([
         getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: runtimePin }).catch(() => []),
         getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: runtimePin }).catch(() => []),
         getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: runtimePin }).catch(() => []),
         getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "muse", pin: runtimePin }).catch(() => []),
         getAgentChatModelsCached({
           projectRoot: runtimeProjectRoot,
           provider: "opencode",
@@ -7239,6 +7406,10 @@ export function AgentChatPane({
       }
       for (const model of droidModels) {
         const resolved = resolveCliRegistryModelId("droid", model.id);
+        if (resolved) available.add(resolved);
+      }
+      for (const model of museModels) {
+        const resolved = resolveCliRegistryModelId("muse", model.id);
         if (resolved) available.add(resolved);
       }
       for (const model of openCodeModels) {
@@ -7353,6 +7524,39 @@ export function AgentChatPane({
     invalidateAgentChatSessionListCache(laneId ? { laneId } : undefined);
   }, [laneId]);
 
+  /** Which chat a summary read may still write for; null once the pane let go of it. */
+  const lockedSummarySessionRef = useRef<string | null>(lockSessionId ?? null);
+  const resetLockedSummaryRetry = useCallback(() => {
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) window.clearTimeout(retry.timer);
+    lockedSummaryRetryRef.current = { attempt: 0, missingSince: null, timer: null };
+  }, []);
+  /**
+   * Arm the next summary read after one that came back empty. Returns whether
+   * the summary already held should be kept meanwhile: always for a failure,
+   * and for "not found" until it has persisted past the confirm window.
+   */
+  const scheduleLockedSummaryRetry = useCallback((outcome: "failed" | "missing"): boolean => {
+    const retry = lockedSummaryRetryRef.current;
+    if (retry.timer != null) window.clearTimeout(retry.timer);
+    retry.timer = null;
+    if (outcome === "missing") {
+      const now = Date.now();
+      retry.missingSince ??= now;
+      if (now - retry.missingSince >= LOCKED_SUMMARY_MISSING_CONFIRM_MS) return false;
+    } else {
+      // An unreachable brain says nothing about whether the chat exists.
+      retry.missingSince = null;
+    }
+    const delay = LOCKED_SUMMARY_RETRY_DELAYS_MS[Math.min(retry.attempt, LOCKED_SUMMARY_RETRY_DELAYS_MS.length - 1)]!;
+    retry.attempt += 1;
+    retry.timer = window.setTimeout(() => {
+      retry.timer = null;
+      void refreshLockedSessionSummaryRef.current().catch(() => undefined);
+    }, delay);
+    return true;
+  }, []);
+
   const refreshLockedSessionSummary = useCallback(async () => {
     if (!lockSessionId) {
       setSessions([]);
@@ -7370,14 +7574,48 @@ export function AgentChatPane({
     }
 
     let summary: AgentChatSessionSummary | null;
+    let readFailed = false;
     if (!seededInitialSummaryRef.current && initialSessionSummary?.sessionId === lockSessionId) {
       summary = initialSessionSummary;
       seededInitialSummaryRef.current = true;
     } else {
-      summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      try {
+        summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+      } catch {
+        summary = null;
+        readFailed = true;
+      }
     }
+    // The pane moved to another chat (or unmounted) while this read was in
+    // flight; its answer belongs to nobody on screen now.
+    if (lockedSummarySessionRef.current !== lockSessionId) return summary;
 
-    setSessions(summary ? [summary] : []);
+    // The summary is the only source of this chat's title and model. A failed
+    // read (the brain restarting, a slow warm-up) keeps the summary already
+    // held and asks again; clearing it left a finished chat on "New chat" with
+    // "Select model", because nothing else would ask. A "not found" is
+    // believed once it has lasted the confirm window, so a deleted chat clears.
+    const keepHeld = summary == null && scheduleLockedSummaryRetry(readFailed ? "failed" : "missing");
+    if (summary) {
+      resetLockedSummaryRetry();
+      rememberLockedSessionSummary(summary);
+    } else if (!keepHeld) {
+      lastLockedSessionSummaryById.delete(lockSessionId);
+    }
+    const remembered = keepHeld ? lastLockedSessionSummaryById.get(lockSessionId) ?? null : null;
+    setSessions((prev) => {
+      if (summary) return [summary];
+      if (!keepHeld) return [];
+      if (prev[0]?.sessionId === lockSessionId) return prev;
+      return remembered ? [remembered] : [];
+    });
+    if (keepHeld) {
+      // The held summary still describes the turn; an empty read must not
+      // flip a running chat's controls to idle.
+      draftSelectionLockedRef.current = false;
+      setSelectedSessionId(lockSessionId);
+      return null;
+    }
     setTurnActiveBySession((prev) => {
       const residentEvents = eventsBySessionRef.current[lockSessionId] ?? [];
       const nextRunning = residentEvents.length > 0
@@ -7390,7 +7628,20 @@ export function AgentChatPane({
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
     return summary;
-  }, [initialSessionSummary, lockSessionId, setSelectedSessionId]);
+  }, [initialSessionSummary, lockSessionId, resetLockedSummaryRetry, scheduleLockedSummaryRetry, setSelectedSessionId]);
+  const refreshLockedSessionSummaryRef = useRef(refreshLockedSessionSummary);
+  refreshLockedSessionSummaryRef.current = refreshLockedSessionSummary;
+  // Set during render, so a read in flight across a chat switch is already
+  // stale by the time it resolves, even before the effects below run.
+  lockedSummarySessionRef.current = lockSessionId ?? null;
+  // A chat switch or unmount drops the retry: the next chat starts its own.
+  useEffect(() => {
+    lockedSummarySessionRef.current = lockSessionId ?? null;
+    return () => {
+      lockedSummarySessionRef.current = null;
+      resetLockedSummaryRetry();
+    };
+  }, [lockSessionId, resetLockedSummaryRetry]);
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {
@@ -8071,7 +8322,16 @@ export function AgentChatPane({
   }, [lockSessionId, setSelectedSessionId]);
 
   useLayoutEffect(() => {
-    if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
+    if (!lockedSingleSessionMode || !lockSessionId) return;
+    if (initialSessionSummary?.sessionId !== lockSessionId) {
+      // No summary handed in: show the one this chat had last time it was
+      // open until the fresh read lands, so its model is known meanwhile.
+      const remembered = lastLockedSessionSummaryById.get(lockSessionId);
+      if (remembered) {
+        setSessions((prev) => (prev[0]?.sessionId === lockSessionId ? prev : [remembered]));
+      }
+      return;
+    }
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
@@ -8119,6 +8379,7 @@ export function AgentChatPane({
     selectedSessionModelId,
     selectedSession?.reasoningEffort,
     selectedSession?.fastMode,
+    selectedSession?.fastTier,
     selectedSession?.executionMode,
     selectedSession?.interactionMode,
     selectedSession?.claudePermissionMode,
@@ -8127,6 +8388,7 @@ export function AgentChatPane({
     selectedSession?.codexConfigSource,
     selectedSession?.opencodePermissionMode,
     selectedSession?.droidPermissionMode,
+    selectedSession?.musePermissionMode,
     selectedSession?.permissionMode,
     selectedSession?.cursorModeId,
     selectedSession?.cursorModeSnapshot?.currentModeId,
@@ -8569,12 +8831,14 @@ export function AgentChatPane({
     if (handoffFormActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
       setHandoffFastMode(fastMode);
+      setHandoffFastTier(fastMode ? fastTierRef.current : null);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
       setHandoffCodexConfigSource(codexConfigSource);
       setHandoffOpenCodePermissionMode(opencodePermissionMode);
       setHandoffDroidPermissionMode(droidPermissionMode);
+      setHandoffMusePermissionMode(musePermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
       // Only the source family's control is this chat's real choice; the others
@@ -8587,6 +8851,7 @@ export function AgentChatPane({
           codexSandbox,
           opencodePermissionMode,
           droidPermissionMode,
+          musePermissionMode,
           cursorModeId,
         }));
         if (activeLadderFamily !== "claude") setHandoffClaudePermissionMode(resolved.claudePermissionMode);
@@ -8598,6 +8863,7 @@ export function AgentChatPane({
           setHandoffOpenCodePermissionMode(resolved.opencodePermissionMode);
         }
         if (activeLadderFamily !== "droid") setHandoffDroidPermissionMode(resolved.droidPermissionMode);
+        if (activeLadderFamily !== "muse") setHandoffMusePermissionMode(resolved.musePermissionMode);
         if (activeLadderFamily !== "cursor") setHandoffCursorModeId(resolved.cursorModeId);
       }
       const prefill = pendingHandoffPrefillRef.current;
@@ -9153,6 +9419,7 @@ export function AgentChatPane({
         if (meta.codexConfigSource !== undefined) summaryPatch.codexConfigSource = meta.codexConfigSource;
         if (meta.opencodePermissionMode !== undefined) summaryPatch.opencodePermissionMode = meta.opencodePermissionMode;
         if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
+        if (meta.musePermissionMode !== undefined) summaryPatch.musePermissionMode = meta.musePermissionMode;
         if (meta.cursorModeId !== undefined) {
           summaryPatch.cursorModeId = meta.cursorModeId;
           summaryPatch.cursorModeIdWasCleared = meta.cursorModeId === null;
@@ -9209,6 +9476,7 @@ export function AgentChatPane({
           if (meta.codexConfigSource !== undefined) setCodexConfigSource(meta.codexConfigSource);
           if (meta.opencodePermissionMode !== undefined) setOpenCodePermissionMode(meta.opencodePermissionMode);
           if (meta.droidPermissionMode !== undefined) setDroidPermissionMode(meta.droidPermissionMode);
+          if (meta.musePermissionMode !== undefined) setMusePermissionMode(meta.musePermissionMode);
           if (
             meta.cursorModeId !== undefined
             || meta.cursorModeSnapshot !== undefined
@@ -9897,36 +10165,26 @@ export function AgentChatPane({
     }
   }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
 
-  // Mosaic card submit → structured reply through the normal chat send path.
-  const handleMosaicSubmit = useCallback(async (submission: { text: string; displayText: string }) => {
-    const sessionId = selectedSessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      setError(null);
-      touchSession(sessionId);
-      await agentChatApiRef.current.send({ sessionId, text: submission.text, displayText: submission.displayText }, chatRuntimePinRef.current);
-      void refreshSessions().catch(() => {});
-    } catch (mosaicSendError) {
-      setError(mosaicSendError instanceof Error ? mosaicSendError.message : String(mosaicSendError));
-      throw mosaicSendError;
+  // A scene's `ade.reply` → the prompt box. Nothing is sent: the reader can
+  // add to the draft and sends it themselves. Picking another option swaps
+  // the earlier pick for the new one, and anything the reader typed stays.
+  // The last pick is remembered per source (one scene, one app): a second
+  // scene's pick is a second answer, added beside the first, not a swap.
+  const lastSceneReplyBySourceRef = useRef(new Map<string, string>());
+  const handleSceneReply = useLatestCallback((text: string, sourceKey: string) => {
+    const picks = lastSceneReplyBySourceRef.current;
+    // Per chat: a pick made in one chat must never match words in the draft of another.
+    const pickKey = `${selectedSessionIdRef.current ?? ""}\u0000${sourceKey}`;
+    const previous = picks.get(pickKey);
+    if (picks.size >= 64 && !picks.has(pickKey)) picks.clear();
+    picks.set(pickKey, text);
+    if (previous && draft.includes(previous)) {
+      // A function, not a string: `$&` or `$$` in a reply is text, not a pattern.
+      replaceComposerDraft(draft.replace(previous, () => text));
+      return;
     }
-  }, [refreshSessions, touchSession]);
-
-  const mosaicCardKeyFor = useCallback(
-    // Scope (the transcript row key) keeps byte-identical cards at different
-    // positions independently answerable.
-    (source: string, scope: string) => `${selectedSessionIdRef.current ?? "draft"}:${scope}:${djb2Hash(source)}`,
-    [],
-  );
-
-  // Interactive mosaic cards are Claude-family only; other runtimes fall back to
-  // the plain code fence. Memoized so AgentChatMessageList's row memo holds.
-  const mosaicContext = useMemo<MosaicRenderContext | undefined>(() => {
-    if (sessionProvider !== "claude") return undefined;
-    // Pass the promise through — the card awaits it and rolls back its
-    // answered latch when the send rejects.
-    return { cardKeyFor: mosaicCardKeyFor, onSubmit: handleMosaicSubmit };
-  }, [sessionProvider, mosaicCardKeyFor, handleMosaicSubmit]);
+    insertComposerDraft(text);
+  });
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.
@@ -10047,6 +10305,7 @@ export function AgentChatPane({
       case "codex": return "codex";
       case "opencode": return "opencode";
       case "droid": return "droid";
+      case "muse": return "muse";
       case "cursor": return "cursor";
       // Every ACP provider shares one permission round-trip, grok included.
       case "qwen":
@@ -10080,6 +10339,7 @@ export function AgentChatPane({
             && codexSandbox === initialNativeControls.codexSandbox;
         case "opencode": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
         case "droid": return droidPermissionMode === initialNativeControls.droidPermissionMode;
+        case "muse": return musePermissionMode === initialNativeControls.musePermissionMode;
         case "cursor": return cursorModeId === initialNativeControls.cursorModeId;
         case "acp": return opencodePermissionMode === initialNativeControls.opencodePermissionMode;
       }
@@ -10097,6 +10357,7 @@ export function AgentChatPane({
       codexSandbox,
       opencodePermissionMode,
       droidPermissionMode,
+      musePermissionMode,
       cursorModeId,
     });
 
@@ -10119,6 +10380,9 @@ export function AgentChatPane({
       case "droid":
         setDroidPermissionMode(resolved.droidPermissionMode);
         break;
+      case "muse":
+        setMusePermissionMode(resolved.musePermissionMode);
+        break;
       case "cursor":
         setCursorModeId(resolved.cursorModeId);
         break;
@@ -10136,6 +10400,7 @@ export function AgentChatPane({
     cursorModeId,
     droidPermissionMode,
     initialNativeControls,
+    musePermissionMode,
     opencodePermissionMode,
   ]);
 
@@ -10147,6 +10412,7 @@ export function AgentChatPane({
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    musePermissionMode,
     cursorModeId,
     cursorConfigValues,
   }), [
@@ -10157,6 +10423,7 @@ export function AgentChatPane({
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    musePermissionMode,
     cursorModeId,
     cursorConfigValues,
   ]);
@@ -10222,6 +10489,7 @@ export function AgentChatPane({
           modelId: saved.modelId,
           reasoningEffort: saved.reasoningEffort,
           fastMode: saved.fastMode,
+          fastTier: saved.fastTier ?? null,
           cursorCloudServiceTier: saved.cursorCloudServiceTier,
           executionMode: saved.executionMode,
           controls: saved.controls,
@@ -10264,6 +10532,7 @@ export function AgentChatPane({
     modelId,
     reasoningEffort,
     fastMode,
+    ...(fastMode && fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     cursorCloudServiceTier,
     executionMode,
     controls: {
@@ -10291,6 +10560,7 @@ export function AgentChatPane({
     draftLaunchTargetId,
     executionMode,
     fastMode,
+    fastTier,
     iosElementContextItems,
     mentionLabels,
     modelId,
@@ -10339,6 +10609,7 @@ export function AgentChatPane({
         // displayed the remembered family effort.
         reasoningEffort: effectiveReasoningEffort,
         fastMode,
+        fastTier,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
@@ -10349,10 +10620,11 @@ export function AgentChatPane({
         // displayed the remembered family effort.
         reasoningEffort: effectiveReasoningEffort,
         fastMode,
+        fastTier,
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, effectiveReasoningEffort, fastMode, fastTier, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -10439,6 +10711,9 @@ export function AgentChatPane({
     // must carry the value the user can actually see.
     const launchReasoningEffort = launchState?.reasoningEffort ?? effectiveReasoningEffort;
     const launchFastMode = launchState?.fastMode ?? fastMode;
+    const launchFastTier = launchFastMode && (launchState ? launchState.fastTier : fastTier) === "ultrafast"
+      ? "ultrafast" as const
+      : null;
     const launchExecutionMode = launchState?.executionMode ?? executionMode;
     const launchControls = launchState?.nativeControls ?? currentNativeControls;
     const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
@@ -10466,6 +10741,7 @@ export function AgentChatPane({
       sessionProfile,
       reasoningEffort: launchReasoningEffort,
       fastMode: launchFastMode,
+      ...(launchFastTier ? { fastTier: launchFastTier } : {}),
       // The saved preset (or the stored key) the picker named. Sent as an id:
       // the runtime that owns the lane is the one that can read this
       // machine's preset list and key store, so nothing resolved travels.
@@ -10483,7 +10759,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -10591,6 +10867,7 @@ export function AgentChatPane({
       // the provider default while the trigger displayed something else.
       reasoningEffort: effectiveReasoningEffort,
       fastMode,
+      ...(fastMode && fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
       cursorCloudServiceTier,
       executionMode,
       interactionMode,
@@ -10615,6 +10892,7 @@ export function AgentChatPane({
     builtInBrowserContextItems,
     cursorCloudServiceTier,
     fastMode,
+    fastTier,
     contextAttachments,
     currentNativeControls,
     draft,
@@ -10654,6 +10932,7 @@ export function AgentChatPane({
         modelId: snapshot.modelId,
         reasoningEffort: snapshot.reasoningEffort,
         fastMode: snapshot.fastMode,
+        fastTier: snapshot.fastTier ?? null,
         cursorCloudServiceTier: snapshot.cursorCloudServiceTier,
         executionMode: snapshot.executionMode,
         controls: snapshot.nativeControls,
@@ -11440,6 +11719,9 @@ export function AgentChatPane({
         reasoningEffort: prepared.reasoningEffort,
         ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
           ? { fastMode: launchFastMode }
+          : {}),
+        ...(provider === "codex" && launchFastMode === true && prepared.fastTier === "ultrafast"
+          ? { fastTier: "ultrafast" as const }
           : {}),
         initialPrompt: cliPrompt,
         // A row a stored key makes reachable launches on that key.
@@ -12485,12 +12767,21 @@ export function AgentChatPane({
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
           ? { fastMode: handoffFastMode }
           : {}),
+        // Named either way, so a handoff never inherits a tier the modal hid.
+        ...(handoffTargetProvider === "codex"
+          ? {
+            fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(handoffTargetDescriptor)
+              ? "ultrafast" as const
+              : null,
+          }
+          : {}),
         claudePermissionMode: handoffClaudePermissionMode,
         codexApprovalPolicy: handoffCodexApprovalPolicy,
         codexSandbox: handoffCodexSandbox,
         codexConfigSource: handoffCodexConfigSource,
         opencodePermissionMode: handoffOpenCodePermissionMode,
         droidPermissionMode: handoffDroidPermissionMode,
+        musePermissionMode: handoffMusePermissionMode,
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
@@ -12548,11 +12839,13 @@ export function AgentChatPane({
     handoffCodexConfigSource,
     handoffTargetDescriptor,
     handoffFastMode,
+    handoffFastTier,
     handoffForkPoint,
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
     handoffDroidPermissionMode,
+    handoffMusePermissionMode,
     handoffModelId,
     handoffNote,
     handoffNativePermissionMode,
@@ -12908,6 +13201,31 @@ export function AgentChatPane({
       }
       return;
     }
+    // In a subagent's transcript view, a runtime that can message its
+    // subagents (Muse) sends the draft to that subagent, on the chat's own
+    // machine (the chat's runtime pin), not as a new turn of the parent.
+    if (subagentView && selectedSessionId && selectedSubagentCapability.canMessage) {
+      const text = draft.trim();
+      if (!text) return;
+      submitInFlightRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await agentChatApiRef.current.messageSubagent({
+          sessionId: selectedSessionId,
+          taskId: subagentView.taskId,
+          text,
+        }, chatRuntimePinRef.current);
+        if (result.delivered) updateComposerDraft("");
+        else setError(result.reason ?? "The subagent did not take the message.");
+      } catch (messageError) {
+        setError(errorMessage(messageError));
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+      return;
+    }
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";
@@ -13074,6 +13392,7 @@ export function AgentChatPane({
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
             fastMode: slot.fastMode,
+            ...(provider === "codex" && slot.fastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
@@ -13234,7 +13553,11 @@ export function AgentChatPane({
       setError(constrainedModelSelectionError);
       return;
     }
-    if (!modelId) {
+    // A message into a running turn is a steer, which the session's own model
+    // handles; the picker is locked mid-turn, so requiring a pick here would
+    // leave no way to steer while the chat's summary is still loading.
+    const steeringActiveTurn = Boolean(selectedSessionId && turnActiveBySession[selectedSessionId]);
+    if (!modelId && !steeringActiveTurn) {
       setError("Select a model first");
       return;
     }
@@ -13434,6 +13757,9 @@ export function AgentChatPane({
       });
     }
 
+    // Set once the message is handed to the chat, so a transport timeout can
+    // tell "may still arrive" from "never left".
+    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number } | null = null;
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
@@ -13452,13 +13778,25 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
+      // A pick can move the chat onto a preset or off one, which the model id
+      // alone cannot show: the row can already name the model while the
+      // preset decides what launches.
+      const routePick = selectedSessionId && sessionRoutePickRef.current?.sessionId === selectedSessionId
+        ? sessionRoutePickRef.current
+        : null;
+      const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
       const selectedModelChanged =
         Boolean(selectedSessionId)
-        && Boolean(selectedSessionModelId)
-        && selectedSessionModelId !== modelId;
+        && (
+          (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+          || selectedRouteChanged
+        );
       const selectedFastModeChanged =
         Boolean(selectedSessionId)
-        && (selectedSession?.fastMode === true) !== fastMode;
+        && (
+          (selectedSession?.fastMode === true) !== fastMode
+          || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast")
+        );
       const selectedReasoningChanged =
         Boolean(selectedSessionId)
         && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
@@ -13487,8 +13825,17 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const modelUpdate = selectedModelChanged ? { modelId } : {};
-        const fastModeUpdate = selectedFastModeChanged ? { fastMode } : {};
+        const sessionModelUpdate = (): { modelId?: string; presetId?: string | null } => {
+          if (!selectedModelChanged) return {};
+          // A preset names its own model.
+          if (routePick?.presetId && selectedRouteChanged) return { presetId: routePick.presetId };
+          // A plain pick on a preset chat leaves the preset.
+          return selectedRouteChanged ? { modelId, presetId: null } : { modelId };
+        };
+        const modelUpdate = sessionModelUpdate();
+        const fastModeUpdate = selectedFastModeChanged
+          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
+          : {};
         const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
         const pendingNativeUpdate = selectedModelChanged
           ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
@@ -13505,6 +13852,7 @@ export function AgentChatPane({
           ...pendingCursorConfig,
         }, chatRuntimePinRef.current);
         deferredComposerSessionIdRef.current = null;
+        setSessionRoutePick(null);
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
         // No session yet — create one. The empty-state composer holds the
@@ -13543,6 +13891,9 @@ export function AgentChatPane({
       }
 
       const submittedAt = new Date().toISOString();
+      const sentTexts = [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean);
+      // Identical messages already in the chat, so only a new one counts as arrived.
+      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere: countSentMessages(sessionId, sentTexts, submittedAt) };
       touchSession(sessionId, submittedAt);
       patchSessionSummary(
         sessionId,
@@ -13572,7 +13923,13 @@ export function AgentChatPane({
 
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
         try {
-          setOptimisticIfAllowed(sessionId);
+          // Compact first queues the message behind the compaction; the brain's
+          // queued row shows it, not a bubble that reads as already sent.
+          if (compactFirst.sendRef.current?.sessionId === sessionId && compactFirst.sendRef.current.value) {
+            setOptimisticOutgoingMessageSynced(null);
+          } else {
+            setOptimisticIfAllowed(sessionId);
+          }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
           await agentChatApiRef.current.send({
@@ -13647,6 +14004,53 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
+      if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
+        // The call gave up, not the send: the chat's machine usually still
+        // delivers it. Put the text back only if it never shows up.
+        const pending = handedOff;
+        const waitingMessage = "Sending is taking longer than expected. If the message does not appear, it goes back in the composer.";
+        setOptimisticOutgoingMessageSynced(null);
+        setError(waitingMessage);
+        const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
+        // One check pending at a time: 15s, 45s, then the last at 2 minutes.
+        const checkDelays = [15_000, 30_000, 75_000];
+        const check = (index: number) => {
+          const timer = window.setTimeout(() => {
+            sendRecoveryTimersRef.current.delete(timer);
+            if (!paneMountedRef.current) return;
+            if (arrived()) {
+              setError((current) => (current === waitingMessage ? null : current));
+              return;
+            }
+            if (index < checkDelays.length - 1) {
+              void refreshSessions({ force: true }).catch(() => {});
+              check(index + 1);
+              return;
+            }
+            setError((current) => (current === waitingMessage ? null : current));
+            if (selectedSessionIdRef.current !== pending.sessionId || draftValueRef.current.trim().length) {
+              // Another chat is open, or a new draft took the composer: say so instead.
+              const lostText = pending.texts[0] ?? "";
+              showToast({
+                tone: "warning",
+                title: "A message did not send",
+                message: `“${summarizeInlineText(lostText, 80)}” never reached its chat.`,
+                durationMs: 0,
+                actions: [{ label: "Copy message", onClick: () => { void navigator.clipboard?.writeText(lostText).catch(() => undefined); } }],
+              });
+              return;
+            }
+            setDraft(draftSnapshot);
+            setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+            setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
+            setError("Message not sent. It is back in the composer.");
+          }, checkDelays[index]);
+          sendRecoveryTimersRef.current.add(timer);
+        };
+        check(0);
+        await refreshSessions({ force: true }).catch(() => {});
+        return null;
+      }
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
       setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
@@ -13670,6 +14074,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
+    countSentMessages,
     isPersonalPane, attachments,
     ambientTurnContext,
     buildNativeControlPayload,
@@ -13677,6 +14082,7 @@ export function AgentChatPane({
     clearPromptSuggestionForSession,
     sendToContinuedChat,
     fastMode,
+    fastTier,
     constrainedModelSelectionError,
     copyPromptForLaunch,
     createSession,
@@ -13735,6 +14141,9 @@ export function AgentChatPane({
     workDraftKind,
     chatLaunch,
     launchRoutesSends,
+    subagentView,
+    selectedSubagentCapability,
+    updateComposerDraft,
   ]);
 
   const compactContext = useCallback(async () => {
@@ -14020,6 +14429,7 @@ export function AgentChatPane({
     setCodexConfigSource(nextControls.codexConfigSource);
     setOpenCodePermissionMode(nextControls.opencodePermissionMode);
     setDroidPermissionMode(nextControls.droidPermissionMode);
+    setMusePermissionMode(nextControls.musePermissionMode);
     setCursorModeId(nextControls.cursorModeId);
     setCursorConfigValues(nextControls.cursorConfigValues);
 
@@ -14073,6 +14483,7 @@ export function AgentChatPane({
           codexConfigSource: updatedSession.codexConfigSource,
           opencodePermissionMode: updatedSession.opencodePermissionMode,
           droidPermissionMode: updatedSession.droidPermissionMode,
+          musePermissionMode: updatedSession.musePermissionMode,
           cursorModeId: updatedSession.cursorModeId,
           cursorModeSnapshot: updatedSession.cursorModeSnapshot,
         });
@@ -14167,15 +14578,17 @@ export function AgentChatPane({
     setFastModeState,
   ]);
 
-  const handleFastModeChange = useCallback((enabled: boolean) => {
+  const handleFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
     const previousFastMode = fastMode;
+    const previousFastTier = fastTierRef.current === "ultrafast" ? "ultrafast" as const : null;
+    const nextFastTier = enabled && tier === "ultrafast" ? "ultrafast" : null;
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
     }
     // Written synchronously, not left to the mirroring effect: the picker's
     // fast chip can enable fast mode and change the model in the same tick, and
     // the model-change persist reads this ref in that same tick.
-    setFastModeState(enabled);
+    setFastModeState(enabled, nextFastTier);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
     if (isDeferredComposerModelSelection(
@@ -14189,7 +14602,7 @@ export function AgentChatPane({
 
     const updateId = ++fastModeUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
-    patchSessionSummary(targetSessionId, { fastMode: enabled });
+    patchSessionSummary(targetSessionId, { fastMode: enabled, fastTier: nextFastTier });
     // Serialize the IPC writes: chain off any in-flight fast-mode update for the
     // same session so two rapid toggles persist in order. The prior mutation
     // already surfaced its own error, so swallow it here before issuing ours.
@@ -14201,20 +14614,22 @@ export function AgentChatPane({
       .then(() => agentChatApiRef.current.updateSession({
         sessionId: targetSessionId,
         fastMode: enabled,
+        fastTier: nextFastTier,
       }, chatRuntimePinRef.current))
       .then((updatedSession) => {
       if (updateId !== fastModeUpdateCounterRef.current) return;
       const reconciled = updatedSession.fastMode === true;
-      patchSessionSummary(targetSessionId, { fastMode: reconciled });
+      const reconciledTier = reconciled && updatedSession.fastTier === "ultrafast" ? "ultrafast" : null;
+      patchSessionSummary(targetSessionId, { fastMode: reconciled, fastTier: reconciledTier });
       if (selectedSessionIdRef.current === targetSessionId) {
-        setFastModeState(reconciled);
+        setFastModeState(reconciled, reconciledTier);
       }
       void refreshSessions().catch(() => {});
     }).catch((err) => {
       if (updateId === fastModeUpdateCounterRef.current
         && selectedSessionIdRef.current === targetSessionId) {
-        setFastModeState(previousFastMode);
-        patchSessionSummary(targetSessionId, { fastMode: previousFastMode });
+        setFastModeState(previousFastMode, previousFastTier);
+        patchSessionSummary(targetSessionId, { fastMode: previousFastMode, fastTier: previousFastTier });
       }
       void refreshSessions().catch(() => {});
       setError(err instanceof Error ? err.message : String(err));
@@ -15048,7 +15463,7 @@ export function AgentChatPane({
               )}
               aria-pressed={handoffFastMode}
               aria-label="Fast mode for handoff"
-              onClick={() => setHandoffFastMode((current) => !current)}
+              onClick={() => handleHandoffFastModeChange(!handoffFastMode)}
             >
               <Lightning size={12} weight="fill" />
               Fast
@@ -15081,6 +15496,20 @@ export function AgentChatPane({
           aria-label="Droid autonomy mode for handoff"
         >
           {HANDOFF_DROID_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {handoffTargetProvider === "muse" ? (
+        <select
+          value={handoffMusePermissionMode}
+          onChange={(e) => setHandoffMusePermissionMode(e.target.value as AgentChatMusePermissionMode)}
+          className={handoffSelectCls}
+          aria-label="Muse approval mode for handoff"
+        >
+          {HANDOFF_MUSE_MODES.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
@@ -15686,6 +16115,7 @@ export function AgentChatPane({
         </>}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        promptCache={selectedSession?.promptCache ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
@@ -15929,12 +16359,31 @@ export function AgentChatPane({
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat an hour, when no deltas stream.
-  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, mode: compactionIdleMode, now: compactFirst.now })
+  // A queued message is about to send on its own; the offer would only flash.
+  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
+    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
-  const compactFirstEnabled = compactFirst.choice?.sessionId === selectedSessionId
-    ? compactFirst.choice.value : selectedSession?.compactionIdleMode === "always";
+  const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
+  const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";
   compactFirst.sendRef.current = idleCompactOffer && selectedSessionId ? { sessionId: selectedSessionId, value: compactFirstEnabled } : null;
+  const compactFirstChip = idleCompactOffer && selectedSessionId && !compactFirstChoice?.dismissed && !parallelChatMode ? (
+    <CompactFirstChip
+      offer={idleCompactOffer}
+      enabled={compactFirstEnabled}
+      onToggle={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: !compactFirstEnabled })}
+      onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
+    />
+  ) : null;
+  // What Claude mods draw for the open chat, on top of the prompt box.
+  const claudeModUi = claudeModUiSessionId
+    ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
+    : null;
+  // The pick shows on the trigger before it is sent; otherwise what the chat runs on.
+  const activeHarnessPresetId = !selectedSessionId
+    ? draftHarnessPresetId
+    : sessionRoutePick?.sessionId === selectedSessionId
+      ? sessionRoutePick.presetId
+      : selectedSession?.presetId ?? null;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -15957,7 +16406,7 @@ export function AgentChatPane({
             modelId={subagentComposerModel?.modelId ?? modelId}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
-            activeHarnessPresetId={selectedSessionId ? selectedSession?.presetId ?? null : draftHarnessPresetId}
+            activeHarnessPresetId={activeHarnessPresetId}
             // Custom shows in CLI mode too; the picker lists the CLIs that take
             // no endpoint (`shared/harnessPresetCliGate.ts`) as unavailable.
             onOpenHarnessSettings={openHarnessSettings}
@@ -15978,12 +16427,15 @@ export function AgentChatPane({
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}
+            fastTier={subagentComposerModel ? null : fastTier}
+            // What Codex last reported for this chat's Fast. Codex is the only
+            // provider that answers with a service tier, so it is absent
+            // everywhere else. A subagent composer runs its own model, so it
+            // does not inherit the chat's report.
+            effectiveFastTier={subagentComposerModel ? null : (selectedSession?.codexServiceTier ?? null)}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
-            compactFirstOffer={idleCompactOffer}
-            compactFirstEnabled={compactFirstEnabled}
-            onCompactFirstChange={(value) => { if (selectedSessionId) compactFirst.setChoice({ sessionId: selectedSessionId, value }); }}
             compactionPulse={contextCompactionPulse}
             onCompactContext={compactContext}
             compactSessionProvider={selectedSession?.provider ?? null}
@@ -16024,6 +16476,7 @@ export function AgentChatPane({
             codexConfigSource={codexConfigSource}
             opencodePermissionMode={opencodePermissionMode}
             droidPermissionMode={droidPermissionMode}
+            musePermissionMode={musePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUseSnapshot={computerUseSnapshot}
@@ -16036,7 +16489,7 @@ export function AgentChatPane({
             hideNativeControls={hideNativeControls}
             hideModelControls={hideModelControls}
             messagePlaceholder={effectiveMessagePlaceholder}
-            inputLockMessage={subagentView
+            inputLockMessage={subagentView && !selectedSubagentCapability.canMessage
               ? `Viewing ${subagentMetadata?.label
               ?? subagentMetadata?.agentNickname
               ?? subagentView.agentType
@@ -16054,6 +16507,9 @@ export function AgentChatPane({
             onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
+            onMusePermissionModeChange={(value, nextInteractionMode) => {
+              void updateNativeControls({ musePermissionMode: value, interactionMode: nextInteractionMode });
+            }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
@@ -16095,6 +16551,7 @@ export function AgentChatPane({
               // back to the model's own provider in the trigger — naming a
               // provider the preset does not even run on.
               setDraftHarnessPresetId(options?.presetId ?? null);
+              setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               // Ordinary model selection clears the previous cloud service
               // tier. A service-tier row selection carries the newly chosen
@@ -16129,11 +16586,18 @@ export function AgentChatPane({
                   fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
                 });
                 setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
-                setFastModeState(reconciledControls.fastMode);
+                // Ultrafast carries over only to a model that offers it too.
+                setFastModeState(
+                  reconciledControls.fastMode,
+                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+                );
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else if (options) {
                 if (presetEffort !== undefined) setReasoningEffort(presetEffort);
-                setFastModeState(options.fastMode);
+                setFastModeState(
+                  options.fastMode,
+                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+                );
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else {
                 setCursorCloudServiceTier(nextCursorCloudTier);
@@ -16371,6 +16835,7 @@ export function AgentChatPane({
                   modelId,
                   reasoningEffort,
                   fastMode,
+                  fastTier,
                   executionMode,
                 }),
               ]);
@@ -16386,16 +16851,19 @@ export function AgentChatPane({
             }}
             onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
+              const nextDesc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
               patchParallelSlot(index, {
                 modelId: nextModelId,
                 ...(options ? { fastMode: options.fastMode } : {}),
+                // Ultrafast carries over only to a model that offers it too.
+                ...(modelSupportsUltrafast(nextDesc) ? {} : { fastTier: null }),
               });
             }}
             onParallelSlotReasoningChange={(index, effort) => {
               patchParallelSlot(index, { reasoningEffort: effort });
             }}
-            onParallelSlotFastModeChange={(index, enabled) => {
-              patchParallelSlot(index, { fastMode: enabled });
+            onParallelSlotFastModeChange={(index, enabled, tier) => {
+              patchParallelSlot(index, { fastMode: enabled, fastTier: enabled && tier === "ultrafast" ? "ultrafast" : null });
             }}
             parallelLaunchBusy={parallelLaunchBusy}
             parallelLaunchStatus={parallelLaunchStatus}
@@ -16424,6 +16892,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         <LaneBranchComposerChip laneId={laneId} />
+        {compactFirstChip}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"
@@ -16442,32 +16911,6 @@ export function AgentChatPane({
       <div {...{ [CHAT_COMPOSER_JUMP_SLOT_ATTR]: "" }} className="flex shrink-0 pb-1.5 empty:hidden" />
     </div>
   );
-  /**
-   * The turn's time-lapse of the lane's macOS screen, when there was one.
-   *
-   * Rendered in the notice overlay rather than inline in the transcript because
-   * it is context about the turn that just ended, not a message in it — and it
-   * renders null (and subscribes to nothing that can produce one) for every
-   * chat whose lane never used the desktop.
-   */
-  const macDesktopTimeLapseCard = laneId ? (
-    <ChatMacDesktopTimeLapseCard
-      laneId={laneId}
-      sessionId={composerSessionId}
-      runtimePin={renderedChatRuntimePin}
-      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
-    />
-  ) : null;
-  const composerNoticeOverlay = macDesktopTimeLapseCard ? (
-    <ChatComposerOverlayClear
-      basePx={8}
-      data-testid="chat-composer-notice-overlay"
-      className="pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-1.5 px-3"
-    >
-      {macDesktopTimeLapseCard}
-    </ChatComposerOverlayClear>
-  ) : null;
-
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
   // subagentEventsForDisplay useMemo are computed earlier (with the subagent state
   // cluster) so the hook is never called after the `if (!laneId) return` guard.
@@ -16665,6 +17108,7 @@ export function AgentChatPane({
         </div>
       ) : null}
       {usageLimitPill}
+      {claudeModUi}
       {composerElement}
     </div>
   );
@@ -17005,6 +17449,7 @@ export function AgentChatPane({
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
+                      <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         threadComments={subagentView ? null : threadCommentsProp}
@@ -17070,7 +17515,6 @@ export function AgentChatPane({
                         latestCompactionKey={latestCompactionKey}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         onStopSubagent={listStopSubagent}
-                        mosaic={subagentView ? undefined : mosaicContext}
                         unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
@@ -17079,10 +17523,10 @@ export function AgentChatPane({
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                         onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
+                      </SceneReplyContext.Provider>
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
-                    {!appPanelOpen ? composerNoticeOverlay : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-fg/[0.06]">
                         {authStickyBar}
@@ -17092,6 +17536,7 @@ export function AgentChatPane({
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
                         {usageLimitPill}
+                        {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}
@@ -17429,7 +17874,8 @@ export function AgentChatPane({
           reasoningEffort={handoffReasoningEffort}
           onReasoningEffortChange={setHandoffReasoningEffort}
           fastMode={handoffFastMode}
-          onFastModeChange={setHandoffFastMode}
+          fastTier={handoffFastTier}
+          onFastModeChange={handleHandoffFastModeChange}
           nativeControls={handoffNativeControlState}
           onNativeControlsChange={applyHandoffNativeControls}
           onOpenSignIn={openProviderSignIn}

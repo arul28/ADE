@@ -1,9 +1,11 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+  BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
   USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
+import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -94,8 +96,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
-  // Both are operator work, like `project_secret.exportEnv`.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // Both are operator work, like `project_secret.exportEnv`. `museSettings`
+  // opens a Muse host on the user's credential to read or change Muse's own
+  // settings, the same tier as the updater beside it.
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -187,6 +191,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // agent that could write or delete them could edit what the user is
       // about to tell it.
       ...THREAD_COMMENT_ACTION_NAMES,
+      // What a mod draws is for the person at the chat. A press runs plugin
+      // code on the host; an agent must not press a control on its own chat.
+      ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -275,8 +282,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
-  // An agent asking to move a chat must not approve its own request.
-  chat: ["resolveCrossMachineHandoffApproval"],
+  // An agent asking to move a chat must not approve its own request. And only
+  // a person's client hosts an MCP App, so only it may pass an app's call on.
+  chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -662,6 +670,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "interrupt",
     "interruptWithQueueMode",
     "stopTask",
+    "messageSubagent",
+    "controlSubagent",
     "restartSession",
     "waitFor",
     "armWait",
@@ -708,6 +718,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "claimDraft",
     "sendDraftNow",
     ...THREAD_COMMENT_ACTION_NAMES,
+    ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",
@@ -737,6 +748,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",
+    // MCP Apps. `getMcpApp` reads a stored page. `mcpAppRequest` is the user's
+    // alone (ADE_ACTION_USER_ONLY): it runs a tool for an app in a frame, and
+    // an agent has its own, permissioned way to call its MCP tools.
+    "getMcpApp",
+    "mcpAppRequest",
+    "listMcpAppGrants",
+    "revokeMcpAppGrant",
     "resolveSmartLinkPreview",
     // Sources favicons: a first-party fetch of the icon of a site the chat
     // already visited, bounded and SSRF-guarded (chat/sourceFaviconService.ts).
@@ -775,6 +793,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getStatus",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
+    "museBinaryStatus",
+    "ensureMuseBinary",
+    "museSettings",
+    "museSettingsClose",
     "acpProviderDiagnostics",
     "acpProviderUpdate",
     "listApiCredentials",
@@ -820,6 +842,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "openCursorCloudChat",
     "watchCursorCloudMirror",
     "getCursorCloudFleet",
+    "getCursorAgentUsage",
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",
@@ -1147,6 +1170,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // The answer to a command this machine sent to the desktop its user sits
+    // at (`built_in_browser_remote_call`). Runtime-served, like the ack above.
+    BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
     // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
     // service object lacks them too.
     ...USER_BROWSER_RUNTIME_METHODS,
@@ -1210,9 +1236,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The store never reads, writes, copies
    * or returns a token: the provider's own CLI writes its credentials inside
    * that directory, `loginCommand` only hands back the argv and the one env var
-   * that points the CLI at it, and `remove` forgets the entry without deleting
-   * anything on disk. So none of these methods can leak or destroy a
-   * credential, which is the bar the CTO gate exists to enforce.
+   * that points the CLI at it, and none of them can leak a credential.
+   * `signOut` and `remove` (which signs out first) clear one account's saved
+   * login. They stay open to agents on purpose: the user wants an agent to
+   * manage accounts end to end, and the default account is refused by both.
    *
    * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
    * account in a private PTY. That opens the user's browser and, once the user
@@ -1231,6 +1258,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "create",
     "remove",
+    "signOut",
     "rename",
     "setDefault",
     "setAccent",

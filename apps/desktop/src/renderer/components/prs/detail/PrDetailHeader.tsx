@@ -107,7 +107,7 @@ export type PrDetailHeaderProps = {
   /** The ⋯ menu's context. Its `onRefresh` and `refreshing` also drive the refresh button. */
   actions: PrActionsContext;
   unmappedAffordance?: UnmappedAffordance | null;
-  /** The lane's machine, shown beside the lane chip once the project spans machines. */
+  /** The lane's machine. Shown beside the lane chip only when it is another machine. */
   laneMachineChip?: MachineChipModel | null;
   /** Set when the pane holds more than one pull request (a chat's PRs). */
   switcher?: PrSwitcher | null;
@@ -283,7 +283,9 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
               className="ade-pr-detail-header-lane"
             />
           ) : null}
-          {lane && laneMachineChip ? <MachineChip machine={laneMachineChip} subject="This lane" /> : null}
+          {/* Only a lane on another machine says where it is: lane actions run
+              there. A chip that names this computer tells the reader nothing. */}
+          {lane && laneMachineChip && !laneMachineChip.isThisMachine ? <MachineChip machine={laneMachineChip} subject="This lane" /> : null}
           {lane ? null : unmappedAffordance?.foreignLane ? (
             <span
               // Wraps rather than squeezing the lane name next to its machine.

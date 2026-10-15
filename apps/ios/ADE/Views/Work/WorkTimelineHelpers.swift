@@ -2019,12 +2019,15 @@ func assembleWorkTimeline(
     }
   }
   if !artifacts.isEmpty { workStampTurnProofCounts(&deduped) }
-  // The spawn-completion fold runs FIRST, on raw transcript adjacency. The tool
+  // The spawn-completion folds run FIRST, on raw transcript adjacency. The tool
   // collapse buffers soft-break rows past a cluster, so `notice · tool · notice`
   // comes out of it as `toolGroup · notice · notice` — folding after that would
-  // join two runs the parent's own work had separated. Desktop folds at the same
-  // point: while rows are being appended, before any grouping.
+  // join two runs the parent's own work had separated. Desktop runs the same two
+  // steps before any grouping: adjacency while rows are appended, then the stale
+  // fold in `filterVisibleTranscriptRows`. The stale fold needs the adjacency
+  // runs' counts, so it goes straight after.
   var folded = collapseConsecutiveSpawnCompletionEntries(deduped)
+  folded = workFoldStaleSpawnCompletionEntries(folded)
   folded = collapseConsecutiveWorkToolEntries(folded)
   folded = collapseConsecutiveWorkActivityEntries(folded)
   folded = collapseActivityPhaseTimelineEntries(folded)
@@ -2095,8 +2098,10 @@ private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
 }
 
 /// Fold a run of 2+ ADJACENT `spawn_completed` peer notices for the SAME child
-/// chat into one row carrying a trailing `×N` — desktop parity with the
-/// adjacency fold in `collapseTranscriptRows`.
+/// chat into one row that counts its turns — desktop parity with the adjacency
+/// fold in `collapseTranscriptRows`. The trailing `×N` is stamped by
+/// `workFoldStaleSpawnCompletionEntries`, the step after this one, once the
+/// child's total is known.
 ///
 /// A parent that spawned a peer gets one notice per sibling TURN, so a chatty
 /// child stacks a wall of identical ribbons. Adjacency-only on purpose: anything
@@ -2130,24 +2135,15 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
     }
     let anchorCard = anchor.card
     let newestCard = newest.card
-    // The count trails the host's own sentence. iOS re-states nothing: a legacy
-    // transcript's `Peer "X" turn finished` keeps those words and still gets the
-    // multiplier, because the fold never re-derives the line.
-    let multiplier = "×\(run.count)"
-    let foldedBody = nonEmptyWorkTimelineText(newestCard.body)
-      .map { "\($0) \(multiplier)" } ?? multiplier
-    let folded = WorkEventCardModel(
+    // The wording stays the host's own: iOS re-states nothing, so a legacy
+    // transcript's `Peer "X" turn finished` keeps those words through the fold.
+    let folded = workSpawnCompletionRow(
+      newestCard,
       id: anchorCard.id,
-      kind: newestCard.kind,
-      title: newestCard.title,
-      icon: newestCard.icon,
-      tint: newestCard.tint,
-      timestamp: newestCard.timestamp,
       turnId: anchorCard.turnId ?? newestCard.turnId,
-      body: foldedBody,
-      bullets: newestCard.bullets,
-      metadata: newestCard.metadata,
-      spawnCompletionChildId: anchor.childId
+      body: newestCard.body,
+      turns: run.count,
+      childId: anchor.childId
     )
     result.append(WorkTimelineEntry(
       id: run[0].id,
@@ -2158,6 +2154,93 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
     ))
   }
   return result
+}
+
+/// The stale half of desktop `foldSpawnCompletionLines` (desktop also puts
+/// neighbouring children on one line; the phone keeps a row per child): a
+/// child's older notices are out of date as
+/// soon as a newer one lands, wherever they sit. Only the child's NEWEST notice
+/// stays, at its own position with its own timestamp, and it stands for every
+/// turn the child has finished in this transcript. Without this a phone keeps a
+/// stale "finished its turn" row for each child that spoke again after it.
+///
+/// Runs right after the adjacency fold, so each entry already carries its run's
+/// count. A notice with no child id is never matched: it neither drops nor
+/// counts, and keeps its own row. A child with one notice keeps its wording; a
+/// child with more than one gets the trailing `×N` stamped here.
+func workFoldStaleSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  // Newest first: the first notice seen per child is the one that stays, and
+  // each older one is dropped after its turns are added to the child's total.
+  var turnsByChild: [String: Int] = [:]
+  var stale = Set<Int>()
+  for index in entries.indices.reversed() {
+    guard let completion = workSpawnCompletionEntryCard(entries[index]) else { continue }
+    if turnsByChild[completion.childId] != nil { stale.insert(index) }
+    turnsByChild[completion.childId, default: 0] += completion.card.spawnCompletionTurns
+  }
+  guard !turnsByChild.isEmpty else { return entries }
+
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count - stale.count)
+  for index in entries.indices where !stale.contains(index) {
+    let entry = entries[index]
+    guard let completion = workSpawnCompletionEntryCard(entry),
+          let turns = turnsByChild[completion.childId],
+          turns > 1
+    else {
+      result.append(entry)
+      continue
+    }
+    // The count trails the host's sentence, as the adjacency fold always did.
+    let multiplier = "×\(turns)"
+    let body = nonEmptyWorkTimelineText(completion.card.body)
+      .map { "\($0) \(multiplier)" } ?? multiplier
+    let card = workSpawnCompletionRow(
+      completion.card,
+      id: completion.card.id,
+      turnId: completion.card.turnId,
+      body: body,
+      turns: turns,
+      childId: completion.childId
+    )
+    result.append(WorkTimelineEntry(
+      id: entry.id,
+      timestamp: entry.timestamp,
+      rank: entry.rank,
+      payload: .eventCard(card),
+      turnId: entry.turnId
+    ))
+  }
+  return result
+}
+
+/// A spawn-completion row rebuilt with a new identity, body and turn count. The
+/// notice's own fields (kind, timestamp, icon, tint, bullets, metadata and the
+/// host's noticeKind) carry over, so the rebuilt row reads like the one it
+/// replaces.
+private func workSpawnCompletionRow(
+  _ source: WorkEventCardModel,
+  id: String,
+  turnId: String?,
+  body: String?,
+  turns: Int,
+  childId: String
+) -> WorkEventCardModel {
+  WorkEventCardModel(
+    id: id,
+    kind: source.kind,
+    title: source.title,
+    icon: source.icon,
+    tint: source.tint,
+    timestamp: source.timestamp,
+    turnId: turnId,
+    body: body,
+    bullets: source.bullets,
+    metadata: source.metadata,
+    noticeKind: source.noticeKind,
+    spawnCompletionChildId: childId,
+    spawnCompletionTurns: turns
+  )
 }
 
 /// The spawn-completion notice an entry carries, if it is one: the child chat it
@@ -2491,8 +2574,15 @@ private func workTurnFoldProseStaysVisible(_ message: WorkChatMessage) -> Bool {
     || text.range(of: workTurnFoldProseImagePattern, options: .regularExpression) != nil {
     return true
   }
-  if message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
+  let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if phase == "commentary" {
     return false
+  }
+  // A partial answer is content the terminal answer does not repeat, so it is
+  // never narration to fold away — no matter how short it is (desktop
+  // `proseStaysVisible`). The length bar governs providers that label nothing.
+  if phase == "partial_answer" {
+    return true
   }
   // UTF-16 code units, matching desktop `String.length`.
   return text.utf16.count >= workTurnFoldSubstantiveProseMinChars
@@ -4703,6 +4793,26 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
       metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
+    )
+  }
+  if existing.kind == "contextCompact", existing.isInProgress, incoming.isInProgress {
+    // A host that repeats Claude's `compacting` status while one compaction
+    // runs emits another "started" under the same card id. Last-wins would
+    // move the card's timestamp forward, restarting the "Compacting context ·
+    // 42 s" clock mid-run; keep the first start and let the incoming card win
+    // everywhere else.
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: existing.timestamp,
+      turnId: incoming.turnId,
+      body: incoming.body ?? existing.body,
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      isInProgress: incoming.isInProgress
     )
   }
   return incoming

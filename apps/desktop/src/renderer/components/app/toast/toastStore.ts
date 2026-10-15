@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { forwardLogToSentry } from "../../../../shared/sentry/logBridge";
 import type { NoticeTone } from "../../ui/notice/noticeTones";
 import type { ToastCardAction, ToastCardModel, ToastChip } from "../../ui/notice/ToastCard";
 
@@ -55,6 +56,8 @@ export type Toast = Omit<ToastInput, "id" | "tone" | "durationMs"> & {
 export type ToastPatch = Partial<Omit<ToastInput, "id">>;
 
 const DEFAULT_DURATION_MS = 6000;
+/** A toast worth reading: a failure to act on, or a message of more than one line. */
+export const READABLE_TOAST_DURATION_MS = 18_000;
 const MAX_TOASTS = 5;
 
 type TimerEntry = {
@@ -131,12 +134,39 @@ function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): numb
   return stack.findIndex((t) => t.id !== arrivingId);
 }
 
+const TOAST_TEXT_LIMIT = 300;
+
+/**
+ * What an error toast is grouped and titled by in Sentry: the fixed start of
+ * its title. Titles end in a lane, file or branch name ("Push failed:
+ * my-lane", "Could not open \"notes.md\""); grouping on the whole title would
+ * open one issue per name and put the name in the issue's title.
+ */
+function toastGroupKey(title: string): string {
+  // A quote opens a name only after a space: "Couldn't …" is one word.
+  return title.split(/:|"|`|\s'/, 1)[0].trim().split(/\s+/).slice(0, 4).join(" ");
+}
+
 /**
  * Show a toast, or replace an in-place one when `id` matches an existing toast
  * (keeping its stack position). Returns the toast id.
  */
 export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
+  // An error the user is shown is an error ADE should hear about, as a Sentry
+  // Log and a breadcrumb on the next issue. Not an issue of its own: the
+  // failure behind it (an IPC call, a render crash) already opened one, with a
+  // stack; a toast only repeats it under its title. The message rides along
+  // only when it is plain text (a rendered node can hold anything).
+  if (input.tone === "error") {
+    const group = toastGroupKey(input.title);
+    // Toast text is UI copy plus an error message, but an error message can
+    // quote what it failed on; a short prefix is enough to recognise it.
+    forwardLogToSentry("warn", `toast.${group}`, {
+      title: input.title.slice(0, TOAST_TEXT_LIMIT),
+      ...(typeof input.message === "string" ? { message: input.message.slice(0, TOAST_TEXT_LIMIT) } : {}),
+    });
+  }
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;
   const toast: Toast = {
     ...input,

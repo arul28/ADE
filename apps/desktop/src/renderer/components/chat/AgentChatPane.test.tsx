@@ -3980,6 +3980,49 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("recovers a locked chat's model once its summary can be read again", async () => {
+    // A Work chat is locked to one session and learns its title and model from
+    // its summary. While the brain cannot answer, the chat shows no model; a
+    // finished chat gets no events that would ask again, so only the pane's
+    // own retry brings the model back once the brain answers.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Its own id: the pane remembers summaries across mounts, and a chat it
+      // has read before would show its model from the start.
+      const session = buildSession("session-summary-recovery", { status: "idle", title: "Finished chat" });
+      installAdeMocks({ sessions: [session] });
+      let brainUp = false;
+      const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+      getSummary.mockImplementation(async () => {
+        if (!brainUp) throw new Error("brain restarting");
+        return session;
+      });
+      const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+      const currentModel = new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i");
+
+      render(
+        <MemoryRouter>
+          <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(getSummary).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(screen.queryByRole("button", { name: currentModel })).toBeNull();
+
+      brainUp = true;
+      const readsBeforeRecovery = getSummary.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(getSummary.mock.calls.length).toBeGreaterThan(readsBeforeRecovery);
+      expect(await screen.findByRole("button", { name: currentModel })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("restores the idle summary and composer after send dispatch fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({
@@ -4000,6 +4043,44 @@ describe("AgentChatPane submit recovery", () => {
       expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
+  });
+
+  it.each([
+    { name: "never arrives", earlierCopy: false, arrives: false, restored: true },
+    { name: "arrives after the call timed out", earlierCopy: false, arrives: true, restored: false },
+    // An identical message sent a minute earlier proves nothing about this one.
+    { name: "never arrives, though an identical earlier message is in the chat", earlierCopy: true, arrives: false, restored: true },
+  ])("a send whose call times out goes back in the composer only if it $name", async ({ earlierCopy, arrives, restored }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const text = "Ship the queue fix.";
+      const session = buildSession("session-1", { status: "idle" });
+      const userMessage = (timestamp: string) => ({
+        sessionId: session.sessionId,
+        timestamp,
+        event: { type: "user_message", text, turnId: "turn-x" },
+      }) as AgentChatEventEnvelope;
+      const { send, emitChatEvent } = installAdeMocks({
+        sessions: [session],
+        sendError: new Error("Remote ADE service timed out waiting for method ade/actions/call chat.sendMessage (30000ms)"),
+        transcript: earlierCopy ? `${JSON.stringify(userMessage(new Date(Date.now() - 60_000).toISOString()))}\n` : "",
+      });
+
+      renderPane(session);
+      const textbox = await screen.findByRole("textbox");
+      fireEvent.change(textbox, { target: { value: text } });
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+      await waitFor(() => expect(send).toHaveBeenCalled());
+      // The call gave up, not the send: the composer stays clear while it may still arrive.
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
+
+      if (arrives) act(() => emitChatEvent(userMessage(new Date().toISOString())));
+      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(restored ? text : ""));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("restores the backend summary and composer after steer dispatch fails", async () => {
@@ -8974,6 +9055,7 @@ describe("AgentChatPane submit recovery", () => {
           codexConfigSource: "flags",
           opencodePermissionMode: "edit",
           droidPermissionMode: "auto-low",
+          musePermissionMode: "onRequest",
           cursorModeId: "agent",
           cursorConfigValues: {},
         },

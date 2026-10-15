@@ -34,6 +34,7 @@ export function terminalSessionResumeProvider(session: ChatTerminalSession | nul
   if (toolType.startsWith("droid")) return "droid";
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("pi")) return "pi";
+  if (toolType.startsWith("muse")) return "muse";
   if (toolType.startsWith("claude")) return "claude";
   if (toolType.startsWith("qwen")) return "qwen";
   if (toolType.startsWith("kimi")) return "kimi";

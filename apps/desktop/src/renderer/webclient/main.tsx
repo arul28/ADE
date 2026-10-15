@@ -66,3 +66,10 @@ installAnimationPhaseAlignment();
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,
 );
+
+// Error tracking after the first paint, as its own chunk (see ./sentry.ts).
+const startSentry = () => {
+  void import("./sentry").then((module) => module.initWebClientSentry()).catch(() => undefined);
+};
+if ("requestIdleCallback" in window) window.requestIdleCallback(startSentry, { timeout: 3_000 });
+else setTimeout(startSentry, 1_000);

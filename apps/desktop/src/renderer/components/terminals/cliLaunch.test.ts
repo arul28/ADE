@@ -427,7 +427,9 @@ describe("ACP CLI providers", () => {
     expect(launch.args).toEqual(["-m", "kimi-code/k3", "--plan"]);
     expect(launch.assignedSessionId).toBeUndefined();
     expect(launch.startupCommand).not.toContain("Review this lane.");
-    expect(launch.initialInput).toBe("Review this lane.");
+    // ADE guidance rides in front of the first prompt; the user prompt comes last.
+    expect(launch.initialInput).toMatch(/^ADE session guidance\b/u);
+    expect(launch.initialInput?.endsWith("Review this lane.")).toBe(true);
     expect(launch.initialInputDelayMs).toBe(750);
   });
 
@@ -503,7 +505,11 @@ describe("ACP CLI providers", () => {
     expect(launch.args.some((arg) => arg.startsWith("--resume"))).toBe(false);
     expect(launch.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
     expect(launch.args).toEqual(expect.arrayContaining(["--deny-tool=write", "--deny-tool=shell"]));
-    expect(launch.args).toEqual(expect.arrayContaining(["-i", "Plan the change."]));
+    // The first prompt is the ADE guidance followed by the user prompt.
+    const iIndex = launch.args.indexOf("-i");
+    expect(iIndex).toBeGreaterThan(-1);
+    expect(launch.args[iIndex + 1]).toMatch(/^ADE session guidance\b/u);
+    expect(launch.args[iIndex + 1].endsWith("Plan the change.")).toBe(true);
   });
 
   it("rejects the permission modes each ACP provider has no mapping for", () => {
@@ -1224,6 +1230,26 @@ describe("buildTrackedCliStartupCommand", () => {
         permissionMode: "default",
       });
       expect(inheritedLaunch.args.join("\n")).not.toContain("service_tier");
+
+      // Ultrafast is Fast's tier: it asks for that tier while Fast is on and
+      // means nothing while Fast is off.
+      const ultrafastLaunch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: true,
+        fastTier: "ultrafast",
+      });
+      expect(ultrafastLaunch.args).toEqual(expect.arrayContaining(["-c", "service_tier=\"ultrafast\""]));
+      expect(ultrafastLaunch.args).toContain("features.fast_mode=true");
+      expect(ultrafastLaunch.args).not.toContain("service_tier=\"fast\"");
+      const tierWithoutFast = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: false,
+        fastTier: "ultrafast",
+      });
+      expect(tierWithoutFast.args).toContain("service_tier=\"default\"");
+      expect(tierWithoutFast.args.join("\n")).not.toContain("ultrafast");
     });
 
     it("keeps legacy Codex migration-prompt models on the argv prompt path", () => {
@@ -1773,6 +1799,17 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: false },
     })).toContain("-c \"service_tier=\\\"default\\\"\"");
+
+    // A session launched on Ultrafast resumes on it, unless the resume sets
+    // Fast itself, which means plain Fast.
+    const ultrafastSession = {
+      provider: "codex" as const,
+      targetKind: "thread" as const,
+      targetId: "thread-99",
+      launch: { permissionMode: "edit" as const, model: "gpt-5.4", fastMode: true, fastTier: "ultrafast" as const },
+    };
+    expect(buildTrackedCliResumeCommand(ultrafastSession)).toContain("-c \"service_tier=\\\"ultrafast\\\"\"");
+    expect(buildTrackedCliResumeCommand(ultrafastSession, { fastMode: true })).toContain("-c \"service_tier=\\\"fast\\\"\"");
 
   });
 

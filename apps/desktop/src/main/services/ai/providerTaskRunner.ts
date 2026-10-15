@@ -35,6 +35,9 @@ import {
   resolveQwenCliModelForLaunch,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
+import type { Item } from "@muse-code/sdk/dist/src/msp.js";
+import { isMuseKnownNotification, startPinnedMuseHost } from "../chat/museSdkHost";
+import { addUsage, museCompletionUsage, type MuseTurnUsage } from "../chat/museSdkEventMapper";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -495,6 +498,93 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   };
 }
 
+/**
+ * One prompt through a short-lived `muse serve` host: start a session, run a
+ * single turn, collect the reply, close. Read-only tasks select Muse's
+ * `denyUnmatched` mode, so a title or summary can never touch the workspace.
+ */
+async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const combinedPrompt = args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
+  const host = await startPinnedMuseHost({
+    baseEnv: { ...userProcessEnv(), ...(args.accountEnv ?? {}) },
+    noSessionLog: true,
+    cwd: args.cwd,
+    clientVersion: "ade",
+    userInputDialogs: false,
+  });
+  try {
+    // Nobody watches a one-shot task, so it can never answer an approval or a
+    // question: Muse refuses anything its rules do not already allow, and the
+    // host says it has no question dialogs (`userInputDialogs: false`).
+    const started = await host.command<{ session: { sessionId: string } }>("session/start", {
+      workspaceRoot: args.cwd,
+      modelId: args.descriptor.providerModelId,
+      approvalMode: "denyUnmatched",
+    });
+    const sessionId = started.session.sessionId;
+    const texts = new Map<string, string>();
+    // Filled in by the subscription callback below.
+    const tally: { usage: MuseTurnUsage | null } = { usage: null };
+    const turnId = host.mintCommandId();
+    const completed = new Promise<{ terminal: string; message?: string }>((resolve) => {
+      host.subscribe(sessionId, (notification) => {
+        if (!isMuseKnownNotification(notification)) return;
+        switch (notification.method) {
+          case "item/completed": {
+            const item: Item | undefined = notification.params.item;
+            if (item?.kind === "agentMessage" && item.itemId && item.turnId === turnId) {
+              texts.set(item.itemId, item.text ?? "");
+            }
+            return;
+          }
+          case "session/tokenUsage": {
+            if (notification.params.turnId !== turnId) return;
+            // Uncached input from MSP's counted-once `promptTokens`.
+            tally.usage = addUsage(tally.usage, museCompletionUsage(notification.params));
+            return;
+          }
+          case "turn/completed": {
+            if (notification.params.turnId !== turnId) return;
+            const error = notification.params.error;
+            resolve({ terminal: String(notification.params.terminal ?? "completed"), ...(error?.message ? { message: error.message } : {}) });
+            return;
+          }
+          default:
+            return;
+        }
+      });
+      host.onExit(() => resolve({ terminal: "failed", message: host.stderrTail().slice(-4).join("\n") || "Muse stopped." }));
+    });
+    await host.command("turn/start", {
+      sessionId,
+      input: [{ type: "text", text: combinedPrompt }],
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+    }, { commandId: turnId });
+    const timeoutMs = args.timeoutMs ?? 120_000;
+    let timer: NodeJS.Timeout | null = null;
+    const outcome = await Promise.race([
+      completed,
+      new Promise<{ terminal: string; message: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ terminal: "failed", message: `Muse did not answer within ${timeoutMs} ms.` }), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome.terminal !== "completed") throw new Error(outcome.message ?? `Muse turn ${outcome.terminal}.`);
+    const text = [...texts.values()].join("\n").trim();
+    const counted = tally.usage;
+    return {
+      text,
+      structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
+      sessionId,
+      inputTokens: counted?.inputTokens ?? null,
+      outputTokens: counted?.outputTokens ?? null,
+    };
+  } finally {
+    await host.close();
+  }
+}
+
 /** Run an ADE-owned metadata prompt through a provider's native CLI. */
 async function runAcpOneShotTask(
   args: ProviderTaskRunnerArgs,
@@ -667,6 +757,9 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
   }
   if (args.descriptor.family === "cursor") {
     return await runCursorTask(args);
+  }
+  if (args.descriptor.family === "muse") {
+    return await runMuseTask(args);
   }
   const cliProvider = resolveCliProviderForModel(args.descriptor);
   if (cliProvider === "qwen") {

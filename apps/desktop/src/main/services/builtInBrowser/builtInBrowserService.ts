@@ -1,3 +1,4 @@
+import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { existsSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
@@ -58,6 +59,7 @@ import type {
   BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
+  BuiltInBrowserTabLoadError,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
@@ -102,12 +104,10 @@ import type {
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
 import {
-  BUILT_IN_BROWSER_AGENT_VIEWPORT,
+  BUILT_IN_BROWSER_RECORDING_VIEWPORT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
-  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT,
-  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH,
   BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS,
   BUILT_IN_BROWSER_PREVIEW_WARM_MS,
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
@@ -128,7 +128,7 @@ import {
   announceBuiltInBrowserWebContents,
   registerBrowserMediaPreload,
 } from "./builtInBrowserMediaHooks";
-import { isRecord } from "../shared/utils";
+import { isRecord, normalizeRelative } from "../shared/utils";
 import { pathKey } from "../shared/pathCompare";
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
@@ -164,8 +164,14 @@ import {
   errorMessage,
   normalizeDimension,
 } from "./builtInBrowserConstants";
-import { createBuiltInBrowserAgentViewport, tabUsesAgentViewport } from "./builtInBrowserAgentViewport";
-import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
+import {
+  recordingViewportViewRect,
+  createBuiltInBrowserRecordingViewport,
+  narrowPageHint,
+  tabUsesRecordingViewport,
+} from "./builtInBrowserRecordingViewport";
+import { createPanelRectSettler } from "./builtInBrowserPanelRectSettler";
+import { createUrlLoader, isAllowedNavigationUrl, normalizeBrowserUrl, urlForBrowserLog } from "./builtInBrowserNavigation";
 import {
   builtInBrowserRecordingKey,
   builtInBrowserTabTitle,
@@ -212,6 +218,7 @@ import {
 } from "./builtInBrowserStateStore";
 import {
   BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
+  BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE,
   BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT,
   clampBuiltInBrowserEmulationViewScale,
   createBuiltInBrowserNetworkLog,
@@ -395,6 +402,8 @@ export type BrowserTabState = {
    * launchpad rather than a page. Cleared the moment it navigates anywhere.
    */
   isLaunchpad: boolean;
+  /** The current page's main-frame load failure; cleared when the next navigation starts. */
+  loadError: BuiltInBrowserTabLoadError | null;
   /**
    * The favicon the renderer draws, and the origin it belongs to.
    *
@@ -412,6 +421,12 @@ export type BrowserTabState = {
   networkLog: BuiltInBrowserNetworkLogStore;
   networkLogPending: Map<string, BuiltInBrowserNetworkLogEntry>;
   recording: BuiltInBrowserRecordingSession | null;
+  /**
+   * Set for the moment a recording is starting, before its session exists, so
+   * the tab lays out at `BUILT_IN_BROWSER_RECORDING_VIEWPORT` for the very
+   * first frame rather than relaying out mid-video (`tabUsesRecordingViewport`).
+   */
+  recordingStarting?: boolean;
   /**
    * Error tallies since this tab's last main-frame navigation, which is what
    * the Work tools pane's red activity dot reports. Kept as counters rather
@@ -432,7 +447,9 @@ export type BrowserTabState = {
    */
   findWaiters: Set<(requestId: number) => void>;
   /**
-   * The last non-empty rect this tab was actually shown at in the panel.
+   * The last non-empty rect this tab was shown at in the panel AND the panel
+   * stopped at (`createPanelRectSettler`): never a frame of the pane opening, closing
+   * or being dragged.
    *
    * Parking a previewed tab has to give it a size, and the panel's live bounds
    * are already zero by then (`hideBuiltInBrowserView` sends `0×0` on the way
@@ -452,11 +469,11 @@ export type BrowserTabState = {
  * `network` is the opt-in request log; `emulation` is a device override, which
  * Chromium drops the instant the DevTools session that set it detaches — which
  * is exactly why device presets used to change the label and nothing else.
- * `agent-viewport` is the same override, held for an agent-owned or recording
- * tab (see `BUILT_IN_BROWSER_AGENT_VIEWPORT`); it steps aside for a preset and
+ * `recording-viewport` is the same override, held for a recording
+ * tab (see `BUILT_IN_BROWSER_RECORDING_VIEWPORT`); it steps aside for a preset and
  * for DevTools rather than blocking either.
  */
-export type BrowserDebuggerHoldOwner = "network" | "emulation" | "agent-viewport";
+export type BrowserDebuggerHoldOwner = "network" | "emulation" | "recording-viewport";
 
 /**
  * Side-channel for the parts of a login handoff that are not the browser's job:
@@ -2190,7 +2207,7 @@ function createBuiltInBrowserWindowService(args: {
   const emitStatus = (): void => {
     // Before the status is built: a claim, release or recording edge that got
     // us here may have to pin or free the tab's layout, and re-park it.
-    reconcileAgentViewports();
+    reconcileRecordingViewports();
     const status = getStatus();
     if (!restoringTabs && args.onStateChange) {
       // An isolated tab's sign-in lives only in memory, so restoring its URL
@@ -2218,6 +2235,9 @@ function createBuiltInBrowserWindowService(args: {
     logger()?.warn("built_in_browser.error", { err: message });
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
+
+  const urlLoader = createUrlLoader({ logger, onLoadSettled: () => emitStatus() });
+  const loadUrlSafely = urlLoader.load;
 
   const currentCursorPointInView = (): BrowserInspectPoint | null => {
     if (!win || win.isDestroyed() || !visible || bounds.width <= 0 || bounds.height <= 0) return null;
@@ -2601,9 +2621,10 @@ function createBuiltInBrowserWindowService(args: {
     );
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
-    // A first claim pins the page to the agent viewport, which relays it out.
-    // Locating a target before that lands would aim at the old layout.
-    await settleAgentViewport(tab);
+    // A recording tab may still be moving onto the recording viewport, which
+    // relays the page out. Locating a target before that lands would aim at
+    // the old layout.
+    await settleRecordingViewport(tab);
   };
 
   const prepareAgentReadTab = (
@@ -2627,7 +2648,7 @@ function createBuiltInBrowserWindowService(args: {
       waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
     });
     claimTabOwnerFromInput(tab, input);
-    await settleAgentViewport(tab);
+    await settleRecordingViewport(tab);
   };
 
   /**
@@ -3194,7 +3215,7 @@ function createBuiltInBrowserWindowService(args: {
             : new WebContentsView({ webPreferences: browserWebPreferences(opener?.isolation?.partition) });
           const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
           if (!popupWebContents) {
-            void tab.webContents.loadURL(popupUrl).catch((error) => {
+            void loadUrlSafely(tab.webContents, popupUrl).catch((error) => {
               emitError(new Error(`Could not load deferred browser popup: ${errorMessage(error)}`));
             });
           }
@@ -3221,6 +3242,7 @@ function createBuiltInBrowserWindowService(args: {
         return;
       }
       event.preventDefault();
+      urlLoader.noteHeldForApproval(wc, browserOriginOf(url) ?? url);
       // The action that caused this (a click on a cross-origin link, a submit
       // that redirects) is usually still in flight. Its answer must say the
       // navigation is held for the user, not "nothing changed".
@@ -3252,13 +3274,14 @@ function createBuiltInBrowserWindowService(args: {
           ));
           return;
         }
-        await wc.loadURL(url);
+        await loadUrlSafely(wc, url);
       }).catch(emitError);
     };
     wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
     wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
       const tab = tabForWebContents(wc);
+      if (tab) tab.loadError = null;
       noteNetworkActivity(tab);
       if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "start");
       emitStatus();
@@ -3295,7 +3318,7 @@ function createBuiltInBrowserWindowService(args: {
         tabCapabilities.applyTabZoom(tab, tab.zoomFactor);
       }
       if (tab) tabCapabilities.reapplyTabEmulation(tab);
-      if (tab) refreshAgentViewport(tab);
+      if (tab) refreshRecordingViewport(tab);
       emitStatus();
     });
     wc.on("page-favicon-updated", (_event, favicons: string[]) => {
@@ -3366,14 +3389,24 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return;
       const tab = tabForWebContents(wc);
+      const failedUrl = stringOrNull(validatedURL) ?? emptyToNull(wc.getURL());
+      const failure = errorDescription || `Browser load failed with code ${errorCode}`;
       if (tab) {
+        // Chromium paints a failed main-frame load as a plain white page. The
+        // status carries the failure so a preview can step aside rather than
+        // float that white page, and an agent can read why.
+        tab.loadError = {
+          code: errorCode,
+          description: failure,
+          url: failedUrl,
+        };
         noteNetworkActivity(tab);
         pushNetworkDiagnostic(tab, {
-          url: stringOrNull(validatedURL) ?? emptyToNull(wc.getURL()) ?? "about:blank",
+          url: failedUrl ?? "about:blank",
           method: null,
           resourceType: "mainFrame",
           statusCode: null,
-          error: errorDescription || `Browser load failed with code ${errorCode}`,
+          error: failure,
           startedAt: null,
           endedAt: new Date().toISOString(),
           durationMs: null,
@@ -3384,7 +3417,7 @@ function createBuiltInBrowserWindowService(args: {
         errorDescription,
         validatedURL,
       });
-      emitError(new Error(errorDescription || `Browser load failed with code ${errorCode}`));
+      emitError(new Error(failure));
       emitStatus();
     });
   };
@@ -3433,6 +3466,7 @@ function createBuiltInBrowserWindowService(args: {
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
       emulation: null,
       isLaunchpad: false,
+      loadError: null,
       faviconUrl: null,
       faviconSourceUrl: null,
       faviconOrigin: null,
@@ -3441,6 +3475,7 @@ function createBuiltInBrowserWindowService(args: {
       networkLog: createBuiltInBrowserNetworkLog(),
       networkLogPending: new Map(),
       recording: null,
+      recordingStarting: false,
       consoleErrorCount: 0,
       failedRequestCount: 0,
       debuggerHolds: new Set(),
@@ -3559,47 +3594,55 @@ function createBuiltInBrowserWindowService(args: {
     return { right, bottom };
   };
 
-  const parkedPreviewRect = (tab: BrowserTabState): Electron.Rectangle => {
+  /**
+   * The size a parked view is laid out at while nobody watches it on screen.
+   * Window-relative placement is `parkedPreviewRect`'s job; this is only the box.
+   */
+  const parkedPreviewSize = (tab: BrowserTabState): { width: number; height: number } => {
+    // A recording tab is laid out at the recording viewport whatever its box, so
+    // its park box IS that size: scale 1, and every frame recorded while
+    // nobody watches it is the full page, not a shrunk copy of the pane.
+    if (tabUsesRecordingViewport(tab)) {
+      return { width: BUILT_IN_BROWSER_RECORDING_VIEWPORT.width, height: BUILT_IN_BROWSER_RECORDING_VIEWPORT.height };
+    }
+    // A device preset draws the device at the pane's letterbox scale, pinned
+    // to the view's top-left corner, so any larger box frames it with blank
+    // space. Boxed at the device's drawn size, every frame is the device alone.
+    if (tab.emulation) {
+      const scale = tabCapabilities.emulationInputScale(tab);
+      return {
+        width: Math.max(1, Math.round(tab.emulation.width * scale)),
+        height: Math.max(1, Math.round(tab.emulation.height * scale)),
+      };
+    }
+    // The size the person gave it. A tab the pane has shown is parked at
+    // exactly the pane's last settled rect, however narrow, so parking never
+    // resizes the page: not on the way out, not on the way back. An agent that
+    // needs a desktop layout asks for one (`narrowPageHint` on its
+    // observation tells it how).
+    //
+    // The floor is only for a tab the pane never showed: it has no rect to
+    // reuse, and a zero-sized view captures nothing.
+    const panelRect = tab.lastPanelRect;
+    if (panelRect && panelRect.width > 0 && panelRect.height > 0) {
+      return { width: panelRect.width, height: panelRect.height };
+    }
+    return { width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH, height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT };
+  };
+
+  /** The park point past every display, at `size` (window-relative, as `setBounds` is). */
+  const parkedPreviewRect = (size: { width: number; height: number }): Electron.Rectangle => {
     const content = win && !win.isDestroyed()
       ? win.getContentBounds()
       : { x: 0, y: 0, width: 0, height: 0 };
     const union = displayUnionBottomRight();
     const right = Math.max(union.right, content.x + Math.max(0, content.width));
     const bottom = Math.max(union.bottom, content.y + Math.max(0, content.height));
-    // A tab on the agent viewport is laid out at that size whatever its box,
-    // so its park box IS that size: scale 1, and every preview frame and
-    // recording taken while nobody watches it is the full page, not a
-    // shrunk copy of whatever pane last showed it.
-    if (tabUsesAgentViewport(tab)) {
-      return {
-        x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-        y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-        width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width,
-        height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height,
-      };
-    }
-    // Window-relative, because `WebContentsView.setBounds` is.
-    // A pane squeezed to a sliver is not a page size worth keeping: a tab
-    // parked at 167 px wide laid the page out as a strip, and every
-    // screenshot, recording and preview an agent took of it came out as one.
-    // Below the usable size the floor wins, and the one resize is the price.
-    const panelRect = tab.lastPanelRect
-      && tab.lastPanelRect.width >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH
-      && tab.lastPanelRect.height >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT
-      ? tab.lastPanelRect
-      : null;
     return {
       x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      // A remembered rect is used AS IS — not floored — because the whole point
-      // is that parking must not resize the page. The Work pane is clamped to
-      // 26–55% of the window, so every realistic pane is narrower than the
-      // floor; applying it on top would fire a real `window` resize inside the
-      // page on the way out and another on the way back. The floor is only the
-      // fallback for a tab the panel never showed: it has no rect to reuse, and
-      // a zero-sized view captures nothing.
-      width: panelRect ? panelRect.width : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
-      height: panelRect ? panelRect.height : BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
+      width: size.width,
+      height: size.height,
     };
   };
 
@@ -3650,7 +3693,7 @@ function createBuiltInBrowserWindowService(args: {
    * (120 ms) is the bound that makes that unreachable in practice, and is the
    * reason this must not be lengthened.
    */
-  const warmingPreviewRect = (tab: BrowserTabState): Electron.Rectangle | null => {
+  const warmingPreviewRect = (size: { width: number; height: number }): Electron.Rectangle | null => {
     const content = win && !win.isDestroyed()
       ? win.getContentBounds()
       : null;
@@ -3663,12 +3706,11 @@ function createBuiltInBrowserWindowService(args: {
     // every 120 ms for as long as the window stayed hidden, because the warm can
     // never be marked complete. Park directly and warm when the window is back.
     if (!hostWindowIsOnScreen()) return null;
-    const parked = parkedPreviewRect(tab);
     return {
       x: Math.round(content.width) - 1,
       y: Math.round(content.height) - 1,
-      width: parked.width,
-      height: parked.height,
+      width: size.width,
+      height: size.height,
     };
   };
 
@@ -3688,6 +3730,33 @@ function createBuiltInBrowserWindowService(args: {
    * two frames is a cheaper thing to spend than a card that is black forever.
    */
   const surfacedTabIds = new Set<string>();
+  /**
+   * The size each surfaced view was last given while it overlapped the window.
+   *
+   * Chromium does not re-lay out a view whose bounds lie wholly off the window,
+   * so a park at a different size would keep the old layout — a page laid out
+   * at the width of a pane caught mid-close stays that sliver inside the park
+   * box, and the corner card shows a strip. A park whose size differs from this
+   * warms again, so the resize lands while the view overlaps by one pixel.
+   *
+   * Recorded from the rect handed to `setBounds`, not read back with
+   * `getBounds`: the comparison must be against exactly what the park asks for,
+   * or a rounding difference would re-warm on every attach pass.
+   */
+  const surfacedSizes = new Map<string, { width: number; height: number }>();
+  const noteSurfacedSize = (tabId: string, rect: { width: number; height: number }): void => {
+    if (rect.width > 0 && rect.height > 0) surfacedSizes.set(tabId, { width: rect.width, height: rect.height });
+    else surfacedSizes.delete(tabId);
+  };
+  /** `lastPanelRect` is the size the pane settled at (`createPanelRectSettler`). */
+  const panelRectSettler = createPanelRectSettler({
+    isStillShownAt: (tab, rect) => {
+      if (disposed || tab.webContents.isDestroyed()) return false;
+      if (!visible || tab.id !== activeTabId || parkedTabIds.has(tab.id)) return false;
+      const current = toElectronRect(bounds);
+      return current.width === rect.width && current.height === rect.height;
+    },
+  });
   /**
    * Per tab, not one shared handle: two watched tabs warm independently, and a
    * single timer meant the second one cancelled the first — leaving that view
@@ -3779,9 +3848,9 @@ function createBuiltInBrowserWindowService(args: {
     const release = acquireCaptureHold(tab.id);
     try {
       await waitForWarmToFinish(tab.id);
-      // Parking an agent-viewport tab refits it to scale 1; a capture taken
+      // Parking a recording-viewport tab refits it to scale 1; a capture taken
       // before that lands is the previous pane's shrunk page.
-      await settleAgentViewport(tab);
+      await settleRecordingViewport(tab);
       return await fn();
     } finally {
       release();
@@ -3832,21 +3901,20 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  /* ── Agent viewport (see `builtInBrowserAgentViewport.ts`) ───────────── */
+  /* ── Recording viewport (see `builtInBrowserRecordingViewport.ts`) ─────── */
 
-  const agentViewport = createBuiltInBrowserAgentViewport({
+  const recordingViewport = createBuiltInBrowserRecordingViewport({
     tabs: () => tabs,
-    isParked: (tabId) => parkedTabIds.has(tabId),
     reattachViews: () => attachViewsToCurrentWindow(),
     acquireDebuggerHold: (tab, owner) => acquireDebuggerHold(tab, owner),
     releaseDebuggerHold: (tab, owner) => releaseDebuggerHold(tab, owner),
     sendDebuggerCommand: (wc, method, params) => sendDebuggerCommand(wc, method, params),
     logger,
   });
-  const syncAgentViewport = agentViewport.sync;
-  const refreshAgentViewport = agentViewport.refresh;
-  const reconcileAgentViewports = agentViewport.reconcile;
-  const settleAgentViewport = agentViewport.settle;
+  const syncRecordingViewport = recordingViewport.sync;
+  const refreshRecordingViewport = recordingViewport.refresh;
+  const reconcileRecordingViewports = recordingViewport.reconcile;
+  const settleRecordingViewport = recordingViewport.settle;
 
   const attachViewsToCurrentWindow = (): void => {
     if (!win || win.isDestroyed()) return;
@@ -3860,6 +3928,9 @@ function createBuiltInBrowserWindowService(args: {
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
       if (!shouldAttach) {
+        // Leaving the screen: the size it was passing through is not a size
+        // the person chose.
+        panelRectSettler.cancel(tab.id);
         const wasAttended = win.contentView.children.includes(tab.view) && !parkedTabIds.has(tab.id);
         if (wasAttended && surfacedTabIds.has(tab.id)) {
           recentlyAttendedUntil.set(tab.id, Date.now() + RECENTLY_ATTENDED_GRACE_MS);
@@ -3870,24 +3941,37 @@ function createBuiltInBrowserWindowService(args: {
           const wasAttached = win.contentView.children.includes(tab.view);
           const wasParked = parkedTabIds.has(tab.id);
           if (!wasAttached) win.contentView.addChildView(tab.view);
+          // A grace park keeps the page exactly as it was on screen: same size,
+          // no recording viewport, so the way back is a move and not a relayout.
+          const graceSize = graceOnly ? tab.lastPanelRect : null;
+          const targetRect = parkedPreviewRect(graceSize ?? parkedPreviewSize(tab));
+          // A surface laid out at another size cannot be resized from off the
+          // window (see `surfacedSizes`), so it is warmed again at the new one.
+          const surfacedSize = surfacedSizes.get(tab.id);
+          if (
+            surfacedTabIds.has(tab.id)
+            && !warmingTimers.has(tab.id)
+            && surfacedSize
+            && (surfacedSize.width !== targetRect.width || surfacedSize.height !== targetRect.height)
+          ) {
+            surfacedTabIds.delete(tab.id);
+          }
           // Warm first if this view has no surface yet; the timer moves it to
           // the real park point two frames later.
-          const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(tab);
+          const warming = surfacedTabIds.has(tab.id) ? null : warmingPreviewRect(targetRect);
+          // The warm lays the page out at the park size; that is the size the
+          // surface now holds, whether this warm or an earlier one set it.
+          if (warming) noteSurfacedSize(tab.id, warming);
           // Square while parked: the rounded corners belong to the panel's
           // frame, and a preview frame with four transparent notches in it is
           // not what the corner card is asking for. The one exception is the
           // warm, where the radius exists to clip the pixel that overlaps the
           // UI rather than to decorate anything.
           applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
-          // A grace park keeps the page exactly as it was on screen: same size,
-          // no agent viewport, so the way back is a move and not a relayout.
-          const graceRect = graceOnly && tab.lastPanelRect
-            ? { ...parkedPreviewRect(tab), width: tab.lastPanelRect.width, height: tab.lastPanelRect.height }
-            : null;
-          const parkedRect = warming ?? graceRect ?? parkedPreviewRect(tab);
+          const parkedRect = warming ?? targetRect;
           tab.view.setBounds(parkedRect);
-          if (graceRect) syncAgentViewport(tab);
-          else syncAgentViewport(tab, parkedRect);
+          if (graceSize) syncRecordingViewport(tab);
+          else syncRecordingViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
@@ -3904,7 +3988,7 @@ function createBuiltInBrowserWindowService(args: {
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
-        syncAgentViewport(tab, null);
+        syncRecordingViewport(tab, null);
         continue;
       }
       // Parked (off screen) or detached a moment ago: Chromium can present the
@@ -3916,13 +4000,15 @@ function createBuiltInBrowserWindowService(args: {
         win.contentView.addChildView(tab.view);
       }
       if (electronRect.width > 0 && electronRect.height > 0) {
-        tab.lastPanelRect = { ...electronRect };
+        panelRectSettler.note(tab, electronRect);
       }
       applyTabViewCornerRadius(tab, BUILT_IN_BROWSER_VIEW_CORNER_RADIUS);
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
-      tab.view.setBounds(electronRect);
-      syncAgentViewport(tab, electronRect);
+      const viewRect = tabUsesRecordingViewport(tab) ? recordingViewportViewRect(electronRect) : electronRect;
+      tab.view.setBounds(viewRect);
+      noteSurfacedSize(tab.id, viewRect);
+      syncRecordingViewport(tab, viewRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
       if (cameOnScreen) repaintTab(tab);
@@ -4786,8 +4872,13 @@ function createBuiltInBrowserWindowService(args: {
       height: normalizeDimension(nextBounds.height),
     };
     const nextVisible = nextBounds.visible && normalized.width > 0 && normalized.height > 0;
+    // A hidden tab is parked at its device's full size, whatever fit the
+    // closing pane last measured (0 once it reaches nothing). A visible pane's
+    // tiny fit is the smallest scale, not "no scale" (which the clamp reads as 1).
     const nextScale = clampBuiltInBrowserEmulationViewScale(
-      typeof nextBounds.scale === "number" ? nextBounds.scale : 1,
+      typeof nextBounds.scale === "number" && nextVisible
+        ? Math.max(nextBounds.scale, BUILT_IN_BROWSER_MIN_EMULATION_VIEW_SCALE)
+        : 1,
     );
     const scaleChanged = nextScale !== emulationViewScale;
     const unchanged = (
@@ -4822,7 +4913,9 @@ function createBuiltInBrowserWindowService(args: {
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
+    addSentryBreadcrumb("browser", "navigate: waiting for profile migration");
     await args.waitForProfileMigration();
+    addSentryBreadcrumb("browser", "navigate: waiting for tab restore");
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
     const isolation = isolatedSessions.forInput(input);
@@ -4909,7 +5002,8 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     void noteDemoAction(tab, input, "navigate", { label: demoUrlHost(targetUrl) });
-    await wc.loadURL(targetUrl);
+    addSentryBreadcrumb("browser", "navigate: loading", { origin: urlForBrowserLog(targetUrl) });
+    await loadUrlSafely(wc, targetUrl);
     if (input.openPanel) {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
     }
@@ -4951,7 +5045,7 @@ function createBuiltInBrowserWindowService(args: {
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
     if (normalizedUrl) {
-      await tab.webContents.loadURL(normalizedUrl);
+      await loadUrlSafely(tab.webContents, normalizedUrl);
     }
     if (input.openPanel) {
       requestOpenPanel({ url: normalizedUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
@@ -5027,7 +5121,9 @@ function createBuiltInBrowserWindowService(args: {
       // `surfacedTabIds` and runs a pointless attach pass, and both collections
       // then grow with every closed tab for the life of the window.
       surfacedTabIds.delete(removed.id);
+      surfacedSizes.delete(removed.id);
       clearWarmingTimer(removed.id);
+      panelRectSettler.cancel(removed.id);
       tabCapabilities.stopPreviewStreamsForTab(removed.id);
       teardownTabCapabilities(removed);
       MANAGED_BROWSER_WEB_CONTENTS.delete(removed.webContents);
@@ -5642,6 +5738,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     unregisterWindowWatchers();
     clearWarmingTimers();
+    panelRectSettler.dispose();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
     unsubscribeNetworkObserver?.();
@@ -6026,7 +6123,7 @@ function createBuiltInBrowserWindowService(args: {
    *
    * Chromium reads `Input.dispatchMouseEvent` coordinates in the space it
    * draws the page in, and an emulation override with `scale` draws CSS pixels
-   * smaller: the agent viewport (1280×800) fitted into a narrower pane, or a
+   * smaller: the recording viewport (1280×800) fitted into a narrower pane, or a
    * device preset letterboxed into it. Element rects, handles and `--x/--y`
    * are CSS pixels, so without this a click aimed at an element's centre
    * landed at centre ÷ scale, on some other element or off the page, and was
@@ -6039,7 +6136,7 @@ function createBuiltInBrowserWindowService(args: {
   ): Promise<void> => {
     const scale = tab.emulation
       ? tabCapabilities.emulationInputScale(tab)
-      : agentViewport.inputScale(tab);
+      : recordingViewport.inputScale(tab);
     await sendDebuggerCommand(
       tab.webContents,
       "Input.dispatchMouseEvent",
@@ -6284,7 +6381,8 @@ function createBuiltInBrowserWindowService(args: {
     const image = screenshot ? decodeDataUrl(screenshot.dataUrl) : null;
     const filePath = image ? path.join(dir, `${id}.png`) : null;
     if (image && filePath) await fs.writeFile(filePath, image.buffer);
-    const relativePath = filePath ? path.relative(observationRelativeBasePath, filePath) : null;
+    // Agents read these paths; they use forward slashes on every OS.
+    const relativePath = filePath ? normalizeRelative(path.relative(observationRelativeBasePath, filePath)) : null;
     const domWithHandles = dom ? applyObservationHandles(dom, id) : null;
     let elementMap: BuiltInBrowserObservationElementMap | null = null;
     if (elementMapScreenshot) {
@@ -6292,7 +6390,7 @@ function createBuiltInBrowserWindowService(args: {
       await fs.writeFile(elementMapPath, elementMapImage.buffer);
       elementMap = {
         filePath: elementMapPath,
-        relativePath: path.relative(observationRelativeBasePath, elementMapPath),
+        relativePath: normalizeRelative(path.relative(observationRelativeBasePath, elementMapPath)),
         width: elementMapScreenshot.width,
         height: elementMapScreenshot.height,
         mimeType: elementMapImage.mimeType,
@@ -6300,6 +6398,7 @@ function createBuiltInBrowserWindowService(args: {
         ...(input.includeDataUrl ? { dataUrl: elementMapScreenshot.dataUrl } : {}),
       };
     }
+    const pageHint = narrowPageHint(tab, screenshot?.width ?? null);
     const observation: BuiltInBrowserObservation = {
       id,
       tabId: tab.id,
@@ -6313,6 +6412,7 @@ function createBuiltInBrowserWindowService(args: {
       filePath,
       relativePath,
       ...(screenshotUnavailable ? { screenshotUnavailable } : {}),
+      ...(pageHint ? { narrowPageHint: pageHint } : {}),
       ...(input.includeDataUrl && screenshot ? { dataUrl: screenshot.dataUrl } : {}),
       ...(domWithHandles ? { dom: domWithHandles } : {}),
       ...(elementMap ? { elementMap } : {}),
@@ -6417,11 +6517,20 @@ function createBuiltInBrowserWindowService(args: {
       }
       attachViewsToCurrentWindow();
     },
+    // A parked tab is boxed at its device's size (see `parkedPreviewRect`).
+    onTabEmulationChanged: () => attachViewsToCurrentWindow(),
     isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
     holdCaptureSurface: async (tabId) => {
       const release = acquireCaptureHold(tabId);
       await waitForWarmToFinish(tabId);
       return release;
+    },
+    // Pin the tab to the fixed recording viewport and wait for the override to
+    // land before the recorder negotiates its first frame, so the video opens
+    // at 1280×800 rather than the pane's size.
+    prepareRecordingViewport: async (tab) => {
+      reconcileRecordingViewports();
+      await settleRecordingViewport(tab);
     },
     createRecordingWindow: args.createRecordingWindow ?? null,
     createTabRecorder: args.createTabRecorder ?? null,
@@ -6493,9 +6602,9 @@ function createBuiltInBrowserWindowService(args: {
     setEmulation: async (input: BuiltInBrowserSetEmulationArgs) => {
       const result = await tabCapabilities.setEmulation(input);
       // Clearing a preset clears Chromium's override outright, ours included
-      // when no preset was on; put the agent viewport back if it still applies.
+      // when no preset was on; put the recording viewport back if it still applies.
       const tab = tabById(result.tabId);
-      if (tab) refreshAgentViewport(tab);
+      if (tab) refreshRecordingViewport(tab);
       return result;
     },
     setZoom: tabCapabilities.setZoom,
@@ -6673,19 +6782,6 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
   }
 }
 
-function urlForBrowserLog(value: string): string | null {
-  const url = emptyToNull(value);
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
-    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
-    return parsed.protocol;
-  } catch {
-    return null;
-  }
-}
-
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
   const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
@@ -6697,6 +6793,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     url,
     title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
     isLaunchpad,
+    loadError: tab.loadError,
     isolatedProfile: tab.isolation?.profile ?? null,
     faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
@@ -6710,8 +6807,8 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,
     emulation: tab.emulation,
-    agentViewport: tabUsesAgentViewport(tab)
-      ? { width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width, height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height }
+    agentViewport: tabUsesRecordingViewport(tab)
+      ? { width: BUILT_IN_BROWSER_RECORDING_VIEWPORT.width, height: BUILT_IN_BROWSER_RECORDING_VIEWPORT.height }
       : null,
     networkLogging: tab.networkLoggingEnabled,
     recording: tab.recording

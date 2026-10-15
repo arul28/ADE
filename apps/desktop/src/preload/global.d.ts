@@ -1,7 +1,10 @@
+import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
@@ -10,6 +13,12 @@ import type {
   ChatThreadCommentListArgs,
   ChatThreadCommentUpdateArgs,
 } from "../shared/threadComments";
+import type {
+  ClaudePluginUiActArgs,
+  ClaudePluginUiActResult,
+  ClaudePluginUiGetArgs,
+  ClaudePluginUiSnapshot,
+} from "../shared/claudePluginUi";
 import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
@@ -85,6 +94,9 @@ import type {
   WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
+  BuiltInBrowserRemoteCall,
+  BuiltInBrowserRemoteAgentCallOutcome,
+  BuiltInBrowserRemoteCallReply,
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
@@ -136,6 +148,12 @@ import type {
   ApplyConflictProposalArgs,
   AppInfo,
   LocalRuntimeStatus,
+  BackgroundServiceSummary,
+  QuitPromptAnswer,
+  QuitPromptRepairResult,
+  QuitPromptRequest,
+  StopBackgroundServiceRequest,
+  StopBackgroundServiceResult,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -147,6 +165,7 @@ import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
   AutoUpdateSnapshot,
+  UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -274,6 +293,10 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatMessageSubagentArgs,
+  AgentChatMessageSubagentResult,
+  AgentChatControlSubagentArgs,
+  AgentChatControlSubagentResult,
   AgentChatRestartSessionArgs,
   AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
@@ -550,6 +573,12 @@ import type {
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
+  McpRegistryCheck,
+  McpRegistryContext,
+  McpRegistryImportResult,
+  McpRegistryResult,
+  McpRegistryScan,
+  McpRegistrySecretRef,
   AccountSettingsWriteOptions,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -1050,7 +1079,17 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  ProjectMoveAttention,
+  ProjectMoveCleanupArgs,
+  ProjectMovePreflight,
+  ProjectMoveProgress,
+  ProjectMoveRecord,
+  ProjectMoveResult,
+  ProjectMoveStartArgs,
+  ProjectMoveVolume,
+} from "../shared/types/projectMove";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
@@ -1134,6 +1173,24 @@ declare global {
          * touch a launch agent, so callers must feature-detect before offering it.
          */
         restartBackgroundService?: () => Promise<void>;
+        /**
+         * The quit confirmation main asks this window to show. Call
+         * `quitPromptShown` once it is on screen, then answer. Native desktop
+         * only; absent on the hosted-web client and browser mock.
+         */
+        onQuitPrompt?: (cb: (request: QuitPromptRequest) => void) => () => void;
+        /** Main is asking natively instead; drop the prompt with this id. */
+        onQuitPromptDismiss?: (cb: (requestId: string) => void) => () => void;
+        quitPromptShown?: (requestId: string) => void;
+        /** Resolves with the repair outcome for a "repair" choice, else null. */
+        answerQuitPrompt?: (answer: QuitPromptAnswer) => Promise<QuitPromptRepairResult | null>;
+        /** Whether ADE confirms before quitting; "Don't ask again" turns it off. */
+        getAskBeforeQuit?: () => Promise<boolean>;
+        setAskBeforeQuit?: (ask: boolean) => Promise<boolean>;
+        /** What runs agents on this computer, and what stopping would end. */
+        getBackgroundService?: () => Promise<BackgroundServiceSummary>;
+        /** Stops the background service and every agent in it, then quits ADE. */
+        stopBackgroundServiceAndQuit?: (request: StopBackgroundServiceRequest) => Promise<StopBackgroundServiceResult>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -1335,11 +1392,34 @@ declare global {
          */
         ackAutoSent: (references: string[]) => Promise<void>;
       };
+      /**
+       * Moving a project to a new folder on this Mac. Optional: older preloads
+       * lack it, and the Settings row hides itself then. Local only: the
+       * project must live on the machine this window runs on.
+       */
+      projectMove?: {
+        listVolumes: () => Promise<ProjectMoveVolume[]>;
+        preflight: (args: { projectRoot: string; destinationRoot: string }) => Promise<ProjectMovePreflight>;
+        start: (args: ProjectMoveStartArgs) => Promise<ProjectMoveResult>;
+        status: (projectRoot: string) => Promise<ProjectMoveRecord | null>;
+        attention: () => Promise<ProjectMoveAttention>;
+        cleanup: (args: ProjectMoveCleanupArgs) => Promise<ProjectMoveRecord>;
+        reveal: (args: { moveId: string; which: "original" | "moved" }) => Promise<void>;
+        chooseFolder: (defaultPath?: string) => Promise<string | null>;
+        onProgress: (cb: (progress: ProjectMoveProgress) => void) => () => void;
+      };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
         /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
         openBackgroundSettings?: () => Promise<{ opened: boolean }>;
+        /** Optional: older preloads lack the missing-data recovery calls. */
+        restoreProjectData?: (projectRoot: string) => Promise<ProjectDataRestoreResult>;
+        startFresh?: (projectRoot: string) => Promise<void>;
+        /** Whether a project's ADE data is missing or swapped; no root asks about the project that failed to reopen at launch. */
+        projectDataStatus?: (projectRoot?: string) => Promise<ProjectDataStatus | null>;
+        /** An open project's .ade folder or database was moved or deleted. */
+        onProjectDataMissing?: (cb: (payload: { projectRoot: string; status: ProjectDataProblem }) => void) => () => void;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have
@@ -1396,6 +1476,11 @@ declare global {
           id: string,
           targetVersion?: string | null,
         ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
+        /**
+         * What "Update & restart" would stop on that machine right now. Never
+         * rejects: a machine that cannot answer comes back `checked: false`.
+         */
+        getUpdateImpact: (id: string) => Promise<UpdateImpact>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
         addProject: (
           id: string,
@@ -1490,6 +1575,14 @@ declare global {
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        museBinaryStatus: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        ensureMuseBinary: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
+        museSettings: <R extends MuseSettingsRequest>(
+          args: MuseSettingsRunArgs<R>,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MuseSettingsResult<R["kind"]>>;
+        museSettingsClose: (args: { handleId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: true }>;
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
@@ -2332,6 +2425,16 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Note or follow-up task to one subagent (Muse: `subagent/sendMessage` / `followupTask`). */
+        messageSubagent: (
+          args: AgentChatMessageSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatMessageSubagentResult>;
+        /** Interrupt/resume/reopen/close a subagent, pause/resume a workflow, skip/retry a workflow child. */
+        controlSubagent: (
+          args: AgentChatControlSubagentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatControlSubagentResult>;
         /** Stop the provider process, keep the conversation; the next message starts fresh. */
         restartSession: (
           args: AgentChatRestartSessionArgs,
@@ -2521,6 +2624,11 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<{ ok: boolean; error?: string }>;
         };
+        /** Claude mod UI. Absent in a client that draws none (the hosted web client). */
+        claudePluginUi?: {
+          get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
+          act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
+        };
         threadComments: {
           list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
           create: (args: ChatThreadCommentCreateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
@@ -2562,6 +2670,26 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** The MCP App a tool call produced, from the machine that owns the chat. */
+        getMcpApp: (
+          args: import("../shared/mcpApp").McpAppGetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGetResult>;
+        /** One call from an MCP App's frame, to the server the app came from. */
+        mcpAppRequest: (
+          args: import("../shared/mcpApp").McpAppRequestArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
+        /** The tools the user always allows for the server an app came from. */
+        listMcpAppGrants: (
+          args: import("../shared/mcpApp").McpAppGrantsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
+        /** Take one "always allow" back; answers the grants that are left. */
+        revokeMcpAppGrant: (
+          args: import("../shared/mcpApp").McpAppRevokeGrantArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
@@ -2661,6 +2789,8 @@ declare global {
            */
           scopeKey?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
+        /** The URL an MCP App's frame loads its page from; main builds the page's policy. */
+        prepareApp: (args: { html: string; csp: import("../shared/mcpApp").McpAppCsp }) => Promise<string>;
       };
       computerUse: {
         listArtifacts: (
@@ -3491,6 +3621,18 @@ declare global {
          * other window's panel is told no. Always local; feature-detect before use.
          */
         claimRemoteRequest: (args: { requestId: string }) => Promise<{ claimed: boolean }>;
+        /**
+         * Run a browser command an agent on another machine sent to this
+         * desktop, in this desktop's browser. Always local.
+         */
+        runRemoteAgentCall: (
+          args: { method: string; input: Record<string, unknown> },
+        ) => Promise<BuiltInBrowserRemoteAgentCallOutcome>;
+        /** Answer a browser command on the pinned runtime that sent it. */
+        replyRemoteCall: (
+          args: BuiltInBrowserRemoteCallReply,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         setDevTools: (
           args: BuiltInBrowserSetDevToolsArgs,
           pin?: OpenProjectBinding | null,
@@ -3536,6 +3678,14 @@ declare global {
          */
         onRemoteRequest: (
           cb: (ev: BuiltInBrowserRemoteRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /**
+         * Browser commands of an agent on the pinned machine, to run in this
+         * desktop's browser. A no-op unsubscribe for any non-remote pin.
+         */
+        onRemoteCall: (
+          cb: (ev: BuiltInBrowserRemoteCall) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
@@ -3641,6 +3791,11 @@ declare global {
           args: ProviderInstanceDismissReplacedArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        /** Signs the account out with the provider CLI; refused for the default. */
+        signOut: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance | null>;
         loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
@@ -4159,6 +4314,24 @@ declare global {
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
       };
+      /**
+       * Settings > MCP servers: this computer's view of the registry, and the
+       * one path that writes a registry secret to the account vault. No call
+       * returns a secret value.
+       *
+       * Optional because the hosted web client does not expose it; the page
+       * is hidden there.
+       */
+      mcpRegistry?: {
+        context: (args: { projectRoot: string | null }) => Promise<McpRegistryContext>;
+        check: (args: { servers: McpRegistryServer[] }) => Promise<McpRegistryResult<McpRegistryCheck>>;
+        setSecret: (args: McpRegistrySecretRef & { value: string }) => Promise<McpRegistryResult<null>>;
+        removeSecret: (args: McpRegistrySecretRef) => Promise<McpRegistryResult<null>>;
+        /** Drops the vault items `server` no longer names; all of them when `keep` is null. */
+        pruneSecrets: (args: { server: string; keep: McpRegistryServer | null }) => Promise<McpRegistryResult<null>>;
+        scan: (args: { projectRoot: string | null }) => Promise<McpRegistryScan>;
+        import: (args: { name: string; projectRoot: string | null }) => Promise<McpRegistryImportResult>;
+      };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
@@ -4583,7 +4756,7 @@ declare global {
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
-      /** Apple Music: playback through the on-demand player host, browsing through the Apple Music API. */
+      /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */
       music?: MusicBridge;
       perf: {
         getConfig: () => Promise<{

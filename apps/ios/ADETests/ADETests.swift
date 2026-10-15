@@ -507,11 +507,11 @@ final class ADETests: XCTestCase {
 
   func testImportProviderLabelsCoverEveryProvider() {
     XCTAssertEqual(
-      ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "factory"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "factory"]
         .map(workExternalSessionProviderName),
-      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
+      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Muse", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
     )
-    XCTAssertEqual(Set(workProviderImportRules.keys).count, 10)
+    XCTAssertEqual(Set(workProviderImportRules.keys).count, 11)
   }
 
   /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
@@ -524,6 +524,7 @@ final class ADETests: XCTestCase {
       "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
       "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "muse": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
@@ -533,7 +534,7 @@ final class ADETests: XCTestCase {
     for (provider, rules) in expected {
       XCTAssertEqual(workProviderImportRules[provider], rules, provider)
     }
-    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"])
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot"])
   }
 
   func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
@@ -581,10 +582,10 @@ final class ADETests: XCTestCase {
   }
 
   func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
-    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 10)
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 11)
     XCTAssertEqual(
       workImportScanProviders(hostKnowsAcpProviders: false),
-      ["claude", "codex", "cursor", "droid", "opencode", "pi"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]
     )
   }
 
@@ -3829,6 +3830,58 @@ final class ADETests: XCTestCase {
   /// connects it again: Settings lists it as available (with Connect), not as
   /// a primary that cannot be reached, and a machine the user connects next
   /// becomes primary instead of a fleet machine beside nothing.
+  /// Bonjour resolves the same machine with and without its IPv6 addresses
+  /// from one browse to the next. A resolution that only drops addresses the
+  /// profile holds keeps the fuller list (re-saving on every flip froze the
+  /// main thread); one that brings a new address replaces it.
+  @MainActor
+  func testDiscoveryKeepsFullerLanRoutesWhenAResolutionOnlyDropsAddresses() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-id",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret", makeActive: true)
+    func resolution(_ addresses: [String]) -> DiscoveredSyncHost {
+      DiscoveredSyncHost(
+        id: "studio-id",
+        serviceName: "ADE Sync studio 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "studio-id",
+        port: 8787,
+        addresses: addresses,
+        tailscaleAddress: nil,
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0",
+        projectIds: [],
+        projectNames: [],
+        projectCount: 0,
+        lastResolvedAt: "2026-05-10T10:00:00.000Z"
+      )
+    }
+    let full = ["192.168.1.113", "2605:a601::2"]
+
+    service.applyDiscoveredHostsForTesting([resolution(full)])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full)
+
+    service.applyDiscoveredHostsForTesting([resolution(["192.168.1.113"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, full, "A dropped IPv6 address is resolver noise at first.")
+
+    service.applyDiscoveredHostsForTesting([resolution(["10.0.0.9"])])
+    XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, ["10.0.0.9"], "A new address is a move, not noise.")
+  }
+
   @MainActor
   func testUserDisconnectedPrimaryListsAsAvailable() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -8928,6 +8981,58 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  /// The machine's project id for a checkout the phone has cached under its
+  /// own id: once adopted, a plain catalog refresh (the one every changeset
+  /// runs) must keep it. Mapping it back re-keyed the project on every
+  /// connect, and each flip cancelled the hydration in flight.
+  @MainActor
+  func testSyncServiceKeepsAdoptedRemoteProjectIdAcrossCatalogRefreshes() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("cached-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-two", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-1", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('cached-project', '/tmp/project-two', 'Project Two', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "cached-project")
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "runtime-project",
+        displayName: "Project Two",
+        rootPath: "/tmp/project-two",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 3,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+
+    service.refreshProjectCatalog()
+    service.refreshProjectCatalog()
+
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-two")
+    XCTAssertEqual(service.projects.filter { $0.rootPath == "/tmp/project-two" }.map(\.id), ["runtime-project"])
+
+    database.close()
+  }
+
   @MainActor
   func testSyncServiceSeedsRuntimeProjectRowBeforeHydration() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
@@ -13280,15 +13385,22 @@ final class ADETests: XCTestCase {
       ),
     ]
 
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .active), 3)
-    XCTAssertEqual(laneScopeCount(snapshots, scope: .archived), 1)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .running), 2)
-    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .awaitingInput), 1)
+    // The Lanes chips: each filter's lanes. An archived lane with a running
+    // chat is Archived only, never Running.
+    let expectedByFilter: [(LaneQuickFilter, [String])] = [
+      (.active, ["lane-primary", "lane-attached-active", "lane-worktree"]),
+      (.running, ["lane-primary"]),
+      (.attention, ["lane-worktree"]),
+      (.dirty, ["lane-attached-active"]),
+      (.archived, ["lane-archived"]),
+    ]
+    for (filter, expectedIds) in expectedByFilter {
+      XCTAssertEqual(snapshots.filter(filter.matches).map(\.lane.id), expectedIds, "\(filter)")
+    }
 
     let activeFiltered = laneListFilteredSnapshots(
       snapshots,
       scope: .active,
-      runtimeFilter: .all,
       searchText: "",
       pinnedLaneIds: ["lane-worktree"]
     )
@@ -13308,11 +13420,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:unknown"))
     XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "type:attached"))
 
-    XCTAssertEqual(laneListEmptyStateTitle(scope: .active), "No active lanes")
-    XCTAssertEqual(
-      laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
-      "Try a different search or clear the filter."
-    )
   }
 
   func testLaneDeleteDependencyBatchesKeepAncestorsAfterSelectedDescendants() {
@@ -20673,6 +20780,40 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workIsSceneFenceLanguage(""))
   }
 
+  /// Desktop `isReaderAuthoredMessage`: a message ADE wrote for the user (a
+  /// wake, a continuation) does not answer a scene. Only the reader's does.
+  @MainActor
+  func testSceneIsAnsweredOnlyByAMessageTheReaderWrote() throws {
+    let scene = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Pick one.","turnId":"turn-1","itemId":"item-1"}}"#
+    let wake = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"user_message","text":"Scheduled check.","turnId":"turn-2","metadata":{"scheduledWake":{"id":"w1"}}}}"#
+    let continuation = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"user_message","text":"Continue.","turnId":"turn-3","metadata":{"hostContinuation":true}}}"#
+    let reader = #"{"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"user_message","text":"Option A","turnId":"turn-4","metadata":{"usageLimitResume":null}}}"#
+
+    func answer(_ envelopes: [WorkChatEnvelope]) -> String? {
+      let messages = buildWorkChatMessages(from: envelopes)
+      let bridge = WorkSceneChatBridge()
+      bridge.timeline = {
+        messages.enumerated().map { index, message in
+          WorkTimelineEntry(id: message.id, timestamp: message.timestamp, rank: index, payload: .message(message))
+        }
+      }
+      guard let sceneMessage = messages.first(where: { $0.role != "user" }) else { return nil }
+      return bridge.answeredText(afterMessageId: sceneMessage.id)
+    }
+
+    // The stored transcript path.
+    XCTAssertNil(answer(parseWorkChatTranscript([scene, wake, continuation].joined(separator: "\n"))))
+    XCTAssertEqual(answer(parseWorkChatTranscript([scene, wake, continuation, reader].joined(separator: "\n"))), "Option A")
+
+    // The live sync path.
+    let decoder = JSONDecoder()
+    func synced(_ lines: [String]) throws -> [WorkChatEnvelope] {
+      try lines.map { makeWorkChatEnvelope(from: try decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8))) }
+    }
+    XCTAssertNil(answer(try synced([scene, wake, continuation])))
+    XCTAssertEqual(answer(try synced([scene, wake, continuation, reader])), "Option A")
+  }
+
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"functions.Read","args":{"path":"README.md"},"turnId":"turn-1"}}
@@ -20723,7 +20864,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogUsesRequestedProviderOrder() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
 
-    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "cursor", "opencode", "droid"])
+    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "muse", "cursor", "opencode", "droid"])
   }
 
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {
@@ -24504,6 +24645,32 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.isInProgress, false)
   }
 
+  func testWorkContextCompactLifecycleKeepsFirstStartWhenTheHostRepeatsCompacting() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+      // A host that repeats Claude's `compacting` status every ~30s sends
+      // another "started" for the same compaction. The running divider counts
+      // its elapsed from the card's timestamp, so the repeat must not move it.
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:31.000Z",
+        sequence: 2,
+        event: .contextCompact(summary: "Manual", isInProgress: true, postTokens: nil, turnId: "turn-compact", compactionId: "turn-compact")
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.timestamp, "2026-06-15T00:00:01.000Z")
+    XCTAssertEqual(cards.first?.isInProgress, true)
+  }
+
   func testWorkContextCompactLifecycleMergesCrossTurnCompletionByCompactionId() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
@@ -25382,6 +25549,28 @@ final class ADETests: XCTestCase {
       workToolArgPreview(toolName: "computer_use", argsText: #"{"status":"ready"}"#),
       "· ready"
     )
+  }
+
+  /// The phone's copy of the desktop command parser
+  /// (`computerUseActionSummary.ts`): shell redirections belong to the shell,
+  /// not to the command's flags, and quoted text that only looks like one is
+  /// still an argument. Same rows as the desktop table.
+  func testComputerUseSummaryKeepsShellRedirectionsOutOfTheAction() {
+    let rows: [(command: String, output: String, text: String, outcome: WorkComputerUseOutcome)] = [
+      ("ade browser click --x 537 --y 411 --text 2>&1 | grep ok", "", "Clicked at 537, 411 using ADE browser", .notChecked),
+      ("ade browser click --text \"<Submit>\" 2>&1", "", "Clicked “<Submit>” using ADE browser", .notChecked),
+      ("ade screen type \">\" --app Notes", "", "Typed “>” in Notes", .notChecked),
+      ("ade screen type hello *>$null", "", "Typed “hello” on the lane screen", .notChecked),
+      ("ade proof capture --caption Login --text>proof.txt", "Attached", "Filed proof “Login”", .unconfirmed),
+    ]
+    for row in rows {
+      guard let action = workComputerUseSummary(command: row.command, output: row.output, status: "completed", exitCode: 0) else {
+        XCTFail("No computer-use summary for \(row.command)")
+        continue
+      }
+      XCTAssertEqual(workComputerUseText(action), row.text, row.command)
+      XCTAssertEqual(action.outcome, row.outcome, row.command)
+    }
   }
 
   func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {

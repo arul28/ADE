@@ -16,6 +16,7 @@ export const TRACKED_AGENT_CLI_TOOL_TYPES: readonly TrackedAgentCliToolType[] = 
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",

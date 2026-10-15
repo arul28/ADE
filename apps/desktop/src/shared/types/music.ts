@@ -1,10 +1,18 @@
 /**
  * The Music feature's contract between the main process and the renderer.
  *
- * Apple Music plays in a separate player host (WebView2 on Windows; WKWebView
- * on macOS later) that the main process starts on demand and unloads when idle.
- * Catalog and library reads go straight from the main process to the Apple
- * Music API, so browsing never needs the host. See docs/features/music/README.md.
+ * Two providers sit behind one bridge; the main process routes every call to
+ * the selected one (`selectProvider`) and pushes only its state.
+ * - Apple Music plays in a separate player host (WebView2 on Windows,
+ *   WKWebView on macOS) that the main process starts on demand and unloads
+ *   when idle. Catalog and library reads go straight from the main process to
+ *   the Apple Music API, so browsing never needs the host.
+ * - Spotify plays inside ADE too: its Web Playback SDK runs in the same player
+ *   host on its own page, and ADE shows up in Spotify as a Connect device. It
+ *   can also drive another device (the Spotify app, a phone, a speaker)
+ *   through the Web API. Spotify Premium is required. Item ids are Spotify
+ *   URIs (`spotify:track:…`).
+ * See docs/features/music/README.md.
  */
 
 export const MUSIC_IPC = {
@@ -25,17 +33,78 @@ export const MUSIC_IPC = {
   unload: "ade.music.unload",
   showSignIn: "ade.music.showSignIn",
   cancelSignIn: "ade.music.cancelSignIn",
+  selectProvider: "ade.music.selectProvider",
+  configureSpotify: "ade.music.configureSpotify",
+  devices: "ade.music.devices",
+  transfer: "ade.music.transfer",
   stateEvent: "ade.music.state",
 } as const;
 
+export type MusicProvider = "apple" | "spotify";
+
+/** A Spotify Connect device, as `GET /me/player/devices` lists it. */
+export type MusicDevice = {
+  id: string;
+  name: string;
+  /** Spotify's type: "Computer", "Smartphone", "Speaker", "TV", … */
+  type: string;
+  isActive: boolean;
+  /** Spotify refuses commands to this device (some restricted devices). */
+  isRestricted: boolean;
+  /** 0..1, or null when the device does not report or allow volume. */
+  volume: number | null;
+  supportsVolume: boolean;
+};
+
+/** Spotify's own part of `MusicState` (present whenever the state carries `provider`). */
+export type MusicSpotifyState = {
+  /** A Spotify app Client ID is set (the user's own app from developer.spotify.com). */
+  configured: boolean;
+  clientId: string | null;
+  /**
+   * The redirect URI to register in that Spotify app, exactly, port included.
+   * ADE's sign-in always listens on `MUSIC_SPOTIFY_CALLBACK_PORT`: Spotify's
+   * dashboard rejects a portless loopback URI as "not secure".
+   */
+  redirectUri: string;
+  /** The device playback runs on, when Spotify reports one. */
+  device: MusicDevice | null;
+};
+
+/** The `transfer` device id for ADE's own Spotify player, which has no Spotify id until it runs. */
+export const MUSIC_SPOTIFY_ADE_DEVICE = "ade";
+
+/** The name ADE's own Spotify player has in Spotify's device list. */
+export const MUSIC_SPOTIFY_ADE_DEVICE_NAME = "ADE";
+
+/** Whether a Spotify device is ADE's own player. */
+export function isAdeSpotifyDevice(device: Pick<MusicDevice, "name" | "type"> | null | undefined): boolean {
+  return device?.name === MUSIC_SPOTIFY_ADE_DEVICE_NAME && device.type === "Computer";
+}
+
+/**
+ * The loopback port ADE's Spotify sign-in listens on. Spotify's dashboard
+ * refuses a portless `http://127.0.0.1/...` redirect as "not secure", so the
+ * port is fixed and part of the URI the user registers.
+ */
+export const MUSIC_SPOTIFY_CALLBACK_PORT = 43219;
+
+/** The redirect URI to register in the Spotify app. */
+export const MUSIC_SPOTIFY_REDIRECT_URI = `http://127.0.0.1:${MUSIC_SPOTIFY_CALLBACK_PORT}/spotify/callback`;
+
+export type MusicConfigureSpotifyResult = { ok: true } | { ok: false; error: string };
+
 /**
  * Where the feature stands, in the order a user meets it.
- * - `unsupported`: this platform has no player host yet (macOS today).
+ * - `unsupported`: this platform has no player host (Apple Music off Windows and macOS).
  * - `unavailable`: no developer token (signed out of ADE, the token service is
  *   down, or the host binary is missing). `message` says which.
  * - `ready`: catalog works. `authorized` says whether the library and playback do.
  */
 export type MusicAvailability = "unsupported" | "unavailable" | "ready";
+
+/** The state's `message` when Spotify needs a Client ID before Connect. */
+export const MUSIC_SPOTIFY_NOT_CONFIGURED = "Add your Spotify app's Client ID to connect Spotify.";
 
 /** The player host's own lifecycle. `suspended` = unloaded with a track kept to resume. */
 export type MusicHostStatus = "stopped" | "starting" | "running" | "suspended" | "failed";
@@ -55,11 +124,13 @@ export type MusicPlaybackState =
 export type MusicItemKind = "song" | "album" | "playlist" | "artist" | "station";
 
 export type MusicArtwork = {
-  /** Apple's template, with `{w}` and `{h}` placeholders. Use `musicArtworkUrl()`. */
+  /** Apple's template, with `{w}` and `{h}` placeholders; for Spotify the largest image. Use `musicArtworkUrl()`. */
   url: string;
   width: number | null;
   height: number | null;
   bgColor: string | null;
+  /** Fixed-size images (Spotify), any order. `musicArtworkUrl()` picks the smallest that covers the size. */
+  sizes?: Array<{ url: string; width: number | null }>;
 };
 
 export type MusicItem = {
@@ -79,6 +150,11 @@ export type MusicItem = {
   trackCount: number | null;
   releaseYear: number | null;
   explicit: boolean;
+  /**
+   * The item's page on the provider's site (Spotify: open.spotify.com). Spotify
+   * requires its metadata and artwork to link back there; show "Open in Spotify".
+   */
+  externalUrl?: string | null;
 };
 
 export type MusicNowPlaying = {
@@ -90,11 +166,16 @@ export type MusicNowPlaying = {
   durationMs: number | null;
   library: boolean;
   catalogId: string | null;
+  externalUrl?: string | null;
 };
 
 export type MusicRepeatMode = 0 | 1 | 2; // none, one, all
 
 export type MusicState = {
+  /** The provider this state describes (the selected one). Absent means Apple Music. */
+  provider?: MusicProvider;
+  /** Spotify's setup and device; present when the state carries `provider`. */
+  spotify?: MusicSpotifyState;
   availability: MusicAvailability;
   /** Why the feature is unavailable or what last failed, in plain words. */
   message: string | null;
@@ -159,6 +240,9 @@ export type MusicSearchResult = {
 
 export type MusicLibraryKind = "playlists" | "albums" | "songs";
 
+/** A collection (album or playlist) is read up to this many songs, 100 per page. */
+export const MUSIC_MAX_COLLECTION_TRACKS = 2_000;
+
 export type MusicPage = {
   items: MusicItem[];
   /** Offset for the next page, or null at the end. */
@@ -188,7 +272,8 @@ export type MusicBridge = {
   search: (args: { term: string; scope: MusicSearchScope; limit?: number }) => Promise<MusicSearchResult>;
   library: (args: { kind: MusicLibraryKind; offset?: number; limit?: number }) => Promise<MusicPage>;
   recent: () => Promise<MusicRecent>;
-  tracks: (args: { kind: "album" | "playlist"; id: string; library: boolean }) => Promise<MusicItem[]>;
+  /** One page of an album's or playlist's songs (`limit` up to 100); read on with `nextOffset`. */
+  tracks: (args: { kind: "album" | "playlist"; id: string; library: boolean; offset?: number; limit?: number }) => Promise<MusicPage>;
   /** The like state of a song: true liked, false disliked, null neither. */
   rating: (args: { id: string; library: boolean }) => Promise<boolean | null>;
   setRating: (args: { id: string; library: boolean; liked: boolean | null }) => Promise<void>;
@@ -202,12 +287,24 @@ export type MusicBridge = {
   showSignIn: () => Promise<void>;
   /** Close Apple's sign-in window, which ends Connect as cancelled. */
   cancelSignIn: () => Promise<void>;
+  /** Switch provider: pauses the one playing, remembers the choice, resolves with the new state. */
+  selectProvider: (provider: MusicProvider) => Promise<MusicState>;
+  /** Set (or clear with null) the Spotify app Client ID. Changing it signs Spotify out. */
+  configureSpotify: (args: { clientId: string | null }) => Promise<MusicConfigureSpotifyResult>;
+  /** Spotify Connect devices; empty for Apple Music. */
+  devices: () => Promise<MusicDevice[]>;
+  /** Move Spotify playback to a device (`play` keeps it playing there, default true). */
+  transfer: (args: { deviceId: string; play?: boolean }) => Promise<MusicCommandResult>;
   onState: (cb: (state: MusicState) => void) => () => void;
 };
 
 /** An Apple artwork template at a pixel size (use 2x the CSS size). */
 export function musicArtworkUrl(artwork: MusicArtwork | null | undefined, size: number): string | null {
   if (!artwork?.url) return null;
+  if (artwork.sizes?.length) {
+    const sized = [...artwork.sizes].sort((a, b) => (a.width ?? Infinity) - (b.width ?? Infinity));
+    return (sized.find((image) => (image.width ?? Infinity) >= size) ?? sized[sized.length - 1]!).url;
+  }
   const px = String(Math.max(16, Math.round(size)));
   return artwork.url.replace("{w}", px).replace("{h}", px).replace("{f}", "jpg").replace("{c}", "bb");
 }

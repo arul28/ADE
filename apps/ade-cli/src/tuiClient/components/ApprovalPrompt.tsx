@@ -47,6 +47,7 @@ const PROVIDER_ACCENT_SOURCES = new Set([
   "droid",
   "opencode",
   "pi",
+  "muse",
   "qwen",
   "kimi",
   "grok",

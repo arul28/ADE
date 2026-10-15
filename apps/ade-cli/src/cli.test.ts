@@ -3347,6 +3347,17 @@ describe("ADE CLI", () => {
       /Unknown search kind/,
     );
 
+    // `--query <text>` names the query; its value is not read as a positional.
+    for (const flag of ["--query", "-q"]) {
+      expect(expectExecutePlan(buildCliPlan(["search", flag, "login redirect", "--kind", "chat"])).steps[0]?.params)
+        .toMatchObject({ arguments: { args: { query: "login redirect", kinds: ["chat"] } } });
+    }
+    // An option search does not know is refused, never dropped: a `--socket`
+    // written after the command used to send the search to the default brain.
+    expect(() => buildCliPlan(["search", "q", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "--query", "--socket", "/tmp/test.sock"])).toThrow(/goes before the command/);
+    expect(() => buildCliPlan(["search", "q", "--bogus"])).toThrow(/Unknown search option: --bogus/);
+
     // A missing query is a usage error, but --status / --rebuild are not queries.
     expect(() => buildCliPlan(["search"])).toThrow(/requires a query/);
     const status = expectExecutePlan(buildCliPlan(["search", "--status"]));
@@ -4007,7 +4018,9 @@ describe("ADE CLI", () => {
         "shell",
         "--print-config",
       ]),
-    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or devin/);
+    // Assert the rejection, not the exact provider roster: the roster grows
+    // (muse, pi, qwen, …) and pinning its copy makes every addition edit here.
+    ).toThrow(/provider must be one of/);
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {
@@ -4522,6 +4535,22 @@ describe("ADE CLI", () => {
       reasoningEffort: "high",
       fastMode: true,
     });
+  });
+
+  it("asks for Codex Ultrafast with --ultrafast, which means Fast on", () => {
+    const base = ["chat", "create", "--lane", "lane-1", "--provider", "codex", "--model", "openai/gpt-6.1-sol"];
+    const value = expectStaticPlan(buildCliPlan([...base, "--ultrafast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(value.input).toMatchObject({ provider: "codex", fastMode: true, fastTier: "ultrafast" });
+
+    const plainFast = expectStaticPlan(buildCliPlan([...base, "--fast", "--dry-run"])).value as {
+      input: Record<string, unknown>;
+    };
+    expect(plainFast.input.fastMode).toBe(true);
+    expect(plainFast.input).not.toHaveProperty("fastTier");
+
+    expect(() => buildCliPlan([...base, "--ultrafast", "--standard", "--dry-run"])).toThrow(/not both/);
   });
 
   // ADE-135: `ade prs checks` printed nothing but the row table, so three
@@ -8145,6 +8174,118 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("signs in from another device while the browser sign-in on this machine is still pending", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-login-both-"));
+    const socketPath = path.join(root, "ade.sock");
+    // A stand-in for the OS opener, so the browser handoff succeeds and no
+    // real browser opens.
+    const binDir = path.join(root, "bin");
+    fs.mkdirSync(binDir);
+    for (const opener of ["open", "xdg-open"]) {
+      fs.writeFileSync(path.join(binDir, opener), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    }
+    const authorizeUrl = "https://accounts.example/authorize";
+    const verificationUri = "https://directory.example/device";
+    const requests: Array<{ method: string; params?: any }> = [];
+    const answer = (action: string, result: unknown) => ({ domain: "account", action, result, statusHints: {} });
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push({ method: request.method, params: request.params });
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              buildHash: null,
+              defaultRole: "cto",
+              packageChannel: null,
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        if (request.method === "account.call") {
+          const action = request.params?.action;
+          if (action === "status") {
+            return answer(action, { signedIn: false, userId: null, email: null, name: null, expiresAt: null, source: null });
+          }
+          if (action === "startLogin") {
+            return answer(action, {
+              sessionId: "loopback-1",
+              authorizeUrl,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            });
+          }
+          if (action === "startDeviceLogin") {
+            return answer(action, {
+              sessionId: "device-1",
+              userCode: "ABCD-EFGH",
+              verificationUri,
+              verificationUriComplete: `${verificationUri}?user_code=ABCD-EFGH`,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              intervalSec: 0.01,
+            });
+          }
+          // Nobody uses the browser on this machine.
+          if (action === "pollLogin") return answer(action, { status: "pending", message: null });
+          if (action === "pollDeviceLogin") {
+            return answer(action, {
+              status: "signed_in",
+              authStatus: { signedIn: true, email: "person@example.com", source: "device" },
+            });
+          }
+          if (action === "cancelLogin") return answer(action, { signedIn: true });
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    const envKeys = [
+      "ADE_ACCOUNT_TOKEN",
+      "DISPLAY",
+      "PATH",
+      "SSH_CLIENT",
+      "SSH_CONNECTION",
+      "SSH_TTY",
+      "WAYLAND_DISPLAY",
+    ] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      delete process.env.ADE_ACCOUNT_TOKEN;
+      process.env.DISPLAY = ":0";
+      process.env.PATH = binDir;
+      delete process.env.SSH_CLIENT;
+      delete process.env.SSH_CONNECTION;
+      delete process.env.SSH_TTY;
+      delete process.env.WAYLAND_DISPLAY;
+
+      const result = await runCli(["--socket", socketPath, "login", "--max-wait", "5", "--text"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("person@example.com");
+      // Both ways in were offered by the one command.
+      const printed = stderrWrite.mock.calls.flat().join("");
+      expect(printed).toContain(authorizeUrl);
+      expect(printed).toContain(verificationUri);
+      expect(printed).toContain("ABCD-EFGH");
+      // The listener on this machine is closed, so the browser tab that is
+      // still open here cannot finish a second sign-in.
+      const cancelled = requests
+        .filter((request) => request.method === "account.call" && request.params?.action === "cancelLogin")
+        .map((request) => request.params?.args?.sessionId);
+      expect(cancelled).toEqual(["loopback-1"]);
+    } finally {
+      stderrWrite.mockRestore();
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("advises starting the machine brain when a personal chat connection fails", async () => {
     const socketPath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-personal-chat-missing-")),
@@ -10995,6 +11136,34 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("uploads the proof a PR text cites after the PR is made, and only then", () => {
+    const steps = (argv: string[]) => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind, "an executable plan").toBe("execute");
+      return plan.kind === "execute" ? plan.steps.map((step) => [step.key, Boolean(step.optional)]) : [];
+    };
+    const cited = "## Evidence\n![The list](ade-proof://pic-1)";
+    // The upload is optional on both commands: a PR that was made or a text
+    // that was replaced stays a success when GitHub refuses the pictures.
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "body", "12", "--body", cited])).toEqual([
+      ["result", false],
+      ["proofList", true],
+      ["proofLink", true],
+    ]);
+    expect(steps(["prs", "create", "--lane", "lane-1", "--body", "No pictures here."])).toEqual([["result", false]]);
+    // The explicit command fails loudly when it cannot read the proof.
+    expect(steps(["proof", "publish", "--pr", "12", "--in-body"])).toEqual([["proofList", false], ["proofLink", true]]);
+    expect(() => buildCliPlan(["proof", "publish", "--pr", "12", "--in-body", "pic-1"])).toThrow(/takes no ids/);
+    // A missing flag must not replace the PR text with nothing; an explicit empty text may.
+    expect(() => buildCliPlan(["prs", "body", "12"])).toThrow(/needs --body/);
+    expect(steps(["prs", "body", "12", "--body", ""])).toEqual([["result", false]]);
+  });
+
   it("summarizes PR create output with GitHub and ADE links", () => {
     const connection = {
       mode: "headless" as const,
@@ -12017,6 +12186,23 @@ describe("ADE CLI", () => {
           spawnKind: "subagent",
         },
       });
+      const args = (plan.steps[0]?.params as { arguments: Record<string, unknown> }).arguments;
+      expect(args).not.toHaveProperty("permissionMode");
+
+      const explicitMode = expectExecutePlan(buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+        "--type",
+        "subagent",
+        "--permission-mode",
+        "plan",
+      ]));
+      expect(
+        (explicitMode.steps[0]?.params as { arguments: Record<string, unknown> }).arguments.permissionMode,
+      ).toBe("plan");
     });
   });
 

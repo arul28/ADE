@@ -2,7 +2,7 @@
 // For a watcher over <directory>: time until ready, time to close, the longest event-loop
 // block, and CPU at idle, for the native tree watcher and for chokidar in polling mode.
 // WITH_NATIVE_CHOKIDAR=1 adds chokidar's own native mode, which shows the close stall
-// that polling was chosen to avoid. Read-only. macOS only.
+// that polling was chosen to avoid. Read-only. macOS and Windows.
 import chokidar from "../../../apps/desktop/node_modules/chokidar/index.js";
 import { watchTree } from "../../../apps/desktop/src/main/services/shared/treeWatcher";
 const root = process.argv[2]!; const ignored = [/(^|[/\\])\.git($|[/\\])/, /(^|[/\\])node_modules($|[/\\])/, /(^|[/\\])\.ade($|[/\\])/];

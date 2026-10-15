@@ -1,5 +1,7 @@
+import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
+import { sentryOptions, type SentryEnv } from "./sentry";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 import {
@@ -26,9 +28,9 @@ import {
   type UsageResearchEnv,
 } from "./usageResearch";
 
-type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv;
+type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & SentryEnv;
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
     // Diagnostics and usage research are matched before the directory because
     // they are the routes here that are not account-scoped: `handleRequest`
@@ -73,4 +75,4 @@ export default {
       settle("model_registry", () => runModelRegistryCron(env)),
     ]));
   },
-};
+});

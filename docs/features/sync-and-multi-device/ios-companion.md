@@ -340,7 +340,9 @@ apps/ios/
 │   │   │                               # project action envelopes
 │   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
 │   │   │                            # handler. Compact PR links flip tabs via
-│   │   │                            # .adeDeepLinkRequested. Session links publish
+│   │   │                            # .adeDeepLinkRequested. A device sign-in
+│   │   │                            # link posts .adeDeviceSignInRequested, and
+│   │   │                            # ADEApp shows the approval sheet. Session links publish
 │   │   │                            # WorkSessionNavigationRequest with lane/repo/
 │   │   │                            # branch/event/offset scope; the app-root task
 │   │   │                            # routes the request to Hub or Work, including
@@ -370,6 +372,13 @@ apps/ios/
 │   │   │                            # lifecycle columns for fresh installs
 │   │   │                            # (Database.swift owns the matching
 │   │   │                            # ensureColumn migrations for upgrades)
+│   │   ├── SceneShell.html          # generated from desktop buildSceneDocument
+│   │   │                            # (policy, base styles, the in-frame SDK,
+│   │   │                            # ade.chart) with tokens Swift fills.
+│   │   │                            # Regenerate after a change to
+│   │   │                            # shared/chatScene*.ts:
+│   │   │                            # node apps/desktop/scripts/generate-ios-scene-shell.mjs
+│   │   │                            # (--check exits 1 when it is stale)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── AccountService.swift     # Clerk-backed account identity,
@@ -384,6 +393,15 @@ apps/ios/
 │   │   │                            # install labels (channel/adeHome →
 │   │   │                            # installLabel/rowLabel) + Attention relay
 │   │   │                            # clients
+│   │   ├── DeviceSignInApproval.swift # the sign-in link of another computer
+│   │   │                            # (https://ade-app.dev/device?user_code=…):
+│   │   │                            # parses the code and calls the account
+│   │   │                            # directory's /device/approve to read what
+│   │   │                            # the code is for and to approve it. The
+│   │   │                            # sheet is Views/Account/
+│   │   │                            # DeviceSignInApprovalSheet.swift; every web
+│   │   │                            # sign-in sheet anchors through Views/
+│   │   │                            # Components/WebAuthPresentationAnchor.swift
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -2901,7 +2919,7 @@ save through the same contract, then `workCliInitialInput` serializes the temp
 paths into the desktop-compatible `Attached files and images:` manifest inside
 `work.startCliSession.initialInput`.
 
-Work can also import provider-native CLI sessions from all 10 import providers
+Work can also import provider-native CLI sessions from all 11 import providers
 (Claude, Codex, Cursor, Droid, OpenCode, Pi, Qwen, Kimi, Grok, Copilot).
 `WorkImportSessionScreen` first shows a compact searchable list with provider
 chips, a lane filter menu (per-lane counts plus "Other folders"), and a
@@ -3577,8 +3595,9 @@ instances. Each `ProviderAccountRow` carries the account's quota meters
 (`providerAccountWindows` / `ProviderAccountQuotaMeter`), ordered by the shared
 `adeUsageWindowRank`, and
 marks the account smart balance would give the next chat (**Next**, from
-`MobileUsageQuotaSnapshot.balanceNext`). Swipe or context menu makes an account
-the default, removes one, or opens `ProviderAccountDetailPage` (make default,
+`MobileUsageQuotaSnapshot.balanceNext`; for Claude this previews the same
+weekly-first, five-hour reserve rotation as desktop). Swipe or context menu
+makes an account the default, removes one, or opens `ProviderAccountDetailPage` (make default,
 sign in again, rename, remove); a running-chats note makes clear that switching
 the default only changes new chats. **Add account** opens
 `ProviderAccountAddSheet` (name only — there is no accent step). Sign-in runs
@@ -3736,6 +3755,35 @@ Top-level tabs and detail screens observe only the revision that maps
 to their data, so a chat transcript changeset no longer causes Files,
 Lanes, and PRs to all re-query together.
 
+The Lanes and PRs tabs go one step further, like the Work tab: a thin shell
+(`LanesTabShell`, `PRsTabShell`) narrows `SyncService` into an `Equatable`
+input struct (`LanesRootInputs`, `PrsRootInputs`) and the screen behind it is
+`.equatable()` on that struct. While a tab is hidden, only its navigation
+request and the active project are tracked, so a hidden tab does not re-render
+on every sync publish. A field the body draws from `SyncService` must be in the
+struct, or the screen goes stale when only that field changes. Both tabs stay
+mounted across a project switch, so each clears its previous project's rows on
+`activeProjectId` changes.
+
+The active project id itself must stay stable through the first hydration.
+When the phone has the checkout cached under its own id and the machine reports
+another id for the same root, the catalog reconcile adopts the machine's id
+once and keeps it (`refreshProjectCatalog` keeps the remote identity when the
+active id already matches it). If the id still changes for the same root while
+connected, `setActiveProjectId` restarts the initial hydration: the refreshes
+already in flight were scoped to the old id and cancel themselves, which once
+left every domain on "syncing initial data" with nothing to retry it.
+
+The Lanes tab is a `List`: a search field (the screen hides its navigation
+bar, so `.searchable` never rendered), quick-filter chips with counts
+(`LaneQuickFilter`: Active, Running, Needs you, Changes, Archived), then the
+focused machine's lanes in stack order and each other machine's lanes under its
+name. Rows swipe to pin and to archive or restore; a machine without a live
+link shows its last roster dimmed, with no swipe actions. Opening a lane pushes
+`LaneRoute` on the tab's navigation path. Lane detail reads the cache and the
+host once on open, and reads the cache again if a local revision landed during
+that host read.
+
 ## PR data projection
 
 The iOS PR wizard (`CreatePrWizardView`) supports three create modes —
@@ -3876,7 +3924,15 @@ Reading order (the desktop triage layout, native to a phone):
    lane (`prs.linkToLane`), or Open in GitHub;
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
-   native `DisclosureGroup` rows instead of visible raw tags;
+   native `DisclosureGroup` rows instead of visible raw tags. Media in the
+   text is drawn as media (`prDescriptionPieces` in
+   `PrGitHubDescriptionParser.swift`, the twin of the desktop's
+   `prBodyProof.ts`): a picture alone on its line, a GitHub attachment alone
+   on its line as a video that loads only on a tap, and a Before/After table
+   of pictures as a comparison (stacked on a phone, side by side at regular
+   width). Only media that GitHub serves is loaded (`prIsGitHubMediaURL`); a
+   picture on any other host stays words, because a PR text can be written by
+   anyone and a remote picture tells its author who read it;
 4. "Needs attention" (`PrNeedsAttentionHeader`): the unresolved review threads,
    with reply and resolve, pinned above the history;
 5. the history, built by `buildPullRequestTimeline` and folded by
@@ -3890,7 +3946,14 @@ Reading order (the desktop triage layout, native to a phone):
 
 The next step is a bar above the tab bar on every tab (`PrNextStepBar`). It
 shows the headline from `PrNextStep.resolve` (the Swift port of the desktop
-`resolvePrNextStep`, same priority order) and its one action. A tap on the
+`resolvePrNextStep`, same priority order) and its one action. The merge state
+comes only from the PR's snapshot: until one loads the bar reads "Checking
+merge status…" with no action, and once the loads settle without one (offline,
+or the read failed) it reads "Merge status unavailable". It never falls back to
+the list row's data, which would read as "Ready to merge". The bar is opaque.
+The number, author, and state sit in the navigation bar
+(`PrFlatDetailNavTitle`); the description shows placeholder lines while it
+loads and folds behind "Show more" when long. A tap on the
 headline opens `PrNextStepSheet` with the detail, the requirement chips, the
 secondary action, and "Merge anyway" (the admin bypass when rules block), which
 opens the existing merge-method sheet. The inline merge rail and the checks,
@@ -4522,14 +4585,15 @@ the stats and shows update guidance.
   cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
   atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
-  queue, so it no longer hides behind an accordion: one queued message is a
-  single compact card — waiting glyph, one truncated line of the message, its
-  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
-  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
-  a slim `N queued` count above the rows. While a turn is running the clock
-  glyph breathes and the disposition reads "sends at next step" on a provider
-  that takes a message mid-turn and "sends when turn ends" on one that does
-  not; on an idle session it sits still and reads "after turn". The pulse goes
+  queue, so it no longer hides behind an accordion. There is no frame or
+  header around the rows (the same list desktop draws above its composer): each
+  queued message is one glass row — waiting glyph, one truncated line of the
+  message, a small `Sends next` / `Queued` tag, and **Send now** /
+  **Interrupt** / **Edit** / **Cancel** as visible icon-only buttons with
+  44pt-tall touch areas. The disposition ("sends at next step" on a provider
+  that takes a message mid-turn, "sends when turn ends" on one that does not,
+  "after turn" on an idle session) is in the row's VoiceOver label and its
+  detail sheet. While a turn is running the clock glyph breathes. The pulse goes
   through `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full
   strength.
 - **Tapping a staged row opens its detail sheet.** A truncated line and four

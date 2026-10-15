@@ -48,7 +48,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
-import { getCachedDevinModels, warmDevinModels } from "./devinModelsDiscovery";
+import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
 import {
   getMachineProviderInstanceStore,
@@ -111,6 +111,7 @@ import {
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
+import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, withReportedClaudeVersion } from "./claudeAvailability";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -166,6 +167,7 @@ export type AiIntegrationStatus = {
     droid: boolean;
     // Optional, mirroring `AiSettingsStatus`: a host on an older build has no
     // arm for these and its payload must still deserialise.
+    muse?: boolean;
     qwen?: boolean;
     kimi?: boolean;
     grok?: boolean;
@@ -177,6 +179,7 @@ export type AiIntegrationStatus = {
     codex: AgentModelDescriptor[];
     cursor: AgentModelDescriptor[];
     droid: AgentModelDescriptor[];
+    muse?: AgentModelDescriptor[];
     qwen?: AgentModelDescriptor[];
     kimi?: AgentModelDescriptor[];
     grok?: AgentModelDescriptor[];
@@ -185,7 +188,7 @@ export type AiIntegrationStatus = {
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -425,60 +428,6 @@ function detectClaudeAuthModeFromEntries(auth: DetectedAuth[]): AiClaudeAvailabi
   return "none";
 }
 
-function detectClaudeAuthModeFromConnection(
-  connection: AiProviderConnections["claude"],
-): AiClaudeAvailability["auth"]["mode"] {
-  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
-  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
-  if (localCredentials) return "api_key";
-  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
-  if (cli || connection.authAvailable) return "oauth";
-  return "none";
-}
-
-function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
-  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
-  return resolved.source === "bundled"
-    ? { present: true, source: "bundled", path: resolved.path }
-    : { present: false, source: "missing", path: null };
-}
-
-function buildClaudeAvailabilityFromConnection(
-  connection: AiProviderConnections["claude"],
-  options?: { disabled?: boolean },
-): AiClaudeAvailability {
-  const bundledBinary = resolveBundledClaudeBinary();
-  const binary = bundledBinary.present
-    ? bundledBinary
-    : {
-        present: connection.runtimeDetected,
-        source: connection.runtimeDetected ? "path" as const : "missing" as const,
-        path: connection.path,
-      };
-  const authMode = detectClaudeAuthModeFromConnection(connection);
-  const binaryOnlyBlockers = [
-    "could not find the claude cli",
-    "cli not found",
-    "claude cli is installed",
-    "add that bin directory",
-  ];
-  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
-  const blockerIsOnlyAboutPath = binary.source === "bundled"
-    && binaryOnlyBlockers.some((needle) => normalizedBlocker.includes(needle));
-  const ready = options?.disabled !== true
-    && binary.present
-    && connection.authAvailable
-    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
-  return {
-    binary,
-    auth: {
-      ready,
-      mode: ready ? authMode : "none",
-      detail: ready ? null : connection.blocker,
-    },
-  };
-}
-
 function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiClaudeAvailability {
   const bundledBinary = resolveBundledClaudeBinary();
   const installed = Boolean(status?.installed);
@@ -491,7 +440,7 @@ function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiC
         path: status?.path ?? null,
       };
   return {
-    binary,
+    binary: withReportedClaudeVersion(binary),
     auth: {
       ready: binary.present && ready,
       mode: binary.present && ready ? "oauth" : "none",
@@ -1045,6 +994,9 @@ function buildStatusModelLists(
     codex: availability.codex ? agentModelsFromAvailable(available, "openai") : [],
     cursor: availability.cursor ? agentModelsFromAvailable(available, "cursor") : [],
     droid: availability.droid ? agentModelsFromAvailable(available, "factory") : [],
+    // Usable Muse models once Muse is ready (binary + sign-in). Signed out,
+    // the settings page shows the registry's curated list with a sign-in note.
+    muse: availability.muse ? agentModelsFromAvailable(available, "muse") : [],
     // The ACP providers list their models whenever the CLI is present, not only
     // once signed in: the curated list is what the settings page is for, and an
     // empty page would say "this provider has no models" when what is true is
@@ -1108,7 +1060,8 @@ export function createAiIntegrationService(args: {
         || args.providerConnections.codex.authAvailable
         || args.providerConnections.cursor.authAvailable
         || args.providerConnections.droid.authAvailable
-        || Boolean(args.providerConnections.pi?.authAvailable))
+        || Boolean(args.providerConnections.pi?.authAvailable)
+        || Boolean(args.providerConnections.muse?.authAvailable))
     ) {
       return "subscription";
     }
@@ -1162,6 +1115,8 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
+    // Last session's or probe's live ACP lists, before anything merges on top.
+    applyPersistedAcpModelCatalogs();
     // ACP model ids are provider-owned. In particular, Qwen can be pointed at
     // an arbitrary OpenAI-compatible endpoint, so its own settings are the
     // source of truth when they name models; ADE's curated Alibaba rows are
@@ -1193,19 +1148,11 @@ export function createAiIntegrationService(args: {
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
       if (!hasAuth) continue;
-      if (provider === "devin") {
-        // `devin models list` is the account's real catalog, ahead of the
-        // curated family picks. Serve the cached rows; warm once in the
-        // background when cold so this read never blocks on a subprocess.
-        const discovered = getCachedDevinModels();
-        if (discovered?.length) {
-          mergeDynamicAcpModelDescriptors("devin", discovered);
-        } else {
-          void warmDevinModels().then((rows) => {
-            if (rows.length) mergeDynamicAcpModelDescriptors("devin", rows);
-          });
-        }
-      }
+      // The provider's own list (persisted from the last chat or probe) is the
+      // picker; curated rows are only the fallback before one exists. Refresh
+      // it in the background when it is missing or old, so this read never
+      // blocks on a subprocess.
+      warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -1223,7 +1170,11 @@ export function createAiIntegrationService(args: {
       let cursorModels: Awaited<ReturnType<typeof discoverCursorSdkModelDescriptors>> = [];
       try {
         cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey, { mode: cursorDiscoveryMode });
-      } catch {
+      } catch (error) {
+        logger.warn("ai.cursor_model_discovery_failed", {
+          mode: cursorDiscoveryMode,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        });
         cursorModels = [];
       }
       if (cursorModels.length) {
@@ -2234,6 +2185,7 @@ export function createAiIntegrationService(args: {
             codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
             cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
             droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
+            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
             qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
             kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
@@ -2249,6 +2201,7 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
             if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
             if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
+            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
             if (descriptor.family === ACP_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;

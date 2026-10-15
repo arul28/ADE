@@ -7,6 +7,7 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatContextUsage,
@@ -106,7 +107,7 @@ export type AdeCodeConnection = {
 export type AdeCodeProvider =
   | Extract<
     AgentChatProvider,
-    "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+    "codex" | "claude" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
   | "devin"
   | "ollama"
@@ -137,6 +138,7 @@ export type AdeCodeModelState = Partial<LaunchIdentity> & {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  musePermissionMode: AgentChatMusePermissionMode;
   cursorModeId: string | null;
   cursorAvailableModeIds: string[];
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;

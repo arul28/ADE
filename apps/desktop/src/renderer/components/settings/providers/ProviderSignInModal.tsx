@@ -22,7 +22,7 @@ import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
-import type { OpenProjectBinding } from "../../../../shared/types";
+import type { OpenProjectBinding, TerminalToolType } from "../../../../shared/types";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -60,6 +60,11 @@ export type ProviderSignInModalProps = {
   providerLabel: string;
   /** The command the terminal runs, e.g. `kimi login`. */
   command: string;
+  /**
+   * The terminal's tool type. `shell` by default; Muse passes `muse` so the PTY
+   * host swaps its pinned binary in for the bare `muse` word.
+   */
+  toolType?: TerminalToolType;
   /** Lane to open the terminal in. Resolved by the caller; null asks for the primary lane. */
   laneId?: string | null;
   /** Re-read auth status. Resolves true once this provider is signed in. */
@@ -78,6 +83,7 @@ export function ProviderSignInModal({
   providerId,
   providerLabel,
   command,
+  toolType = "shell",
   laneId,
   checkSignedIn,
   onClose,
@@ -126,7 +132,7 @@ export function ProviderSignInModal({
           // Not tracked: this is a one-shot login shell, not an agent session,
           // and tracking it would put a phantom row in Work.
           tracked: false,
-          toolType: "shell",
+          toolType,
           startupCommand: command,
         }, pin);
         if (cancelled) {
@@ -142,7 +148,7 @@ export function ProviderSignInModal({
     return () => {
       cancelled = true;
     };
-  }, [command, laneId, pinIdentity, title]);
+  }, [command, laneId, pinIdentity, title, toolType]);
 
   // ── Dispose on unmount, always ──
   useEffect(() => {
@@ -230,7 +236,13 @@ export function ProviderSignInModal({
         />
       ) : null}
 
-      <div style={{ flex: 1, minHeight: 320, display: "flex", flexDirection: "column" }}>
+      {/*
+        A definite height, not just a min-height: TerminalView fills its parent
+        with `h-full`, which resolves to 0 against a box sized only by
+        min-height. A 0-height host counts as hidden, so the terminal never
+        subscribed to its PTY's output and the dialog stayed blank.
+      */}
+      <div style={{ flex: "1 1 auto", height: "clamp(320px, 56vh, 520px)", minHeight: 320, display: "flex", flexDirection: "column" }}>
         {error ? (
           <Banner
             layout="inline"

@@ -39,6 +39,7 @@ import {
 } from "../shared/providerConfigHomes";
 import { resolveAcpExecutable } from "./acpExecutables";
 import {
+  getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
@@ -141,6 +142,14 @@ function loginBlocker(provider: AcpChatProvider): string {
 }
 
 function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult): void {
+  // A sign-in that changed state may now be a different account, whose models differ.
+  const before = getProviderRuntimeHealth(provider)?.state ?? null;
+  if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
+    // Loaded on use: model discovery imports this module.
+    void import("../chat/acpHost/acpModelDiscovery")
+      .then((discovery) => discovery.markAcpModelCatalogStale(provider))
+      .catch(() => undefined);
+  }
   switch (result.state) {
     case "ready":
       reportProviderRuntimeReady(provider);

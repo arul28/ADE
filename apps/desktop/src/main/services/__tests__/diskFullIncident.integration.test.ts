@@ -92,6 +92,7 @@ function sessionServiceFor(row: Record<string, any>) {
     updateMeta: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearAttentionRequest: vi.fn(() => true),
     clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
@@ -122,6 +123,7 @@ function recoveryPool(): ProjectRecoveryConnectionPool {
     callSync: vi.fn(async () => ({ pong: true })) as any,
     ensureProject: vi.fn(async () => ({ projectId: "project-incident" } as any)),
     callActionForRoot: vi.fn(async () => ({ result: [] } as any)),
+    removeProject: vi.fn(async () => {}),
   };
 }
 

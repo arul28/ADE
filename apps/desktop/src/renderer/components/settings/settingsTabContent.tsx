@@ -25,18 +25,20 @@ import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
 import { LinearMark } from "../lanes/linearBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
+import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LaneBehaviorSection } from "./LaneBehaviorSection";
 import { LaneTemplatesSection } from "./LaneTemplatesSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { NotificationsSection } from "./NotificationsSection";
+import { McpServersSection } from "./mcp/McpServersSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
-import { ProductAnalyticsSection } from "./ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { ProjectSection } from "./ProjectSection";
+import { ProjectLocationSection } from "./ProjectLocationSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
@@ -342,7 +344,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   general: [
     {
-      entryIds: ["general.about", "general.auto-updates"],
+      entryIds: ["general.about", "general.auto-updates", "general.update-other-machines"],
       // About has no section file of its own, so the page supplies its anchor.
       render: () => (
         <div id="about" data-settings-anchor="about">
@@ -354,7 +356,16 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "ade",
     },
     { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "ade" },
+    {
+      entryIds: ["general.background-service", "general.quit-confirmation"],
+      render: () => <BackgroundServiceSection />,
+      machine: "local",
+      title: "Background service",
+      group: "ade",
+    },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
+    // The move runs in this computer's main process, on a project this computer has.
+    { entryIds: ["general.project-location"], render: () => <ProjectLocationSection />, machine: "local", title: "Project location", group: "project" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },
     {
@@ -367,13 +378,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links", group: "computer" },
-    // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", group: "privacy" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
-      title: "Diagnostics sharing",
+      title: "Send a report to ADE",
       group: "privacy",
     },
     // Last on purpose: the hard reset is its own section at the very bottom of
@@ -426,6 +435,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   storage: [
     {

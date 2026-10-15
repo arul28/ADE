@@ -348,6 +348,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const piExtensionsEnabled = asBool(value.piExtensionsEnabled);
   if (piExtensionsEnabled != null) chat.piExtensionsEnabled = piExtensionsEnabled;
+  const claudePluginUiEnabled = asBool(value.claudePluginUiEnabled);
+  if (claudePluginUiEnabled != null) chat.claudePluginUiEnabled = claudePluginUiEnabled;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;
@@ -1470,7 +1472,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (providersRaw) {
       const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
       const providerMode = (
-        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot",
+        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot",
       ) => {
         const mode = asString(providersRaw[key])?.trim();
         // "auto" belongs here: it is a member of `AgentChatPermissionMode` and
@@ -1489,6 +1491,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       providerMode("droid");
       providerMode("opencode");
       providerMode("pi");
+      providerMode("muse");
       providerMode("qwen");
       providerMode("kimi");
       providerMode("grok");

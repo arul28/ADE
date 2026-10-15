@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle, Pause, PencilSimple, Play, Target, WarningCircle, X } from "@phosphor-icons/react";
-import type { CodexThreadGoal } from "../../../../shared/types";
+import type { CodexThreadGoal, CodexThreadGoalStatus } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 
 const AMBER = "#F59E0B";
@@ -10,7 +10,7 @@ type CodexGoalCardProps = {
   goal: CodexThreadGoal;
   onEdit?: (nextObjective: string) => void;
   onClear?: () => void;
-  onSetStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
+  onSetStatus?: (status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">) => void;
   pending?: boolean;
 };
 

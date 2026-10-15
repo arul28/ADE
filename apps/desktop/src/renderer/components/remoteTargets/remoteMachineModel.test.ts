@@ -14,7 +14,7 @@ import {
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
-  formatVersionSkewNote,
+  isMachineVersionCurrent,
   isVersionSkewWarning,
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
@@ -394,35 +394,7 @@ describe("formatLastSeen", () => {
   });
 });
 
-describe("formatVersionSkewNote", () => {
-  it("names both machines and points the update at the older one", () => {
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.59",
-        remoteVersion: "1.2.57",
-        remoteName: "Arul's Mac Studio",
-      }),
-    ).toBe(
-      "This machine is on ADE 1.2.59. Arul's Mac Studio is on 1.2.57. They can still connect — update Arul's Mac Studio when you can.",
-    );
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.57",
-        remoteVersion: "1.2.59",
-        remoteName: "Arul's Mac Studio",
-      }),
-    ).toBe(
-      "This machine is on ADE 1.2.57. Arul's Mac Studio is on 1.2.59. They can still connect — update this machine when you can.",
-    );
-    expect(
-      formatVersionSkewNote({
-        localVersion: "1.2.59",
-        remoteVersion: "1.2.59",
-        remoteName: "Studio",
-      }),
-    ).toBeNull();
-  });
-
+describe("isVersionSkewWarning", () => {
   it("recognizes both the old jargon and the new version-skew copy", () => {
     expect(
       isVersionSkewWarning(
@@ -437,6 +409,19 @@ describe("formatVersionSkewNote", () => {
     expect(isVersionSkewWarning("Remote ADE service is missing project capabilities: create.")).toBe(
       false,
     );
+  });
+});
+
+describe("isMachineVersionCurrent", () => {
+  it.each([
+    ["the same version", "1.2.55", "1.2.55", true],
+    ["a newer version", "1.2.56", "1.2.55", true],
+    ["an older version", "1.2.54", "1.2.55", false],
+    ["a v-prefixed target", "1.2.55", "v1.2.55", true],
+    ["a missing version", null, "1.2.55", false],
+    ["an unreadable version", "not-a-version", "1.2.55", false],
+  ])("is current: %s", (_label, version, target, expected) => {
+    expect(isMachineVersionCurrent(version, target)).toBe(expected);
   });
 });
 

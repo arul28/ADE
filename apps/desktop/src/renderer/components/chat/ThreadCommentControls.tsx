@@ -6,6 +6,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import { cssZoomOf } from "../../lib/webZoom";
+import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -36,6 +37,12 @@ export function useThreadCommentActions(
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const stopEditing = useCallback(() => setEditingId(null), []);
+  // An edit belongs to the chat it started in; another chat starts clean.
+  const pinKey = pin?.key ?? null;
+  useEffect(() => {
+    setEditingId(null);
+    setError(null);
+  }, [pinKey, sessionId]);
   const run = async <T,>(action: () => Promise<T> | undefined): Promise<T | null> => {
     setError(null);
     try {
@@ -96,6 +103,7 @@ export function ThreadCommentEditor({
   error = null,
   onSave,
   onCancel,
+  onBodyChange,
 }: {
   initialBody?: string;
   placeholder?: string;
@@ -104,6 +112,8 @@ export function ThreadCommentEditor({
   error?: string | null;
   onSave: (body: string) => void;
   onCancel: () => void;
+  /** Every edit of the text, for a caller that keeps unsaved text. */
+  onBodyChange?: (body: string) => void;
 }) {
   const [body, setBody] = useState(initialBody);
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -127,7 +137,10 @@ export function ThreadCommentEditor({
         value={body}
         placeholder={placeholder}
         rows={2}
-        onChange={(event) => setBody(event.target.value)}
+        onChange={(event) => {
+          setBody(event.target.value);
+          onBodyChange?.(event.target.value);
+        }}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -282,6 +295,12 @@ export function ComposerThreadCommentsButton({
   useEffect(() => {
     if (!comments.length) setOpen(false);
   }, [comments.length]);
+
+  // The list belongs to one chat: switching chat, machine or tab closes it.
+  const pinKey = pin?.key ?? null;
+  useEffect(() => setOpen(false), [pinKey, sessionId]);
+  const close = useCallback(() => setOpen(false), []);
+  useOnSurfaceHidden(buttonRef, open, close);
 
   useEffect(() => {
     if (!open) return undefined;

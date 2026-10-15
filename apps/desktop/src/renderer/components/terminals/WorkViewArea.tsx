@@ -1,3 +1,4 @@
+import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { STANDARD_EASE } from "../../lib/motion";
@@ -316,6 +317,7 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   if (provider === "codex") return "Codex";
   if (provider === "cursor") return "Cursor Agent";
   if (provider === "droid") return "Droid";
+  if (provider === "muse") return PROVIDER_DISPLAY_NAME.muse;
   if (provider === "opencode") return "OpenCode";
   return "agent CLI";
 }

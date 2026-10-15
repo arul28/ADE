@@ -2,6 +2,7 @@ import { ArrowLeft, CircleNotch } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  PROJECT_FOLDER_MISSING_COPY,
   RECOVERY_COPY,
   REPAIR_STEPS,
   stateForCode,
@@ -12,10 +13,13 @@ import {
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
+import { isWindowsPlatform } from "../../lib/windowsBetaNotice";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { confirmDialog } from "../ui/dialog";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import {
   ERROR_BODY,
+  ERROR_DISCLOSURE_CARET,
   ERROR_HEADLINE,
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
@@ -48,7 +52,84 @@ type DiagnosisState = ProjectRecoveryDiagnosis["state"];
  * only has to watch: a booting brain, and a brain macOS will start the moment
  * "Allow in the Background" is switched back on.
  */
-const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set(["brain_starting", "background_blocked"]);
+const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set([
+  "brain_starting",
+  "background_blocked",
+  // The person may put the folder back by hand; open the project when they do.
+  "data_missing",
+  "data_replaced",
+]);
+
+/** What a person does to put a deleted or moved .ade folder back by hand. */
+function putBackSteps(windows: boolean): readonly string[] {
+  return windows
+    ? [
+        "In the Recycle Bin, find the folder named .ade and choose Restore.",
+        "Or, if you moved it, move it back into the project folder.",
+      ]
+    : [
+        "In the Trash, press Command-Shift-Period to show hidden files, then Put Back the folder named .ade.",
+        "Or, if you moved it, move it back into the project folder.",
+      ];
+}
+
+/**
+ * The missing-data screen: two choices and nothing to read past. Restart,
+ * Reset and Report don't help when the folder is gone, so they stay off it.
+ */
+function DataRecoveryChoices({
+  restore,
+  startFresh,
+  manualSteps,
+  watching,
+}: {
+  restore: { label: string; onClick: () => void } | null;
+  startFresh: { label: string; onClick: () => void; primary?: boolean } | null;
+  manualSteps: readonly string[] | null;
+  watching: boolean;
+}) {
+  return (
+    <>
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        {restore ? (
+          <button type="button" onClick={restore.onClick} className={ERROR_PRIMARY_BUTTON}>
+            {restore.label}
+          </button>
+        ) : null}
+        {startFresh ? (
+          // Filled only for "Use this copy". "Start fresh" never is: it is the
+          // one choice that leaves the old lanes and history behind.
+          <button
+            type="button"
+            onClick={startFresh.onClick}
+            className={startFresh.primary ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
+          >
+            {startFresh.label}
+          </button>
+        ) : null}
+      </div>
+      {manualSteps ? (
+        <details className="group mt-4">
+          <summary className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[12px] font-medium text-(color:--kit-text-2) transition-colors hover:text-fg">
+            {ERROR_DISCLOSURE_CARET}
+            How do I put it back?
+          </summary>
+          <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-[12px] leading-relaxed text-(color:--kit-text-2) marker:text-(color:--kit-text-3)">
+            {manualSteps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {watching ? (
+        <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
+          {SPINNER}
+          ADE opens the project as soon as the folder is back.
+        </p>
+      ) : null}
+    </>
+  );
+}
 
 /** Without Restart ADE, two failed fixes in a row hand the lead to Reset. */
 const FAILURES_BEFORE_RESET_LEADS = 2;
@@ -200,6 +281,11 @@ export function ProjectRecoveryScreen() {
   // relaunch is how the screen knows that rung was already climbed.
   const [restartedRecently] = useState(() => restartedAdeRecently());
   const [restartFailed, setRestartFailed] = useState(false);
+  // What a restore or fresh start is doing, while it runs.
+  const [dataActionLabel, setDataActionLabel] = useState<string | null>(null);
+  // A restore's own plain-words reason it could not finish. Raw errors stay
+  // in the technical fold, like a failed fix's.
+  const [dataFailureReason, setDataFailureReason] = useState<string | null>(null);
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -286,6 +372,7 @@ export function ProjectRecoveryScreen() {
     if (!rootPath || phase === "repairing" || repairInFlightRef.current) return;
     repairInFlightRef.current = true;
     reopenStartedRef.current = false;
+    setDataActionLabel(null);
     setReport(null);
     setRevealed(0);
     setLiveSteps([]);
@@ -382,6 +469,76 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath, switchProjectToPath]);
 
+  // Restoring the folder, or starting fresh, ends like a successful fix: the
+  // success card, then the project reopens.
+  const runDataAction = useCallback(async (label: string, action: () => Promise<{ ok: boolean; reason?: string }>) => {
+    if (!rootPath || repairInFlightRef.current) return;
+    repairInFlightRef.current = true;
+    setDataActionLabel(label);
+    setDataFailureReason(null);
+    reopenStartedRef.current = false;
+    setReport(null);
+    setRepairError(null);
+    setPhase("repairing");
+    try {
+      const result = await action();
+      if (result.ok) {
+        setPhase("success");
+      } else {
+        setDataFailureReason(result.reason ?? null);
+        setFailedFixes((count) => count + 1);
+        setPhase("failure");
+      }
+    } catch (error) {
+      setRepairError(error instanceof Error ? error.message : String(error));
+      setFailedFixes((count) => count + 1);
+      setPhase("failure");
+    } finally {
+      repairInFlightRef.current = false;
+    }
+  }, [rootPath]);
+
+  const restoreData = useCallback(() => {
+    const restore = window.ade?.recovery?.restoreProjectData;
+    if (!rootPath || !restore) return;
+    void runDataAction("Putting the folder back", async () => {
+      const result = await restore(rootPath);
+      return result.restored ? { ok: true } : { ok: false, reason: result.reason };
+    });
+  }, [rootPath, runDataAction]);
+
+  // Both "Start fresh" and "Use this copy" end the same way: the project
+  // reopens with whatever ADE data is there now.
+  const reopenWithCurrentData = useCallback(() => {
+    const start = window.ade?.recovery?.startFresh;
+    if (!rootPath || !start) return;
+    void runDataAction("Opening the project with new ADE data", async () => {
+      await start(rootPath);
+      // Starting fresh closes the project, which can take this screen down
+      // with it; reopen from here rather than from the success card, and only
+      // call it done once the project is open again.
+      reopenStartedRef.current = true;
+      clearRestartStamp();
+      try {
+        await switchProjectToPath(rootPath);
+      } catch {
+        reopenStartedRef.current = false;
+        return { ok: false, reason: "ADE set up new data, but the project didn't open. Open it again from the project list." };
+      }
+      return { ok: true };
+    });
+  }, [rootPath, runDataAction, switchProjectToPath]);
+
+  const startFresh = useCallback(async () => {
+    if (!(await confirmDialog({
+      title: "Start fresh?",
+      message: "Your code stays as it is. The old lanes and chat history won't come back.",
+      confirmLabel: "Start fresh",
+      destructive: true,
+    }))) return;
+    reopenWithCurrentData();
+  }, [reopenWithCurrentData]);
+
   const onRestart = useCallback(() => {
     setRestartFailed(false);
     void restartAde().then((started) => {
@@ -394,7 +551,11 @@ export function ProjectRecoveryScreen() {
   // the stored code, via the shared mapping. The words come from the shared
   // table either way, so the two can never disagree.
   const state: DiagnosisState = diagnosis?.state ?? stateForCode(code);
-  const copy = RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
+  // A project folder that is itself gone has its own words: nothing can be
+  // restored into it, only brought back.
+  const copy = state === "data_missing" && diagnosis?.projectFolderMissing
+    ? { ...RECOVERY_COPY.data_missing, headline: PROJECT_FOLDER_MISSING_COPY.headline, body: PROJECT_FOLDER_MISSING_COPY.body }
+    : RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
   const canAutoRepair = Boolean(
     rootPath && (diagnosis ? diagnosis.canAutoRepair : copy.canAutoRepair),
   );
@@ -406,6 +567,16 @@ export function ProjectRecoveryScreen() {
   const isFailure = phase === "failure";
   const repairOffered = canAutoRepair && !starting;
   const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
+  const dataMissing = state === "data_missing";
+  const dataReplaced = state === "data_replaced";
+  const dataState = dataMissing || dataReplaced;
+  const restoreAvailable = dataMissing && diagnosis?.restoreAvailable === true
+    && typeof window.ade?.recovery?.restoreProjectData === "function";
+  // The project folder itself is gone: nothing to restore into or start in.
+  const projectFolderMissing = dataMissing && diagnosis?.projectFolderMissing === true;
+  // Only once the diagnosis says the project folder is there to start in.
+  const startFreshAvailable = Boolean(diagnosis) && !projectFolderMissing
+    && typeof window.ade?.recovery?.startFresh === "function";
   const restartAvailable = canRestartAde();
   // Report issue renders nothing on a preload without the diagnostics bridge;
   // its hint must not be left standing alone.
@@ -431,7 +602,9 @@ export function ProjectRecoveryScreen() {
     ? report.steps.slice(0, isRepairing ? revealed : undefined)
     : liveSteps;
   // What the fix is doing right now: the step after the last finished one.
-  const activeStepLabel = isRepairing && !report
+  const activeStepLabel = isRepairing && dataActionLabel
+    ? dataActionLabel
+    : isRepairing && !report
     ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
     : null;
 
@@ -440,7 +613,9 @@ export function ProjectRecoveryScreen() {
     ? (failedStep ? FAILED_STEP_HEADLINE[failedStep] : "That didn't fix it")
     : copy.headline;
   const heroBody = isFailure
-    ? (report?.nextAction ?? "ADE tried, but the problem is still there. Nothing was removed.")
+    ? (report?.nextAction
+      ?? (dataState ? dataFailureReason : null)
+      ?? "ADE tried, but the problem is still there. Nothing was removed.")
     : copy.body;
 
   // Which rung leads, i.e. gets the one filled button. A failed fix climbs to
@@ -519,8 +694,21 @@ export function ProjectRecoveryScreen() {
             </div>
           ) : null}
 
+          {dataState && !isRepairing && !isSuccess ? (
+            <DataRecoveryChoices
+              restore={restoreAvailable ? { label: isFailure ? "Try again" : "Restore from Trash", onClick: restoreData } : null}
+              startFresh={startFreshAvailable
+                ? dataReplaced
+                  ? { label: "Use this copy", onClick: reopenWithCurrentData, primary: true }
+                  : { label: "Start fresh", onClick: () => void startFresh() }
+                : null}
+              manualSteps={dataMissing && !restoreAvailable && !projectFolderMissing ? putBackSteps(isWindowsPlatform()) : null}
+              watching={dataMissing && !isFailure}
+            />
+          ) : null}
+
           {/* The ladder. Hidden while a fix runs and once it worked. */}
-          {!isRepairing && !isSuccess ? (
+          {!dataState && !isRepairing && !isSuccess ? (
             <>
               <ul className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2.5">
                 {starting ? (

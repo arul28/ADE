@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   CaretRight,
   ChatCircle,
   CheckCircle,
+  XCircle,
   Clock,
   Eye,
   GitCommit,
@@ -21,8 +22,12 @@ import type { DigestRenderItem } from "./prDigestTimelineModel";
 /* ══════════════════ Digest rows (Overview triage layout) ══════════════════ */
 
 const ATTENTION_TONE = COLORS.warning;
-/** Pinned rows before "Show more": the block must never bury the thread. */
+/** Rows of the open list before "Show more": the block must never bury the thread. */
 const ATTENTION_VISIBLE_ROWS = 6;
+
+function countOf(count: number, one: string, many: string): string {
+  return count === 1 ? `1 ${one}` : `${count} ${many}`;
+}
 
 /**
  * Bot blocks split out of the PR body become synthetic bot comments. The PR
@@ -121,30 +126,103 @@ export function NeedsAttentionBlock({
   item,
   onOpen,
   onFixInChat,
+  onFixChecksInChat,
+  onOpenChecks,
 }: {
   item: Extract<DigestRenderItem, { kind: "attention" }>;
   onOpen: (eventId: string) => void;
   onFixInChat?: (item: PrNeedsAttentionItem) => void;
+  /** Hands the failing checks to the chat. Omitted hides the button. */
+  onFixChecksInChat?: () => void;
+  onOpenChecks?: () => void;
 }) {
+  // One line by default: a reader opens a PR to see what is in it, so the
+  // description stays on top of the page and this line says what waits.
+  const [open, setOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? item.items : item.items.slice(0, ATTENTION_VISIBLE_ROWS);
   const hidden = item.items.length - visible.length;
+  const fromPeople = item.items.filter((entry) => !entry.identity.isBot).length;
+  const summary = [
+    item.failingChecks.length ? countOf(item.failingChecks.length, "check fails", "checks fail") : null,
+    item.items.length
+      ? `${countOf(item.items.length, "open thread", "open threads")}${fromPeople && fromPeople < item.items.length ? `, ${fromPeople} from people` : ""}`
+      : null,
+  ].filter(Boolean).join(" · ");
   return (
     <section
       data-testid="pr-digest-attention"
-      aria-label="Needs attention"
+      aria-label="Needs you"
       className="relative overflow-hidden rounded-[10px]"
-      style={{ background: `color-mix(in srgb, ${ATTENTION_TONE} 6%, transparent)` }}
+      style={{ background: `color-mix(in srgb, ${ATTENTION_TONE} ${open ? 6 : 5}%, transparent)` }}
     >
-      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: ATTENTION_TONE }} />
-      <header className="flex items-center gap-2 px-4 pb-1 pt-2.5">
-        <WarningCircle size={13} weight="fill" style={{ color: ATTENTION_TONE }} />
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]" style={{ color: ATTENTION_TONE }}>
-          Needs attention
-        </span>
-        <span className="font-mono text-[10.5px]" style={{ color: COLORS.textMuted }}>{item.items.length}</span>
-      </header>
+      <button
+        type="button"
+        data-testid="pr-digest-attention-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg/[0.03]"
+        style={{ background: "transparent", border: "none", cursor: "pointer" }}
+      >
+        <WarningCircle size={13} weight="fill" style={{ color: ATTENTION_TONE, flexShrink: 0 }} />
+        <span className="shrink-0 text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>Needs you</span>
+        <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: COLORS.textSecondary }}>{summary}</span>
+        <CaretRight
+          size={12}
+          weight="bold"
+          className="shrink-0 transition-transform"
+          style={{ color: COLORS.textMuted, transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
+        />
+      </button>
+      {open ? (
       <ul className="flex flex-col pb-1.5">
+        {item.failingChecks.length > 0 ? (
+          <li>
+            <div
+              data-testid="pr-digest-attention-checks"
+              // A row that opens the Checks tab, where the host has one.
+              {...(onOpenChecks ? {
+                role: "button",
+                tabIndex: 0,
+                onClick: onOpenChecks,
+                onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpenChecks();
+                  }
+                },
+              } : {})}
+              className={`group flex items-center gap-2.5 px-4 py-1.5 transition-colors ${onOpenChecks ? "cursor-pointer hover:bg-fg/[0.035]" : ""}`}
+            >
+              <XCircle size={16} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} />
+              <span className="shrink-0 text-[12px] font-medium" style={{ color: COLORS.textPrimary }}>
+                {item.failingChecks.length === 1 ? "1 check fails" : `${item.failingChecks.length} checks fail`}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: COLORS.textSecondary }} title={item.failingChecks.join(", ")}>
+                {item.failingChecks.join(", ")}
+              </span>
+              {onFixChecksInChat ? (
+                <button
+                  type="button"
+                  data-testid="pr-digest-fix-checks-in-chat"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFixChecksInChat();
+                  }}
+                  className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium opacity-80 transition-opacity group-hover:opacity-100"
+                  style={{
+                    color: COLORS.accent,
+                    background: `color-mix(in srgb, ${COLORS.accent} 14%, transparent)`,
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  Fix in chat
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ) : null}
         {visible.map((entry) => {
           const where = threadLocation(entry.entry.path, entry.entry.line);
           return (
@@ -198,7 +276,8 @@ export function NeedsAttentionBlock({
           );
         })}
       </ul>
-      {hidden > 0 ? (
+      ) : null}
+      {open && hidden > 0 ? (
         <button
           type="button"
           onClick={() => setShowAll(true)}

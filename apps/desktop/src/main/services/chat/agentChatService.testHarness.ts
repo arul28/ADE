@@ -185,6 +185,13 @@ const mockState = vi.hoisted(() => ({
   droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexResponseOverrides: new Map<string, Record<string, unknown> | ((payload: Record<string, unknown>) => Record<string, unknown>)>(),
+  /**
+   * The mocked app-server's `initialize` result. Empty by default — no
+   * `userAgent`, so the runtime learns no version and every version-gated
+   * request takes its "server predates this" path. A test that exercises a
+   * gate sets `{ userAgent: "codex_app_server/0.162.1" }` here.
+   */
+  codexInitializeResult: {} as Record<string, unknown>,
   delayedCodexMethods: new Set<string>(),
   pendingCodexResponses: [] as Array<() => void>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
@@ -340,6 +347,8 @@ vi.mock("node:child_process", () => ({
             } else {
               result = override;
             }
+          } else if (payload.method === "initialize") {
+            result = mockState.codexInitializeResult;
           } else if (payload.method === "thread/start") {
             mockState.codexThreadCounter += 1;
             result = { thread: { id: `thread-${mockState.codexThreadCounter}` } };
@@ -1065,6 +1074,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
   restartRecoveryStopAttribution,
+  flushAllQueuedTranscriptWrites,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
@@ -1627,6 +1637,16 @@ function createMockSessionService() {
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    clearAttentionRequest: vi.fn((sessionId: string, expectedSource?: string, notAfter?: string) => {
+      const row = sessions.get(sessionId);
+      if (!row) return false;
+      if (expectedSource && row.attentionSource !== expectedSource) return true;
+      if (notAfter && (!expectedSource || !row.attentionRequestedAt || Date.parse(row.attentionRequestedAt) > Date.parse(notAfter))) return true;
+      row.attentionRequestedAt = null;
+      row.attentionMessage = null;
+      row.attentionSource = null;
+      return true;
+    }),
     clearTurnStartMarkers: vi.fn(),
     clearSessionActivity: vi.fn(),
     setDetectedSessionActivity: vi.fn((sessionId: string) => Boolean(sessions.get(sessionId))),
@@ -2159,6 +2179,7 @@ beforeEach(() => {
   mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexResponseOverrides.clear();
+  mockState.codexInitializeResult = {};
   mockState.delayedCodexMethods.clear();
   mockState.pendingCodexResponses = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
@@ -2356,6 +2377,7 @@ export {
   detectAllAuth,
   detectCliAuthStatuses,
   enforceCrossMachineForkEncodedBudget,
+  flushAllQueuedTranscriptWrites,
   flushCursorSdkSilenceRecycle,
   fs,
   getDefaultModelDescriptor,

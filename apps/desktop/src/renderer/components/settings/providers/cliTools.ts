@@ -167,6 +167,11 @@ export function describeCredentialSource(
   if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
   if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
   if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
+  if (localSource.source === "muse-env") return "Detected via META_API_KEY environment variable.";
+  if (localSource.source === "muse-api-key-store") return "Meta API key is stored in ADE encrypted storage.";
+  if (localSource.source === "muse-auth-file") {
+    return localSource.path ? `Signed in to Muse (${localSource.path}).` : "Signed in to Muse.";
+  }
   return null;
 }
 
@@ -197,7 +202,11 @@ export function shortCredentialSource(
     case "cursor-env":
     case "cursor-api-key-store":
     case "factory-env":
+    case "muse-env":
+    case "muse-api-key-store":
       return "API key";
+    case "muse-auth-file":
+      return "Signed in";
     case "pi-auth-file":
     case "pi-models-file":
       return "Signed in";

@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowCounterClockwise, CaretDown, Check, Drop, FloppyDisk, PencilSimple, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
+import { AppWindow, ArrowCounterClockwise, CaretDown, Check, Drop, FloppyDisk, PencilSimple, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
 import { confirmDialog, promptDialog } from "../ui/dialog";
 import { Z_LAYERS } from "../ui/zLayers";
 import { useAppStore } from "../../state/appStore";
 import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
-import { HOME_LAYOUT_KEYBINDING, HOME_LAYOUT_PRESETS_MAX, useHomeLayoutStore } from "./homeLayout";
+import { HOME_APPS, HOME_LAYOUT_KEYBINDING, HOME_LAYOUT_PRESETS_MAX, useHomeLayoutStore } from "./homeLayout";
+import { HomeAppIcon, HOME_APP_LABELS } from "../music/musicApps";
 import { useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
 
@@ -87,6 +88,30 @@ function AppearancePopover({ onClose }: { onClose: () => void }) {
           Use theme look
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Which app buttons this layout shows beside the hero actions. */
+function AppsPopover({ onClose }: { onClose: () => void }) {
+  const hiddenApps = useHomeLayoutStore((s) => s.layout.hiddenApps);
+  const setAppShown = useHomeLayoutStore((s) => s.setAppShown);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useDismiss(ref, onClose);
+  return (
+    <div ref={ref} className="ade-home-look" role="dialog" aria-label="Apps" style={{ zIndex: Z_LAYERS.popover }}>
+      {HOME_APPS.map((app) => {
+        const shown = !hiddenApps.includes(app);
+        return (
+          <div key={app} className="ade-home-app-row">
+            <HomeAppIcon app={app} size={22} />
+            <span>{HOME_APP_LABELS[app]}</span>
+            <button type="button" className="kit-btn" onClick={() => setAppShown(app, !shown)}>
+              {shown ? "Remove" : <><Plus size={12} aria-hidden /> Add</>}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -214,6 +239,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookOpen, setLookOpen] = useState(false);
   const [layoutsOpen, setLayoutsOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
   // An empty cell on the page opens the gallery straight away, including the
   // click that turned edit mode on (the request is made before this mounts).
   const pickerRequest = useHomeGridMetrics((s) => s.pickerRequest);
@@ -236,6 +262,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           data-home-popover-toggle
           onClick={() => {
             setLookOpen(false);
+            setAppsOpen(false);
             setLayoutsOpen((value) => !value);
           }}
         >
@@ -257,6 +284,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           data-home-popover-toggle
           onClick={() => {
             setLayoutsOpen(false);
+            setAppsOpen(false);
             setLookOpen((value) => !value);
           }}
         >
@@ -264,6 +292,23 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           <span className="ade-home-action-label">Card look</span>
         </button>
         {lookOpen ? <AppearancePopover onClose={() => setLookOpen(false)} /> : null}
+      </div>
+      <div className="ade-home-look-anchor">
+        <button
+          type="button"
+          className="ade-home-action"
+          aria-expanded={appsOpen}
+          data-home-popover-toggle
+          onClick={() => {
+            setLayoutsOpen(false);
+            setLookOpen(false);
+            setAppsOpen((value) => !value);
+          }}
+        >
+          <AppWindow size={14} aria-hidden />
+          <span className="ade-home-action-label">Apps</span>
+        </button>
+        {appsOpen ? <AppsPopover onClose={() => setAppsOpen(false)} /> : null}
       </div>
       <button
         type="button"

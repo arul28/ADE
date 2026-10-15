@@ -456,7 +456,34 @@ armed session is consumed from the persisted list, so a later launch does not
 arm it twice; a chat whose project was not reachable stays on the list and gets
 another attempt.
 
-Each row delivers the "ADE restarted to install an update…" continue prompt
+**That launch waits for the transaction above before it opens anything.** The
+pool refuses every project while the transaction's update window is open
+(`createConnection` answers "ADE is applying an update…"), so a project opened
+during it — a restored tab, the startup project, or the one the resume has to
+reach — was refused and dropped, and the resume found no project to ask at all.
+The wait is bounded at 30 seconds and applies only to a launch with a project to
+open or a resume to arm; every install recorded so far finished the whole
+transaction in two to four seconds. Past that bound the launch opens its window
+immediately, and the resume — which opens nothing — is still armed the moment
+the transaction lets the pool go.
+
+The arm happens in exactly one place, on the far side of that wait, because
+`armUpdateResume` upserts a deterministic row id: arming a session twice
+re-schedules a row that may already have fired, and the chat is told to continue
+a second time. What goes wrong instead is now named in the log:
+`update_resume.arm_no_project` when no project was reachable to ask,
+`update_resume.arm_failed` when a project that was asked refused,
+`update_resume.arm_chain_failed` for a throw outside both,
+`autoUpdate.post_update_transaction_wait_timeout` when the install outlasted the
+wait, and `autoUpdate.install_superseded_unarmed_resumes` when a later install
+drops a resume the record never placed.
+
+Dismissing the "ADE updated" notice is not a refusal to resume. The record is
+kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
+stops being surfaced as a notice, including on the next launch — and it is
+dropped entirely once it owes nothing or a later install replaces it.
+
+Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
 once. Only rows that actually landed `scheduled` (not paused) are reported in
 the post-update "Scheduled N chats to resume" notice, and typing into a chat
 cancels its pending resume. Remote-machine chats and terminals are never

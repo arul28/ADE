@@ -27,6 +27,7 @@ import { lobeProviderIconSrc } from "../../lib/lobeProviderIconSrc";
 import { cn } from "../ui/cn";
 import droidMarkSrc from "../../assets/provider-logos/droid.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
+import museMarkSrc from "@lobehub/icons-static-svg/icons/meta-color.svg";
 import devinMarkSrc from "../../assets/provider-logos/devin.svg";
 import devinGlyphSrc from "../../assets/provider-logos/devin-glyph.svg";
 
@@ -79,6 +80,11 @@ export function DroidLogo({ size = 16, className }: LogoProps) {
 
 export function PiLogo({ size = 16, className }: LogoProps) {
   return <LobeStaticMark src={piMarkSrc} size={size} className={className} />;
+}
+
+/** Muse Code is Meta's agent, so it wears Meta's own mark (LobeHub's `meta-color`). */
+export function MuseLogo({ size = 16, className }: LogoProps) {
+  return <LobeStaticMark src={museMarkSrc} size={size} className={className} />;
 }
 
 export function DevinLogo({ size = 16, className }: LogoProps) {
@@ -210,6 +216,8 @@ export function ProviderLogo({
       return <DroidLogo size={size} className={className} />;
     case "pi":
       return <PiLogo size={size} className={className} />;
+    case "muse":
+      return <MuseLogo size={size} className={className} />;
     case "devin":
       return <DevinLogo size={size} className={className} />;
     case "opencode":
@@ -314,6 +322,10 @@ export function ModelRowLogo({
       return <Cursor.Avatar size={size} className={c} />;
     }
     return <CursorSubscriptionModelMark providerModelId={providerModel} size={size} className={className} />;
+  }
+
+  if (fam === "muse" || cli === "muse") {
+    return <MuseLogo size={size} className={className} />;
   }
 
   if (fam === "factory" || cli === "droid") {

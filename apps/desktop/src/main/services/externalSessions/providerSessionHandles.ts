@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { resolveHomeDir } from "./discoveryUtils";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
+import { museSessionsRoot } from "./discoverMuse";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
@@ -124,6 +125,7 @@ export function providerSessionRoots(args: {
     { provider: "opencode", root: path.join(xdgData, "opencode") },
     { provider: "opencode", root: path.join(homeDir, ".local", "share", "opencode") },
     { provider: "pi", root: piSessionRootForEnvironment(env) },
+    { provider: "muse", root: museSessionsRoot({ env, homeDir }) },
     // ACP CLIs. Each one has its own layout; see `sessionIdFromLayout`.
     // Same root discovery uses (`QWEN_RUNTIME_DIR`, then `QWEN_HOME`), so a
     // session an ADE terminal runs is recognized wherever Qwen writes it.
@@ -173,6 +175,11 @@ function sessionIdFromLayout(
       // <session-state>/<id>/<file> (current) or <session-state>/<id>.jsonl (legacy)
       if (parts.length >= 2) return validLayoutId(parts[0]);
       return validLayoutId(parts[0]?.match(/^(.+)\.jsonl$/iu)?.[1]);
+    case "muse":
+      // <sessions>/YYYY/MM/DD/<id>/<file>. A running Muse holds the session's
+      // `.session.lock` and `cron.db` open, never `session.jsonl`; deeper paths
+      // are `subagent/<childId>/…` runs, which are not the session.
+      return parts.length === 5 && /^\d{4}$/u.test(parts[0]!) ? validLayoutId(parts[3]?.toLowerCase()) : null;
     case "opencode": {
       // OpenCode keeps sessions in `opencode.db` (SQLite) plus per-session
       // `storage/**/ses_<id>(.json|/…)` files. The database names no session,

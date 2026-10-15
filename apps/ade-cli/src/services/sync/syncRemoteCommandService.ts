@@ -4,17 +4,28 @@ import { parseGitHubIssueListState } from "../../../../desktop/src/shared/github
 import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
+import {
+  buildMcpAppContentSecurityPolicy,
+  MCP_APP_LIMITS,
+  MCP_APP_TOO_LARGE_FOR_REMOTE,
+  type McpAppRemoteDocument,
+} from "../../../../desktop/src/shared/mcpApp";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import {
+  legacyPermissionModeFromMusePermissionMode,
+  musePermissionModeFromLegacyPermissionMode,
+} from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
@@ -1320,12 +1331,14 @@ function parseCrossMachineTargetArgs(
   const continuationPrompt = parseNullableString("continuationPrompt");
   const reasoningEffort = parseNullableString("reasoningEffort");
   const fastMode = parseBoolean("fastMode");
+  const fastTier = value.fastTier === "ultrafast" ? "ultrafast" as const : value.fastTier === null ? null : undefined;
   const claudePermissionMode = parseEnum("claudePermissionMode", ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const);
   const codexApprovalPolicy = parseEnum("codexApprovalPolicy", ["untrusted", "on-request", "on-failure", "never"] as const);
   const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
   const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
   const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+  const musePermissionMode = parseEnum("musePermissionMode", AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
@@ -1344,12 +1357,14 @@ function parseCrossMachineTargetArgs(
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(fastTier !== undefined ? { fastTier } : {}),
     ...(claudePermissionMode !== undefined ? { claudePermissionMode } : {}),
     ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy } : {}),
     ...(codexSandbox !== undefined ? { codexSandbox } : {}),
     ...(codexConfigSource !== undefined ? { codexConfigSource } : {}),
     ...(opencodePermissionMode !== undefined ? { opencodePermissionMode } : {}),
     ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+    ...(musePermissionMode !== undefined ? { musePermissionMode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(cursorModeId !== undefined ? { cursorModeId } : {}),
     ...(cursorConfigValues !== undefined ? { cursorConfigValues } : {}),
@@ -1671,6 +1686,7 @@ async function summarizeChatSessionForRemote(
     ...(session.piSessionId ? { piSessionId: session.piSessionId } : {}),
     ...(session.piSessionFile ? { piSessionFile: session.piSessionFile } : {}),
     ...(session.droidPermissionMode ? { droidPermissionMode: session.droidPermissionMode } : {}),
+    ...(session.musePermissionMode ? { musePermissionMode: session.musePermissionMode } : {}),
     ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
     ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
     ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
@@ -1683,6 +1699,7 @@ async function summarizeChatSessionForRemote(
     status: session.status,
     currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
+    ...(session.promptCache ? { promptCache: session.promptCache } : {}),
     startedAt: session.createdAt,
     endedAt: null,
     lastActivityAt: session.lastActivityAt,
@@ -1794,6 +1811,7 @@ function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatL
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
     ...(asTrimmedString(value.instanceId) ? { instanceId: asTrimmedString(value.instanceId) } : {}),
     ...(asTrimmedString(value.presetId) ? { presetId: asTrimmedString(value.presetId) } : {}),
@@ -2047,6 +2065,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
+    ...(value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
@@ -2219,6 +2238,7 @@ function projectChatOntoSession(
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
+    ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
   };
   if (chat.awaitingInput) {
     return {
@@ -2381,7 +2401,7 @@ function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermission
 function mapPrAiPermissionModeToNativeFields(
   mode: PrAgentPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "interactionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -2410,6 +2430,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "default") return { droidPermissionMode: "read-only" };
     return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
   }
+  if (provider === "muse") {
+    // Plan is Muse's read-only mode plus ADE's plan guidance.
+    if (legacy === "plan") return { musePermissionMode: "denyUnmatched", interactionMode: "plan" };
+    return { musePermissionMode: musePermissionModeFromLegacyPermissionMode(legacy) ?? "onRequest" };
+  }
   if (provider === "cursor") {
     if (legacy === "full-auto") return { cursorModeId: "full-auto" };
     if (legacy === "plan") return { cursorModeId: "plan" };
@@ -2425,7 +2450,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"> | null | undefined,
 ): PrAgentPermissionMode | null {
   if (!summary) return null;
   if (summary.permissionMode) return summary.permissionMode;
@@ -2448,6 +2473,9 @@ function deriveAiPermissionModeFromSummary(
     if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
     if (summary.droidPermissionMode === "read-only") return "plan";
     return null;
+  }
+  if (summary.provider === "muse") {
+    return legacyPermissionModeFromMusePermissionMode(summary.musePermissionMode) ?? null;
   }
   if (summary.provider === "cursor") {
     if (summary.cursorModeId === "full-auto") return "full-auto";
@@ -3092,6 +3120,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
 
   if ("title" in value) parsed.title = value.title == null ? null : asTrimmedString(value.title) ?? null;
   if ("modelId" in value) parsed.modelId = value.modelId == null ? undefined : asTrimmedString(value.modelId) as AgentChatUpdateSessionArgs["modelId"];
+  if ("presetId" in value) parsed.presetId = value.presetId == null ? null : asTrimmedString(value.presetId) ?? null;
   if ("reasoningEffort" in value) parsed.reasoningEffort = value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null;
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatUpdateSessionArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatUpdateSessionArgs["interactionMode"];
@@ -3102,8 +3131,14 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("fastMode" in value || "codexFastMode" in value) {
     parsed.fastMode = asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode);
   }
+  // Fast's tier: "ultrafast", or null for plain Fast. A value this host does
+  // not know (a newer client's tier) leaves the stored tier alone rather than
+  // downgrading it, as the cross-machine target parser does.
+  if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
+  else if ("fastTier" in value && value.fastTier === null) parsed.fastTier = null;
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
+  if ("musePermissionMode" in value) parsed.musePermissionMode = value.musePermissionMode == null ? undefined : asTrimmedString(value.musePermissionMode) as AgentChatUpdateSessionArgs["musePermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
@@ -3551,6 +3586,7 @@ function parseChatModelsArgs(value: Record<string, unknown>): {
 const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProvider>([
   "opencode",
   "pi",
+  "muse",
   "cursor",
   "droid",
   "lmstudio",
@@ -4135,6 +4171,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
     ...(
       payload.provider === "opencode"
       || payload.provider === "pi"
+      || payload.provider === "muse"
       || payload.provider === "qwen"
       || payload.provider === "kimi"
       || payload.provider === "grok"
@@ -4624,7 +4661,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getDeleteRisk", { viewerAllowed: true }, async (payload) =>
     args.laneService.getDeleteRisk(requireString(payload.laneId, "lanes.getDeleteRisk requires laneId.")));
   register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
+    args.laneService.getReclaimRisk({ laneId: requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.") }));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
   // Both route through the one shared setup path (template merged over the
   // project config). Active lanes only, as the sync host always resolved them.
@@ -4847,6 +4884,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
           model: resolvedModel,
           reasoningEffort: parsed.reasoningEffort ?? null,
           fastMode: parsed.fastMode ?? null,
+          ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
           ...(resolvedInstance ? { instanceId: resolvedInstance.id } : {}),
           ...(parsed.presetId ? { presetId: parsed.presetId } : {}),
           ...(parsed.credentialId ? { credentialId: parsed.credentialId } : {}),
@@ -4869,6 +4907,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
         fastMode: parsed.fastMode ?? undefined,
+        ...(provider === "codex" && parsed.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
         ...(provider === "codex" ? { codexComputerUse } : {}),
@@ -5029,6 +5068,39 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // MCP Apps (shared/mcpApp.ts). The page a phone gets is bounded, and it
+  // comes with the policy the phone must serve it with: the brain builds that
+  // string, from what the resource declared, and the phone builds none.
+  register("chat.getMcpApp", { viewerAllowed: true }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").getMcpApp({
+      sessionId: requireString(payload.sessionId, "chat.getMcpApp requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.getMcpApp requires itemId."),
+    });
+    if (result.status !== "ready") return result;
+    if (Buffer.byteLength(result.app.html, "utf8") > MCP_APP_LIMITS.maxRemoteDocumentBytes) {
+      return { status: "unavailable" as const, reason: MCP_APP_TOO_LARGE_FOR_REMOTE };
+    }
+    const app: McpAppRemoteDocument = {
+      ...result.app,
+      contentSecurityPolicy: buildMcpAppContentSecurityPolicy(result.app.csp, { sandbox: true }),
+    };
+    return { status: "ready" as const, app };
+  });
+  // Not for a viewer: this is what runs a tool. `userActivated` is the
+  // controller's own word that the user just tapped inside the app's frame.
+  // `controllerAllowed` is what lets the owner's own phone through:
+  // `viewerAllowed: false` alone refuses every paired device.
+  register("chat.mcpAppRequest", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const method = payload.method === "tools/call" || payload.method === "resources/read" ? payload.method : null;
+    if (!method) throw new Error("chat.mcpAppRequest requires method tools/call or resources/read.");
+    return requireService(args.agentChatService, "Agent chat service not available.").mcpAppRequest({
+      sessionId: requireString(payload.sessionId, "chat.mcpAppRequest requires sessionId."),
+      itemId: requireString(payload.itemId, "chat.mcpAppRequest requires itemId."),
+      method,
+      params: payload.params,
+      userActivated: payload.userActivated === true,
+    });
+  });
   // Bound the registry sent to a phone: a project can discover hundreds of
   // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>

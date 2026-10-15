@@ -1,44 +1,53 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { COMPACT_FIRST_IDLE_MS } from "../../../shared/compactFirst";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
+import { compactFirstEligibleAtMs, lastFinishedTurnMs } from "../../../shared/compactFirst";
 import { contextCompactMergeKey } from "../../../shared/contextCompaction";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 
-export type CompactFirstChoice = { sessionId: string; value: boolean };
+/** `dismissed` hides the offer until the next turn ends; the send then keeps the full history. */
+export type CompactFirstChoice = { sessionId: string; value: boolean; dismissed?: boolean };
 
 /**
- * State behind the "Compact first" pill for the selected chat.
+ * State behind the "Compact first" chip for the selected chat.
  *
- * `idleWindowOpen` turns true once the last turn ended an hour ago, when the
- * prompt cache has expired. The user's pill choice covers one send: a new turn
- * end or a switch to another chat clears it. `sendRef` carries what the pill
- * shows into the send path, which is defined before the pill is computed.
+ * `idleWindowOpen` turns true once the chat's prompt cache has expired
+ * (`compactFirstEligibleAtMs`: its lifetime, or an hour when unknown). The
+ * user's choice covers one send: it is kept per chat with the turn end it was
+ * made after, so a new turn end drops it and a visit to another chat does not.
+ * `sendRef` carries what the chip shows into the send path, which is defined
+ * before the chip is computed.
  */
-export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null) {
+export function useCompactFirst(events: readonly AgentChatEventEnvelope[], sessionId: string | null, cache?: ClaudePromptCache | null) {
   const [now, setNow] = useState(Date.now());
-  const [choice, setChoice] = useState<CompactFirstChoice | null>(null);
+  const [choices, setChoices] = useState<ReadonlyMap<string, CompactFirstChoice & { turnEndedAt: number | null }>>(new Map());
   const sendRef = useRef<CompactFirstChoice | null>(null);
-  // Walks back only to the last `done`, so streaming deltas stay cheap.
-  const lastTurnEndedAt = useMemo(() => {
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index];
-      if (entry?.event.type === "done") return Date.parse(entry.timestamp);
-    }
-    return null;
-  }, [events]);
+  const { endedAtMs: lastTurnEndedAt, startedAtMs: lastTurnStartedAt } = useMemo(() => lastFinishedTurnMs(events), [events]);
+  const cacheTtl = cache?.ttl;
+  const cacheSince = cache?.since;
+  const eligibleAt = useMemo(
+    () => compactFirstEligibleAtMs(
+      cacheTtl ? { ttl: cacheTtl, since: cacheSince } : null,
+      lastTurnEndedAt,
+      lastTurnStartedAt,
+    ),
+    [cacheTtl, cacheSince, lastTurnEndedAt, lastTurnStartedAt],
+  );
   useEffect(() => {
-    setChoice(null);
-  }, [sessionId, lastTurnEndedAt]);
-  useEffect(() => {
-    if (lastTurnEndedAt == null || !Number.isFinite(lastTurnEndedAt)) return;
-    const wait = lastTurnEndedAt + COMPACT_FIRST_IDLE_MS - Date.now();
+    if (eligibleAt == null) return;
+    const wait = eligibleAt - Date.now();
     if (wait <= 0) {
       setNow(Date.now());
       return;
     }
     const timer = setTimeout(() => setNow(Date.now()), Math.min(wait + 1, 2_147_483_647));
     return () => clearTimeout(timer);
+  }, [eligibleAt]);
+  const idleWindowOpen = eligibleAt != null && now >= eligibleAt;
+  const stored = sessionId ? choices.get(sessionId) : undefined;
+  const choice: CompactFirstChoice | null = stored && stored.turnEndedAt === lastTurnEndedAt ? stored : null;
+  const setChoice = useCallback((next: CompactFirstChoice) => {
+    setChoices((current) => new Map(current).set(next.sessionId, { ...next, turnEndedAt: lastTurnEndedAt }));
   }, [lastTurnEndedAt]);
-  const idleWindowOpen = lastTurnEndedAt != null && now >= lastTurnEndedAt + COMPACT_FIRST_IDLE_MS;
   return { now, idleWindowOpen, choice, setChoice, sendRef };
 }
 

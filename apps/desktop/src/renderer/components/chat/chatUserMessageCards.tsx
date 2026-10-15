@@ -9,26 +9,13 @@ import { cn } from "../ui/cn";
 import { ChipText } from "./ChipText";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import type { WorkspacePathLocation } from "./chatWorkspacePaths";
+import { userTextLooksLikeMarkdown } from "./userMessageBody";
 
 /*
- * How a user's own message reads back in the transcript: markdown detection,
- * "Add to chat" quote cards, and the card for thread comments a send carried.
+ * How a user's own message reads back in the transcript: "Add to chat" quote
+ * cards and the card for thread comments a send carried. What a row shows is
+ * decided in `userMessageBody.ts`.
  */
-
-const MARKDOWN_HEADING_LINE = /^#{1,6}\s+\S/m;
-const MARKDOWN_FENCE_LINE = /^\s*(```|~~~)/m;
-const MARKDOWN_LIST_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\S/gm;
-
-/**
- * True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
- * spec), not a chat line that happens to contain an asterisk. Such a message
- * renders as formatted markdown; everything else keeps its exact text.
- */
-export function userTextLooksLikeMarkdown(text: string): boolean {
-  if (text.length < 80) return false;
-  if (MARKDOWN_HEADING_LINE.test(text) || MARKDOWN_FENCE_LINE.test(text)) return true;
-  return (text.match(MARKDOWN_LIST_LINE)?.length ?? 0) >= 3;
-}
 
 /**
  * A quote the user pulled from an agent reply with "Add to chat", shown as a

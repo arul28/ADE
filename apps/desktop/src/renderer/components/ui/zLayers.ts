@@ -29,12 +29,16 @@ export const Z_LAYERS = {
   popover: 100,
   /** The app sidebar and anchored popovers share their existing content layer. */
   sidebar: 100,
+  /**
+   * Floating top-center banners ("Restart and install"). Under the sheets: a
+   * sheet the person just opened is what they are looking at, and a banner
+   * drawn over it covered its header.
+   */
+  floatingBanner: 115,
   /** Top-bar dropdown sheets (Connections, usage, activity). */
   sheet: 120,
   /** The command palette's backdrop; it shares the sheets' level. */
   commandPalette: 120,
-  /** Floating top-center banners. */
-  floatingBanner: 140,
   /**
    * A full-viewport app surface (the Mac Desktop fullscreen view). Below
    * dialogs and toasts so a confirm or picker raised from inside it works.

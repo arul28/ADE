@@ -25,6 +25,14 @@ export function estimateToolRequiredBytes(archiveBytes: number | null): number {
 }
 
 /**
+ * A bare-file tool (no archive) needs its own size once, plus headroom: there
+ * is no unpacked copy to make room for.
+ */
+export function estimateFileToolRequiredBytes(fileBytes: number): number {
+  return fileBytes + TOOL_SPACE_HEADROOM_BYTES;
+}
+
+/**
  * Free bytes on the volume hosting `dirPath`, walking up to the nearest
  * ancestor that exists — the tools root is usually created by the very install
  * that needs the preflight. Returns null when the platform cannot answer, and

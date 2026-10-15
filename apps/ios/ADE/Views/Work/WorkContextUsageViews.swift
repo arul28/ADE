@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Claude, Codex, and Pi honor `/compact` as a real compact action. Other
+/// Claude, Codex, Muse, and Pi honor `/compact` as a real compact action. Other
 /// providers would treat the same text as a normal prompt.
 func workProviderSupportsManualCompact(_ provider: String) -> Bool {
   switch provider.lowercased() {
-  case "claude", "codex", "pi":
+  case "claude", "codex", "muse", "pi":
     return true
   default:
     return false
@@ -363,25 +363,44 @@ struct WorkCompactFirstOffer: Equatable {
   let contextTokens: Int
   let estimatedPostTokens: Int
   let mode: String
-  func isEligible(at now: Date) -> Bool { now.timeIntervalSince(endedAt) >= 3600 }
+  var idleSeconds: TimeInterval = 3600
+  func isEligible(at now: Date) -> Bool { now.timeIntervalSince(endedAt) >= idleSeconds }
 }
 
+/// Floating glass chip just above the prompt box (the desktop's
+/// `CompactFirstChip`): tap toggles compacting before the next send. It draws
+/// its own bottom gap, so before the offer is eligible it takes no room.
 struct WorkCompactFirstPill: View {
   let offer: WorkCompactFirstOffer
   @Binding var choice: Bool?
   var body: some View {
-    TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(3600), by: 60)) { context in
+    TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(offer.idleSeconds), by: 60)) { context in
       if offer.isEligible(at: context.date) {
         let enabled = choice ?? (offer.mode == "always")
+        let tint = enabled ? ADEColor.accent : ADEColor.textSecondary
         Button { choice = !enabled } label: {
-          Text("Compact first · \(workAbbreviateCount(offer.contextTokens))")
-            .font(.caption2).padding(.horizontal, 8).padding(.vertical, 4)
-            .foregroundStyle(enabled ? ADEColor.accent : ADEColor.textSecondary)
-            .background((enabled ? ADEColor.accent : ADEColor.textMuted).opacity(0.08), in: Capsule())
+          HStack(spacing: 6) {
+            Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
+              .font(.system(size: 10, weight: .bold))
+            Text("Compact first · \(workAbbreviateCount(offer.contextTokens))")
+              .font(.caption2.weight(.semibold).monospacedDigit())
+          }
+          .foregroundStyle(tint)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 6)
+          .workChatGlass(in: Capsule(style: .continuous), interactive: true)
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(tint.opacity(enabled ? 0.55 : 0.22), lineWidth: 0.75)
+          )
+          .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
+        .padding(.bottom, 8)
+        .transition(.opacity)
+        .accessibilityIdentifier("Work.Chat.Composer.CompactFirstPill")
         .accessibilityValue(enabled ? "On" : "Off")
-        .help("The cache expired after an hour. Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")
+        .help("The cache expired after \(offer.idleSeconds < 3600 ? "5 minutes" : "an hour"). Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")
       }
     }
     .onChange(of: offer.endedAt) { _, _ in choice = nil }
@@ -398,7 +417,6 @@ struct WorkProviderCompactionSettings: View {
   @State private var settings: [String: Any] = [:]
   @State private var tokens = ""
   @State private var idleMode = "ask"
-  @State private var enabled = true
   @State private var loading = true
   @State private var errorMessage: String?
 
@@ -406,20 +424,19 @@ struct WorkProviderCompactionSettings: View {
     NavigationStack {
       Form {
         if provider == "claude" {
-          Toggle("Auto-compact", isOn: $enabled)
-          Picker("Auto-compact at", selection: $tokens) {
-            Text("Auto (recommended)").tag("")
+          Picker("Compact at", selection: $tokens) {
+            Text("Auto (default)").tag("")
             ForEach(1...10, id: \.self) { step in Text(workAbbreviateCount(step * 100_000)).tag(String(step * 100_000)) }
           }
-          Picker("After an hour idle", selection: $idleMode) {
+          Picker("After the cache expires", selection: $idleMode) {
             Text("Ask (pill)").tag("ask")
             Text("Always compact first").tag("always")
             Text("Never").tag("never")
           }
         } else if provider == "codex" {
-          TextField("Auto-compact at (default if empty)", text: $tokens).keyboardType(.numberPad)
+          TextField("Compact at (Auto if empty)", text: $tokens).keyboardType(.numberPad)
         } else if provider == "opencode" || provider == "pi" {
-          Toggle("Auto-compact", isOn: $enabled)
+          Text("Compacts when the chat gets full. Its buffer sizes are in desktop Settings.")
         } else {
           Text("This provider compacts by itself. ADE cannot change when.")
         }
@@ -446,15 +463,14 @@ struct WorkProviderCompactionSettings: View {
       settings = compaction?[provider] as? [String: Any] ?? [:]
       tokens = (settings["atTokens"] as? Int).map(String.init) ?? ""
       idleMode = settings["idleMode"] as? String ?? "ask"
-      enabled = settings["enabled"] as? Bool ?? true
     } catch { errorMessage = error.localizedDescription }
   }
   @MainActor private func save() async {
     loading = true
     defer { loading = false }
     var value = settings
-    // Codex has no auto-compact toggle (desktop hides it too), so leave its stored value alone.
-    if provider != "codex" { value["enabled"] = enabled }
+    // Compaction is always on; a stored "off" from before is dropped.
+    value.removeValue(forKey: "enabled")
     if provider == "claude" || provider == "codex" {
       if !tokens.isEmpty {
         guard let number = Int(tokens), number > 0 else { errorMessage = "Enter a positive token count."; return }

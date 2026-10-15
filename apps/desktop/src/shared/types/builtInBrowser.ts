@@ -79,6 +79,13 @@ export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & BuiltInBrowse
   openPanel?: boolean;
 };
 
+export type BuiltInBrowserTabLoadError = {
+  /** Chromium's net error code, e.g. -102 for a refused connection. */
+  code: number;
+  description: string;
+  url: string | null;
+};
+
 export type BuiltInBrowserTab = {
   id: string;
   url: string | null;
@@ -90,6 +97,13 @@ export type BuiltInBrowserTab = {
    * title reads "New tab" rather than the empty document title.
    */
   isLaunchpad: boolean;
+  /**
+   * Why the current page failed to load (connection refused, DNS, timeout), or
+   * null. Chromium shows such a page as plain white, so the Work tab's floating
+   * preview hides while it is set. Cleared when the tab starts loading again.
+   * Absent on a main process that predates it, which reads as null.
+   */
+  loadError?: BuiltInBrowserTabLoadError | null;
   /**
    * The isolated profile this tab signs in with, or null for the shared
    * profile. Fixed for the tab's life. Absent on a main process that predates
@@ -120,8 +134,9 @@ export type BuiltInBrowserTab = {
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
   /**
-   * The fixed page size an agent-owned or recording tab is laid out at
-   * (`BUILT_IN_BROWSER_AGENT_VIEWPORT`), or null when the tab follows its box.
+   * The fixed page size a recording tab is laid out at
+   * (`BUILT_IN_BROWSER_RECORDING_VIEWPORT`), or null when the tab follows its box.
+   * The wire name predates recording-only use and stays for compatibility.
    * The pane letterboxes it exactly like a device preset. Absent on a main
    * process that predates it, which reads as null.
    */
@@ -502,6 +517,11 @@ export type BuiltInBrowserObservation = {
   relativePath: string | null;
   /** Why there is no image, when there is none: "Browser screenshot is unavailable for tab …". */
   screenshotUnavailable?: string;
+  /**
+   * For the agent, when the page is narrow because the person's pane is: why a
+   * site may be in its mobile layout, and the command for a desktop one.
+   */
+  narrowPageHint?: string;
   dataUrl?: string;
   dom?: BuiltInBrowserDomSnapshot | null;
   elementMap?: BuiltInBrowserObservationElementMap | null;
@@ -1353,27 +1373,30 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
  * The view has to stay attached and visible to keep a compositor surface (a
  * detached or hidden `WebContentsView` captures nothing at all), so it is parked
  * this far past the bottom-right corner of the union of every display, where no
- * window on any screen can reach it. The size floors only apply to a panel that
- * was never opened — a zero-sized view would capture an empty image.
+ * window on any screen can reach it. The size floors only apply to a tab the
+ * panel never showed — a zero-sized view would capture an empty image.
  */
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
-/** A remembered pane smaller than this parks at the floors above instead. */
-export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH = 640;
-export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT = 400;
+/**
+ * A page narrower than this, because the person's pane is, gets a
+ * `narrowPageHint` on an agent's observation. The page keeps
+ * the size of the pane that showed it; the hint tells the agent how to ask
+ * for a desktop layout.
+ */
+export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
 
 /**
- * The page size of a tab an agent owns or that is being recorded.
+ * The page size of a tab that is being recorded.
  *
- * A page lays out at its native view's size, so an agent's tab opened in a
- * narrow Work pane reflowed to a thin strip — and every screenshot, recording
- * and floating preview the agent took of it was that strip. While a tab is
- * agent-owned or recording its layout viewport is pinned here (the same CDP
- * device-metrics override a device preset uses) and scaled to fit whatever box
- * shows it; parked off screen, it is exactly this size at scale 1.
+ * A page lays out at its native view's size, so a recording made in a narrow
+ * Work pane was a thin strip. While a tab records, its layout viewport is
+ * pinned here (the same CDP device-metrics override a device preset uses) and
+ * scaled to fit whatever box shows it; parked off screen, it is exactly this
+ * size at scale 1. Agent-owned tabs are not pinned: they lay out at the pane.
  */
-export const BUILT_IN_BROWSER_AGENT_VIEWPORT: { readonly width: number; readonly height: number } = {
+export const BUILT_IN_BROWSER_RECORDING_VIEWPORT: { readonly width: number; readonly height: number } = {
   width: 1280,
   height: 800,
 };

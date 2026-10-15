@@ -3,6 +3,8 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
+  modelSupportsUltrafast,
+  type FastTier,
   modelSupportsServiceTier,
   type AuthType,
   type ModelDescriptor,
@@ -104,7 +106,20 @@ export type ModelPickerProps = {
    * affordance at all.
    */
   fastMode?: boolean;
-  onFastModeChange?: (next: boolean) => void;
+  /**
+   * The faster tier Fast is on. Passing it (null included) opts the surface in
+   * to Ultrafast: a model whose catalog offers it cycles its chip Off → Fast →
+   * Ultrafast, and the tier arrives as `onFastModeChange`'s second argument.
+   * Omit it on a surface that cannot carry the tier, so the chip stays Fast.
+   */
+  fastTier?: FastTier | null;
+  /**
+   * The tier the server last reported for this chat's Fast. Passing it puts a
+   * badge on the selected row so a tier the server declined or downgraded is
+   * visible instead of the chip silently claiming the request.
+   */
+  effectiveFastTier?: string | null;
+  onFastModeChange?: (next: boolean, tier?: FastTier) => void;
   /** @deprecated Older alias for {@link ModelPickerProps.fastMode}. */
   fastModeActive?: boolean;
   /** @deprecated Older alias for {@link ModelPickerProps.onFastModeChange}. */
@@ -171,6 +186,8 @@ export const ModelPicker = memo(function ModelPicker({
   runtimePin,
   constrainToAvailableModelIds = false,
   fastMode,
+  fastTier,
+  effectiveFastTier = null,
   onFastModeChange,
   fastModeActive,
   onFastModeToggle,
@@ -489,6 +506,7 @@ export const ModelPicker = memo(function ModelPicker({
             disabled={disabled}
             open={open}
             fastMode={fastModeOn && !legacyFastChip}
+            fastTier={fastTier ?? null}
             {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
             {...(serviceTierMode ? { serviceTier, serviceTierSupported } : {})}
             className={triggerClassName}
@@ -530,6 +548,9 @@ export const ModelPicker = memo(function ModelPicker({
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
+                fastTier={fastTier ?? null}
+                ultrafastEnabled={fastTier !== undefined}
+                effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
@@ -630,6 +651,7 @@ export function composeModelPickerTriggerLabel({
   model,
   value,
   fastMode = false,
+  fastTier = null,
   fastModeSupported,
   serviceTier,
   serviceTierSupported,
@@ -638,6 +660,8 @@ export function composeModelPickerTriggerLabel({
   model: ModelDescriptor | undefined;
   value: string;
   fastMode?: boolean;
+  /** Ultrafast names itself on the trigger; it applies only where the model offers it. */
+  fastTier?: FastTier | null;
   fastModeSupported?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   serviceTierSupported?: boolean;
@@ -659,7 +683,8 @@ export function composeModelPickerTriggerLabel({
     fastMode,
     ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
   });
-  return fast ? `${base} Fast` : base;
+  if (!fast) return base;
+  return fastTier === "ultrafast" && modelSupportsUltrafast(model) ? `${base} Ultrafast` : `${base} Fast`;
 }
 
 type TriggerProps = {
@@ -670,6 +695,7 @@ type TriggerProps = {
   disabled: boolean;
   open: boolean;
   fastMode: boolean;
+  fastTier?: FastTier | null;
   fastModeSupported?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   serviceTierSupported?: boolean;
@@ -679,7 +705,7 @@ type TriggerProps = {
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, activePreset, compact, disabled, open, fastMode, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
+      { model, value, activePreset, compact, disabled, open, fastMode, fastTier, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
       ref,
     ) {
       const label = composeModelPickerTriggerLabel({
@@ -687,6 +713,7 @@ const ModelPickerTrigger = memo(
         value,
         ...(activePreset?.name ? { presetName: activePreset.name } : {}),
         fastMode,
+        fastTier: fastTier ?? null,
         ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
         ...(serviceTierSupported !== undefined ? { serviceTier, serviceTierSupported } : {}),
       });

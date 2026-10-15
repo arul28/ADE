@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -45,11 +46,14 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
+  RuntimeActivitySummary,
+  UpdateImpact,
   RuntimeEventsReleaseRequest,
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { parseRuntimeUpdateImpact, UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import { readProjectIconForUpload } from "../projects/projectIconResolver";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
@@ -234,6 +238,11 @@ function trackPageFileWatch(
  * leaving the request open forever.
  */
 const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
+/**
+ * A confirmation dialog waits on this, so it is a few seconds, not a work
+ * budget. One deadline covers the ask and its older-machine fallback.
+ */
+const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 3_000;
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -385,6 +394,13 @@ function resolveAuthorizedLocalRuntimeRootPath(
   if (requested) {
     const alreadyAuthorized = roots.get(localRuntimeRootKey(requested));
     if (alreadyAuthorized) return alreadyAuthorized;
+    // A window that still holds a project's folder from before a move reaches
+    // it at its new folder, when this window may use that one.
+    const moved = resolveMovedProjectRoot(requested);
+    if (moved !== requested) {
+      const movedAuthorized = roots.get(localRuntimeRootKey(moved));
+      if (movedAuthorized) return movedAuthorized;
+    }
     const additionallyAuthorized = authorizeLocalRuntimeRoot?.(session, requested);
     const normalizedAdditional = normalizeLocalRuntimeRootPath(additionallyAuthorized);
     return normalizedAdditional &&
@@ -1524,6 +1540,42 @@ export function registerRuntimeBridge({
           retryOnConnectionError: false,
         },
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetUpdateImpact,
+    async (_event, arg: { id: string }): Promise<UpdateImpact> => {
+      // Never rejects: the caller is a confirmation dialog, and a machine that
+      // cannot answer (or is gone) is "unknown", not an error to show.
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) return UNKNOWN_UPDATE_IMPACT;
+      const deadlineMs = Date.now() + REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS;
+      const ask = async (method: string): Promise<unknown> => {
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) throw new Error("The update-impact deadline passed.");
+        return await remoteConnectionService.callMachineMethod<unknown>(
+          target.id,
+          method,
+          {},
+          { timeoutMs: remainingMs, retryOnConnectionError: false },
+        );
+      };
+      try {
+        const impact = parseRuntimeUpdateImpact(await ask("runtime.updateImpact"));
+        return impact ? { ...impact, checked: true } : UNKNOWN_UPDATE_IMPACT;
+      } catch {
+        // A machine that needs this update usually predates the method. It can
+        // still say whether anything is running, just not what.
+        try {
+          const activity = await ask("runtime.activitySummary") as Partial<RuntimeActivitySummary> | null;
+          if (typeof activity?.idle !== "boolean") return UNKNOWN_UPDATE_IMPACT;
+          return { ...UNKNOWN_UPDATE_IMPACT, checked: true, busyWithoutDetail: !activity.idle };
+        } catch {
+          return UNKNOWN_UPDATE_IMPACT;
+        }
+      }
     },
   );
 

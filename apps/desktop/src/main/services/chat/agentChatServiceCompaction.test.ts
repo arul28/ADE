@@ -21,6 +21,7 @@ import {
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 describe("createAgentChatService", () => {
   describe("compaction flush", () => {
@@ -130,6 +131,11 @@ describe("createAgentChatService", () => {
           return;
         }
         // Begin: SDK status flips to "compacting" before the boundary lands.
+        // Claude repeats this status every ~30s while one compaction runs; a
+        // repeat is the same compaction and must not open a second row (the
+        // divider's elapsed clock is the timestamp of the row's newest
+        // "started").
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
         // End: the compact boundary marks completion with the real trigger/tokens.
         yield {
@@ -222,6 +228,43 @@ describe("createAgentChatService", () => {
       ]);
     });
 
+    it("drops the compacting chip when a compaction ends on a chat with no prior activity", async () => {
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-compact-clear", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compact-clear", status: "compacting" };
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: "sdk-session-compact-clear",
+          compact_metadata: { trigger: "manual", pre_tokens: 120_000, post_tokens: 18_000 },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compact-clear",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.runSessionTurn({ sessionId: session.id, text: "/compact", timeoutMs: 15_000 });
+
+      // Nothing was happening before the compaction, so there is no prior
+      // activity to restore: the row must be cleared, or it reads "Compacting…"
+      // on a chat that is demonstrably done.
+      await vi.waitFor(() => expect(sessionService.setDetectedSessionActivity).toHaveBeenCalled());
+      await vi.waitFor(() => expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id));
+    });
+
     it.each([
       { compactFirst: true, expectedUserTexts: ["/compact", "hello again"] },
       { compactFirst: false, expectedUserTexts: ["hello again"] },
@@ -241,7 +284,7 @@ describe("createAgentChatService", () => {
             type: "system",
             subtype: "compact_boundary",
             session_id: "sdk-session-compact-first",
-            compact_metadata: { trigger: "manual", pre_tokens: 150_000, post_tokens: 5_000 },
+            compact_metadata: { trigger: "manual", pre_tokens: 250_000, post_tokens: 5_000 },
           };
         }
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -260,7 +303,7 @@ describe("createAgentChatService", () => {
       // The last turn finished long ago and left 150k tokens in context.
       writeTestTranscriptEnvelopes(session.id, [
         { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
-        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 150_000 } } },
+        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 250_000 } } },
       ] as AgentChatEventEnvelope[]);
 
       await service.sendMessage({ sessionId: session.id, text: "hello again", compactFirst });
@@ -271,6 +314,62 @@ describe("createAgentChatService", () => {
           .map((event: any) => event.text);
         expect(texts).toEqual(expectedUserTexts);
       });
+    });
+
+    it("keeps every message queued behind a Compact first compaction that fails, and sends each once with the full chat", async () => {
+      installRealTranscriptParser();
+      let releaseCompaction = () => {};
+      const compactionGate = new Promise<void>((resolve) => { releaseCompaction = resolve; });
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-compact-first-fail", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          // The compaction runs until the test releases it, then the provider fails.
+          await compactionGate;
+          throw new Error("compaction exploded");
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compact-first-fail",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      writeTestTranscriptEnvelopes(session.id, [
+        { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
+        { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 250_000 } } },
+      ] as AgentChatEventEnvelope[]);
+
+      // The send returns while the compaction is still running: the message is queued, not sent.
+      const first = await service.sendMessage({ sessionId: session.id, text: "hello again", compactFirst: true });
+      expect(first).toEqual(expect.objectContaining({ queued: true }));
+      await service.steer({ sessionId: session.id, text: "and this" });
+      const queuedTexts = () => onEvent.mock.calls.map((call) => call[0]?.event)
+        .filter((event: any) => event?.type === "user_message" && event.deliveryState === "queued")
+        .map((event: any) => event.text);
+      expect(queuedTexts()).toEqual(["hello again", "and this"]);
+      releaseCompaction();
+
+      const events = () => onEvent.mock.calls.map((call) => call[0]?.event);
+      const deliveredTexts = () => events()
+        .filter((event: any) => event?.type === "user_message" && event.deliveryState === "delivered")
+        .map((event: any) => event.text);
+      // Nothing behind the failed compaction was cancelled; each message went out once, in order,
+      // and the user is told the first one went with the full chat.
+      await vi.waitFor(() => expect(deliveredTexts()).toEqual(["hello again", "and this"]));
+      await vi.waitFor(() => expect(events().some((event: any) => event?.type === "system_notice" && event.severity === "warning")).toBe(true));
+      expect(events().filter((event: any) => event?.type === "user_message" && event.deliveryState === "cancelled")).toEqual([]);
     });
 
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
@@ -1928,6 +2027,52 @@ describe("createAgentChatService", () => {
         expect(summary?.usageLimitResume ?? null).toBeNull();
         expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
       });
+
+      it.each([
+        { onExtraUsage: "stop" as const, status: "allowed", interrupts: 1, turnStatus: "failed", parked: true },
+        { onExtraUsage: null, status: "allowed", interrupts: 0, turnStatus: "completed", parked: false },
+        // A plan rejection is the plan limit, not an extra-usage stop: Claude
+        // ends the turn itself, and ADE sends no interrupt.
+        { onExtraUsage: "stop" as const, status: "rejected", interrupts: 0, turnStatus: "failed", parked: true },
+      ])("ends a turn on extra usage only for an account set to stop (onExtraUsage: $onExtraUsage, event: $status)", async (row) => {
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        const interrupt = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          // Claude allows the request and reports that it was billed past the plan.
+          yield {
+            type: "rate_limit_event",
+            session_id: "sdk-session-extra-usage",
+            rate_limit_info: { status: row.status, rateLimitType: "five_hour", resetsAt, isUsingOverage: true },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        const sdkSession = { send, stream, close, interrupt, sessionId: "sdk-session-extra-usage" };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        const accounts = getMachineProviderInstanceStore();
+        const account = accounts.resolve("claude", session.instanceId).instance;
+        accounts.setProviderSettings("claude", { onExtraUsage: row.onExtraUsage }, account.id);
+
+        await service.runSessionTurn({ sessionId: session.id, text: "keep going", timeoutMs: 15_000 });
+
+        expect(interrupt).toHaveBeenCalledTimes(row.interrupts);
+        const done = events.filter((entry) => entry.event.type === "done").at(-1);
+        expect(done?.event).toMatchObject({ status: row.turnStatus });
+        const summary = await service.getSessionSummary(session.id);
+        expect(Boolean(summary?.usageLimitParkedUntil)).toBe(row.parked);
+      });
     });
 
     it("Don't continue interrupts a busy Claude query without closing the session", async () => {
@@ -2680,6 +2825,59 @@ describe("createAgentChatService", () => {
         )).toBe(false);
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
         expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ends a Claude turn while a mod keeps sending UI messages after the result", async () => {
+      // `performance` too: the drain window for mod messages reads a monotonic clock.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let ticksRead = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield { type: "result", session_id: "sdk-session-mod-ticker", usage: { input_tokens: 1, output_tokens: 1 } };
+          // The harness drains one stream to warm the session up; the turn reads the next one.
+          if (streamCall === 1) return;
+          // A real tail message, so the test also sees a turn that drops one.
+          yield { type: "prompt_suggestion", session_id: "sdk-session-mod-ticker", uuid: "tail-1", suggestion: "Audit the Work tab" };
+          // A mod that redraws on a timer: each message lands inside the
+          // one-second drain window that waits for a tail message.
+          for (let tick = 0; tick < 200; tick += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            ticksRead += 1;
+            yield { type: "system", subtype: "ui_status", session_id: "sdk-session-mod-ticker", plugin: "ticker", text: `tick ${tick}` };
+          }
+        })());
+        const sdkSession = { send: vi.fn().mockResolvedValue(undefined), stream, close: vi.fn(), sessionId: "sdk-session-mod-ticker" };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+        let settled = false;
+        const turn = service.runSessionTurn({ sessionId: session.id, text: "answer while the mod ticks", timeoutMs: 60_000 })
+          .finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(4_000);
+
+        // The turn ended on the shared window, long before the mod stopped.
+        expect(settled).toBe(true);
+        await turn;
+        // The mod did send messages during the turn; the idle reader takes the later ones.
+        expect(ticksRead).toBeGreaterThan(0);
+        expect(events.filter((event) => event.event.type === "done")).toHaveLength(1);
+        const eventTypes = events.map((event) => event.event.type);
+        expect(eventTypes).toContain("prompt_suggestion");
+        expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
+        // What a mod draws is not transcript content.
+        expect((await service.getChatEventHistory(session.id, { maxEvents: 50 })).events
+          .some((event) => JSON.stringify(event.event).includes("tick "))).toBe(false);
       } finally {
         vi.useRealTimers();
       }

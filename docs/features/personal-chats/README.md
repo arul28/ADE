@@ -354,6 +354,11 @@ themselves are not trimmed.
   App Control, CLI-launch, lane, repo, PR, and **Open in** editor affordances
   are absent. The desktop Browser uses
   its global profile; terminal commands run in the personal scratch workspace.
+  The page reopens the chat that was open last, per machine
+  (`renderer/state/lastOpenChat.ts`, persisted across restarts); it starts a
+  new chat only after **New** was pressed, and falls back to the most recent
+  chat when the remembered one was deleted or archived. A link to a specific
+  chat wins over the remembered one.
 - iOS: the Hub is the only entry point. It pushes a native Chats page, then a
   new-chat or existing-chat destination without selecting a project.
 - TUI: deliberately out of scope for the initial release. The regular `ade`

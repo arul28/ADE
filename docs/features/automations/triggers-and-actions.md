@@ -59,8 +59,9 @@ GitHub triggers are emitted by three ingress paths: a real webhook (`github-webh
 - `session.limit_reached` — the provider reported a usage limit for the session.
 - `session.failed` — the provider or its API failed the session.
 - `session.ended_without_pr` — the session ended and its lane has no open PR.
+- `session.settled` — a chat was settled (filed as done).
 
-All four carry a structured `trigger.session` payload: `sessionId`, `provider`, `modelId`, `laneId`, and — for `session.limit_reached` only — `resetAt` (the ISO time the usage window reopens). The same ids are mirrored onto `trigger.sessionId` and `trigger.laneId`, so lane-shaped filters and existing templates keep working.
+All five carry a structured `trigger.session` payload: `sessionId`, `provider`, `modelId`, `laneId`, and — for `session.limit_reached` only — `resetAt` (the ISO time the usage window reopens). The same ids are mirrored onto `trigger.sessionId` and `trigger.laneId`, so lane-shaped filters and existing templates keep working.
 
 Two filters apply to these triggers:
 
@@ -68,6 +69,8 @@ Two filters apply to these triggers:
 - `providers` — a provider allow-list (`claude`, `codex`, `cursor`, ...), compared case-insensitively. An empty or absent list matches any provider; a configured list never matches an event that carries no provider.
 
 `session.limit_reached` and `session.failed` arrive through a host callback: the chat runtime calls `automationService.onSessionSignal({ kind, sessionId, provider?, modelId?, laneId?, resetAt?, summary? })` once it has decided a turn hit a limit or failed. Automations never inspect chat events themselves.
+
+`session.settled` comes from the session service. The host that declares the settle reports it after the settle lands, by `automationService.onSessionSettled({ sessionId, laneId, provider? })`. It carries no `modelId`. It fires one time for the chat that was settled, by a person, by an agent, or by a merged PR. It fires only for an ADE chat: a settled shell or tracked CLI session does not fire it. A subagent that follows its settled parent does not fire it. A host with no automation service (an embedded TUI runtime, or a build with automations off) reports nothing. The lane can still hold other open chats, so a cleanup command on this trigger can remove files that a second chat uses; use `lane.archived` for cleanup of the whole lane.
 
 `session.ended_without_pr` is derived inside the service. `onSessionEnded` first dispatches `session-end`, then reads the local PR projection for the lane and dispatches the narrower trigger only when the lane has no `open`/`draft` PR. An unreadable projection is treated as "has a PR", so a lookup failure can never fire the trigger wrongly.
 
@@ -120,6 +123,7 @@ The service produces human summaries for the UI:
 - `session.limit_reached` -> `"Usage limit reached: <model or provider>"`
 - `session.failed` -> `"Session failed: <model or provider>"`
 - `session.ended_without_pr` -> `"Session ended without a PR: <lane>"`
+- `session.settled` -> `"Session settled: <lane>"`
 - `git.commit` -> `"git.commit:<branch>"` when branch is set
 - `github.pr_*` -> `"github.pr_*:<branch>"` (legacy `git.pr_*` first normalizes to `github.pr_*`)
 - `github.issue_*` -> `"github.issue_*:<repo>"` when `repo` is set

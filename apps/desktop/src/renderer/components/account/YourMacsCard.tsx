@@ -5,8 +5,8 @@ import {
   CaretRight,
   DeviceMobile,
   DotsThreeVertical,
-  Laptop,
 } from "@phosphor-icons/react";
+import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
 import type {
   AdeAccountLocalMachineIdentity,
   AdeAccountMachinePairingRepairResult,
@@ -949,7 +949,14 @@ export function YourMacsCard() {
                     </button>
                   ) : <span className="ade-acct-caret-spacer" />}
                   <span className="ade-acct-glyph" aria-hidden>
-                    <Laptop size={16} />
+                    <MachineAvatar
+                      colorKey={row.key}
+                      name={row.name}
+                      platform={machinePlatform(machine?.platform)}
+                      formFactor={machineFormFactor({ name: row.name, power: machine?.power })}
+                      size={32}
+                      dimmed={!row.awake}
+                    />
                     {/* The dot states the SAME presence as the line beside it. */}
                     <span
                       className="ade-acct-presence"

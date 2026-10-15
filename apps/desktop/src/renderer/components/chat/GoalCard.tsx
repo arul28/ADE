@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PencilSimple, Target, X } from "@phosphor-icons/react";
-import type { ClaudeActiveGoal, CodexThreadGoal } from "../../../shared/types";
+import type { ClaudeActiveGoal, CodexThreadGoal, CodexThreadGoalStatus } from "../../../shared/types";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
 
 /**
@@ -15,7 +15,7 @@ export type GoalCardProps =
       goal: CodexThreadGoal;
       onEdit?: (nextObjective: string) => void;
       onClear?: () => void;
-      onSetStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
+      onSetStatus?: (status: Extract<CodexThreadGoalStatus, "active" | "paused" | "blocked" | "complete">) => void;
       pending?: boolean;
     }
   | {

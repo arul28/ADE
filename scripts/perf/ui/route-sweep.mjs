@@ -6,10 +6,12 @@
 //   nav phase (0-4s): long tasks, IPC calls/time (from perf events.jsonl)
 //   idle phase (6s..6+idle): renderer metrics, IPC/min, animations, compositor draws
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 const [runId, routesArg, idleArg] = process.argv.slice(2);
 const routes = routesArg.split(",");
 const idleSecs = Number(idleArg ?? 12);
-const eventsPath = `${process.env.HOME}/.ade/perf-runs/${runId}/events.jsonl`;
+const eventsPath = join(homedir(), ".ade", "perf-runs", runId, "events.jsonl");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();

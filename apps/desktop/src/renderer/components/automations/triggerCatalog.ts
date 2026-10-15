@@ -143,12 +143,13 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     label: "Chat session",
     icon: ChatCircleText,
     accent: "#58A6FF",
-    hint: "When a chat ends, fails, or hits a limit",
+    hint: "When a chat ends, fails, hits a limit, or is settled",
     events: [
       { value: "session-end", label: "Session ended" },
       { value: "session.limit_reached", label: "Usage limit reached" },
       { value: "session.failed", label: "Session failed" },
       { value: "session.ended_without_pr", label: "Ended without a PR" },
+      { value: "session.settled", label: "Chat settled" },
     ],
   },
   {

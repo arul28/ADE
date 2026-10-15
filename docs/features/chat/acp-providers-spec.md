@@ -716,6 +716,25 @@ Rust, Apache-2.0)
 `acpRuntimeCoordinator.ts` owns these rules. The chat service only passes the
 chat's model token and effort.
 
+- **The picker shows the provider's live list.** `acpHost/acpModelDiscovery.ts`
+  warms each installed, signed-in provider in the background (`initialize`,
+  `session/new`, `session/close`, never a prompt; `devin models list` for
+  Devin), one provider at a time, and saves the last good list per provider in
+  `userData/acp-model-catalog-cache.json` for 6 hours. A stale list is served
+  while it refreshes, and a failed warm is not retried for 5 minutes. An open
+  chat session's own report refreshes the same cache. Once a provider has a
+  live list, `modelRegistry.ts` serves exactly that list: curated rows the
+  list names keep their researched name, color and context window, and curated
+  rows it does not name are hidden. The curated rows are the fallback for a
+  provider that has never reported (offline, never probed).
+- **Copilot effort.** Copilot accepts `none`, `minimal`, `low`, `medium`,
+  `high`, `xhigh` and `max` (`--effort` is its alias for
+  `--reasoning-effort`), and exits at startup on any other value, so only
+  those seven are passed. A live Copilot model gets the levels the session
+  lists for it, else the levels ADE already learned, else all seven, except
+  `Auto`, `gpt-3*`/`gpt-4*` and models the curated table marks as
+  non-reasoning.
+
 - **Order after every entry** (`session/new`, `session/resume`,
   `session/load`): mode, then model, then effort. A resumed session comes
   back on the model and effort that it last ran with (Grok 1.0.40), so a

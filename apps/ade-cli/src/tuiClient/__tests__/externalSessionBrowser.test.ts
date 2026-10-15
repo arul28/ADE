@@ -338,9 +338,9 @@ describe("externalSessionBrowser helpers", () => {
 
   it("cycles through every provider, including the ACP ones", () => {
     expect(EXTERNAL_SESSION_PROVIDER_FILTERS).toEqual([
-      "all", "claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot",
+      "all", "claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot",
     ]);
-    expect(nextExternalSessionProviderFilter("pi")).toBe("qwen");
+    expect(nextExternalSessionProviderFilter("pi")).toBe("muse");
     expect(nextExternalSessionProviderFilter("copilot")).toBe("all");
     expect(externalSessionProviderLabel("copilot")).toBe("Copilot");
   });

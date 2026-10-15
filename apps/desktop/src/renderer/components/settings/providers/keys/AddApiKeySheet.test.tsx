@@ -34,6 +34,7 @@ const EXPECTED: Record<SettingsProviderId, { endpoint: boolean; protocol: boolea
   cursor: { endpoint: false, protocol: false, models: false, providerId: false },
   droid: { endpoint: true, protocol: true, models: true, providerId: false },
   pi: { endpoint: false, protocol: false, models: false, providerId: false },
+  muse: { endpoint: false, protocol: false, models: false, providerId: false },
   opencode: { endpoint: true, protocol: true, models: true, providerId: true },
   qwen: { endpoint: true, protocol: false, models: false, providerId: false },
   kimi: { endpoint: false, protocol: false, models: false, providerId: false },

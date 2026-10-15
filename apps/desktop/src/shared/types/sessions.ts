@@ -11,12 +11,14 @@ import type {
   AgentChatCliLaunchProvider,
   AgentChatCrossMachineHandoffRecord,
   AgentChatDroidPermissionMode,
+  AgentChatMusePermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
   AgentChatUsageLimitResume,
   WorkBoardColumn,
   WorkBoardMoveTarget,
 } from "./chat";
+import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -91,6 +93,7 @@ export type TerminalToolType =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated"
@@ -100,6 +103,7 @@ export type TerminalToolType =
   | "cursor"
   | "droid-chat"
   | "pi-chat"
+  | "muse-chat"
   // ACP providers: tracked CLI terminal, then the ADE chat runtime.
   | "qwen"
   | "kimi"
@@ -122,6 +126,7 @@ export type TrackedAgentCliToolType =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -160,6 +165,7 @@ export function isTrackedAgentCliToolType(
     || toolType === "droid"
     || toolType === "opencode"
     || toolType === "pi"
+    || toolType === "muse"
     || toolType === "qwen"
     || toolType === "kimi"
     || toolType === "grok"
@@ -227,6 +233,7 @@ export type TerminalResumeProvider =
   | "droid"
   | "opencode"
   | "pi"
+  | "muse"
   | "qwen"
   | "kimi"
   | "grok"
@@ -238,9 +245,12 @@ export type TerminalResumeTargetKind = "session" | "thread";
 export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  musePermissionMode?: AgentChatMusePermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /** "ultrafast" when a Codex CLI launched with Fast set to Ultrafast. */
+  fastTier?: "ultrafast" | null;
   /** @deprecated Use fastMode. Accepted for resume metadata written before the fast-mode rename. */
   codexFastMode?: boolean | null;
   claudePermissionMode?: AgentChatClaudePermissionMode | null;
@@ -424,6 +434,8 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Claude chats: the chat's prompt cache after its last turn. */
+  chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
   /**
@@ -644,10 +656,13 @@ export type PtyCreateArgs = {
     provider: AgentChatCliLaunchProvider;
     permissionMode: AgentChatPermissionMode;
     droidPermissionMode?: AgentChatDroidPermissionMode | null;
+    musePermissionMode?: AgentChatMusePermissionMode | null;
     sessionId?: string;
     model?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
+    /** Codex only: "ultrafast" asks for Ultrafast when Fast is on. */
+    fastTier?: "ultrafast" | null;
     initialPrompt?: string | null;
     /**
      * Provider account ("instance") to launch under, for `claude` and `codex`

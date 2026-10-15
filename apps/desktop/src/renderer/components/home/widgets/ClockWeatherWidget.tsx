@@ -7,7 +7,7 @@ import { WeatherGlyph, weatherKind, weatherLabel } from "./WeatherGlyph";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { FitList } from "../HomeFitList";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
-import { usePolling } from "./widgetHooks";
+import { usePolling } from "../../../hooks/usePolling";
 import "../homeWidgets.css";
 
 /**

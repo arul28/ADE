@@ -116,16 +116,7 @@ final class LinearOAuthRunner: NSObject, ObservableObject, ASWebAuthenticationPr
   }
 
   nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-    MainActor.assumeIsolated {
-      let scene = UIApplication.shared.connectedScenes
-        .compactMap { $0 as? UIWindowScene }
-        .first { $0.activationState == .foregroundActive }
-        ?? UIApplication.shared.connectedScenes
-          .compactMap { $0 as? UIWindowScene }
-          .first
-      let window = scene?.keyWindow ?? scene?.windows.first
-      return window ?? ASPresentationAnchor()
-    }
+    MainActor.assumeIsolated { adeWebAuthPresentationAnchor() }
   }
 }
 

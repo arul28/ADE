@@ -2,6 +2,7 @@ import { ArrowRight, CircleNotch, Question, WarningCircle } from "@phosphor-icon
 import { fetchAccountStatus, accountSessionTitle, type AdeAccountSessionState } from "../../lib/account";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
+import { AnotherDeviceSignInPanel } from "../account/AnotherDeviceSignInPanel";
 import { useSignInFlow } from "../account/useSignInFlow";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
@@ -22,7 +23,7 @@ export function GlassSignInCard({
   onSignedIn: () => void;
   sessionState?: AdeAccountSessionState;
 }) {
-  const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel } = useSignInFlow({
+  const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
     onSignedIn,
     sessionState,
   });
@@ -68,8 +69,12 @@ export function GlassSignInCard({
             Sign in anyway
           </button>
         </div>
+      ) : otherDevice.prompt ? (
+        <div style={{ marginTop: 22 }}>
+          <AnotherDeviceSignInPanel prompt={otherDevice.prompt} onCancel={otherDevice.cancel} />
+        </div>
       ) : (
-        <div style={{ marginTop: 26 }}>
+        <div style={{ marginTop: 26, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
           <button
             type="button"
             className="ade-glass-primary"
@@ -80,6 +85,16 @@ export function GlassSignInCard({
             {signInLabel}
             {busy ? null : <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />}
           </button>
+          {otherDevice.available ? (
+            <button
+              type="button"
+              className="ade-glass-link"
+              disabled={!configured || otherDevice.starting}
+              onClick={() => void otherDevice.begin()}
+            >
+              Sign in with your phone or another device
+            </button>
+          ) : null}
         </div>
       )}
 

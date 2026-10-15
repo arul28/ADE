@@ -7,6 +7,7 @@ import {
   persistableRemoteProjectBinding,
   persistableRemoteProjectIconDataUrl,
   readGlobalState,
+  readGlobalStateForUpdate,
   recentProjectKey,
   setRecentProjectPinned,
   upsertRecentProject,
@@ -243,5 +244,22 @@ describe("writeGlobalState", () => {
 
     expect(readGlobalState(filePath)).toEqual(state);
     expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
+describe("readGlobalStateForUpdate", () => {
+  it.each([
+    { name: "a missing file reads as empty", content: null, forUpdate: {}, lenient: {} },
+    { name: "a valid file reads as itself", content: '{"askBeforeQuit":false}', forUpdate: { askBeforeQuit: false }, lenient: { askBeforeQuit: false } },
+    { name: "a corrupt file throws, so a write cannot wipe it", content: '{"lastProjectRoot":', forUpdate: "throws", lenient: {} },
+  ])("$name", ({ content, forUpdate, lenient }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-global-state-"));
+    const filePath = path.join(dir, "global-state.json");
+    if (content !== null) fs.writeFileSync(filePath, content);
+    if (forUpdate === "throws") expect(() => readGlobalStateForUpdate(filePath)).toThrow();
+    else expect(readGlobalStateForUpdate(filePath)).toEqual(forUpdate);
+    // The lenient reader keeps answering {} for display paths.
+    expect(readGlobalState(filePath)).toEqual(lenient);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
