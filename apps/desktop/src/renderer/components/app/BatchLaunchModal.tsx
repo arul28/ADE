@@ -35,7 +35,7 @@ import {
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { useActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { useActiveProjectRoot, useAppStore, useRootAppStore, workViewStoreForProject } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
@@ -956,7 +956,18 @@ export function IssueLaunchHost() {
 
     for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
     if (pin) requestCrossMachineLanesForMachine(machine.machineId);
-    else await refreshLanes({ includeStatus: false }).catch(() => undefined);
+    else {
+      // This host sits in AppShell, above the project's AppStoreProvider, so
+      // its own store is the root one. Refresh the project surface's store
+      // too, or the Lanes page keeps its old list until the next reload.
+      const projectStore = workViewStoreForProject(projectRoot);
+      await Promise.all([
+        refreshLanes({ includeStatus: false }),
+        projectStore.getState().refreshLanes === refreshLanes
+          ? Promise.resolve()
+          : projectStore.getState().refreshLanes({ includeStatus: false }),
+      ]).catch(() => undefined);
+    }
     if (!pin && (result.createdLaneIds.length || result.createdSessionIds.length)) {
       rememberLaunchedLanes({ laneIds: result.createdLaneIds, sessionIds: result.createdSessionIds });
     }
@@ -1009,8 +1020,9 @@ export function IssueLaunchHost() {
       return;
     }
     selectLane(laneId);
+    workViewStoreForProject(projectRoot).getState().selectLane(laneId);
     window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
-  }, [selectLane]);
+  }, [projectRoot, selectLane]);
 
   return (
     <>

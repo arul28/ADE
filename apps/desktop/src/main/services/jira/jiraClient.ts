@@ -10,8 +10,11 @@ function isLoopbackHostname(hostname: string): boolean {
 
 export function normalizeJiraSiteUrl(value: string): string {
   let parsed: URL;
+  // People paste `acme.atlassian.net`; assume https when no scheme is given.
+  const trimmed = value.trim();
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
-    parsed = new URL(value.trim());
+    parsed = new URL(withScheme);
   } catch {
     throw createJiraError("invalid", "Enter a valid Jira site URL, such as https://example.atlassian.net.");
   }
