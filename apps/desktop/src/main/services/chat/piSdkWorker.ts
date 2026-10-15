@@ -667,7 +667,6 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
     const compact = init.compaction;
     if (typeof manager?.applyOverrides === "function") {
       manager.applyOverrides({ compaction: {
-        ...(compact.enabled !== undefined ? { enabled: compact.enabled } : {}),
         ...(compact.reserveTokens !== undefined ? { reserveTokens: compact.reserveTokens } : {}),
         ...(compact.keepRecentTokens !== undefined ? { keepRecentTokens: compact.keepRecentTokens } : {}),
       } });

@@ -237,3 +237,31 @@ export function buildClaudeBuiltinAgentOverrides(
   }
   return agents;
 }
+
+/**
+ * The SDK `agents` record with a subagent compaction window on every entry.
+ *
+ * The window lives on each agent's definition, and the SDK has no overlay for
+ * a built-in, so a built-in the record does not already replace gets ADE's
+ * copy of its definition on the model it uses by itself: Explore and Plan run
+ * on the main model, general-purpose on the default subagent model.
+ */
+export function withClaudeSubagentCompactWindow(
+  agents: Record<string, object>,
+  autoCompactWindow: number,
+): Record<string, object> {
+  const out: Record<string, object> = {};
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    const template = CLAUDE_BUILTIN_AGENT_TEMPLATES[key];
+    if (agents[template.agentType]) continue;
+    out[template.agentType] = {
+      description: template.description,
+      prompt: template.prompt,
+      ...(key === "generalPurpose" ? {} : { model: "inherit" }),
+      ...(template.disallowedTools ? { disallowedTools: [...template.disallowedTools] } : {}),
+      autoCompactWindow,
+    };
+  }
+  for (const [name, agent] of Object.entries(agents)) out[name] = { ...agent, autoCompactWindow };
+  return out;
+}

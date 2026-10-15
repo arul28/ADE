@@ -111,6 +111,7 @@ import {
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
+import { reportedClaudeCodeVersion } from "./claudeCodeVersion";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -445,6 +446,12 @@ function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "pre
     : { present: false, source: "missing", path: null };
 }
 
+/** The binary as resolved, with the version the runtime itself last reported. */
+function withReportedClaudeVersion(binary: AiClaudeAvailability["binary"]): AiClaudeAvailability["binary"] {
+  const version = binary.present ? reportedClaudeCodeVersion() : null;
+  return version ? { ...binary, version } : binary;
+}
+
 function buildClaudeAvailabilityFromConnection(
   connection: AiProviderConnections["claude"],
   options?: { disabled?: boolean },
@@ -472,7 +479,7 @@ function buildClaudeAvailabilityFromConnection(
     && connection.authAvailable
     && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
   return {
-    binary,
+    binary: withReportedClaudeVersion(binary),
     auth: {
       ready,
       mode: ready ? authMode : "none",
@@ -493,7 +500,7 @@ function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiC
         path: status?.path ?? null,
       };
   return {
-    binary,
+    binary: withReportedClaudeVersion(binary),
     auth: {
       ready: binary.present && ready,
       mode: binary.present && ready ? "oauth" : "none",

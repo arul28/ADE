@@ -134,6 +134,9 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       return { state: "not-installed", label: "Not installed", message, errorLine: message };
     },
     models: (ctx) => descriptorModels(ctx.status?.models?.claude ?? []),
+    // What the runtime reported at its last start, so it fills in after the
+    // first chat or settings check on this machine.
+    version: (ctx) => ctx.status?.availableProviders?.claude?.binary.version ?? null,
     facts: (ctx) => [
       ...pathFacts(ctx.status?.availableProviders?.claude?.binary.path ?? ctx.status?.providerConnections?.claude?.path, "Binary"),
       ...credentialFacts(ctx, "claude"),

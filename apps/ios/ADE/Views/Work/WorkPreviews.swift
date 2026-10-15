@@ -481,10 +481,18 @@ private enum WorkPreviewData {
 /// The fixture chat every chat preview renders. `laneTools`, when given, fills
 /// the badge row's lane tool chips instead of polling a brain.
 @MainActor
-func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkChatSessionView {
-  WorkChatSessionView(
+/// `compactFirst` turns the fixture into an idle Claude chat whose 5-minute
+/// cache has expired, so the composer offers Compact first.
+func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil, compactFirst: Bool = false) -> WorkChatSessionView {
+  var summary = WorkPreviewData.chatSummary
+  if compactFirst {
+    summary.compactionIdleMode = "ask"
+    summary.compactFirstMinTokens = 1_000
+    summary.promptCache = AgentChatPromptCache(ttl: "5m", since: nil)
+  }
+  return WorkChatSessionView(
     session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
-    chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
+    chatSummaryContext: WorkChatSummaryRenderContext(summary),
     thread: workPreviewThreadModel(
       sessionId: WorkPreviewData.terminalSession.id,
       transcript: WorkPreviewData.transcript,
@@ -521,6 +529,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkC
     transitionNamespace: nil,
     onOpenLane: {},
     onSend: { _, _, _ in true },
+    onSendWithCompaction: compactFirst ? { _, _, _, _ in true } : nil,
     onInterrupt: { _ in },
     onRestoreCancelledQueue: nil,
     onApproveRequest: { _, _, _ in },
@@ -542,7 +551,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkC
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
     onSelectCodexFastMode: { _ in true },
-    resolvedSessionStatus: normalizedWorkChatSessionStatus(
+    resolvedSessionStatus: compactFirst ? "idle" : normalizedWorkChatSessionStatus(
       session: WorkPreviewData.terminalSession,
       summary: WorkPreviewData.chatSummary
     ),
@@ -1308,6 +1317,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
+  /// The real chat, idle past its prompt cache, with the Compact first chip
+  /// floating above the composer.
+  case compactFirst = "compact-first"
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
@@ -1487,6 +1499,10 @@ struct ADEPreviewScreenHost: View {
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
       )
+    case .compactFirst:
+      NavigationStack {
+        workPreviewChatSessionView(compactFirst: true)
+      }
     case .toolChips:
       NavigationStack {
         workPreviewChatSessionView(

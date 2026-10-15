@@ -3079,7 +3079,7 @@ export type AgentChatRuntimeOwnerRef = {
 
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   compactionIdleMode?: "ask" | "always" | "never";
-  /** Set only by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`: the lowered Compact first limit. */
+  /** The Compact first floor for a Claude chat; lowered by a brain started with `ADE_COMPACT_FIRST_MIN_TOKENS`. */
   compactFirstMinTokens?: number;
   manualCompactAvailable?: boolean;
   sessionId: string;

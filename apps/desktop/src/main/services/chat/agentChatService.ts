@@ -1,6 +1,8 @@
-import { compactFirstMinTokensFromEnv, compactFirstOffer } from "../../../shared/compactFirst";
+import { COMPACT_FIRST_MIN_TOKENS, compactFirstMinTokensFromEnv, compactFirstOffer, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
+import { noteClaudeCodeVersion } from "../ai/claudeCodeVersion";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -383,7 +385,7 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
-import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
+import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   createCredentialModelDescriptorBase,
@@ -2732,6 +2734,12 @@ type ClaudeContextGuardrailState = {
   fallbackIssuedThisEpisode: boolean;
   pendingInternalCompactionTrigger: "ade_fallback" | "recovery" | null;
   pendingInternalCompactionId: string | null;
+  /**
+   * The pending compaction whose "started" event has gone out. A `/compact`
+   * waits behind the running turn, and Claude repeats its `compacting` status
+   * while it works, so "started" goes out once, when Claude really begins.
+   */
+  internalCompactionStartedId: string | null;
   /**
    * The notice ADE will show *if* the SDK confirms the compaction it was asked
    * for. Held until the compact_boundary lands, because claiming a compaction
@@ -21265,6 +21273,8 @@ export function createAgentChatService(args: {
   const openNativeCompactions = new Map<string, Map<string, Extract<AgentChatEvent, { type: "context_compact" }>>>();
   const compactOnlyTurns = new Set<string>();
   const compactFirstMinTokens = compactFirstMinTokensFromEnv(process.env);
+  /** Per chat, the timer for "Always compact first" while the cache is warm (`scheduleWarmIdleCompaction`). */
+  const warmIdleCompactTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const emitChatEvent = (
     managed: ManagedChatSession,
@@ -21333,7 +21343,10 @@ export function createAgentChatService(args: {
         ?? ((event.usage?.cacheReadTokens ?? 0) > 0 ? managed.session.promptCache?.ttl : undefined);
       const since = event.usage?.lastRequestStartedAt;
       if (ttl) managed.session.promptCache = { ttl, ...(since ? { since } : {}) };
+      // After this event is in the history the schedule reads.
+      setTimeout(() => void scheduleWarmIdleCompaction(managed), 0);
     }
+    if (event.type === "status" && event.turnStatus === "started") clearWarmIdleCompaction(managed.session.id);
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -22060,6 +22073,39 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Claude's `compacting` status: the compaction has really begun. One that
+   * ADE asked for carries ADE's id so it pairs with the completion.
+   */
+  const emitClaudeCompactionStarted = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string | undefined,
+  ): void => {
+    const guardrail = runtime.contextGuardrail;
+    const compactionId = guardrail.pendingInternalCompactionId;
+    if (guardrail.pendingInternalCompactionTrigger && compactionId) {
+      if (guardrail.internalCompactionStartedId === compactionId) return;
+      guardrail.internalCompactionStartedId = compactionId;
+      emitChatEvent(managed, {
+        type: "context_compact",
+        trigger: "ade_fallback",
+        state: "started",
+        compactionId,
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+    // The real trigger arrives with the boundary (completed) event, so this
+    // defaults to "auto".
+    emitChatEvent(managed, {
+      type: "context_compact",
+      trigger: "auto",
+      state: "started",
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
   const issueClaudeInternalCompaction = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -22087,13 +22133,10 @@ export function createAgentChatService(args: {
     guardrail.pendingInternalCompactionTrigger = trigger;
     guardrail.pendingInternalCompactionId = randomUUID();
     guardrail.fallbackIssuedThisEpisode = true;
-    emitChatEvent(managed, {
-      type: "context_compact",
-      trigger: "ade_fallback",
-      state: "started",
-      compactionId: guardrail.pendingInternalCompactionId,
-      ...(turnId ? { turnId } : {}),
-    });
+    // The `/compact` waits its turn behind whatever Claude runs next, so
+    // "Compacting" goes out when Claude starts (`emitClaudeCompactionStarted`).
+    // Shown from here, it sat on a chain of turns for half an hour while the
+    // context kept growing.
     guardrail.pendingInternalCompactionNotice = {
       message: trigger === "recovery"
         ? "context overflowed — compacted; please re-send your last message"
@@ -27554,6 +27597,7 @@ export function createAgentChatService(args: {
 
     if (msg.type === "system" && record.subtype === "init") {
       runtime.apiKeySource = stringOrNull(record.apiKeySource) ?? runtime.apiKeySource ?? null;
+      noteClaudeCodeVersion(record.claude_code_version);
       rememberClaudeTerminalSlashCommands(runtime, record.terminal_slash_commands);
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
@@ -27591,17 +27635,9 @@ export function createAgentChatService(args: {
 
     if (msg.type === "system" && record.subtype === "status" && record.status === "compacting") {
       const turnId = startClaudeIdleTurn(managed, runtime, state, "Claude is compacting context");
-      const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
       observeClaudeCompaction(managed, runtime, { completed: false });
       emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
-      if (!internalCompactionPending) {
-        emitChatEvent(managed, {
-          type: "context_compact",
-          trigger: "auto",
-          state: "started",
-          turnId,
-        });
-      }
+      emitClaudeCompactionStarted(managed, runtime, turnId);
       return;
     }
 
@@ -28929,6 +28965,7 @@ export function createAgentChatService(args: {
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
+          noteClaudeCodeVersion(initMsg.claude_code_version);
           const initSessionId = typeof initMsg.session_id === "string"
             ? initMsg.session_id.trim()
             : "";
@@ -29007,20 +29044,11 @@ export function createAgentChatService(args: {
             }
           }
           if (statusMsg.status === "compacting") {
-            const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
             observeClaudeCompaction(managed, runtime, { completed: false });
             emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
             // Begin marker so the UI shows a live "compacting…" indicator instead of
-            // feeling stuck until the compact_boundary lands. The real trigger arrives
-            // with the boundary (completed) event, so default to "auto" here.
-            if (!internalCompactionPending) {
-              emitChatEvent(managed, {
-                type: "context_compact",
-                trigger: "auto",
-                state: "started",
-                turnId,
-              });
-            }
+            // feeling stuck until the compact_boundary lands.
+            emitClaudeCompactionStarted(managed, runtime, turnId);
           }
           continue;
         }
@@ -41739,6 +41767,12 @@ export function createAgentChatService(args: {
         ...(claudePresetPlan.claudeAgents as NonNullable<ClaudeSDKOptions["agents"]>),
       };
     }
+    // The account's subagent compaction window. It sits on each agent's
+    // definition, so the built-ins get ADE's copy of theirs to carry it.
+    const subagentCompactWindow = claudeCompactWindow(compactionSettingsFor(managed).subagentAtTokens);
+    if (subagentCompactWindow !== undefined) {
+      opts.agents = withClaudeSubagentCompactWindow(opts.agents ?? {}, subagentCompactWindow) as NonNullable<ClaudeSDKOptions["agents"]>;
+    }
     // The CTO tool server is injected without `allowManagedMcpServersOnly`
     // isolation — the CTO is a daily driver chat and must keep the user's own
     // MCP servers.
@@ -43305,6 +43339,7 @@ export function createAgentChatService(args: {
         fallbackIssuedThisEpisode: false,
         pendingInternalCompactionTrigger: null,
         pendingInternalCompactionId: null,
+        internalCompactionStartedId: null,
         pendingInternalCompactionNotice: null,
         compactionUnavailable: false,
         compactionUnavailableTurnId: null,
@@ -44582,8 +44617,22 @@ export function createAgentChatService(args: {
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
-    const rawModel = typeof model === "string" ? model : "";
+    // A preset names its harness and the model it launches. A caller that sends
+    // only `presetId` (the CLI, an action bus, a scheduled wake) gets the
+    // preset's model, spelled the way the composer sends it, before any
+    // provider default can fill the gap: a default recorded "Claude Opus" on a
+    // chat that ran DeepSeek. An ad-hoc route id carries its spec in the id.
+    const trimmedPresetId = requestedPresetId?.trim() ?? "";
+    const presetSpec = !trimmedPresetId
+      ? null
+      : isRoutePresetId(trimmedPresetId)
+        ? decodeRoutePresetId(trimmedPresetId)
+        : readHarnessPresetsFromMachine(resolveMachineAdeDir())?.find((preset) => preset.id === trimmedPresetId) ?? null;
+    const callerModel = typeof model === "string" ? model : "";
     const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
+    const rawModel = !callerModel.trim() && !rawModelId && presetSpec?.model.trim()
+      ? launchModelIdFor(presetSpec.harness, presetSpec.source, presetSpec.model)
+      : callerModel;
     const requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
     const modelFromModelId = requestedModelDescriptor
       ? requestedModelDescriptor.isCliWrapped
@@ -44700,30 +44749,21 @@ export function createAgentChatService(args: {
       requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
 
-    if (requestedPresetId?.trim()) {
+    if (presetSpec) {
       // A preset names its harness. When a caller supplies only `presetId` — the
       // CLI, an action bus, a scheduled wake — the provider would otherwise stay
       // at the caller's default, and the session row would record one provider
       // while the runtime launched under another. Every provider-gated surface
       // (the Work provider filter, provider notices, permission-mode labels)
       // then reads the wrong one, which is how a Claude Code chat ends up
-      // showing Codex configuration warnings. Read the preset's own body, from
-      // the same machine cache the launch reads, and adopt its harness. An
-      // ad-hoc route id carries its spec in the id itself. A caller that sent
-      // no model gets the preset's, so the row names the model that runs.
-      const presetId = requestedPresetId.trim();
-      const presetSpec: { harness: AgentChatProvider; model: string } | null = isRoutePresetId(presetId)
-        ? decodeRoutePresetId(presetId)
-        : readHarnessPresetsFromMachine(resolveMachineAdeDir())?.find((preset) => preset.id === presetId) ?? null;
-      if (presetSpec) {
-        effectiveProvider = presetSpec.harness;
-        if (!normalizedModel.trim() && presetSpec.model.trim()) normalizedModel = presetSpec.model.trim();
-        // The preset remaps the provider a third way, alongside the requested
-        // provider and the model's group, so the caller-MCP gate has to run on
-        // the provider that will actually launch — the same reason the model
-        // remap above is checked again. No servers is a no-op.
-        requireProviderAcceptsCallerMcpServers(effectiveProvider);
-      }
+      // showing Codex configuration warnings. The preset's body, read above
+      // from the same machine cache the launch reads, names the harness.
+      effectiveProvider = presetSpec.harness;
+      // The preset remaps the provider a third way, alongside the requested
+      // provider and the model's group, so the caller-MCP gate has to run on
+      // the provider that will actually launch — the same reason the model
+      // remap above is checked again. No servers is a no-op.
+      requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
 
     if (requestedPresetId?.trim()) {
@@ -55114,6 +55154,61 @@ export function createAgentChatService(args: {
     }
   }
 
+  /**
+   * Claude Code's own idle compaction, kept by ADE. Claude compacts a big chat
+   * 54 minutes into its one-hour cache, while the cache is still warm and the
+   * compaction cheap, but ADE closes an idle Claude process after five
+   * minutes, so Claude's own timer never fires here. With "Always compact
+   * first" ADE keeps the timer (`warmIdleCompactTimers`); a chat it misses
+   * compacts on the next send.
+   */
+  function clearWarmIdleCompaction(sessionId: string): void {
+    const timer = warmIdleCompactTimers.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    warmIdleCompactTimers.delete(sessionId);
+  }
+
+  async function warmIdleCompactAt(managed: ManagedChatSession): Promise<number | null> {
+    if (managed.closed || managed.session.provider !== "claude") return null;
+    const mode = compactionSettingsFor(managed).idleMode ?? "ask";
+    if (mode !== "always") return null;
+    const history = (await getChatEventHistory(managed.session.id, { maxEvents: 512 })).events;
+    return warmIdleCompactAtMs({ provider: "claude", events: history, cache: managed.session.promptCache, minTokens: compactFirstMinTokens, mode });
+  }
+
+  async function scheduleWarmIdleCompaction(managed: ManagedChatSession): Promise<void> {
+    const sessionId = managed.session.id;
+    clearWarmIdleCompaction(sessionId);
+    try {
+      const fireAt = await warmIdleCompactAt(managed);
+      if (fireAt == null || warmIdleCompactTimers.has(sessionId)) return;
+      const timer = setTimeout(() => void fireWarmIdleCompaction(managed, fireAt), Math.max(0, fireAt - Date.now()));
+      timer.unref?.();
+      warmIdleCompactTimers.set(sessionId, timer);
+    } catch (error) {
+      logger.warn("agent_chat.warm_idle_compaction_schedule_failed", { sessionId, error: getErrorMessage(error) });
+    }
+  }
+
+  async function fireWarmIdleCompaction(managed: ManagedChatSession, fireAt: number): Promise<void> {
+    const sessionId = managed.session.id;
+    warmIdleCompactTimers.delete(sessionId);
+    // Claude skips a timer that fired late (a machine that slept): the cache
+    // may already be gone, and the next send compacts the chat anyway.
+    if (Date.now() - fireAt > 60_000) return;
+    const idle = !runtimeMidTurn(managed) && managed.session.status !== "active" && !collectPendingInputRequests(managed).length;
+    // The same schedule read again: no turn since, same cache, still big.
+    if (!idle || (await warmIdleCompactAt(managed)) !== fireAt) return;
+    logger.info("agent_chat.warm_idle_compaction", { sessionId });
+    try {
+      // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
+      await runSessionTurn({ sessionId, text: "/compact", timeoutMs: null });
+    } catch (error) {
+      logger.warn("agent_chat.warm_idle_compaction_failed", { sessionId, error: getErrorMessage(error) });
+    }
+  }
+
   function emitCompactFirstFallbackNotice(managed: ManagedChatSession): void {
     emitChatEvent(managed, {
       type: "system_notice",
@@ -59300,7 +59395,8 @@ export function createAgentChatService(args: {
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: getSlashCommands({ sessionId: row.id, provider }).some((command) => command.name.replace(/^\//, "") === "compact") } : {}),
       ...(provider === "claude" ? { compactionIdleMode: compactionSettingsForSession({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }).idleMode ?? "ask" } : {}),
-      ...(provider === "claude" && compactFirstMinTokens != null ? { compactFirstMinTokens } : {}),
+      // Always sent, so a client built with an older floor offers at this one.
+      ...(provider === "claude" ? { compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS } : {}),
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
@@ -62949,6 +63045,8 @@ export function createAgentChatService(args: {
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    for (const timer of warmIdleCompactTimers.values()) clearTimeout(timer);
+    warmIdleCompactTimers.clear();
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
