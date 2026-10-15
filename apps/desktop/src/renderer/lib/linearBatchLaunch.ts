@@ -12,13 +12,20 @@ import type {
   AgentChatInteractionMode,
   AgentChatOpenCodePermissionMode,
   AgentChatEventEnvelope,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
 } from "../../shared/types";
+import type { LaneJiraIssue, JiraIssueDetail, JiraIssueSummary } from "../../shared/types/jira";
 import {
+  makeGitHubIssueContextAttachment,
+  makeJiraIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../shared/chatContextAttachments";
-import { linearIssueLaneName } from "../../shared/linearIssueBranch";
+import { githubIssueId } from "../../shared/laneGitHubIssue";
+import { jiraIssueToLaneIssue } from "../../shared/laneJiraIssue";
+import { jiraIssueLaneName, jiraIssueBranchName } from "../../shared/jiraIssueBranch";
+import { linearIssueLaneName, resolveLinearIssueBranchName, sanitizeLinearIssueBranchName } from "../../shared/linearIssueBranch";
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -30,6 +37,7 @@ import {
 import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/ModelPicker/modelCatalog";
 import type { NativeControlState } from "./draftLaunchJobs";
 import type { HarnessPresetBody } from "../../shared/harnessPresets";
+import { githubIssueDetailToLaneIssue, type GitHubIssueDetail } from "../components/issues/githubIssueStore";
 import {
   buildChatLaunchNativePayload,
   cliPermissionModeFromNativeControls,
@@ -38,6 +46,124 @@ import {
 
 /** Whether an issue launches the in-process chat SDK or a tracked CLI agent. */
 export type BatchLaunchSessionType = "chat" | "cli";
+
+export type LaunchIssueCreateLaneLink =
+  | { linearIssue: LaneLinearIssue }
+  | { githubIssue: LaneGitHubIssue }
+  | { jiraIssue: LaneJiraIssue };
+
+/** Tracker-neutral issue snapshot used by the shared launch configuration and runner. */
+export type LaunchIssue = {
+  tracker: "linear" | "github" | "jira";
+  id: string;
+  key: string;
+  title: string;
+  url: string | null;
+  laneName: string;
+  branchName: string;
+  contextAttachment: AgentChatContextAttachment;
+  createLaneLink: LaunchIssueCreateLaneLink;
+};
+
+/** Keeps Linear's existing issue-id keys stable and separates other trackers. */
+export function launchIssueIdentity(issue: LaunchIssue): string {
+  return issue.tracker === "linear" ? issue.id : `${issue.tracker}:${issue.id}`;
+}
+
+function normalizeLaunchIssue(issue: LaunchIssue | LaneLinearIssue): LaunchIssue {
+  return "tracker" in issue ? issue : buildLinearLaunchIssue(issue);
+}
+
+export function buildLinearLaunchIssue(issue: LaneLinearIssue): LaunchIssue {
+  return {
+    tracker: "linear",
+    id: issue.id,
+    key: issue.identifier,
+    title: issue.title,
+    url: issue.url,
+    laneName: linearIssueLaneName(issue),
+    branchName: resolveLinearIssueBranchName(issue),
+    contextAttachment: makeLinearIssueContextAttachment(issue, "lane_link"),
+    createLaneLink: { linearIssue: issue },
+  };
+}
+
+/** `gh-123-short-title`, sanitized using the same Git ref rules as Linear. */
+export function githubIssueBranchName(issue: Pick<LaneGitHubIssue, "number" | "title">): string {
+  const slug = issue.title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .split("-")
+    .slice(0, 8)
+    .join("-");
+  return sanitizeLinearIssueBranchName(slug ? `gh-${issue.number}-${slug}` : `gh-${issue.number}`);
+}
+
+export function buildGitHubLaunchIssue(issue: GitHubIssueDetail | LaneGitHubIssue): LaunchIssue | null {
+  if ("isPullRequest" in issue && issue.isPullRequest) return null;
+  const laneIssue = "isPullRequest" in issue ? githubIssueDetailToLaneIssue(issue) : issue;
+  const key = `#${laneIssue.number}`;
+  return {
+    tracker: "github",
+    id: laneIssue.id || githubIssueId(laneIssue.owner, laneIssue.repo, laneIssue.number),
+    key,
+    title: laneIssue.title,
+    url: laneIssue.url,
+    laneName: `${key} ${laneIssue.title}`.trim().slice(0, 120),
+    branchName: githubIssueBranchName(laneIssue),
+    contextAttachment: makeGitHubIssueContextAttachment(laneIssue),
+    createLaneLink: { githubIssue: laneIssue },
+  };
+}
+
+export function buildJiraLaunchIssue(
+  issue: JiraIssueSummary | JiraIssueDetail | LaneJiraIssue,
+  siteUrl?: string,
+): LaunchIssue | null {
+  const laneIssue = "siteUrl" in issue ? issue : siteUrl ? jiraIssueToLaneIssue(issue, siteUrl) : null;
+  if (!laneIssue) return null;
+  return {
+    tracker: "jira",
+    id: laneIssue.id,
+    key: laneIssue.key,
+    title: laneIssue.title,
+    url: laneIssue.url,
+    laneName: jiraIssueLaneName(laneIssue),
+    branchName: jiraIssueBranchName(laneIssue),
+    contextAttachment: makeJiraIssueContextAttachment(laneIssue),
+    createLaneLink: { jiraIssue: laneIssue },
+  };
+}
+
+export function defaultIssueKickoffPrompt(issue: LaunchIssue): string {
+  if (issue.tracker === "linear") return defaultKickoffPrompt();
+  if (issue.tracker === "github") return githubIssueKickoffPrompt();
+  return (
+    `Resolve Jira issue ${issue.key}: ${issue.title}. Its details are attached to this session. `
+    + "Verify that it still applies against the latest remote main, then make the change it describes. "
+    + "Use `ade jira issue` to read it, `ade jira comment` to report progress, and `ade jira transition` to update its status."
+  );
+}
+
+export function githubIssueKickoffPrompt(): string {
+  return (
+    "Resolve the GitHub issue attached to this session. Its full details are in your context — work on THAT issue. "
+    + "Start by checking that the issue still applies against the latest remote main. "
+    + "Then make the change the issue describes, keeping your work scoped to it. "
+    + "Read and comment on the issue with `ade github issue view` and `ade github issue comment`; the pull request you open closes it."
+  );
+}
+
+function cliIssueKickoffPrompt(issue: LaunchIssue, customPrompt: string): string {
+  if (issue.tracker === "linear") return customPrompt.trim() || defaultKickoffIntro();
+  const prompt = customPrompt.trim() || defaultIssueKickoffPrompt(issue);
+  const cliCommands = issue.tracker === "github"
+    ? "Use `ade github issue view` and `ade github issue comment` for issue updates."
+    : "Use `ade jira issue`, `ade jira comment`, and `ade jira transition` for issue work.";
+  return `${prompt}\n\nIssue: ${issue.key} — ${issue.title}\nURL: ${issue.url ?? "(no URL)"}\n${cliCommands}`;
+}
 
 /** Per-issue launch configuration captured in the batch launch modal. */
 export type BatchLaunchIssueConfig = {
@@ -83,7 +209,7 @@ export type BatchLaunchItemStatus =
   | "failed";
 
 export type BatchLaunchItemState = {
-  issue: LaneLinearIssue;
+  issue: LaunchIssue;
   status: BatchLaunchItemStatus;
   laneId: string | null;
   sessionId: string | null;
@@ -307,45 +433,51 @@ export type IssueConflict = {
  * `chat_attach`) so we catch session-only links without an extra IPC round-trip.
  */
 export function findIssueConflicts(
-  issues: LaneLinearIssue[],
+  issues: Array<LaunchIssue | LaneLinearIssue>,
   lanes: LaneSummary[],
 ): Map<string, IssueConflict> {
   const conflicts = new Map<string, IssueConflict>();
-  const primaryLaneByIssueId = new Map<string, LaneSummary>();
-  const sessionLaneByIssueId = new Map<string, LaneSummary>();
+  const conflictByKey = new Map<string, IssueConflict>();
+  const addConflict = (tracker: LaunchIssue["tracker"], issueId: string | undefined, lane: LaneSummary, reason: IssueConflict["reason"]) => {
+    if (!issueId) return;
+    const key = `${tracker}:${issueId}`;
+    const current = conflictByKey.get(key);
+    if (!current || (current.reason === "session" && reason === "lane")) {
+      conflictByKey.set(key, { laneId: lane.id, laneName: lane.name, reason });
+    }
+  };
   for (const lane of lanes) {
     const primary = lane.linearIssue;
-    if (primary?.id && !primaryLaneByIssueId.has(primary.id)) {
-      primaryLaneByIssueId.set(primary.id, lane);
-    }
+    addConflict("linear", primary?.id, lane, "lane");
     for (const link of lane.linearIssueLinks ?? []) {
-      const linkedId = link.issue?.id;
-      if (linkedId && !sessionLaneByIssueId.has(linkedId)) {
-        sessionLaneByIssueId.set(linkedId, lane);
-      }
+      addConflict("linear", link.issue?.id, lane, link.source === "chat_attach" ? "session" : "lane");
+    }
+    for (const link of lane.githubIssueLinks ?? []) {
+      addConflict("github", link.issue?.id, lane, link.source === "chat_attach" ? "session" : "lane");
+    }
+    for (const link of lane.jiraIssueLinks ?? []) {
+      addConflict("jira", link.issue?.id, lane, link.source === "chat_attach" ? "session" : "lane");
     }
   }
-  for (const issue of issues) {
-    const primaryLane = primaryLaneByIssueId.get(issue.id);
-    if (primaryLane) {
-      conflicts.set(issue.id, { laneId: primaryLane.id, laneName: primaryLane.name, reason: "lane" });
-      continue;
-    }
-    const sessionLane = sessionLaneByIssueId.get(issue.id);
-    if (sessionLane) {
-      conflicts.set(issue.id, { laneId: sessionLane.id, laneName: sessionLane.name, reason: "session" });
-    }
+  for (const rawIssue of issues) {
+    const issue = normalizeLaunchIssue(rawIssue);
+    const conflict = conflictByKey.get(`${issue.tracker}:${issue.id}`);
+    if (conflict) conflicts.set(launchIssueIdentity(issue), conflict);
   }
   return conflicts;
 }
 
+export type BatchLaunchCreateLaneArgs = {
+  name: string;
+  branchName?: string;
+  linearIssue?: LaneLinearIssue;
+  githubIssue?: LaneGitHubIssue;
+  jiraIssue?: LaneJiraIssue;
+};
+
 export type BatchLaunchDeps = {
   /** Create a worktree lane for an issue. */
-  createLane: (args: {
-    name: string;
-    branchName?: string;
-    linearIssue: LaneLinearIssue;
-  }) => Promise<{ id: string }>;
+  createLane(args: BatchLaunchCreateLaneArgs): Promise<{ id: string }>;
   /**
    * Create the agent chat session AND run the kickoff turn headlessly in a single
    * call — no mounted chat pane is required to drive the turn. Maps to
@@ -374,11 +506,9 @@ export type BatchLaunchDeps = {
     presetId?: string;
   }) => Promise<{ id: string }>;
   /**
-   * Launch a tracked CLI agent (terminal pty) for the lane with the issue
-   * attached. Maps to `window.ade.agentChat.launchCli`, which injects
-   * `ADE_LINEAR_*` env so the CLI agent can drive the issue via `ade linear`.
-   * Optional: only required when an entry's config requests `sessionType: "cli"`;
-   * chat-only callers may omit it.
+   * Launch a tracked CLI agent (terminal pty) for the lane. Linear issues also
+   * inject `ADE_LINEAR_*`; GitHub and Jira details travel in the kickoff prompt.
+   * Optional: only required when an entry's config requests `sessionType: "cli"`.
    */
   launchCli?: (args: {
     laneId: string;
@@ -388,7 +518,7 @@ export type BatchLaunchDeps = {
     fastMode?: boolean;
     permissionMode?: AgentChatPermissionMode | null;
     kickoffPrompt: string;
-    linearIssues: LaneLinearIssue[];
+    linearIssues?: LaneLinearIssue[];
     presetId?: string;
   }) => Promise<{ sessionId: string }>;
   /** Roll back a lane created in this run when the agent launch fails. */
@@ -486,7 +616,7 @@ export async function rollBackIssueLane(
  * reroute + highlight, and the failed ids so it can offer Retry failed.
  */
 export async function runBatchLaunch(
-  entries: Array<{ issue: LaneLinearIssue; config: BatchLaunchIssueConfig }>,
+  entries: Array<{ issue: LaunchIssue | LaneLinearIssue; config: BatchLaunchIssueConfig }>,
   deps: BatchLaunchDeps,
   options: RunOptions,
 ): Promise<BatchLaunchResult> {
@@ -497,9 +627,10 @@ export async function runBatchLaunch(
     failedIssueIds: [],
   };
 
-  const queue = [...entries];
-  const launchOne = async (entry: { issue: LaneLinearIssue; config: BatchLaunchIssueConfig }) => {
+  const queue = entries.map((entry) => ({ ...entry, issue: normalizeLaunchIssue(entry.issue) }));
+  const launchOne = async (entry: { issue: LaunchIssue; config: BatchLaunchIssueConfig }) => {
     const { issue, config } = entry;
+    const issueIdentity = launchIssueIdentity(issue);
     if (options.signal?.aborted) return;
     // An existing-lane launch reuses a pre-existing lane: we did not create it
     // this run, so it must never be rolled back on agent-launch failure.
@@ -509,36 +640,34 @@ export async function runBatchLaunch(
     try {
       if (existingLaneId) {
         laneId = existingLaneId;
-        options.onItem(issue.id, { status: "launching-agent", error: null, laneId });
+        options.onItem(issueIdentity, { status: "launching-agent", error: null, laneId });
       } else {
-        options.onItem(issue.id, { status: "creating-lane", error: null });
+        options.onItem(issueIdentity, { status: "creating-lane", error: null });
         const branchOverride = config.branchOverride.trim();
         const createArgs: Parameters<BatchLaunchDeps["createLane"]>[0] = {
-          name: linearIssueLaneName(issue),
-          linearIssue: issue,
+          name: issue.laneName,
+          ...issue.createLaneLink,
         };
         if (branchOverride) createArgs.branchName = branchOverride;
         const lane = await deps.createLane(createArgs);
         laneId = lane.id;
         createdLane = true;
         result.createdLaneIds.push(lane.id);
-        options.onItem(issue.id, { laneId: lane.id });
+        options.onItem(issueIdentity, { laneId: lane.id });
 
         if (config.laneOnly) {
-          options.onItem(issue.id, { status: "done" });
+          options.onItem(issueIdentity, { status: "done" });
           return;
         }
-        options.onItem(issue.id, { status: "launching-agent" });
+        options.onItem(issueIdentity, { status: "launching-agent" });
       }
 
-      const kickoffText = config.kickoffPrompt.trim() || defaultKickoffPrompt();
+      const kickoffText = config.kickoffPrompt.trim() || defaultIssueKickoffPrompt(issue);
       const nativeControls = config.nativeControls ?? defaultNativeControls();
 
       if (config.sessionType === "cli") {
-        // Tracked CLI agent: spawns a terminal process with the issue attached
-        // and ADE_LINEAR_* injected so it can run `ade linear` directly. The CLI
-        // kickoff prompt carries the issue identifier/title; the env carries the
-        // structured context, so the formatted attachment block is unnecessary.
+        // Linear receives structured issue context through ADE_LINEAR_*; the
+        // GitHub and Jira issues are carried in the tracker-specific prompt.
         if (!deps.launchCli) {
           throw new Error("CLI session launch requested but no launchCli dependency was provided.");
         }
@@ -557,12 +686,12 @@ export async function runBatchLaunch(
           reasoningEffort: config.reasoningEffort,
           ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
           permissionMode: config.permissionMode ?? cliPermissionModeFromNativeControls(config.modelId, nativeControls),
-          kickoffPrompt: config.kickoffPrompt.trim() || defaultKickoffIntro(),
-          linearIssues: [issue],
+          kickoffPrompt: cliIssueKickoffPrompt(issue, config.kickoffPrompt),
+          ...("linearIssue" in issue.createLaneLink ? { linearIssues: [issue.createLaneLink.linearIssue] } : {}),
           ...(presetId ? { presetId } : {}),
         });
         result.createdSessionIds.push(session.sessionId);
-        options.onItem(issue.id, { sessionId: session.sessionId, status: "done" });
+        options.onItem(issueIdentity, { sessionId: session.sessionId, status: "done" });
         return;
       }
 
@@ -574,14 +703,14 @@ export async function runBatchLaunch(
         laneId,
         config,
         kickoffText,
-        contextAttachment: makeLinearIssueContextAttachment(issue, "lane_link"),
+        contextAttachment: issue.contextAttachment,
       }));
       result.createdSessionIds.push(session.id);
       // `agentChat.launch` intentionally returns as soon as the durable session
       // exists; its kickoff turn continues in the background. Keep the launch
       // visibly in progress until the renderer observes the first lifecycle
       // event for this session instead of claiming the agent is already ready.
-      options.onItem(issue.id, { sessionId: session.id, status: "initializing-agent" });
+      options.onItem(issueIdentity, { sessionId: session.id, status: "initializing-agent" });
     } catch (error) {
       let detail = error instanceof Error ? error.message : String(error);
       // If the agent launch failed but we created the lane this run, roll the
@@ -600,8 +729,8 @@ export async function runBatchLaunch(
           detail = `${detail} — ${rollback.message}`;
         }
       }
-      result.failedIssueIds.push(issue.id);
-      options.onItem(issue.id, { status: "failed", error: detail, laneId });
+      result.failedIssueIds.push(issueIdentity);
+      options.onItem(issueIdentity, { status: "failed", error: detail, laneId });
     }
   };
 

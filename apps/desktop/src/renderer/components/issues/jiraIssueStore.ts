@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type {
   JiraComment,
   JiraConnectionStatus,
@@ -17,6 +17,7 @@ import type { IssueRef } from "../../../shared/issueRefs";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { createIssueEntryCache, errorMessage, type IssueEntry } from "./issueEntryCache";
 
@@ -26,14 +27,23 @@ const CONNECTION_STALE_MS = 60_000;
 const MAX_ISSUES = 80;
 const PAGE_SIZE = 50;
 export const JIRA_CONNECTION_CHANGED_EVENT = "ade:jira-connection-changed";
+export const JIRA_PROJECT_BINDINGS_CHANGED_EVENT = "ade:jira-project-bindings-changed";
 
 const listeners = new Set<() => void>();
+const threadBindingListeners = new Set<() => void>();
 function notify(): void {
   for (const listener of listeners) listener();
+}
+function notifyThreadBindings(): void {
+  for (const listener of threadBindingListeners) listener();
 }
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+function subscribeThreadBindings(listener: () => void): () => void {
+  threadBindingListeners.add(listener);
+  return () => threadBindingListeners.delete(listener);
 }
 
 function scopeKey(projectRoot: string | null, pin?: OpenProjectBinding | null): string {
@@ -108,6 +118,90 @@ export function useJiraConnectionStatus(enabled = true): {
     };
   }, [enabled, projectRoot]);
   return { status: entry.status, loading: entry.promise != null, refresh };
+}
+
+type JiraThreadEntityBindings = {
+  projectKeys: string[];
+  siteUrl: string | null;
+  checkedAt: number;
+  promise: Promise<void> | null;
+};
+
+const threadEntityBindings = new Map<string, JiraThreadEntityBindings>();
+const EMPTY_THREAD_ENTITY_BINDINGS: JiraThreadEntityBindings = {
+  projectKeys: [],
+  siteUrl: null,
+  checkedAt: 0,
+  promise: null,
+};
+
+function loadJiraThreadEntityBindings(
+  projectRoot: string | null,
+  pin: OpenProjectBinding | null,
+  force = false,
+): Promise<void> {
+  const key = scopeKey(projectRoot, pin);
+  const current = threadEntityBindings.get(key) ?? EMPTY_THREAD_ENTITY_BINDINGS;
+  if (current.promise) return current.promise;
+  if (!force && Date.now() - current.checkedAt < CONNECTION_STALE_MS) return Promise.resolve();
+
+  const configPromise = (async () => {
+    try {
+      return await getProjectConfigCached({ projectRoot, pin, force });
+    } catch {
+      return null;
+    }
+  })();
+  const promise = Promise.all([
+    configPromise,
+    loadJiraConnectionStatus(projectRoot, { pin, force }),
+  ]).then(([config, status]) => {
+    threadEntityBindings.set(key, {
+      projectKeys: config?.effective.issueTrackers?.jira?.projectKeys ?? current.projectKeys,
+      siteUrl: status?.connected ? status.siteUrl ?? null : null,
+      checkedAt: Date.now(),
+      promise: null,
+    });
+  }).catch(() => {
+    threadEntityBindings.set(key, { ...current, checkedAt: Date.now(), promise: null });
+  }).finally(notifyThreadBindings);
+
+  threadEntityBindings.set(key, { ...current, promise });
+  notifyThreadBindings();
+  return promise;
+}
+
+/** Jira keys for chat chips, loaded once per chat machine/project scope. */
+export function useJiraThreadEntityBindings(
+  projectRoot: string | null,
+  pin: OpenProjectBinding | null,
+): Pick<JiraThreadEntityBindings, "projectKeys" | "siteUrl"> {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const key = scopeKey(projectRoot, pin);
+  const entry = useSyncExternalStore(
+    subscribeThreadBindings,
+    () => threadEntityBindings.get(key) ?? EMPTY_THREAD_ENTITY_BINDINGS,
+    () => EMPTY_THREAD_ENTITY_BINDINGS,
+  );
+
+  useEffect(() => {
+    const refresh = (force = false) => { void loadJiraThreadEntityBindings(projectRoot, pinRef.current, force); };
+    refresh();
+    const onFocus = () => refresh();
+    const onChanged = () => refresh(true);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener(JIRA_CONNECTION_CHANGED_EVENT, onChanged);
+    window.addEventListener(JIRA_PROJECT_BINDINGS_CHANGED_EVENT, onChanged);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener(JIRA_CONNECTION_CHANGED_EVENT, onChanged);
+      window.removeEventListener(JIRA_PROJECT_BINDINGS_CHANGED_EVENT, onChanged);
+    };
+  }, [projectRoot, pinKey]);
+
+  return { projectKeys: entry.projectKeys, siteUrl: entry.siteUrl };
 }
 
 function statusForIssue(siteUrl: string, status: JiraConnectionStatus | null): void {
@@ -495,18 +589,6 @@ export function useJiraIssueList(filters: JiraIssueFilters, enabled = true, site
   return { ...entry, refresh, loadMore };
 }
 
-export type JiraIssueCreated = { key: string; siteUrl: string; projectKey?: string };
-const createdListeners = new Set<(issue: JiraIssueCreated) => void>();
-export function subscribeJiraIssueCreated(listener: (issue: JiraIssueCreated) => void): () => void {
-  createdListeners.add(listener);
-  return () => createdListeners.delete(listener);
-}
-
-export function announceJiraIssueCreated(siteUrl: string, key: string, projectKey?: string): void {
-  const created = { key: key.toUpperCase(), siteUrl: siteUrl.replace(/\/$/, ""), projectKey };
-  for (const listener of createdListeners) listener(created);
-}
-
 export function noteJiraIssueCreated(projectRoot: string | null, issue: JiraIssueSummary): void {
   primeJiraIssue(projectRoot, issue);
   const filterStates: JiraIssueListState[] = ["open", "all"];
@@ -519,6 +601,5 @@ export function noteJiraIssueCreated(projectRoot: string | null, issue: JiraIssu
     if (filters[4] === "me" || filters[5]) continue;
     lists.set(key, { ...list, issues: mergeJiraIssues([issue], list.issues) });
   }
-  announceJiraIssueCreated(new URL(issue.url).origin, issue.key, issue.projectKey);
   notify();
 }

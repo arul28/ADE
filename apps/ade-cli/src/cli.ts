@@ -37,6 +37,7 @@ import {
 } from "./issueCliFields";
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
+import { buildIssuePlan } from "./cliIssue";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -1177,6 +1178,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
                                                     Connect to Jira Cloud and manage issues
+    $ ade issue list | view | comment | state | create | open-url
+                                                    Read and update issues across trackers
     $ ade github issue list | view | create | edit | comment | close
                                                     Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1575,6 +1578,32 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     - connect and disconnect require --role cto.
     - Pipe the API token into connect; ADE never prints or stores it in project files.
     - Jira list results are paged; pass the returned cursor to --cursor for the next page.
+`,
+  issue: `${ADE_BANNER}
+  ADE Issues
+
+  Read and update issues across the connected Linear, GitHub, and Jira trackers.
+  References may be a Linear key, Jira key, GitHub issue number, repository issue
+  reference, or issue URL.
+
+    $ ade issue list [--tracker linear|github|jira] [--scope <team|project|repo>] --text
+    $ ade issue view <reference> --text
+    $ ade issue resolve <reference> --text
+    $ ade issue comment <reference> --body "Comment text"
+    $ ade issue state <reference> --to "In Progress"
+    $ ade issue create --tracker linear --team ENG --title "Review login flow"
+    $ ade issue create --tracker github --repo owner/repo --title "Fix login flow"
+    $ ade issue create --tracker jira --project ADE --type Task --title "Review login flow"
+    $ ade issue open-url <reference>
+
+  Flags:
+    --tracker <kind>       Select one tracker for list/create.
+    --scope <value>        Linear team key, Jira project key, or GitHub owner/repo.
+    --cursor <cursor>      Continue a paged result.
+    --state <state>        Filter a list, or pass --to with state to change one.
+    --query <text>         Search issue titles and descriptions.
+    --limit <count>        Limit list results (default 25, maximum 100).
+    --body-file <path>     Read a comment or issue description from a file.
 `,
   github: `${ADE_BANNER}
   ADE GitHub
@@ -20016,6 +20045,7 @@ function buildCliPlan(
   )
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
+  if (primary === "issue") return buildIssuePlan(args);
   if (primary === "jira") return buildJiraPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);

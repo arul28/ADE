@@ -63,6 +63,10 @@ export function createJiraClient(args: {
     if (!credentials) throw createJiraError("not-connected", "Connect Jira in Settings to use Jira issues.");
     const siteUrl = normalizeJiraSiteUrl(credentials.siteUrl);
     const url = new URL(path.replace(/^\//, ""), `${siteUrl}/`);
+    // The Basic credential must only ever go to the connected site.
+    if (url.origin !== new URL(siteUrl).origin) {
+      throw createJiraError("invalid", "Refused a Jira request outside the connected site.");
+    }
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Basic ${Buffer.from(`${credentials.email}:${credentials.apiToken}`).toString("base64")}`);
     headers.set("Accept", "application/json");

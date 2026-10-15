@@ -33,6 +33,7 @@ import {
   parseLaneJiraIssueJson,
   parseLaneJiraIssueValue,
 } from "../../../shared/laneJiraIssue";
+import type { IssueRef } from "../../../shared/issueRefs";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
@@ -200,6 +201,13 @@ type SessionLinearIssueLinkRow = {
 
 type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
 type SessionJiraIssueLinkRow = SessionLinearIssueLinkRow;
+
+export type LinkedIssueSnapshotPatch = {
+  reference: IssueRef;
+  title: string;
+  state: { name: string; type?: string | null } | null;
+  updatedAt?: string | null;
+};
 
 const DEFAULT_LANE_STATUS: LaneStatus = {
   dirty: false,
@@ -1854,6 +1862,90 @@ export function createLaneService({
       for (const laneId of touched) {
         broadcastLifecycleEvent({ type: "lanes-invalidated", laneId, laneName: "" });
       }
+    }
+    return [...touched];
+  };
+
+  const refreshLinkedIssueSnapshot = (patch: LinkedIssueSnapshotPatch): string[] => {
+    const touched = new Set<string>();
+    const reference = patch.reference;
+    const now = new Date().toISOString();
+    const updatedAt = patch.updatedAt || now;
+    const isFreshEnough = (current: { updatedAt: string }) => !(current.updatedAt && current.updatedAt > updatedAt);
+    const applyLaneId = (laneId: string | null) => { if (laneId) touched.add(laneId); };
+
+    if (reference.provider === "linear") {
+      const update = (table: "lane_linear_issues" | "lane_linear_issue_links" | "session_linear_issues") => {
+        const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+          `select id, lane_id, issue_json from ${table} where project_id = ?`,
+          [projectId],
+        );
+        for (const row of rows) {
+          const current = parseLaneLinearIssueJson(row.issue_json);
+          if (!current || (current.identifier.toUpperCase() !== reference.identifier.toUpperCase() && current.id !== reference.identifier) || !isFreshEnough(current)) continue;
+          const next = { ...current, title: patch.title || current.title, updatedAt };
+          if (patch.state) {
+            next.stateName = patch.state.name;
+            if (patch.state.type) next.stateType = patch.state.type;
+          }
+          if (next.title === current.title && next.stateName === current.stateName && next.stateType === current.stateType) continue;
+          db.run(`update ${table} set issue_json = ?, updated_at = ? where id = ?`, [JSON.stringify(next), now, row.id]);
+          applyLaneId(row.lane_id);
+        }
+      };
+      update("lane_linear_issues");
+      update("lane_linear_issue_links");
+      update("session_linear_issues");
+    } else if (reference.provider === "github") {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_github_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneGitHubIssueJson(row.issue_json);
+        if (!current || current.owner.toLocaleLowerCase() !== reference.owner.toLocaleLowerCase()
+          || current.repo.toLocaleLowerCase() !== reference.repo.toLocaleLowerCase()
+          || current.number !== reference.number || !isFreshEnough(current)) continue;
+        const stateName = patch.state?.name.toLocaleLowerCase();
+        const state = stateName === "closed" || stateName === "done" || stateName === "completed"
+          || patch.state?.type === "completed" ? "closed"
+          : stateName === "open" || patch.state?.type === "open" ? "open"
+            : current.state;
+        const next = { ...current, title: patch.title || current.title, state, updatedAt };
+        if (next.title === current.title && next.state === current.state) continue;
+        db.run("update session_github_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    } else {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_jira_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneJiraIssueJson(row.issue_json);
+        if (!current || current.key.toLocaleUpperCase() !== reference.key.toLocaleUpperCase()
+          || current.siteUrl.replace(/\/+$/, "").toLocaleLowerCase() !== reference.siteUrl.replace(/\/+$/, "").toLocaleLowerCase()
+          || !isFreshEnough(current)) continue;
+        const category = patch.state?.type === "new" || patch.state?.type === "indeterminate" || patch.state?.type === "done"
+          ? patch.state.type
+          : patch.state?.name.toLocaleLowerCase().includes("done") ? "done"
+            : patch.state?.name.toLocaleLowerCase().includes("progress") ? "indeterminate"
+              : patch.state ? "new" : current.statusCategory;
+        const next = {
+          ...current,
+          title: patch.title || current.title,
+          ...(patch.state ? { statusName: patch.state.name, statusCategory: category } : {}),
+          updatedAt,
+        };
+        if (next.title === current.title && next.statusName === current.statusName && next.statusCategory === current.statusCategory) continue;
+        db.run("update session_jira_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    }
+
+    if (touched.size) {
+      invalidateLaneListCache();
+      for (const laneId of touched) broadcastLifecycleEvent({ type: "lanes-invalidated", laneId, laneName: "" });
     }
     return [...touched];
   };
@@ -5317,6 +5409,7 @@ export function createLaneService({
     },
 
     refreshLinearIssueSnapshots,
+    refreshLinkedIssueSnapshot,
     hasLinearLinkedLanes,
 
     async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {

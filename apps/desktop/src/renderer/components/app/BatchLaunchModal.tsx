@@ -1,22 +1,32 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretRight, GitBranch, Plus, Rocket, WarningCircle } from "@phosphor-icons/react";
-import type { LaneLinearIssue, LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import { CaretRight, GitBranch, GithubLogo, Plus, Rocket, WarningCircle } from "@phosphor-icons/react";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
 import { useLaneMachineChoice } from "../lanes/useLaneMachineChoice";
-import { resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
 } from "../../../shared/modelRegistry";
 import {
   defaultKickoffPrompt,
+  defaultIssueKickoffPrompt,
   findIssueConflicts,
+  issueChatLaunchArgs,
+  BatchLaunchAgentReadinessTracker,
+  defaultKickoffIntro,
+  launchIssueIdentity,
+  isBatchLaunchInFlight,
+  runBatchLaunch,
+  type BatchLaunchItemState,
   type BatchLaunchIssueConfig,
+  type LaunchIssue,
 } from "../../lib/linearBatchLaunch";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
 import { defaultNativeControls } from "../../lib/nativeLaunchControls";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
-import { LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearMark, LinearStateIcon } from "../lanes/linearBrand";
+import { GitHubIssueStateIcon } from "../lanes/githubBrand";
+import { JiraMark, JiraStatusIcon } from "../lanes/jiraBrand";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import {
   SessionLaunchModelControls,
@@ -25,9 +35,25 @@ import {
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { useRootAppStore } from "../../state/appStore";
+import { useActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
+import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { clearCreatingIssue, rememberCreatingIssues, rememberLaunchedLanes } from "../../lib/launchedLanesHighlight";
+import {
+  clearPendingIssueLaunchRequest,
+  notifyIssueLaunchCancelled,
+  notifyIssueLaunchRequestClosed,
+  publishIssueLaunchProgress,
+  subscribeIssueLaunchRequests,
+  takePendingIssueLaunchRequest,
+  type IssueLaunchProgress,
+  type IssueLaunchRequest,
+} from "../../lib/issueLaunchRequests";
+import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { settingsRouteFor } from "../settings/settingsManifest";
+import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import { showToast } from "./toast/toastStore";
 
 type PerIssueState = BatchLaunchIssueConfig & {
@@ -131,6 +157,21 @@ function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIs
   };
 }
 
+function LaunchIssueMark({ issue }: { issue: LaunchIssue }): React.ReactElement {
+  if (issue.tracker === "linear") return <LinearMark size={13} className="shrink-0" />;
+  if (issue.tracker === "jira") return <JiraMark size={13} className="shrink-0" />;
+  return <GithubLogo size={13} weight="fill" className="shrink-0" />;
+}
+
+function LaunchIssueStateIcon({ issue }: { issue: LaunchIssue }): React.ReactElement {
+  const link = issue.createLaneLink;
+  if ("linearIssue" in link) return <LinearStateIcon stateType={link.linearIssue.stateType} size={12} />;
+  if ("githubIssue" in link) {
+    return <GitHubIssueStateIcon state={link.githubIssue.state} stateReason={link.githubIssue.stateReason} size={12} />;
+  }
+  return <JiraStatusIcon category={link.jiraIssue.statusCategory} size={12} />;
+}
+
 function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
   return {
     modelId: state.modelId,
@@ -158,7 +199,7 @@ function patchFromLaunchModelConfig(
 }
 
 export type BatchLaunchSubmit = {
-  issue: LaneLinearIssue;
+  issue: LaunchIssue;
   config: BatchLaunchIssueConfig;
 };
 
@@ -192,7 +233,7 @@ export function BatchLaunchModal({
    */
   onOpenHarnessSettings?: () => void;
   projectRoot?: string | null;
-  issues: LaneLinearIssue[];
+  issues: LaunchIssue[];
   lanes: LaneSummary[];
   /** When true, only create lanes (no agent kickoff) — hides the model pickers. */
   laneOnly?: boolean;
@@ -240,7 +281,8 @@ export function BatchLaunchModal({
   const seedKeyRef = useRef<string | null>(null);
 
   const multiIssue = issues.length > 1;
-  const issueSeedKey = useMemo(() => issues.map((issue) => issue.id).join("\0"), [issues]);
+  const allLinear = issues.every((issue) => issue.tracker === "linear");
+  const issueSeedKey = useMemo(() => issues.map((issue) => `${issue.tracker}:${issue.id}`).join("\0"), [issues]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
   const selectableLanes = useMemo(
     () => lanes.filter((lane) => lane.laneType !== "primary"),
@@ -254,8 +296,7 @@ export function BatchLaunchModal({
     const initialSeed = seedKeyRef.current == null;
     seedKeyRef.current = seedKey;
 
-    const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
-    const kickoffPrompt = fallbackPrompt ?? defaultKickoffPrompt();
+    const fallbackPrompt = allLinear ? safeLoadDefaultPrompt(projectRoot) : null;
     const seedModel = defaultModelId;
     setProjectDefaultPrompt(fallbackPrompt);
     const seededDefaults = batchLaunchNativeDefaults();
@@ -273,8 +314,9 @@ export function BatchLaunchModal({
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
       for (const issue of issues) {
-        next[issue.id] = current[issue.id] ?? {
-          ...makeInitialConfig(rowConfig.modelId || seedModel, kickoffPrompt),
+        const issueId = launchIssueIdentity(issue);
+        next[issueId] = current[issueId] ?? {
+          ...makeInitialConfig(rowConfig.modelId || seedModel, fallbackPrompt ?? defaultIssueKickoffPrompt(issue)),
           sessionType: rowConfig.sessionType,
           reasoningEffort: rowConfig.reasoningEffort,
           fastMode: rowConfig.fastMode,
@@ -287,12 +329,12 @@ export function BatchLaunchModal({
       return next;
     });
     if (initialSeed && issues.length === 1) {
-      setExpanded({ [issues[0]!.id]: true });
+      setExpanded({ [launchIssueIdentity(issues[0]!)]: true });
     }
-  }, [open, projectRoot, issueSeedKey, issues, defaultModelId, defaultConfig]);
+  }, [open, projectRoot, issueSeedKey, issues, allLinear, defaultModelId, defaultConfig]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !allLinear) return;
     let cancelled = false;
     const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
     const initialPrompt = fallbackPrompt ?? defaultKickoffPrompt();
@@ -319,7 +361,7 @@ export function BatchLaunchModal({
     return () => {
       cancelled = true;
     };
-  }, [open, projectRoot]);
+  }, [open, projectRoot, allLinear]);
 
   useEffect(() => {
     if (open) return;
@@ -396,14 +438,14 @@ export function BatchLaunchModal({
   }, [projectRoot]);
 
   const includedIssues = useMemo(
-    () => issues.filter((issue) => perIssue[issue.id]?.include !== false),
+    () => issues.filter((issue) => perIssue[launchIssueIdentity(issue)]?.include !== false),
     [issues, perIssue],
   );
 
   const handleLaunch = useCallback(async () => {
     const entries: BatchLaunchSubmit[] = [];
     for (const issue of issues) {
-      const state = perIssue[issue.id];
+      const state = perIssue[launchIssueIdentity(issue)];
       if (!state || state.include === false) continue;
       const effectiveConfig = multiIssue
         ? state
@@ -452,7 +494,7 @@ export function BatchLaunchModal({
 
   if (!issues.length) return null;
 
-  const conflictCount = includedIssues.filter((issue) => conflicts.has(issue.id)).length;
+  const conflictCount = includedIssues.filter((issue) => conflicts.has(launchIssueIdentity(issue))).length;
   const launchCount = includedIssues.length;
 
   return (
@@ -475,61 +517,56 @@ export function BatchLaunchModal({
       width="min(960px, calc(100vw - 32px))"
     >
       {!laneOnly ? (
-        <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-3"
-          style={{ borderColor: LINEAR_BRAND.borderSubtle, background: LINEAR_BRAND.surface }}
-        >
-          {multiIssue ? (
-            <span className="mr-1 text-[11px] font-semibold text-fg/80">Default</span>
-          ) : null}
-          <SessionLaunchModelControls
-                    onOpenHarnessSettings={onOpenHarnessSettings}
-            config={defaultConfig}
-            onChange={handleDefaultConfigChange}
-          />
-          {multiIssue ? (
+        <section className="kit-card">
+          <div className="kit-card-head">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-fg/85">{multiIssue ? "Default" : "Agent settings"}</span>
+            {multiIssue ? (
             <button
               type="button"
               disabled={!defaultConfig.modelId.trim()}
               onClick={() => applyDefaultConfigToAll(defaultConfig)}
               title="Reset every issue to these defaults"
-              className="ml-auto inline-flex h-6 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10.5px] font-medium text-fg/75 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+              className="kit-card-head-action"
             >
               Reset all
             </button>
           ) : null}
-        </div>
+          </div>
+          <div className="kit-card-body flex flex-wrap items-center gap-2">
+            <SessionLaunchModelControls
+              onOpenHarnessSettings={onOpenHarnessSettings}
+              config={defaultConfig}
+              onChange={handleDefaultConfigChange}
+            />
+          </div>
+        </section>
       ) : null}
 
       <div className="mt-3 max-h-[58vh] space-y-2 overflow-y-auto pr-0.5">
         {issues.map((issue) => {
-          const state = perIssue[issue.id];
+          const issueId = launchIssueIdentity(issue);
+          const state = perIssue[issueId];
           if (!state) return null;
-          const conflict = conflicts.get(issue.id);
-          const isExpanded = expanded[issue.id] === true;
+          const conflict = conflicts.get(issueId);
+          const isExpanded = expanded[issueId] === true;
           const skipped = state.include === false;
-          const branch = state.branchOverride.trim() || resolveLinearIssueBranchName(issue);
+          const branch = state.branchOverride.trim() || issue.branchName;
           const promptSavedAsDefault =
-            state.kickoffPrompt.trim().length > 0 && projectDefaultPrompt === state.kickoffPrompt;
+            allLinear && state.kickoffPrompt.trim().length > 0 && projectDefaultPrompt === state.kickoffPrompt;
           // A saved default starts as a one-line preview; editing it (or expanding
           // it) shows the full textarea.
-          const promptOpen = !promptSavedAsDefault || promptExpanded[issue.id] === true;
+          const promptOpen = !promptSavedAsDefault || promptExpanded[issueId] === true;
           const promptFirstLine = state.kickoffPrompt.split(/\r?\n/, 1)[0] ?? "";
           return (
-            <div
-              key={issue.id}
-              className={cn(
-                "rounded-lg border border-fg/[0.07] bg-fg/[0.02] transition-opacity",
-                skipped && "opacity-45",
-              )}
-            >
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2.5">
+            <section key={issueId} className={cn("kit-card transition-opacity", skipped && "opacity-45")}>
+              <div className="kit-card-body p-0" data-flush="true">
+              <div className="kit-row flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2.5">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <button
                     type="button"
                     aria-label={isExpanded ? "Collapse" : "Expand"}
-                    onClick={() => setExpanded((current) => ({ ...current, [issue.id]: !isExpanded }))}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg/80"
+                    onClick={() => setExpanded((current) => ({ ...current, [issueId]: !isExpanded }))}
+                    className="kit-icon-btn h-5 w-5 shrink-0"
                   >
                     <CaretRight
                       size={12}
@@ -537,17 +574,18 @@ export function BatchLaunchModal({
                       className={cn("transition-transform duration-150", isExpanded && "rotate-90")}
                     />
                   </button>
-                  <LinearPriorityIcon priority={issue.priority} size={11} />
-                  <LinearStateIcon stateType={issue.stateType} size={11} />
-                  <span className="shrink-0 rounded bg-fg/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
-                    {issue.identifier}
+                  <LaunchIssueMark issue={issue} />
+                  <LaunchIssueStateIcon issue={issue} />
+                  <span className="kit-num shrink-0 text-[10.5px] text-[color:var(--kit-text-2)]">
+                    {issue.key}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[12px] text-fg/85" title={issue.title}>
                     {issue.title}
                   </span>
                   {conflict ? (
                     <span
-                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/25 bg-amber-400/[0.08] px-1.5 py-0.5 text-[9.5px] font-medium text-amber-100/90"
+                      className="kit-tag shrink-0 gap-1"
+                      data-tone="warn"
                       title={
                         conflict.reason === "session"
                           ? `A session in lane "${conflict.laneName}" already attaches this issue`
@@ -563,14 +601,14 @@ export function BatchLaunchModal({
                   <SessionLaunchModelControls
                     onOpenHarnessSettings={onOpenHarnessSettings}
                     config={toLaunchModelConfig(state)}
-                    onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
+                    onChange={(patch) => patchIssue(issueId, patchFromLaunchModelConfig(state, patch))}
                   />
                 ) : null}
                 {conflict ? (
                   <button
                     type="button"
-                    onClick={() => patchIssue(issue.id, { include: skipped })}
-                    className="shrink-0 rounded-md border border-fg/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-fg/[0.2] hover:text-fg/90"
+                    onClick={() => patchIssue(issueId, { include: skipped })}
+                    className="kit-btn kit-btn-ghost h-6 shrink-0 px-2 text-[10px]"
                   >
                     {skipped ? "Launch anyway" : "Skip"}
                   </button>
@@ -578,7 +616,7 @@ export function BatchLaunchModal({
               </div>
 
               {isExpanded && !skipped ? (
-                <div className="space-y-3 border-t border-fg/[0.05] px-3 py-3">
+                <div className="space-y-3 border-t border-[color:var(--kit-rule)] px-3 py-3">
                   {!laneOnly ? (
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
@@ -586,11 +624,11 @@ export function BatchLaunchModal({
                           Kickoff prompt
                         </span>
                         <div className="flex shrink-0 items-center gap-1.5">
-                          <button
+                          {allLinear ? <button
                             type="button"
                             onClick={() => savePromptAsDefault(state.kickoffPrompt)}
                             disabled={!projectRoot?.trim() || !state.kickoffPrompt.trim()}
-                            className="inline-flex h-5 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                            className="kit-btn kit-btn-ghost h-5 px-2 text-[10px]"
                             title={
                               projectRoot?.trim()
                                 ? "Use this prompt as the default for future Linear launches in this project"
@@ -598,12 +636,12 @@ export function BatchLaunchModal({
                             }
                           >
                             {promptSavedAsDefault ? "Default saved" : "Save default"}
-                          </button>
+                          </button> : null}
                           {multiIssue ? (
                             <button
                               type="button"
                               onClick={() => applyPromptToAll(state.kickoffPrompt)}
-                              className="inline-flex h-5 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg"
+                              className="kit-btn kit-btn-ghost h-5 px-2 text-[10px]"
                               title="Use this prompt for every issue"
                             >
                               Apply to all
@@ -614,12 +652,12 @@ export function BatchLaunchModal({
                       {promptOpen ? (
                         <textarea
                           value={state.kickoffPrompt}
-                          onChange={(event) => patchIssue(issue.id, { kickoffPrompt: event.target.value })}
+                          onChange={(event) => patchIssue(issueId, { kickoffPrompt: event.target.value })}
                           rows={5}
-                          className="w-full resize-y rounded-md border border-fg/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-fg/[0.18] focus:outline-none"
+                          className="kit-input !h-auto min-h-[112px] w-full resize-y py-2.5 text-[12px] leading-relaxed"
                         />
                       ) : (
-                        <div className="flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-black/25 px-3 py-2">
+                        <div className="kit-card flex items-center gap-1.5 px-3 py-2">
                           <span
                             className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/70"
                             title={state.kickoffPrompt}
@@ -628,8 +666,8 @@ export function BatchLaunchModal({
                           </span>
                           <button
                             type="button"
-                            onClick={() => setPromptExpanded((current) => ({ ...current, [issue.id]: true }))}
-                            className="shrink-0 rounded-md border border-fg/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-fg/[0.2] hover:text-fg/90"
+                            onClick={() => setPromptExpanded((current) => ({ ...current, [issueId]: true }))}
+                            className="kit-btn kit-btn-ghost h-6 shrink-0 px-2 text-[10px]"
                           >
                             Expand
                           </button>
@@ -647,7 +685,7 @@ export function BatchLaunchModal({
                         <div
                           role="group"
                           aria-label="Lane target"
-                          className="inline-flex h-7 shrink-0 items-center rounded-md border border-fg/[0.08] bg-fg/[0.02] p-0.5"
+                          className="kit-seg h-7 shrink-0"
                         >
                           {([
                             { key: "new", label: "New lane" },
@@ -662,11 +700,11 @@ export function BatchLaunchModal({
                                 aria-pressed={active}
                                 disabled={disabled}
                                 title={disabled ? "No existing lanes available yet" : undefined}
-                                onClick={() => patchIssue(issue.id, { laneTarget: key })}
+                                onClick={() => patchIssue(issueId, { laneTarget: key })}
                                 className={cn(
                                   "inline-flex h-6 items-center rounded px-2.5 text-[10.5px] font-medium leading-none transition-colors",
-                                  active ? "bg-fg/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
-                                  disabled && "cursor-not-allowed opacity-40 hover:text-muted-fg/60",
+                                  active ? "bg-[color:var(--kit-active)] text-fg" : "text-[color:var(--kit-text-3)] hover:text-fg",
+                                  disabled && "cursor-not-allowed opacity-40 hover:text-[color:var(--kit-text-3)]",
                                 )}
                               >
                                 {label}
@@ -680,13 +718,13 @@ export function BatchLaunchModal({
                               <LaneCombobox
                                 lanes={selectableLanes}
                                 value={state.existingLaneId ?? ""}
-                                onChange={(laneId) => patchIssue(issue.id, { existingLaneId: laneId })}
+                                onChange={(laneId) => patchIssue(issueId, { existingLaneId: laneId })}
                                 fullWidth
                                 aria-label="Select lane"
                               />
                             </div>
                           ) : (
-                            <span className="text-[10.5px] text-amber-100/75">
+                            <span className="kit-tag" data-tone="warn">
                               No lanes available — create a new one.
                             </span>
                           )
@@ -700,27 +738,28 @@ export function BatchLaunchModal({
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Branch
                       </span>
-                      <div className="flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-black/25 px-3">
+                      <div className="kit-card flex items-center gap-1.5 px-3">
                         <GitBranch size={12} className="shrink-0 text-muted-fg/50" />
                         <input
                           value={state.branchOverride}
-                          onChange={(event) => patchIssue(issue.id, { branchOverride: event.target.value })}
+                          onChange={(event) => patchIssue(issueId, { branchOverride: event.target.value })}
                           placeholder={branch}
-                          className="h-9 w-full bg-transparent font-mono text-[11.5px] text-fg/85 placeholder:text-muted-fg/40 focus:outline-none"
+                          className="kit-input h-9 w-full border-0 bg-transparent px-0 font-mono text-[11.5px] focus-visible:outline-none"
                         />
                       </div>
                     </label>
                   ) : null}
                 </div>
               ) : null}
-            </div>
+              </div>
+            </section>
           );
         })}
       </div>
 
       {conflictCount > 0 ? (
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-100/75">
-          <WarningCircle size={13} weight="fill" className="mt-0.5 shrink-0 text-amber-300/80" />
+        <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-[color:var(--kit-warn)]">
+          <WarningCircle size={13} weight="fill" className="mt-0.5 shrink-0" />
           {conflictCount} {conflictCount === 1 ? "issue is already being worked on" : "issues are already being worked on"} (lane or agent attached). Skip them or launch fresh anyway.
         </p>
       ) : null}
@@ -737,7 +776,7 @@ export function BatchLaunchModal({
         </div>
       ) : null}
 
-      <div className="mt-4 flex items-center justify-end gap-2 border-t border-fg/[0.06] pt-4">
+      <div className="mt-4 flex items-center justify-end gap-2 border-t border-[color:var(--kit-rule)] pt-4">
         {!selectedMachineId ? (
           <span className="mr-auto text-[11px] text-muted-fg/70" data-testid="batch-launch-machine-hint">
             {machineChoice.machines.length > 1
@@ -754,5 +793,243 @@ export function BatchLaunchModal({
         </Button>
       </div>
     </LaneDialogShell>
+  );
+}
+
+type PendingIssueLaunchRequest = IssueLaunchRequest & { nonce: string };
+
+function issueLaunchProgress(states: Map<string, BatchLaunchItemState>): IssueLaunchProgress | null {
+  if (states.size === 0) return null;
+  const rows = [...states.values()];
+  return {
+    total: rows.length,
+    completed: rows.filter((row) => row.status === "done").length,
+    failed: rows.filter((row) => row.status === "failed" || row.status === "agent-error").length,
+    running: rows.some((row) => isBatchLaunchInFlight(row.status)),
+  };
+}
+
+/** App-wide owner for issue launch configuration, execution, and status. */
+export function IssueLaunchHost() {
+  const projectRoot = useActiveProjectRoot();
+  const project = useAppStore((state) => state.project);
+  const projectBinding = useAppStore((state) => state.projectBinding);
+  const lanes = useAppStore((state) => state.lanes);
+  const refreshLanes = useAppStore((state) => state.refreshLanes);
+  const selectLane = useAppStore((state) => state.selectLane);
+  const launchPromptClipboardEnabled = useAppStore((state) => state.launchPromptClipboardEnabled);
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const [request, setRequest] = useState<PendingIssueLaunchRequest | null>(null);
+  const [states, setStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
+  const statesRef = useRef(states);
+  const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
+  const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
+  const batchMachineByIssueRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
+  const batchMachineByLaneIdRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
+
+  const updateStates = useCallback((update: (current: Map<string, BatchLaunchItemState>) => Map<string, BatchLaunchItemState>) => {
+    const next = update(statesRef.current);
+    statesRef.current = next;
+    setStates(next);
+    publishIssueLaunchProgress(issueLaunchProgress(next));
+  }, []);
+
+  useEffect(() => {
+    const pending = takePendingIssueLaunchRequest();
+    if (pending) setRequest(pending);
+    return subscribeIssueLaunchRequests((next) => {
+      clearPendingIssueLaunchRequest();
+      setRequest(next);
+      updateStates(() => new Map());
+      batchConfigByIssueRef.current.clear();
+      batchMachineByIssueRef.current.clear();
+      batchMachineByLaneIdRef.current.clear();
+    });
+  }, [updateStates]);
+
+  useEffect(() => window.ade.agentChat.onEvent((envelope) => {
+    const transition = batchAgentReadinessRef.current.observe(envelope);
+    if (!transition) return;
+    updateStates((current) => {
+      const state = current.get(transition.issueId);
+      if (!state || (state.status !== "initializing-agent" && state.status !== "done")) return current;
+      if (state.status === "done" && transition.outcome.status === "done") return current;
+      const next = new Map(current);
+      next.set(transition.issueId, { ...state, ...transition.outcome });
+      return next;
+    });
+  }), [updateStates]);
+
+  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
+    if (!entries.length) return;
+    const pin = machine.pin;
+    for (const { issue } of entries) batchMachineByIssueRef.current.set(launchIssueIdentity(issue), machine);
+    batchAgentReadinessRef.current.beginBatch();
+    if (launchPromptClipboardEnabled) {
+      const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
+      const lastPrompt = lastLaunchEntry
+        ? lastLaunchEntry.config.kickoffPrompt.trim()
+          || (lastLaunchEntry.config.sessionType === "cli" && lastLaunchEntry.issue.tracker === "linear"
+            ? defaultKickoffIntro()
+            : defaultIssueKickoffPrompt(lastLaunchEntry.issue))
+        : "";
+      void copyLaunchPromptToClipboard(lastPrompt);
+    }
+    const creatingPlaceholders = entries
+      .filter(({ config }) => !config.existingLaneId)
+      .map(({ issue }) => ({ issueId: launchIssueIdentity(issue), tracker: issue.tracker, name: issue.laneName }));
+    if (creatingPlaceholders.length) rememberCreatingIssues({ issues: creatingPlaceholders });
+
+    updateStates(() => {
+      const next = new Map<string, BatchLaunchItemState>();
+      for (const { issue, config } of entries) {
+        const issueId = launchIssueIdentity(issue);
+        next.set(issueId, { issue, status: "pending", laneId: null, sessionId: null, error: null });
+        batchConfigByIssueRef.current.set(issueId, config);
+      }
+      return next;
+    });
+
+    const result = await runBatchLaunch(entries, {
+      createLane: (args) => pin ? window.ade.lanes.create(args, pin) : window.ade.lanes.create(args),
+      launch: async (args) => {
+        const launchArgs: Parameters<typeof window.ade.agentChat.launch>[0] = {
+          laneId: args.laneId,
+          provider: args.provider,
+          model: args.model,
+          modelId: args.modelId,
+          reasoningEffort: args.reasoningEffort,
+          ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
+          ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+          ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
+          ...(args.claudePermissionMode !== undefined ? { claudePermissionMode: args.claudePermissionMode } : {}),
+          ...(args.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
+          ...(args.codexSandbox !== undefined ? { codexSandbox: args.codexSandbox } : {}),
+          ...(args.codexConfigSource !== undefined ? { codexConfigSource: args.codexConfigSource } : {}),
+          ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
+          ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+          ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
+          ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
+          kickoffText: args.kickoffText,
+          contextAttachments: args.contextAttachments,
+          ...(args.presetId ? { presetId: args.presetId } : {}),
+        };
+        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
+        const session = pin
+          ? await window.ade.agentChat.launch(launchArgs, pin)
+          : await window.ade.agentChat.launch(launchArgs);
+        if (projectRoot && !pin) announceWorkChatSessionCreated(projectRoot, session);
+        return session;
+      },
+      launchCli: async (args) => {
+        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
+        const cliArgs: Parameters<typeof window.ade.agentChat.launchCli>[0] = {
+          laneId: args.laneId,
+          provider: args.provider,
+          model: args.model,
+          reasoningEffort: args.reasoningEffort,
+          ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
+          ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+          kickoffPrompt: args.kickoffPrompt,
+          ...(args.linearIssues ? { linearIssues: args.linearIssues } : {}),
+          ...(args.presetId ? { presetId: args.presetId } : {}),
+        };
+        return pin ? window.ade.agentChat.launchCli(cliArgs, pin) : window.ade.agentChat.launchCli(cliArgs);
+      },
+      deleteLane: (args) => (pin ? window.ade.lanes.delete(args, pin) : window.ade.lanes.delete(args)).then(() => undefined),
+    }, {
+      onItem: (issueId, patch) => {
+        if (patch.laneId) {
+          clearCreatingIssue(issueId);
+          batchMachineByLaneIdRef.current.set(patch.laneId, machine);
+        }
+        const earlyOutcome = patch.sessionId ? batchAgentReadinessRef.current.registerSession(issueId, patch.sessionId) : null;
+        updateStates((current) => {
+          const prev = current.get(issueId);
+          if (!prev) return current;
+          const next = new Map(current);
+          next.set(issueId, { ...prev, ...patch, ...(patch.status === "initializing-agent" && earlyOutcome ? earlyOutcome : {}) });
+          return next;
+        });
+      },
+    }).finally(() => batchAgentReadinessRef.current.finishRegistration());
+
+    for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
+    if (pin) requestCrossMachineLanesForMachine(machine.machineId);
+    else await refreshLanes({ includeStatus: false }).catch(() => undefined);
+    if (!pin && (result.createdLaneIds.length || result.createdSessionIds.length)) {
+      rememberLaunchedLanes({ laneIds: result.createdLaneIds, sessionIds: result.createdSessionIds });
+    }
+  }, [launchPromptClipboardEnabled, projectRoot, refreshLanes, updateStates]);
+
+  const handleLaunch = useCallback((entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
+    if (request) notifyIssueLaunchRequestClosed(request.nonce);
+    setRequest(null);
+    window.location.hash = "#/lanes?drawer=stack";
+    void launchBatch(entries, machine).catch((error: unknown) => {
+      console.error("[Issue launch] Batch launch failed:", error);
+    });
+  }, [launchBatch, request]);
+
+  const handleOpenChange = useCallback((open: boolean) => {
+    if (open) return;
+    if (request) {
+      notifyIssueLaunchRequestClosed(request.nonce);
+      if (request.returnToLinearPane) notifyIssueLaunchCancelled(request.nonce);
+    }
+    setRequest(null);
+  }, [request]);
+
+  const handleRetryFailed = useCallback(() => {
+    const failed = [...statesRef.current.values()].filter((state) => state.status === "failed");
+    if (!failed.length) return;
+    const machineIds = new Set(failed.map((state) => batchMachineByIssueRef.current.get(launchIssueIdentity(state.issue))?.machineId ?? ""));
+    if (machineIds.has("") || machineIds.size !== 1) return;
+    const machine = batchMachineByIssueRef.current.get(launchIssueIdentity(failed[0]!.issue))!;
+    const entries = failed.map((state) => ({
+      issue: state.issue,
+      config: batchConfigByIssueRef.current.get(launchIssueIdentity(state.issue)) ?? {
+        modelId: "",
+        reasoningEffort: null,
+        fastMode: false,
+        kickoffPrompt: "",
+        branchOverride: "",
+      },
+    }));
+    void launchBatch(entries, machine).catch((error: unknown) => {
+      console.error("[Issue launch] Batch retry failed:", error);
+    });
+  }, [launchBatch]);
+
+  const dismissStatus = useCallback(() => updateStates(() => new Map()), [updateStates]);
+  const openLane = useCallback((laneId: string) => {
+    const machine = batchMachineByLaneIdRef.current.get(laneId);
+    if (machine?.pin) {
+      window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&machineId=${encodeURIComponent(machine.machineId)}&focus=single`;
+      return;
+    }
+    selectLane(laneId);
+    window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
+  }, [selectLane]);
+
+  return (
+    <>
+      <BatchLaunchModal
+        onOpenHarnessSettings={request?.onOpenHarnessSettings ?? (() => { window.location.hash = `#${settingsRouteFor("agents.harnesses")}`; })}
+        open={request !== null}
+        projectRoot={project?.rootPath}
+        issues={request?.issues ?? []}
+        lanes={lanes}
+        laneOnly={request?.laneOnly}
+        onOpenChange={handleOpenChange}
+        onLaunch={handleLaunch}
+      />
+      <BatchLaunchStatusToast
+        states={states}
+        onRetryFailed={handleRetryFailed}
+        onDismiss={dismissStatus}
+        onOpenLane={openLane}
+      />
+    </>
   );
 }

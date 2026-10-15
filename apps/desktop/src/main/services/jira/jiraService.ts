@@ -160,6 +160,9 @@ function mapProject(value: unknown): JiraProject {
   };
 }
 
+/** How long a failed connection check stands before the next status read asks Jira again. */
+const CONNECTION_RECHECK_MS = 5 * 60_000;
+
 function asError(value: unknown): Error {
   if (value instanceof Error) return value;
   return new Error(String(value));
@@ -206,8 +209,10 @@ export function createJiraService(args: {
       checkedAt = new Date(now()).toISOString();
       return result;
     } catch (error) {
+      // Only a refused credential says the connection is broken; a missing
+      // issue, bad JQL or a rate limit is about that one request.
       const parsed = parseJiraError(error);
-      if (parsed) {
+      if (parsed?.reason === "unauthenticated") {
         lastError = { reason: parsed.reason, message: parsed.message };
         checkedAt = new Date(now()).toISOString();
       }
@@ -227,7 +232,9 @@ export function createJiraService(args: {
   async function getConnectionStatus(): Promise<JiraConnectionStatus> {
     const creds = args.credentials.getCredentials();
     if (!creds) return status(false, null);
-    if (checkedAt === null || (!account && !lastError)) {
+    const staleFailure = lastError !== null && checkedAt !== null
+      && now() - Date.parse(checkedAt) > CONNECTION_RECHECK_MS;
+    if (checkedAt === null || (!account && !lastError) || staleFailure) {
       if (!connectionProbe) {
         connectionProbe = (async () => {
           try {

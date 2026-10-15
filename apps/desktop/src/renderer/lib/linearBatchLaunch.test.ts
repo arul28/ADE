@@ -297,9 +297,9 @@ describe("runBatchLaunch", () => {
   });
 
   it("keeps siblings alive when one issue fails and records the failure", async () => {
-    const createLane = vi.fn(async (args: { name: string; linearIssue: { id: string } }) => {
-      if (args.linearIssue.id === "b") throw new Error("worktree add failed");
-      return { id: `lane-${args.linearIssue.id}` };
+    const createLane = vi.fn(async (args: { name: string; linearIssue?: LaneLinearIssue }) => {
+      if (args.linearIssue!.id === "b") throw new Error("worktree add failed");
+      return { id: `lane-${args.linearIssue!.id}` };
     });
     const launch = vi.fn(async () => ({ id: "sess" }));
     const onItem = vi.fn();
@@ -317,7 +317,7 @@ describe("runBatchLaunch", () => {
   });
 
   it("rolls back the lane when the agent launch fails after lane creation", async () => {
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => {
       throw new Error("model unavailable");
     });
@@ -343,7 +343,7 @@ describe("runBatchLaunch", () => {
   });
 
   it("surfaces the orphan (never silently) when both launch and rollback fail", async () => {
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => {
       throw new Error("model unavailable");
     });
@@ -378,12 +378,12 @@ describe("runBatchLaunch", () => {
   it("respects the concurrency cap", async () => {
     let active = 0;
     let maxActive = 0;
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => {
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => {
       active += 1;
       maxActive = Math.max(maxActive, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active -= 1;
-      return { id: `lane-${args.linearIssue.id}` };
+      return { id: `lane-${args.linearIssue!.id}` };
     });
     const launch = vi.fn(async () => ({ id: "sess" }));
 
@@ -408,7 +408,7 @@ describe("runBatchLaunch", () => {
   });
 
   it("dispatches to launchCli (not launch) when sessionType is cli", async () => {
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => ({ id: "sess" }));
     const launchCli = vi.fn(async (args: { laneId: string; kickoffPrompt: string }) => {
       void args;
@@ -506,7 +506,7 @@ describe("runBatchLaunch", () => {
   });
 
   it("passes fast mode through to CLI launches for fast-capable models", async () => {
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => ({ id: "sess" }));
     const launchCli = vi.fn(async () => ({ sessionId: "cli-1" }));
 
@@ -535,7 +535,7 @@ describe("runBatchLaunch", () => {
 
   it("resolves Cursor batch CLI launches to the concrete fast variant", async () => {
     const { modelId, concreteFastModel } = seedCursorRuntimeDescriptor();
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => ({ id: "sess" }));
     const launchCli = vi.fn(async () => ({ sessionId: "cli-1" }));
 
@@ -580,10 +580,10 @@ describe("runBatchLaunch", () => {
     const allLaunchesStarted = new Promise<void>((resolve) => {
       resolveAllLaunchesStarted = resolve;
     });
-    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const createLane = vi.fn(async (args: { linearIssue?: LaneLinearIssue }) => ({ id: `lane-${args.linearIssue!.id}` }));
     const launch = vi.fn(async () => ({ id: "chat-sess" }));
     const launchCli = vi.fn(async (args: LaunchCliArgs) => {
-      const issueId = args.linearIssues[0]?.id;
+      const issueId = args.linearIssues?.[0]?.id;
       const deferred = issueId ? deferredByIssue.get(issueId) : null;
       if (!deferred) throw new Error(`missing deferred for ${issueId ?? "unknown issue"}`);
       if (launchCli.mock.calls.length === deferredByIssue.size) {

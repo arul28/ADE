@@ -1030,6 +1030,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getCreateMeta",
     "createIssue",
   ],
+  issues: ["list", "get", "resolve", "comment", "setState", "create"],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
     "applyAccountRollups",

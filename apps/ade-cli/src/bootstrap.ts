@@ -131,6 +131,7 @@ import { createProjectSecretService } from "../../desktop/src/main/services/secr
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createJiraCredentialService } from "../../desktop/src/main/services/jira/jiraCredentialService";
 import { createJiraService } from "../../desktop/src/main/services/jira/jiraService";
+import { createIssueTrackerService } from "../../desktop/src/main/services/issueTrackers/issueTrackerService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -456,6 +457,7 @@ export type AdeRuntime = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   jiraService?: ReturnType<typeof createJiraService> | null;
+  issueTrackerService?: ReturnType<typeof createIssueTrackerService> | null;
   accountAuthService?: AccountAuthService | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
@@ -2197,6 +2199,12 @@ export async function createAdeRuntime(args: {
     jiraServiceRef = createJiraService({
       credentials: createJiraCredentialService({ credentialStore: new EncryptedFileCredentialStore() }),
     });
+    const issueTrackerService = createIssueTrackerService({
+      linearIssueTracker: headlessLinearServices.linearIssueTracker,
+      githubService: headlessLinearServices.githubService,
+      jiraService: jiraServiceRef,
+      getProjectConfig: () => projectConfigService.getEffective(),
+    });
     prServiceRef = headlessLinearServices.prService;
     // Follow-up PR branches an agent cuts inside its lane worktree: link their
     // PRs to the lane (and to the chats that were open when they were made).
@@ -2314,6 +2322,7 @@ export async function createAdeRuntime(args: {
         fileService: headlessLinearServices.fileService,
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,
+        jiraService: jiraServiceRef,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
         // Sleep is a machine fact, so every chat in this brain reads the one
@@ -3509,6 +3518,7 @@ export async function createAdeRuntime(args: {
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       jiraService: jiraServiceRef,
+      issueTrackerService,
       accountAuthService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
       linearOAuthService,

@@ -114,14 +114,10 @@ export function writeIssueDraft(provider: IssueProvider, scope: string | null, d
 }
 
 export function initialIssueProvider(request: IssueCreateRequest): IssueProvider {
-  const requestedProvider = (request as unknown as { provider?: string | null }).provider;
   if (request.prefill?.parent) {
-    const parentProvider = (request.prefill.parent as { provider?: string }).provider;
-    if (parentProvider === "jira") return "jira";
-    return parentProvider === "github" ? "github" : "linear";
+    return request.prefill.parent.provider;
   }
-  if (requestedProvider === "jira") return "jira";
-  if (requestedProvider === "linear" || requestedProvider === "github") return requestedProvider;
+  if (request.provider === "linear" || request.provider === "github" || request.provider === "jira") return request.provider;
   try {
     const last = window.localStorage.getItem(LAST_PROVIDER_KEY);
     if (last === "linear" || last === "github" || last === "jira") return last;
@@ -161,14 +157,14 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   const github = { ...EMPTY_GITHUB, ...(githubDraft?.github ?? {}) };
   const jira = { ...EMPTY_JIRA, ...(hasPrefill ? {} : readIssueDraft("jira", scope)?.jira ?? {}) };
   const parent = request.prefill?.parent ?? null;
-  const jiraParent = parent as unknown as { provider?: string; siteUrl?: string; key?: string } | null;
+  const jiraParent = parent?.provider === "jira" ? parent : null;
   return {
     provider,
     title: request.prefill?.title ?? draft?.title ?? "",
     body: request.prefill?.body ?? draft?.body ?? "",
     linear: parent?.provider === "linear" ? { ...linear, parent: parent.identifier, teamKey: parent.teamKey ?? linear.teamKey } : linear,
     github: parent?.provider === "github" ? { ...github, parent: String(parent.number) } : github,
-    jira: jiraParent?.provider === "jira" ? { ...jira, parentKey: jiraParent.key ?? "" } : jira,
+    jira: jiraParent ? { ...jira, parentKey: jiraParent.key } : jira,
     formAnswers: githubDraft?.formAnswers ?? {},
   };
 }

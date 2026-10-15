@@ -385,6 +385,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "connect", "disconnect", "addComment", "updateIssue", "transitionIssue", "createIssue",
     ],
   },
+  issues: {
+    read: ["list", "get", "resolve"],
+    write: ["comment", "setState", "create"],
+  },
   feedback: {
     read: [
       "list",

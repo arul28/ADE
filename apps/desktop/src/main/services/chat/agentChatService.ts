@@ -279,7 +279,9 @@ import {
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
+import type { createJiraService } from "../jira/jiraService";
 import type { createLaneService } from "../lanes/laneService";
+import { issueRefKey, type IssueRef } from "../../../shared/issueRefs";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
 import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
@@ -10483,7 +10485,8 @@ export function createAgentChatService(args: {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
-  githubService?: Pick<GithubService, "getIssue"> | null;
+  githubService?: Pick<GithubService, "getIssue" | "getStatus"> | null;
+  jiraService?: Pick<ReturnType<typeof createJiraService>, "getConnectionStatus" | "getIssue"> | null;
   /**
    * Lazy accessor for the universal search service; may be null in runtimes
    * where search is not wired.
@@ -21436,6 +21439,104 @@ export function createAgentChatService(args: {
     logger,
   });
 
+  const linkedIssueSnapshotReads = new Map<string, number>();
+  const linkedIssueSnapshotCursors = new Map<string, number>();
+  const refreshLinkedIssueSnapshots = async (sessionId: string): Promise<void> => {
+    if (!args.linearIssueTracker && !args.githubService && !args.jiraService) return;
+    const candidates: Array<{ reference: IssueRef; key: string }> = [];
+    try {
+      for (const link of laneService.listLinearIssuesForSession({ chatSessionId: sessionId })) {
+        candidates.push({ reference: { provider: "linear", identifier: link.issue.identifier, url: link.issue.url }, key: "linear" });
+      }
+      for (const link of laneService.listGitHubIssuesForSession({ chatSessionId: sessionId })) {
+        candidates.push({ reference: { provider: "github", owner: link.issue.owner, repo: link.issue.repo, number: link.issue.number, url: link.issue.url }, key: "github" });
+      }
+      for (const link of laneService.listJiraIssuesForSession({ chatSessionId: sessionId })) {
+        candidates.push({ reference: { provider: "jira", siteUrl: link.issue.siteUrl, key: link.issue.key, url: link.issue.url }, key: "jira" });
+      }
+    } catch {
+      return;
+    }
+    const unique = [...new Map(candidates.map((candidate) => [issueRefKey(candidate.reference), candidate])).values()];
+    if (!unique.length) return;
+    const start = (linkedIssueSnapshotCursors.get(sessionId) ?? 0) % unique.length;
+    const bounded = Array.from({ length: Math.min(12, unique.length) }, (_unused, index) => unique[(start + index) % unique.length]!);
+    linkedIssueSnapshotCursors.set(sessionId, (start + bounded.length) % unique.length);
+    while (linkedIssueSnapshotCursors.size > 512) {
+      const oldestSession = linkedIssueSnapshotCursors.keys().next().value;
+      if (oldestSession == null) break;
+      linkedIssueSnapshotCursors.delete(oldestSession);
+    }
+
+    const connectionResults = await Promise.all([...new Set(bounded.map((candidate) => candidate.key))].map(async (kind) => {
+      try {
+        if (kind === "linear") return [kind, Boolean((await args.linearIssueTracker?.getConnectionStatus())?.connected)] as const;
+        if (kind === "github") return [kind, Boolean((await args.githubService?.getStatus())?.connected)] as const;
+        return [kind, Boolean((await args.jiraService?.getConnectionStatus())?.connected)] as const;
+      } catch {
+        return [kind, false] as const;
+      }
+    }));
+    const connected = new Map(connectionResults);
+    const now = Date.now();
+    const eligible = bounded.filter((candidate) => {
+      if (!connected.get(candidate.key)) return false;
+      const key = issueRefKey(candidate.reference);
+      const lastRead = linkedIssueSnapshotReads.get(key);
+      if (lastRead != null && now - lastRead < 60_000) return false;
+      linkedIssueSnapshotReads.delete(key);
+      linkedIssueSnapshotReads.set(key, now);
+      return true;
+    });
+    for (const [key, readAt] of linkedIssueSnapshotReads) {
+      if (now - readAt >= 60_000) linkedIssueSnapshotReads.delete(key);
+    }
+    while (linkedIssueSnapshotReads.size > 2048) {
+      const oldest = linkedIssueSnapshotReads.keys().next().value;
+      if (oldest == null) break;
+      linkedIssueSnapshotReads.delete(oldest);
+    }
+
+    let next = 0;
+    const worker = async () => {
+      while (next < eligible.length) {
+        const candidate = eligible[next++];
+        if (!candidate) continue;
+        try {
+          const { reference } = candidate;
+          if (reference.provider === "linear") {
+            const issue = await args.linearIssueTracker?.fetchIssueById(reference.identifier);
+            if (issue) laneService.refreshLinkedIssueSnapshot({
+              reference,
+              title: issue.title,
+              state: { name: issue.stateName, type: issue.stateType },
+              updatedAt: issue.updatedAt,
+            });
+          } else if (reference.provider === "github") {
+            const issue = await args.githubService?.getIssue(reference.owner, reference.repo, reference.number);
+            if (issue) laneService.refreshLinkedIssueSnapshot({
+              reference,
+              title: issue.title,
+              state: { name: issue.state, type: issue.state === "closed" ? "completed" : "open" },
+              updatedAt: issue.updated_at,
+            });
+          } else {
+            const issue = await args.jiraService?.getIssue({ key: reference.key });
+            if (issue) laneService.refreshLinkedIssueSnapshot({
+              reference,
+              title: issue.title,
+              state: { name: issue.status.name, type: issue.status.category },
+              updatedAt: issue.updatedAt,
+            });
+          }
+        } catch {
+          // Snapshot refresh is best-effort and never changes the turn result.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, eligible.length) }, () => worker()));
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -21498,7 +21599,10 @@ export function createAgentChatService(args: {
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
-    if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
+    if (event.type === "done") {
+      settleClaudeGoalOnTurnEnd(managed, event.status);
+      void refreshLinkedIssueSnapshots(managed.session.id).catch(() => {});
+    }
     if (event.type === "done" && managed.session.provider === "claude") {
       // A turn that wrote no cache but read it restarted the same lifetime:
       // keep the lifetime and move its start to this turn's last request. A

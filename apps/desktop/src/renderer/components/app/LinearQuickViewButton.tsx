@@ -20,7 +20,6 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
-import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearPaneModal } from "./LinearPaneModal";
 import { requestIssueCreate } from "../../lib/issueCreateRequests";
@@ -31,27 +30,14 @@ import {
   linearBrowserIssueToLaneIssue,
   type BatchProgress,
 } from "./LinearIssueBrowser";
-import { BatchLaunchModal, type BatchLaunchMachine, type BatchLaunchSubmit } from "./BatchLaunchModal";
-import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
-import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
+import { buildLinearLaunchIssue, findIssueConflicts } from "../../lib/linearBatchLaunch";
 import {
-  defaultKickoffIntro,
-  defaultKickoffPrompt,
-  findIssueConflicts,
-  isBatchLaunchInFlight,
-  runBatchLaunch,
-  BatchLaunchAgentReadinessTracker,
-  type BatchLaunchIssueConfig,
-  type BatchLaunchItemState,
-} from "../../lib/linearBatchLaunch";
-import {
-  clearCreatingIssue,
-  rememberCreatingIssues,
-  rememberLaunchedLanes,
-} from "../../lib/launchedLanesHighlight";
-import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
-import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
-import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+  getIssueLaunchProgress,
+  requestIssueLaunch,
+  subscribeIssueLaunchCancellations,
+  subscribeIssueLaunchProgress,
+  subscribeIssueLaunchRequestClosed,
+} from "../../lib/issueLaunchRequests";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 
@@ -140,9 +126,6 @@ export function LinearQuickViewButton({
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lanes = useAppStore((s) => s.lanes);
-  const refreshLanes = useAppStore((s) => s.refreshLanes);
-  const selectLane = useAppStore((s) => s.selectLane);
-  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const [visible, setVisible] = useState(false);
   const topBarPreferences = useIssueTopBarPreferences();
   const [open, setOpen] = useState(false);
@@ -150,35 +133,34 @@ export function LinearQuickViewButton({
   const [refreshKey, setRefreshKey] = useState(0);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
-  const [batchIssues, setBatchIssues] = useState<LaneLinearIssue[]>([]);
-  const [batchLaneOnly, setBatchLaneOnly] = useState(false);
-  const [batchLaunchStates, setBatchLaunchStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(() => getIssueLaunchProgress());
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
-  const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
+  const launchRequestNonceRef = useRef<string | null>(null);
   // The pane's own modal hides the native browser while it is open.
   const occludesNativeBrowser = batchModalOpen && !open;
-  // Remembers each issue's chosen config so "Retry failed" reuses the same model.
-  const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
-  // The machine each issue's batch went to, so "Retry failed" re-runs it there.
-  const batchMachineByIssueRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
-  // Lane id → the machine it was created on, so "Open lane" selects it there.
-  const batchMachineByLaneIdRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
 
-  useEffect(() => window.ade.agentChat.onEvent((envelope) => {
-    const transition = batchAgentReadinessRef.current.observe(envelope);
-    if (!transition) return;
-    setBatchLaunchStates((current) => {
-      const state = current.get(transition.issueId);
-      if (!state || (state.status !== "initializing-agent" && state.status !== "done")) return current;
-      if (state.status === "done" && transition.outcome.status === "done") return current;
-      const next = new Map(current);
-      next.set(transition.issueId, { ...state, ...transition.outcome });
-      return next;
-    });
+  useEffect(() => subscribeIssueLaunchProgress((progress) => {
+    setBatchProgress(progress);
   }), []);
+
+  useEffect(() => {
+    const unsubscribeClosed = subscribeIssueLaunchRequestClosed((nonce) => {
+      if (launchRequestNonceRef.current !== nonce) return;
+      setBatchModalOpen(false);
+    });
+    const unsubscribeCancelled = subscribeIssueLaunchCancellations((nonce) => {
+      if (launchRequestNonceRef.current !== nonce) return;
+      launchRequestNonceRef.current = null;
+      setOpen(true);
+    });
+    return () => {
+      unsubscribeClosed();
+      unsubscribeCancelled();
+    };
+  }, []);
   // Auto-check Linear visibility for both local and remote projects. The check
   // is driven by getLinearConnectionStatus, which routes to the remote daemon
   // when bound to a remote runtime, so a remote machine's Linear connection is
@@ -343,28 +325,29 @@ export function LinearQuickViewButton({
     setOpen(false);
   }, [activeProjectRoot]);
 
-  // The launch dock opens one unified launch-config modal for 1..N issues. The
-  // modal closes on Launch and the bounded-parallel orchestrator runs below, so
-  // the user lands on the Lanes tab immediately rather than watching a progress
-  // bar. Both the multi-select dock and the single-issue row route here, so
-  // every issue→lane(+chat/CLI) launch shares one path.
-  // Cancelling the launch modal goes back to where it was opened from: the
-  // pane when the pane's dock opened it, nowhere when the issue viewer did.
-  const batchReturnsToPaneRef = useRef(true);
+  // Linear launch requests join the same app-wide flow as GitHub and Jira.
+  // The pane stays mounted long enough to restore its persisted selection if
+  // the shared launch dialog is cancelled.
   const handleBatchLaunchOpen = useCallback(
     (issues: Array<NormalizedLinearIssue | LaneLinearIssue>, options: { laneOnly?: boolean; fromPane?: boolean }) => {
-      batchReturnsToPaneRef.current = options.fromPane !== false;
-      setBatchIssues(issues.map((i) => ("raw" in i ? linearBrowserIssueToLaneIssue(i) : (i as LaneLinearIssue))));
-      setBatchLaunchStates(new Map());
-      setBatchLaneOnly(options.laneOnly === true);
-      setOpen(false);
+      const launchIssues = issues.map((issue) => buildLinearLaunchIssue(
+        "raw" in issue ? linearBrowserIssueToLaneIssue(issue) : issue,
+      ));
+      const request = requestIssueLaunch(launchIssues, {
+        laneOnly: options.laneOnly === true,
+        returnToLinearPane: options.fromPane !== false,
+        ...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {}),
+      });
+      if (!request) return;
+      launchRequestNonceRef.current = request.nonce;
       setBatchModalOpen(true);
+      setOpen(false);
     },
-    [],
+    [onOpenHarnessSettings],
   );
 
-  // Launch asked for by the issue viewer (Work tools pane, issue sheet): the
-  // same launch-config modal and runner as the pane's own dock.
+  // Launch asked for by the issue viewer (Work tools pane, issue sheet): it
+  // enters the shared modal and runner too.
   useEffect(() => {
     if (variant !== "icon") return;
     const pending = takePendingLinearLaunchRequest();
@@ -374,204 +357,6 @@ export function LinearQuickViewButton({
       handleBatchLaunchOpen(request.issues, { laneOnly: request.laneOnly, fromPane: false });
     });
   }, [handleBatchLaunchOpen, variant]);
-
-  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
-    if (!entries.length) return;
-    // Every create, launch and rollback in this batch goes to the chosen
-    // machine; no call is left to fall back to the tab's machine.
-    const pin = machine.pin;
-    for (const { issue } of entries) batchMachineByIssueRef.current.set(issue.id, machine);
-    batchAgentReadinessRef.current.beginBatch();
-    if (launchPromptClipboardEnabled) {
-      const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
-      const lastPrompt = lastLaunchEntry
-        ? lastLaunchEntry.config.kickoffPrompt.trim()
-          || (lastLaunchEntry.config.sessionType === "cli" ? defaultKickoffIntro() : defaultKickoffPrompt())
-        : "";
-      void copyLaunchPromptToClipboard(lastPrompt);
-    }
-    // Record optimistic "creating lane" placeholders for issues that mint a NEW
-    // lane (existing-lane targets already have a lane), keyed by issue id. The
-    // Lanes tab renders these as spinner tabs immediately on reroute and clears
-    // each one as its real lane materializes (below + on lane match).
-    const creatingPlaceholders = entries
-      .filter(({ config }) => !config.existingLaneId)
-      .map(({ issue }) => ({ issueId: issue.id, name: linearIssueLaneName(issue) }));
-    if (creatingPlaceholders.length) {
-      rememberCreatingIssues({ issues: creatingPlaceholders });
-    }
-    // Seed per-issue status so the status toast (and Retry failed) has rows,
-    // and remember each issue's config for retries.
-    setBatchLaunchStates(() => {
-      const next = new Map<string, BatchLaunchItemState>();
-      for (const { issue, config } of entries) {
-        next.set(issue.id, { issue, status: "pending", laneId: null, sessionId: null, error: null });
-        batchConfigByIssueRef.current.set(issue.id, config);
-      }
-      return next;
-    });
-    const result = await runBatchLaunch(
-      entries,
-      {
-        createLane: (args) => (pin ? window.ade.lanes.create(args, pin) : window.ade.lanes.create(args)),
-        // Single headless launch: creates the session and runs the kickoff turn
-        // server-side without a mounted chat pane. When the user picked a
-        // permission mode it is forwarded; otherwise the IPC defaults to an
-        // autonomous-runnable mode.
-        launch: async (args) => {
-          const launchArgs: Parameters<typeof window.ade.agentChat.launch>[0] = {
-            laneId: args.laneId,
-            provider: args.provider,
-            model: args.model,
-            modelId: args.modelId,
-            reasoningEffort: args.reasoningEffort,
-            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
-            ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
-            ...(args.claudePermissionMode !== undefined ? { claudePermissionMode: args.claudePermissionMode } : {}),
-            ...(args.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
-            ...(args.codexSandbox !== undefined ? { codexSandbox: args.codexSandbox } : {}),
-            ...(args.codexConfigSource !== undefined ? { codexConfigSource: args.codexConfigSource } : {}),
-            ...(args.opencodePermissionMode !== undefined ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
-            ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
-            ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
-            ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
-            kickoffText: args.kickoffText,
-            contextAttachments: args.contextAttachments,
-            ...(args.presetId ? { presetId: args.presetId } : {}),
-          };
-          // Same rule as every other launch: the brain resolves a preset out
-          // of its own account-settings copy, so that copy has to hold it
-          // before the launch is handed over.
-          await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
-          const session = pin
-            ? await window.ade.agentChat.launch(launchArgs, pin)
-            : await window.ade.agentChat.launch(launchArgs);
-          if (activeProjectRoot && !pin) {
-            announceWorkChatSessionCreated(activeProjectRoot, session);
-          }
-          return session;
-        },
-        // CLI-agent variant: spawns a tracked terminal pty with the issue
-        // attached so the agent drives it via `ade linear`. Returns the pty
-        // session id, which runBatchLaunch records like a chat session id.
-        launchCli: async (args) => {
-          await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
-          const cliArgs: Parameters<typeof window.ade.agentChat.launchCli>[0] = {
-            laneId: args.laneId,
-            provider: args.provider,
-            model: args.model,
-            reasoningEffort: args.reasoningEffort,
-            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-            ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
-            kickoffPrompt: args.kickoffPrompt,
-            linearIssues: args.linearIssues,
-            ...(args.presetId ? { presetId: args.presetId } : {}),
-          };
-          return pin ? window.ade.agentChat.launchCli(cliArgs, pin) : window.ade.agentChat.launchCli(cliArgs);
-        },
-        deleteLane: (args) =>
-          (pin ? window.ade.lanes.delete(args, pin) : window.ade.lanes.delete(args)).then(() => undefined),
-      },
-      {
-        onItem: (issueId, patch) => {
-          // As soon as an issue reports its materialized lane id, drop its
-          // optimistic spinner placeholder — the real lane will render instead.
-          if (patch.laneId) {
-            clearCreatingIssue(issueId);
-            batchMachineByLaneIdRef.current.set(patch.laneId, machine);
-          }
-          const earlyOutcome = patch.sessionId
-            ? batchAgentReadinessRef.current.registerSession(issueId, patch.sessionId)
-            : null;
-          setBatchLaunchStates((current) => {
-            const prev = current.get(issueId);
-            if (!prev) return current;
-            const next = new Map(current);
-            next.set(issueId, {
-              ...prev,
-              ...patch,
-              ...(patch.status === "initializing-agent" && earlyOutcome ? earlyOutcome : {}),
-            });
-            return next;
-          });
-        },
-      },
-    ).finally(() => batchAgentReadinessRef.current.finishRegistration());
-    // Clear any placeholders whose issues failed before a lane materialized so a
-    // failed launch never leaves a permanent spinner tab.
-    for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
-    if (pin) requestCrossMachineLanesForMachine(machine.machineId);
-    else await refreshLanes({ includeStatus: false }).catch(() => undefined);
-    if (!pin && (result.createdLaneIds.length || result.createdSessionIds.length)) {
-      rememberLaunchedLanes({
-        laneIds: result.createdLaneIds,
-        sessionIds: result.createdSessionIds,
-      });
-    }
-  }, [activeProjectRoot, launchPromptClipboardEnabled, refreshLanes]);
-
-  const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
-    // Close + reroute synchronously; the orchestrator runs detached so the
-    // Lanes tab opens immediately rather than this being a progress view.
-    setBatchModalOpen(false);
-    close();
-    window.location.hash = "#/lanes?drawer=stack";
-    void launchBatch(entries, machine).catch((err) => {
-      console.error("[Linear] Batch launch failed:", err);
-    });
-  }, [close, launchBatch]);
-
-  // Cancelling the launch modal (vs. launching) must return the user to the
-  // Linear pane they came from — not strand them on whatever tab is behind it
-  // (handleBatchLaunchOpen hid the pane to show the modal). The launch path
-  // closes the modal via setBatchModalOpen(false) directly, so Radix only fires
-  // this on a genuine user dismiss (Esc/overlay/Cancel); reopen the pane there.
-  // The browser remounts with its persisted filters so the selection context is
-  // preserved.
-  const handleBatchModalOpenChange = useCallback((next: boolean) => {
-    setBatchModalOpen(next);
-    if (!next && batchReturnsToPaneRef.current) setOpen(true);
-  }, []);
-
-  const handleRetryFailed = useCallback(() => {
-    const failed = [...batchLaunchStates.values()].filter((state) => state.status === "failed");
-    if (!failed.length) return;
-    // Retries go back to the machine each issue was sent to; issues with no
-    // recorded machine are not retried rather than guessed.
-    const machineIds = new Set(failed.map((state) => batchMachineByIssueRef.current.get(state.issue.id)?.machineId ?? ""));
-    if (machineIds.has("") || machineIds.size !== 1) return;
-    const machine = batchMachineByIssueRef.current.get(failed[0]!.issue.id)!;
-    const entries: BatchLaunchSubmit[] = failed.map((state) => ({
-      issue: state.issue,
-      config: batchConfigByIssueRef.current.get(state.issue.id) ?? {
-        modelId: "",
-        reasoningEffort: null,
-        fastMode: false,
-        kickoffPrompt: "",
-        branchOverride: "",
-      },
-    }));
-    void launchBatch(entries, machine).catch((err) => {
-      console.error("[Linear] Batch retry failed:", err);
-    });
-  }, [batchLaunchStates, launchBatch]);
-
-  const handleDismissBatchStatus = useCallback(() => {
-    setBatchLaunchStates(new Map());
-  }, []);
-
-  const handleOpenBatchLane = useCallback((laneId: string) => {
-    const machine = batchMachineByLaneIdRef.current.get(laneId);
-    if (machine?.pin) {
-      // A lane on another machine is selected through its machine; the bare id
-      // would select a same-id lane on the tab's machine.
-      window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&machineId=${encodeURIComponent(machine.machineId)}&focus=single`;
-      return;
-    }
-    selectLane(laneId);
-    window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
-  }, [selectLane]);
 
   // Pre-launch duplicate guard: passed to the browser so the multi-select dock
   // and single-issue rows can show a "Has lane"/"Has agent" badge and confirm a
@@ -591,17 +376,6 @@ export function LinearQuickViewButton({
     ),
     [lanes],
   );
-
-  // Live progress for the browser's dock indicator, derived from the per-issue
-  // launch states of the in-flight batch.
-  const batchProgress = useMemo<BatchProgress | null>(() => {
-    if (batchLaunchStates.size === 0) return null;
-    const states = [...batchLaunchStates.values()];
-    const completed = states.filter((s) => s.status === "done").length;
-    const failed = states.filter((s) => s.status === "failed" || s.status === "agent-error").length;
-    const running = states.some((s) => isBatchLaunchInFlight(s.status));
-    return { total: states.length, completed, failed, running };
-  }, [batchLaunchStates]);
 
   const handleToggle = () => {
     if (open) {
@@ -687,22 +461,6 @@ export function LinearQuickViewButton({
         />
       </LinearPaneModal>
 
-      <BatchLaunchModal
-        onOpenHarnessSettings={onOpenHarnessSettings}
-        open={batchModalOpen}
-        projectRoot={project?.rootPath}
-        issues={batchIssues}
-        lanes={lanes}
-        laneOnly={batchLaneOnly}
-        onOpenChange={handleBatchModalOpenChange}
-        onLaunch={handleBatchLaunch}
-      />
-      <BatchLaunchStatusToast
-        states={batchLaunchStates}
-        onRetryFailed={handleRetryFailed}
-        onDismiss={handleDismissBatchStatus}
-        onOpenLane={handleOpenBatchLane}
-      />
     </>
   );
 }

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildJiraLaunchIssue } from "../../lib/linearBatchLaunch";
+import { requestIssueLaunch } from "../../lib/issueLaunchRequests";
 import { CircleNotch, DotsThree, GithubLogo, Image as ImageIcon, X } from "@phosphor-icons/react";
 import type { GitHubIssueAttachmentInput, LinearIssueCreateOptions, LinearProjectMilestone } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
@@ -49,7 +51,6 @@ import { useLinearPickerCatalog } from "./linearIssueStore";
 import { useSimilarIssues } from "./useSimilarIssues";
 import type { JiraCreateMeta, JiraUser } from "../../../shared/types/jira";
 import {
-  announceJiraIssueCreated,
   loadJiraAssignableUsers,
   loadJiraCreateMeta,
   loadJiraIssue,
@@ -115,7 +116,7 @@ function imageFiles(list: FileList | null | undefined): File[] {
 export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRequest; onClose: () => void }) {
   const projectRoot = useActiveProjectRoot();
   const parent = request.prefill?.parent ?? null;
-  const jiraParent = parent as unknown as { provider?: string; siteUrl?: string; key?: string } | null;
+  const jiraParent = parent?.provider === "jira" ? parent : null;
   // One read of the draft for the whole form, keyed to this project.
   const [initial] = useState(() => initialIssueForm(request, projectRoot));
   const [provider, setProvider] = useState<IssueProvider>(initial.provider);
@@ -398,8 +399,14 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           if (!jiraConnection.status?.connected || !jiraConnection.status.siteUrl) {
             throw new Error("Connect Jira in Settings before creating an issue.");
           }
+          const siteUrl = jiraConnection.status.siteUrl;
           const created = await submitJiraIssue({ title: trimmed, description: `${body}${contextFooter}`, fields: jira, meta: jiraMeta });
-          announceJiraIssueCreated(jiraConnection.status.siteUrl, created.key);
+          announceIssueCreated({
+            provider: "jira",
+            siteUrl: jiraConnection.status.siteUrl,
+            key: created.key,
+            projectKey: jira.projectKey,
+          });
           void loadJiraIssue(projectRoot, { provider: "jira", siteUrl: jiraConnection.status.siteUrl, key: created.key }, { force: true })
             .then((issue) => { if (issue) noteJiraIssueCreated(projectRoot, issue); })
             .catch(() => undefined);
@@ -407,7 +414,22 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             tone: "success",
             title: `Created ${created.key}`,
             message: trimmed,
-            actions: [{ label: "Start lane", onClick: () => showToast({ tone: "info", title: "Jira lane creation is coming soon", message: "Jira issue launch will be connected in the shared launcher." }) }],
+            actions: [{
+              label: "Start lane",
+              onClick: () => {
+                void loadJiraIssue(projectRoot, { provider: "jira", siteUrl, key: created.key })
+                  .then((issue) => {
+                    const launchIssue = issue ? buildJiraLaunchIssue(issue, siteUrl) : null;
+                    if (!launchIssue) throw new Error(`Could not read ${created.key} from Jira.`);
+                    requestIssueLaunch([launchIssue], { laneOnly: true });
+                  })
+                  .catch((error: unknown) => showToast({
+                    tone: "error",
+                    title: "Could not start a lane",
+                    message: error instanceof Error ? error.message : String(error),
+                  }));
+              },
+            }],
           });
           captureIssueCreated("jira");
           if (!createMore && request.origin !== "pane") {
@@ -521,7 +543,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             <span className="truncate text-[12px] text-[color:var(--kit-text-2)]">{scopeLabel}</span>
           )}
           <span className="text-[color:var(--kit-text-3)]">›</span>
-          <span className="text-[12px]">{parent ? `New sub-issue of ${parent.provider === "linear" ? parent.identifier : jiraParent?.provider === "jira" ? jiraParent.key : `#${parent.number}`}` : "New issue"}</span>
+          <span className="text-[12px]">{parent ? `New sub-issue of ${parent.provider === "linear" ? parent.identifier : parent.provider === "jira" ? parent.key : `#${parent.number}`}` : "New issue"}</span>
           <span className="ml-auto flex items-center gap-1">
             {hasTemplates ? (
               <ChipPicker
@@ -725,7 +747,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               ) : provider === "github" ? (
                 <GitHubMoreFields github={github} setGitHub={setGitHub} parentLocked={parent?.provider === "github"} />
               ) : (
-                <JiraMoreFields jira={jira} setJira={setJira} parentLocked={jiraParent?.provider === "jira"} />
+                <JiraMoreFields jira={jira} setJira={setJira} parentLocked={Boolean(jiraParent)} />
               )}
             </div>
           ) : null}

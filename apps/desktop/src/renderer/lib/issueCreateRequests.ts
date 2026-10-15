@@ -8,12 +8,16 @@ import { createPendingRequestChannel } from "./pendingRequestChannel";
  */
 export type IssueCreateRequest = {
   /** The tracker to start in; the form can still switch when it is not a sub-issue. */
-  provider?: "linear" | "github" | null;
+  provider?: "linear" | "github" | "jira" | null;
   prefill?: {
     title?: string;
     body?: string;
-    /** Linear: `ADE-123`. GitHub: the parent issue number. */
-    parent?: { provider: "linear"; identifier: string; teamKey?: string | null } | { provider: "github"; owner: string; repo: string; number: number } | null;
+    /** Linear: `ADE-123`. GitHub: the parent number. Jira: the parent key and site. */
+    parent?:
+      | { provider: "linear"; identifier: string; teamKey?: string | null }
+      | { provider: "github"; owner: string; repo: string; number: number }
+      | { provider: "jira"; siteUrl: string; key: string }
+      | null;
   };
   /** Where the issue was started from, for its "Context" footer. */
   context?: { sessionId?: string | null; laneId?: string | null; laneName?: string | null } | null;
@@ -54,7 +58,8 @@ export function issueCreateRequestFromSelection(
 /** A just-created issue, for the panes to select. */
 export type IssueCreatedEvent =
   | { provider: "linear"; issue: NormalizedLinearIssue }
-  | { provider: "github"; owner: string; repo: string; number: number };
+  | { provider: "github"; owner: string; repo: string; number: number }
+  | { provider: "jira"; siteUrl: string; key: string; projectKey?: string };
 
 const createdListeners = new Set<(event: IssueCreatedEvent) => void>();
 

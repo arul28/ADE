@@ -55,6 +55,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "mac_desktop",
   "app_control",
   "built_in_browser",
+  "issues",
   "automations",
   "issue",
   "search",

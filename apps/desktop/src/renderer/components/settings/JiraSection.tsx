@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, CircleNotch, LinkBreak } from "@phosphor-icons/react";
 import type { JiraConnectionStatus, JiraProject } from "../../../shared/types/jira";
-import { JIRA_CONNECTION_CHANGED_EVENT, rememberJiraConnectionStatus } from "../issues/jiraIssueStore";
+import {
+  JIRA_CONNECTION_CHANGED_EVENT,
+  JIRA_PROJECT_BINDINGS_CHANGED_EVENT,
+  rememberJiraConnectionStatus,
+} from "../issues/jiraIssueStore";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import { ChipPicker } from "../issues/issueCreateChips";
 import { JiraMark } from "../lanes/jiraBrand";
@@ -143,6 +147,7 @@ export function JiraSection() {
         local: snapshot.local,
       }, pinRef.current);
       setProjectKeys(nextKeys);
+      window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT));
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : "Couldn't save Jira project bindings.");
       await loadProjectBinding();

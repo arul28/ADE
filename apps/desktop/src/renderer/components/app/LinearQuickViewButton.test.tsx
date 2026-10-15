@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { BatchLaunchItemState } from "../../lib/linearBatchLaunch";
 import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { buildLinearLaunchIssue } from "../../lib/linearBatchLaunch";
 import { SessionLaunchModelControls } from "../shared/SessionLaunchModelControls";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import { ToastStack } from "./toast/ToastStack";
@@ -83,7 +84,7 @@ function state(
   patch: Partial<BatchLaunchItemState>,
 ): BatchLaunchItemState {
   return {
-    issue: issue(id, identifier),
+    issue: buildLinearLaunchIssue(issue(id, identifier)),
     status: "done",
     laneId: `lane-${id}`,
     sessionId: `session-${id}`,

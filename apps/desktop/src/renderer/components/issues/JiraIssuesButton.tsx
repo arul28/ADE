@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { JiraMark, JIRA_BRAND } from "../lanes/jiraBrand";
 import { LinearPaneModal, type IssuePaneBrand } from "../app/LinearPaneModal";
-import { requestIssueCreate, type IssueCreateRequest } from "../../lib/issueCreateRequests";
+import { requestIssueCreate } from "../../lib/issueCreateRequests";
 import {
   clearPendingJiraIssuesPaneRequest,
   subscribeJiraIssuesPaneRequests,
@@ -106,7 +106,7 @@ export function JiraIssuesButton({
             setRefreshKey((key) => key + 1);
             void refresh();
           }}
-          onNew={() => requestIssueCreate({ provider: "jira", origin: "pane" } as unknown as IssueCreateRequest)}
+          onNew={() => requestIssueCreate({ provider: "jira", origin: "pane" })}
           newTitle="New Jira issue"
           onClose={() => setOpen(false)}
         >

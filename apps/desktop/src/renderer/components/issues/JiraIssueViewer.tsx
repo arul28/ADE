@@ -5,7 +5,9 @@ import { parseJiraError } from "../../../shared/jiraErrors";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import type { IssueRef } from "../../../shared/issueRefs";
-import { requestIssueCreate, type IssueCreateRequest } from "../../lib/issueCreateRequests";
+import { requestIssueCreate } from "../../lib/issueCreateRequests";
+import { buildJiraLaunchIssue } from "../../lib/linearBatchLaunch";
+import { requestIssueLaunch } from "../../lib/issueLaunchRequests";
 import { requestJiraIssuesPaneOpen } from "../../lib/issueNavigation";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { JiraMark, JiraStatusIcon } from "../lanes/jiraBrand";
@@ -175,11 +177,14 @@ export function JiraIssueViewer({
       dock={issue ? (
         <IssueActionDock
           label={issue.key}
-          onLaunch={(laneOnly) => showToast({
-            tone: "info",
-            title: laneOnly ? "Jira lane creation is coming soon" : "Jira agent launch is coming soon",
-            message: "Jira issue launch will be connected in the shared launcher.",
-          })}
+          onLaunch={(laneOnly) => {
+            const launchIssue = buildJiraLaunchIssue(issue, jiraRef.siteUrl);
+            if (!launchIssue) {
+              showToast({ tone: "error", title: `Couldn't launch ${issue.key}`, message: "Jira issue details are incomplete." });
+              return;
+            }
+            requestIssueLaunch([launchIssue], { laneOnly });
+          }}
           attachment={() => {
             const laneIssue = jiraIssueToLaneIssue(issue, jiraRef.siteUrl);
             if (!laneIssue) throw new Error("Jira issue details are incomplete.");
@@ -208,7 +213,7 @@ function jiraCopyEntries(issue: JiraIssueDetail, variant: IssueViewerProps["vari
         // composer reads this extended shape at runtime.
         prefill: { parent: { provider: "jira", siteUrl: issue.url.split("/browse/")[0]!, key: issue.key } },
         origin: variant === "pane" ? "pane" : null,
-      } as unknown as IssueCreateRequest),
+      }),
     },
     { kind: "item", key: "link", label: "Copy link", icon: LinkSimple, onSelect: () => copyIssueText(issue.url, "link") },
     { kind: "item", key: "ref", label: "Copy reference", icon: Hash, onSelect: () => copyIssueText(issue.key, issue.key) },
