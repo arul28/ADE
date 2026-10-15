@@ -11,20 +11,30 @@
 //      only (the central directory), and each `readText` / `readBytes` inflates
 //      exactly one entry through fflate's filter. A 40 MB deck never becomes
 //      40 MB of JavaScript heap just because one slide is on screen.
-//   3. **Every read is capped.** The central directory's declared uncompressed
-//      size is checked before inflating, so a zip bomb is refused before it can
-//      allocate; a sheet or image past the cap is reported as too large and the
-//      viewer falls back to the open-externally card instead of freezing.
+//   3. **Every read is capped.** A read is checked against the declared
+//      uncompressed size as a fast reject, then against the bytes as they
+//      actually arrive — which is the guarantee, since a deflate stream can
+//      expand far past whatever its header claims. One budget spans the whole
+//      package, so 300 slide parts cannot add up to gigabytes.
 //
-// The uncompressed sizes come from the archive itself, and fflate enforces the
-// allocation it was asked for, so a lying header cannot smuggle in more bytes
-// than the cap allows: the reader is bounded by what the filter admitted.
+// The final line matters: a preview reads many parts, and a per-entry cap alone
+// would still let a crafted deck allocate without bound.
 
 import type * as Fflate from "fflate";
 import { OoxmlError } from "./ooxmlError";
 
 /** Largest single entry this module will inflate (uncompressed). */
-export const ZIP_MAX_ENTRY_BYTES = 24 * 1024 * 1024;
+const ZIP_MAX_ENTRY_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Largest total this module will inflate for ONE package.
+ *
+ * The per-entry cap alone does not bound a preview: a deck reads every slide
+ * part, and 300 parts at the entry cap would be gigabytes of retained text. One
+ * budget across all reads is what actually makes a crafted archive safe — each
+ * read debits the same counter, and the read that would cross it fails.
+ */
+const ZIP_MAX_TOTAL_INFLATED_BYTES = 64 * 1024 * 1024;
 
 /**
  * Largest single entry for embedded media (images on a slide). The deck's own
@@ -32,6 +42,9 @@ export const ZIP_MAX_ENTRY_BYTES = 24 * 1024 * 1024;
  * 20 MB bitmap.
  */
 export const ZIP_MAX_MEDIA_BYTES = 12 * 1024 * 1024;
+
+/** One package's inflate allowance: bytes left, and the entries already charged. */
+type InflateBudget = { remaining: number; charged: Set<string> };
 
 export type OoxmlEntryInfo = {
   name: string;
@@ -57,7 +70,7 @@ const ZIP_SPANNED_MAGIC = 0x08074b50;
 const OLE_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
 /** A real ZIP archive starts with a local, empty, or spanned-data signature. */
-export function looksLikeZipArchive(bytes: Uint8Array): boolean {
+function looksLikeZipArchive(bytes: Uint8Array): boolean {
   if (bytes.length < 4) return false;
   const magic = bytes[0]! | (bytes[1]! << 8) | (bytes[2]! << 16) | (bytes[3]! << 24);
   return magic === ZIP_LOCAL_MAGIC || magic === ZIP_EMPTY_MAGIC || magic === ZIP_SPANNED_MAGIC;
@@ -69,7 +82,7 @@ export function looksLikeZipArchive(bytes: Uint8Array): boolean {
  * with an encryption stream). Either way the ZIP parser below cannot help, and
  * saying so specifically beats a generic "corrupt file" message.
  */
-export function looksLikeOleCompoundFile(bytes: Uint8Array): boolean {
+function looksLikeOleCompoundFile(bytes: Uint8Array): boolean {
   if (bytes.length < OLE_MAGIC.length) return false;
   return OLE_MAGIC.every((byte, index) => bytes[index] === byte);
 }
@@ -129,13 +142,15 @@ function concatChunks(chunks: readonly Uint8Array[], total: number): Uint8Array<
 }
 
 /**
- * Inflate ONE entry, streaming, with a hard byte cap.
+ * Inflate ONE entry, streaming, with a hard byte cap on this read and a shared
+ * budget across the package.
  *
  * The cap is enforced on the bytes as they arrive rather than on the size the
  * archive declares: a deflate stream can expand a thousandfold, so a crafted
  * 100 KB entry could otherwise allocate gigabytes in this process before
- * anyone could look at a header. Counting `ondata` chunks is the only place
- * the real size is known before it is too late.
+ * anyone could look at a header. The declared size is still checked first as a
+ * cheap rejection. Counting `ondata` chunks is the only place the real size is
+ * known before it is too late.
  *
  * Decoding runs in a worker (`AsyncUnzipInflate`) so a large sheet never
  * blocks a frame; a worker-less environment (jsdom tests, a stripped runtime)
@@ -146,6 +161,7 @@ async function readEntryStreaming(
   bytes: Uint8Array,
   name: string,
   maxBytes: number,
+  budget: InflateBudget,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -161,6 +177,10 @@ async function readEntryStreaming(
     const tooLarge = () => new OoxmlError(
       "too-large",
       `“${name}” expands past the ${Math.round(maxBytes / (1024 * 1024))} MB preview limit.`,
+    );
+    const budgetExhausted = () => new OoxmlError(
+      "too-large",
+      `This file expands past what a preview will read (over ${Math.round(ZIP_MAX_TOTAL_INFLATED_BYTES / (1024 * 1024))} MB of document parts).`,
     );
 
     const unzip = new fflate.Unzip((file) => {
@@ -179,9 +199,23 @@ async function readEntryStreaming(
           return;
         }
         total += chunk.length;
+        // Charged once per entry, not once per read: the deck re-reads a
+        // slide's media on every visit and the workbook re-reads its shared
+        // string table for each sheet, and those repeats release what they
+        // read. The bound that matters is DISTINCT parts, which is what a
+        // crafted archive would multiply.
+        if (!budget.charged.has(name)) {
+          budget.charged.add(name);
+          budget.remaining -= chunk.length;
+        }
         if (total > maxBytes) {
           file.terminate();
           fail(tooLarge());
+          return;
+        }
+        if (budget.remaining < 0) {
+          file.terminate();
+          fail(budgetExhausted());
           return;
         }
         chunks.push(chunk);
@@ -226,10 +260,12 @@ export async function openOoxmlZip(bytes: Uint8Array): Promise<OoxmlZip> {
 
   const entries = await listEntries(bytes);
   const fflate = await loadFflate();
+  // One budget for the whole package, charged per distinct entry.
+  const budget: InflateBudget = { remaining: ZIP_MAX_TOTAL_INFLATED_BYTES, charged: new Set<string>() };
 
   async function readBytes(name: string, maxBytes: number = ZIP_MAX_ENTRY_BYTES): Promise<Uint8Array<ArrayBuffer> | null> {
     if (!entries.has(name)) return null;
-    return readEntryStreaming(fflate, bytes, name, maxBytes);
+    return readEntryStreaming(fflate, bytes, name, maxBytes, budget);
   }
 
   return {

@@ -14,6 +14,7 @@
 // workbook costs one sheet's parse, not forty.
 
 import { OoxmlError } from "./ooxmlError";
+import { parseRelationships } from "./ooxmlPackage";
 import {
   columnIndexFromRef,
   decodeXmlEntities,
@@ -29,11 +30,13 @@ import { openOoxmlZip, type OoxmlZip } from "./ooxmlZip";
 /** Rows materialized per sheet. Past this the grid says so rather than growing. */
 export const SPREADSHEET_PREVIEW_MAX_ROWS = 2_000;
 /** Columns materialized per sheet. */
-export const SPREADSHEET_PREVIEW_MAX_COLS = 64;
+const SPREADSHEET_PREVIEW_MAX_COLS = 64;
 /** Characters kept per cell; a spreadsheet cell holding an essay is truncated. */
 const MAX_CELL_CHARS = 2_000;
 /** Rows scanned between event-loop yields, so a large sheet cannot jank a frame. */
 const ROWS_PER_YIELD = 500;
+/** Sheet windows kept per workbook; older ones are re-read on demand. */
+const MAX_CACHED_SHEET_WINDOWS = 8;
 /** The default column width, in the same pixels the explicit widths use. */
 const DEFAULT_COLUMN_WIDTH_PX = 112;
 const MIN_COLUMN_WIDTH_PX = 56;
@@ -191,30 +194,26 @@ export function formatExcelSerial(serial: number, kind: CellFormatKind, date1904
  * what keeps a 30 MB worksheet away from the DOM parser; the cost is that
  * entity decoding has to happen here.
  */
-export function collectTextRuns(fragment: string): string {
+function collectTextRuns(fragment: string): string {
   if (!fragment.length) return "";
-  const working = fragment.includes("<rPh") ? fragment.replace(/<rPh\b[\s\S]*?<\/rPh>/g, "") : fragment;
+  const working = /<[A-Za-z_][\w.-]*:?rPh\b/.test(fragment)
+    ? fragment.replace(/<(?:[A-Za-z_][\w.-]*:)?rPh\b[\s\S]*?<\/(?:[A-Za-z_][\w.-]*:)?rPh>/g, "")
+    : fragment;
   let out = "";
   let pos = 0;
   while (pos < working.length) {
-    const start = working.indexOf("<t", pos);
-    if (start === -1) break;
-    const boundary = working.charCodeAt(start + 2);
-    // "<t>" | "<t …" | "<t/>" only — never "<target" or "<tableCell".
-    if (!(boundary === 0x3e || boundary === 0x20 || boundary === 0x2f)) {
-      pos = start + 2;
-      continue;
-    }
-    const tagEnd = working.indexOf(">", start);
+    const open = findOpenTag(working, pos, "t");
+    if (!open) break;
+    const tagEnd = working.indexOf(">", open.start);
     if (tagEnd === -1) break;
     if (working[tagEnd - 1] === "/") {
       pos = tagEnd + 1;
       continue;
     }
-    const close = working.indexOf("</t>", tagEnd + 1);
+    const close = working.indexOf(`</${open.prefix}t>`, tagEnd + 1);
     if (close === -1) break;
     out += working.slice(tagEnd + 1, close);
-    pos = close + 4;
+    pos = closeTagEnd(close, open.prefix, "t");
   }
   return decodeXmlEntities(out);
 }
@@ -236,23 +235,18 @@ async function readSharedStrings(zip: OoxmlZip, wanted: ReadonlySet<number>): Pr
   let index = 0;
   let sinceYield = 0;
   while (pos < text.length) {
-    const start = text.indexOf("<si", pos);
-    if (start === -1) break;
-    const boundary = text.charCodeAt(start + 3);
-    if (!(boundary === 0x3e || boundary === 0x20 || boundary === 0x2f)) {
-      pos = start + 3;
-      continue;
-    }
-    const tagEnd = text.indexOf(">", start);
+    const item = findOpenTag(text, pos, "si");
+    if (!item) break;
+    const tagEnd = text.indexOf(">", item.start);
     if (tagEnd === -1) break;
     const selfClosing = text[tagEnd - 1] === "/";
     let inner = "";
     let end = tagEnd + 1;
     if (!selfClosing) {
-      const close = text.indexOf("</si>", tagEnd + 1);
+      const close = text.indexOf(`</${item.prefix}si>`, tagEnd + 1);
       if (close === -1) break;
       inner = text.slice(tagEnd + 1, close);
-      end = close + 5;
+      end = closeTagEnd(close, item.prefix, "si");
     }
     if (wanted.has(index)) resolved.set(index, collectTextRuns(inner));
     index += 1;
@@ -309,33 +303,84 @@ function attrValue(attrs: string, name: string): string | null {
   return match ? match[1]! : null;
 }
 
+/**
+ * The next open tag for a local name, with the namespace prefix its producer
+ * chose.
+ *
+ * SpreadsheetML is normally written with the default namespace and no prefix,
+ * so a scanner that matches the literal `<row` reads every Excel-authored sheet
+ * — but a prefixed producer (`<x:row …>`) would otherwise scan as an EMPTY
+ * sheet, which reads as "this file is broken" rather than "you found an edge".
+ * Every raw-text scan in this file goes through here, and the prefix it returns
+ * is what the matching close tag is built from.
+ */
+type OpenTag = {
+  /** Index of the `<`. */
+  start: number;
+  /** `""` or `"x:"`. */
+  prefix: string;
+  /** Index of the first character after the local name — where attributes begin. */
+  nameEnd: number;
+};
+
+const openTagScanners = new Map<string, RegExp>();
+
+function findOpenTag(text: string, pos: number, localName: string): OpenTag | null {
+  let scanner = openTagScanners.get(localName);
+  if (!scanner) {
+    // The name is ours (never from a file), so the only escaping needed is the
+    // optional prefix capture group.
+    scanner = new RegExp(`<(?:([A-Za-z_][\\w.-]*):)?${localName}(?=[\\s/>])`, "g");
+    openTagScanners.set(localName, scanner);
+  }
+  scanner.lastIndex = pos;
+  const match = scanner.exec(text);
+  if (!match) return null;
+  const prefix = match[1] ? `${match[1]}:` : "";
+  return { start: match.index, prefix, nameEnd: match.index + 1 + prefix.length + localName.length };
+}
+
+/** One past the `>` of `</prefixLocalName>`, from the index of its `<`. */
+function closeTagEnd(closeIndex: number, prefix: string, localName: string): number {
+  return closeIndex + 2 + prefix.length + localName.length + 1;
+}
+
 function parseColWidths(text: string): number[] {
   const widths: number[] = [];
-  const colsStart = text.indexOf("<cols");
-  if (colsStart === -1) return widths;
-  const colsEnd = text.indexOf("</cols>", colsStart);
+  const cols = findOpenTag(text, 0, "cols");
+  if (!cols) return widths;
+  const colsEnd = text.indexOf(`</${cols.prefix}cols>`, cols.start);
   if (colsEnd === -1) return widths;
-  const section = text.slice(colsStart, colsEnd);
-  const colRe = /<col\b([^>]*?)\/?>/g;
-  let match: RegExpExecArray | null;
-  while ((match = colRe.exec(section)) !== null) {
-    const attrs = match[1] ?? "";
-    const min = Number(attrValue(attrs, "min") ?? "0");
-    const max = Number(attrValue(attrs, "max") ?? "0");
-    const width = Number(attrValue(attrs, "width") ?? "0");
+  const section = text.slice(cols.start, colsEnd);
+  let cursor = 0;
+  const attrByElement = { min: "min", max: "max", width: "width" } as const;
+  while (cursor < section.length) {
+    const col = findOpenTag(section, cursor, "col");
+    if (!col) break;
+    const tagEnd = section.indexOf(">", col.start);
+    if (tagEnd === -1) break;
+    const attrs = section.slice(col.nameEnd, tagEnd);
+    cursor = tagEnd + 1;
+    const min = Number(attrValue(attrs, attrByElement.min) ?? "0");
+    const max = Number(attrValue(attrs, attrByElement.max) ?? "0");
+    const width = Number(attrValue(attrs, attrByElement.width) ?? "0");
     if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(width) || min < 1 || max < min) continue;
     // Excel's own character-width → pixel conversion (MDW 7 px for the
     // default font), clamped so one absurd `<col width="800"/>` cannot demand
     // an 8,000 px grid. The 200-column spread cap bounds a `<col min="1"
     // max="16384"/>` default element.
     const px = Math.min(MAX_COLUMN_WIDTH_PX, Math.max(MIN_COLUMN_WIDTH_PX, Math.round(width * 7) + 5));
-    for (let col = min; col <= Math.min(max, min + 200); col++) widths[col - 1] = px;
+    for (let index = min; index <= Math.min(max, min + 200); index++) widths[index - 1] = px;
   }
   return widths;
 }
 
 function parseDimension(text: string): { firstRow: number; firstCol: number; rowCount: number; colCount: number } | null {
-  const ref = /<dimension\b[^>]*ref="([^"]+)"/.exec(text)?.[1];
+  const dimension = findOpenTag(text, 0, "dimension");
+  if (!dimension) return null;
+  const tagEnd = text.indexOf(">", dimension.start);
+  if (tagEnd === -1) return null;
+  const ref = attrValue(text.slice(dimension.nameEnd, tagEnd), "ref");
   if (!ref) return null;
   const range = ref.split(":");
   const start = range[0] ?? "";
@@ -355,14 +400,12 @@ function parseDimension(text: string): { firstRow: number; firstCol: number; row
 
 /** First `<v>` / `<f>`-style child's text within a cell body (no nested tags). */
 function extractElementText(inner: string, name: string): string {
-  const start = inner.indexOf(`<${name}`);
-  if (start === -1) return "";
-  const boundary = inner.charCodeAt(start + name.length + 1);
-  if (!(boundary === 0x3e || boundary === 0x20 || boundary === 0x2f)) return "";
-  const tagEnd = inner.indexOf(">", start);
+  const open = findOpenTag(inner, 0, name);
+  if (!open) return "";
+  const tagEnd = inner.indexOf(">", open.start);
   if (tagEnd === -1) return "";
   if (inner[tagEnd - 1] === "/") return "";
-  const close = inner.indexOf(`</${name}>`, tagEnd + 1);
+  const close = inner.indexOf(`</${open.prefix}${name}>`, tagEnd + 1);
   if (close === -1) return "";
   return inner.slice(tagEnd + 1, close);
 }
@@ -370,28 +413,23 @@ function extractElementText(inner: string, name: string): string {
 /** Cells of one `<row>` body, with the row's own column bookkeeping applied. */
 function parseRowCells(body: string, sharedWanted: Set<number>): RawCell[] {
   const cells: RawCell[] = [];
-  let expectedCol = -1;
+  // `r` is optional in ECMA-376 `CT_Cell`; producers that omit it store the
+  // row's cells in order, so the first one lands in column A (and a row whose
+  // cells carry no reference at all is not silently empty).
+  let expectedCol = 0;
   let pos = 0;
   while (pos < body.length) {
-    const start = body.indexOf("<c", pos);
-    if (start === -1) break;
-    const boundary = body.charCodeAt(start + 2);
-    if (!(boundary === 0x3e || boundary === 0x20 || boundary === 0x2f)) {
-      pos = start + 2;
-      continue;
-    }
+    const open = findOpenTag(body, pos, "c");
+    if (!open) break;
+    const start = open.start;
     const tagEnd = body.indexOf(">", start);
     if (tagEnd === -1) break;
-    const attrs = body.slice(start + 2, tagEnd);
+    const attrs = body.slice(open.nameEnd, tagEnd);
     const selfClosing = body[tagEnd - 1] === "/";
 
     const ref = attrValue(attrs, "r");
     let col = ref ? columnIndexFromRef(ref.replace(/\d+$/, "")) : -1;
-    if (col < 0) col = expectedCol; // Producers that omit `r` store cells in order.
-    if (col < 0) {
-      pos = tagEnd + 1;
-      continue;
-    }
+    if (col < 0) col = expectedCol;
     expectedCol = col + 1;
 
     const typeAttr = attrValue(attrs, "t") ?? "n";
@@ -400,10 +438,10 @@ function parseRowCells(body: string, sharedWanted: Set<number>): RawCell[] {
     let inner = "";
     let end = tagEnd + 1;
     if (!selfClosing) {
-      const close = body.indexOf("</c>", tagEnd + 1);
+      const close = body.indexOf(`</${open.prefix}c>`, tagEnd + 1);
       if (close === -1) break;
       inner = body.slice(tagEnd + 1, close);
-      end = close + 4;
+      end = closeTagEnd(close, open.prefix, "c");
     }
     pos = end;
 
@@ -411,7 +449,7 @@ function parseRowCells(body: string, sharedWanted: Set<number>): RawCell[] {
     let raw = "";
     if (typeAttr === "s") {
       type = "shared";
-      raw = inner.indexOf("<v") === -1 ? "" : extractElementText(inner, "v");
+      raw = findOpenTag(inner, 0, "v") ? extractElementText(inner, "v") : "";
       const index = Number(raw);
       if (Number.isFinite(index)) sharedWanted.add(index);
     } else if (typeAttr === "inlineStr") {
@@ -433,7 +471,7 @@ function parseRowCells(body: string, sharedWanted: Set<number>): RawCell[] {
     } else {
       type = "number";
       raw = extractElementText(inner, "v");
-      if (raw === "" && inner.includes("<f")) {
+      if (raw === "" && findOpenTag(inner, 0, "f")) {
         // A formula with no cached result: show the formula rather than a
         // blank cell, which would read as "empty".
         const formula = decodeXmlEntities(extractElementText(inner, "f"));
@@ -469,12 +507,13 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
   let lastRowNumber = dimension?.firstRow ?? 1;
   let sinceYield = 0;
 
-  const rowRe = /<row(?=[\s/>])/g;
-  let match: RegExpExecArray | null;
-  while ((match = rowRe.exec(text)) !== null) {
-    const tagEnd = text.indexOf(">", match.index);
+  let cursor = 0;
+  while (true) {
+    const row = findOpenTag(text, cursor, "row");
+    if (!row) break;
+    const tagEnd = text.indexOf(">", row.start);
     if (tagEnd === -1) break;
-    const attrs = text.slice(match.index + 4, tagEnd);
+    const attrs = text.slice(row.nameEnd, tagEnd);
     const selfClosing = text[tagEnd - 1] === "/";
     const declared = Number(attrValue(attrs, "r") ?? "");
     const rowNumber = Number.isFinite(declared) && declared >= 1
@@ -485,9 +524,9 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
 
     let nextPos = tagEnd + 1;
     if (!selfClosing) {
-      const close = text.indexOf("</row>", tagEnd + 1);
+      const close = text.indexOf(`</${row.prefix}row>`, tagEnd + 1);
       if (close === -1) break;
-      nextPos = close + 6;
+      nextPos = closeTagEnd(close, row.prefix, "row");
       if (rows.length < SPREADSHEET_PREVIEW_MAX_ROWS) {
         const cells = parseRowCells(text.slice(tagEnd + 1, close), sharedWanted);
         for (const cell of cells) {
@@ -505,7 +544,7 @@ export async function scanSheetXml(text: string): Promise<SheetScan> {
       // A self-closing row carries no cells; keep at least column A addressable.
       observedFirstCol = 0;
     }
-    rowRe.lastIndex = nextPos;
+    cursor = nextPos;
   }
 
   const firstCol = dimension?.firstCol ?? (observedFirstCol >= 0 ? observedFirstCol : 0);
@@ -582,32 +621,11 @@ function formatCell(cell: RawCell, shared: Map<number, string>, formats: CellFor
 
 /* ── Workbook assembly ─────────────────────────────────────────────────── */
 
-function resolvePartPath(baseDir: string, target: string): string {
-  if (target.startsWith("/")) return target.slice(1);
-  const segments = baseDir.split("/").filter(Boolean);
-  for (const segment of target.split("/")) {
-    if (segment === "." || segment === "") continue;
-    if (segment === "..") segments.pop();
-    else segments.push(segment);
-  }
-  return segments.join("/");
-}
-
-export function parseSheetList(workbookXml: string, relsXml: string | null): SpreadsheetSheetInfo[] {
+function resolvePackageSheetList(workbookXml: string, relsXml: string | null): SpreadsheetSheetInfo[] {
   const doc = parseXml(workbookXml);
   if (!doc) throw new OoxmlError("invalid", "xl/workbook.xml is not valid XML.");
 
-  const relTargets = new Map<string, { target: string; type: string }>();
-  if (relsXml) {
-    const relsDoc = parseXml(relsXml);
-    if (relsDoc) {
-      for (const rel of elementsNS(relsDoc, "Relationship")) {
-        const id = rel.getAttribute("Id");
-        const target = rel.getAttribute("Target");
-        if (id && target) relTargets.set(id, { target, type: rel.getAttribute("Type") ?? "" });
-      }
-    }
-  }
+  const rels = parseRelationships(relsXml, "xl");
 
   const sheets: SpreadsheetSheetInfo[] = [];
   const container = firstElementNS(doc, "sheets");
@@ -615,8 +633,8 @@ export function parseSheetList(workbookXml: string, relsXml: string | null): Spr
     for (const sheet of elementsNS(container, "sheet")) {
       const name = sheet.getAttribute("name") ?? `Sheet ${sheets.length + 1}`;
       const state = sheet.getAttribute("state");
-      const relId = relationshipId(sheet, "id") ?? "";
-      const rel = relId ? relTargets.get(relId) ?? null : null;
+      const relId = relationshipId(sheet, "id");
+      const rel = relId ? rels.get(relId) ?? null : null;
       // A chartsheet/dialogsheet resolves to a part with no `<sheetData>`;
       // only real worksheets get a path, so the tab can say what it is.
       const isWorksheet = rel
@@ -624,7 +642,7 @@ export function parseSheetList(workbookXml: string, relsXml: string | null): Spr
         : false;
       sheets.push({
         name,
-        path: rel && isWorksheet ? resolvePartPath("xl", rel.target) : null,
+        path: rel && isWorksheet ? rel.target : null,
         hidden: state === "hidden" || state === "veryHidden",
       });
     }
@@ -634,7 +652,7 @@ export function parseSheetList(workbookXml: string, relsXml: string | null): Spr
 }
 
 function readDate1904(workbookXml: string): boolean {
-  return /<workbookPr\b[^>]*date1904="(1|true)"/.test(workbookXml);
+  return /<(?:[A-Za-z_][\w.-]*:)?workbookPr\b[^>]*date1904="(1|true)"/.test(workbookXml);
 }
 
 function emptyWindow(colWidthsPx: number[] = [], notice: string | null = null): SpreadsheetWindow {
@@ -660,20 +678,37 @@ export async function openXlsx(bytes: Uint8Array): Promise<SpreadsheetWorkbook> 
     throw new OoxmlError("invalid", "This package has no xl/workbook.xml — it is not an .xlsx workbook.");
   }
   const relsXml = await zip.readText("xl/_rels/workbook.xml.rels");
-  const sheets = parseSheetList(workbookXml, relsXml);
+  const sheets = resolvePackageSheetList(workbookXml, relsXml);
   const date1904 = readDate1904(workbookXml);
   const formats = parseCellFormats(await zip.readText("xl/styles.xml"));
 
+  // Windows are cached so switching tabs back is instant, but only a bounded
+  // number of them: each one holds up to 2,000 × 64 display strings, and a
+  // 100-sheet workbook would otherwise keep every sheet the reader ever visited.
   const cache = new Map<number, Promise<SpreadsheetWindow>>();
   const defaultSheetIndex = Math.max(0, sheets.findIndex((sheet) => !sheet.hidden));
 
   function readSheet(index: number): Promise<SpreadsheetWindow> {
     const cached = cache.get(index);
-    if (cached) return cached;
+    if (cached) {
+      // Refresh recency for the eviction order below.
+      cache.delete(index);
+      cache.set(index, cached);
+      return cached;
+    }
     const pending = readSheetUncached(index);
     cache.set(index, pending);
-    // A failed read must not be cached as the sheet's answer forever.
-    pending.catch(() => cache.delete(index));
+    while (cache.size > MAX_CACHED_SHEET_WINDOWS) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+    // A failed read must not be cached as the sheet's answer forever — but only
+    // drop it while it is still the entry, or an evicted-and-re-read sheet
+    // would lose its newer pending promise to this older rejection.
+    pending.catch(() => {
+      if (cache.get(index) === pending) cache.delete(index);
+    });
     return pending;
   }
 
@@ -692,7 +727,7 @@ export async function openXlsx(bytes: Uint8Array): Promise<SpreadsheetWorkbook> 
 }
 
 /** Turn a scan plus its resolved shared strings into the display window. */
-export function materializeWindow(
+function materializeWindow(
   scan: SheetScan,
   shared: Map<number, string>,
   formats: CellFormatKind[],

@@ -1,10 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CaretLeft, CaretRight, ListBullets, Presentation } from "@phosphor-icons/react";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
-import { streamFileBytes } from "../streamBytes";
-import { DocumentSurface } from "./DocumentSurface";
-import { ooxmlFailureMessage } from "./office/ooxmlError";
-import type { PptxDeck, PptxParagraph, PptxRun, PptxShape, PptxSlide } from "./office/pptx";
+import { captureError } from "../../../../../shared/sentry/capture";
+import type { PptxBox, PptxDeck, PptxParagraph, PptxRun, PptxShape, PptxSlide } from "./office/pptx";
+import { OoxmlPreviewShell } from "./OoxmlPreviewShell";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 import type { ViewerProps } from "./types";
@@ -25,11 +24,6 @@ const SLIDE_BACKGROUND = "#ffffff";
 const SLIDE_INK = "#1f1f1f";
 const SLIDE_INK_MUTED = "#6b6b6b";
 
-type DeckState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; deck: PptxDeck };
-
 type Mode = "canvas" | "outline";
 
 /**
@@ -45,46 +39,41 @@ type Mode = "canvas" | "outline";
  */
 export function PresentationViewer(props: ViewerProps) {
   const { files, workspaceId, tab, rootPath, content } = props;
-  const [state, setState] = useState<DeckState>({ status: "loading" });
+  const declaredSize = content.totalSize ?? content.size;
+
+  return (
+    <OoxmlPreviewShell<PptxDeck>
+      files={files}
+      workspaceId={workspaceId}
+      path={tab.path}
+      byteCap={MAX_PRESENTATION_STREAM_BYTES}
+      declaredSize={declaredSize}
+      loadingLabel={`Loading ${tab.title}…`}
+      fallback={{ rootPath, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
+      load={async (bytes) => {
+        // Imported on demand: the deck reader is not on the Files route.
+        const { openPptx } = await import("./office/pptx");
+        return openPptx(bytes);
+      }}
+    >
+      {(deck) => <DeckViewer deck={deck} tabId={tab.id} />}
+    </OoxmlPreviewShell>
+  );
+}
+
+function DeckViewer({ deck, tabId }: { deck: PptxDeck; tabId: string }) {
   const [slideIndex, setSlideIndex] = useState(0);
-  const [storedMode, setStoredMode] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "canvas"));
-  const [reloadKey, setReloadKey] = useState(0);
+  const [storedMode, setStoredMode] = useState<Mode>(() => readViewerMode<Mode>(tabId, "canvas"));
   const surfaceRef = useRef<HTMLDivElement | null>(null);
 
   const setMode = (mode: Mode) => {
-    rememberViewerMode(tab.id, mode);
+    rememberViewerMode(tabId, mode);
     setStoredMode(mode);
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading" });
-    setSlideIndex(0);
-    (async () => {
-      try {
-        const bytes = await streamFileBytes(files, workspaceId, tab.path, {
-          isCancelled: () => cancelled,
-          maxBytes: MAX_PRESENTATION_STREAM_BYTES,
-        });
-        if (cancelled) return;
-        // Imported on demand: the deck reader is not on the Files route.
-        const { openPptx } = await import("./office/pptx");
-        const deck = await openPptx(bytes);
-        if (cancelled) return;
-        setState({ status: "ready", deck });
-      } catch (err) {
-        if (!cancelled) setState({ status: "error", message: ooxmlFailureMessage(err) });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [files, workspaceId, tab.path, reloadKey]);
-
-  const deck = state.status === "ready" ? state.deck : null;
-  const slides = deck?.slides ?? [];
+  const slides = deck.slides;
   const slide = slides[slideIndex] ?? null;
-  const aspect = deck ? deck.slideWidthEmu / deck.slideHeightEmu : 16 / 9;
+  const aspect = deck.slideWidthEmu / deck.slideHeightEmu;
 
   // Pictures for the current slide only. The URLs belong to this effect
   // invocation: whoever created them revokes them, including when the parse
@@ -92,15 +81,15 @@ export function PresentationViewer(props: ViewerProps) {
   const [mediaUrls, setMediaUrls] = useState<Map<string, string>>(new Map());
   useEffect(() => {
     setMediaUrls(new Map());
-    if (!deck || !slide) return;
+    if (!slide) return;
     let cancelled = false;
     const createdUrls: string[] = [];
     (async () => {
       const next = new Map<string, string>();
       const paths = Array.from(new Set(
         slide.shapes
-          .filter((shape): shape is Extract<PptxShape, { kind: "image" }> => shape.kind === "image" && shape.mediaPath !== null)
-          .map((shape) => shape.mediaPath as string),
+          .filter(isPictureWithMedia)
+          .map((shape) => shape.mediaPath),
       ));
       for (const path of paths) {
         let media: Awaited<ReturnType<PptxDeck["loadMedia"]>>;
@@ -117,7 +106,10 @@ export function PresentationViewer(props: ViewerProps) {
       }
       if (cancelled) return;
       setMediaUrls(next);
-    })().catch(() => undefined);
+    })().catch((err: unknown) => {
+      // A recovered failure still has to be visible to Sentry (docs/logging.md).
+      captureError(err, { handled: true, tags: { feature: "files.presentation_preview", stage: "media" } });
+    });
     return () => {
       cancelled = true;
       for (const url of createdUrls) URL.revokeObjectURL(url);
@@ -125,33 +117,6 @@ export function PresentationViewer(props: ViewerProps) {
   }, [deck, slide]);
 
   const noticesLine = useMemo(() => (slide ? describeSlideNotices(slide) : null), [slide]);
-
-  if (state.status === "loading") {
-    return <CenteredMessage>Loading {tab.title}…</CenteredMessage>;
-  }
-
-  if (state.status === "error" || !deck) {
-    return (
-      <DocumentSurface
-        rootPath={rootPath}
-        relativePath={tab.path}
-        title={tab.title}
-        mimeType={content.mimeType ?? null}
-        size={content.size}
-        notice={state.status === "error" ? state.message : null}
-        extraActions={(
-          <button
-            type="button"
-            onClick={() => setReloadKey((key) => key + 1)}
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-            style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-          >
-            Try again
-          </button>
-        )}
-      />
-    );
-  }
 
   const move = (delta: number) => {
     setSlideIndex((index) => Math.max(0, Math.min(slides.length - 1, index + delta)));
@@ -237,12 +202,14 @@ export function PresentationViewer(props: ViewerProps) {
   );
 }
 
-function CenteredMessage({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-full items-center justify-center p-6 text-center text-sm" style={{ color: COLORS.textDim }}>
-      {children}
-    </div>
-  );
+/** `p:pic` whose media resolved to a part this viewer can draw. */
+function isPictureWithMedia(shape: PptxShape): shape is PptxShape & { kind: "image"; mediaPath: string } {
+  return shape.kind === "image" && shape.mediaPath !== null;
+}
+
+/** A shape the layout gave real geometry to. */
+function isPositioned(shape: PptxShape): shape is PptxShape & { box: PptxBox } {
+  return shape.box !== null;
 }
 
 function describeSlideNotices(slide: PptxSlide): string | null {
@@ -251,6 +218,7 @@ function describeSlideNotices(slide: PptxSlide): string | null {
   if (slide.notices.media > 0) parts.push(`${slide.notices.media} media element${slide.notices.media === 1 ? "" : "s"}`);
   if (slide.notices.groups > 0) parts.push(`${slide.notices.groups} grouped shape${slide.notices.groups === 1 ? "" : "s"}`);
   if (slide.notices.pictures > 0) parts.push(`${slide.notices.pictures} picture${slide.notices.pictures === 1 ? "" : "s"}`);
+  if (slide.notices.trimmedTables > 0) parts.push(`${slide.notices.trimmedTables} trimmed table${slide.notices.trimmedTables === 1 ? "" : "s"}`);
   if (parts.length === 0) return null;
   return `Not shown in this preview: ${parts.join(", ")}.`;
 }
@@ -367,10 +335,10 @@ function SlideCanvas({
   const paneRef = useRef<HTMLDivElement | null>(null);
   const size = useFitSize(paneRef, aspect);
 
-  const positioned = slide.shapes.filter((shape) => shape.box !== null);
-  const flowing = slide.shapes.filter((shape) => shape.box === null);
+  const positioned = slide.shapes.filter(isPositioned);
+  const flowing = slide.shapes.filter((shape) => !isPositioned(shape));
   const flowTop = positioned.length > 0
-    ? Math.min(0.55, Math.max(...positioned.map((shape) => shape.box!.y + shape.box!.h)) + 0.02)
+    ? Math.min(0.55, Math.max(...positioned.map((shape) => shape.box.y + shape.box.h)) + 0.02)
     : 0.06;
 
   return (
@@ -427,11 +395,11 @@ function PositionedShape({
   slideWidthEmu,
   mediaUrls,
 }: {
-  shape: PptxShape;
+  shape: PptxShape & { box: PptxBox };
   slideWidthEmu: number;
   mediaUrls: Map<string, string>;
 }) {
-  const box = shape.box!;
+  const { box } = shape;
   return (
     <div
       style={{
@@ -588,7 +556,12 @@ function paragraphFontPt(paragraph: PptxParagraph, isTitle: boolean): number {
 }
 
 function TableBody({ rows, headerRow }: { rows: string[][]; headerRow: boolean }) {
-  const columnCount = Math.max(...rows.map((row) => row.length), 1);
+  // A loop, not `Math.max(...rows.map(…))`: the parser bounds the rows, but a
+  // spread over an unbounded array throws and takes the whole window down.
+  let columnCount = 1;
+  for (const row of rows) {
+    if (row.length > columnCount) columnCount = row.length;
+  }
   return (
     <div
       style={{

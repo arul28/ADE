@@ -27,9 +27,10 @@ export class OoxmlError extends Error {
 /**
  * A short, honest line for a viewer's failure card.
  *
- * Both viewers import their parser dynamically, so this lives here rather than
- * being pulled in alongside it: the message of an `OoxmlError` IS the copy, and
- * anything else gets the generic line rather than a raw stack.
+ * A parser authors its `OoxmlError` messages as user-facing copy, and the one
+ * error from outside the parsers (`streamFileBytes` refusing an oversized read)
+ * is a plain sentence too, so a thrown `Error`'s message is the line. Anything
+ * that is not an `Error` gets the generic one rather than a stringified value.
  */
 export function ooxmlFailureMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;

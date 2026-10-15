@@ -24,6 +24,7 @@
 // the open-externally card.
 
 import { OoxmlError } from "./ooxmlError";
+import { parseRelationships, type Relationship } from "./ooxmlPackage";
 import { attributeAnyNS, elementsNS, firstElementNS, parseXml, relationshipId, yieldToEventLoop } from "./ooxmlXml";
 import { openOoxmlZip, ZIP_MAX_MEDIA_BYTES } from "./ooxmlZip";
 
@@ -31,6 +32,15 @@ import { openOoxmlZip, ZIP_MAX_MEDIA_BYTES } from "./ooxmlZip";
 export const PRESENTATION_PREVIEW_MAX_SLIDES = 300;
 /** Shapes drawn per slide, bounding pathological decks. */
 const MAX_SHAPES_PER_SLIDE = 120;
+/**
+ * Table cells drawn per table, and outline lines kept per slide. Both are
+ * derived summaries of what is on the slide, and a slide is untrusted input:
+ * one table with 100,000 rows is a render that constructs 100,000 cells (and,
+ * before the explicit column count below, a `Math.max(...)` that throws).
+ */
+const MAX_TABLE_ROWS = 50;
+const MAX_TABLE_COLUMNS = 20;
+const MAX_OUTLINE_LINES = 200;
 
 export type PptxBox = {
   /** Fractions of the slide, 0..1. */
@@ -93,6 +103,8 @@ export type PptxSlideNotices = {
   groups: number;
   /** Pictures whose media is missing or in a format a browser cannot draw. */
   pictures: number;
+  /** Tables whose rows/columns were trimmed to the preview's bounds. */
+  trimmedTables: number;
 };
 
 export type PptxSlide = {
@@ -136,37 +148,6 @@ const MEDIA_MIME_BY_EXTENSION: Record<string, string> = {
   tif: "image/tiff",
   tiff: "image/tiff",
 };
-
-/* ── Part paths and relationships ──────────────────────────────────────── */
-
-function resolvePartPath(baseDir: string, target: string): string {
-  if (target.startsWith("/")) return target.slice(1);
-  const segments = baseDir.split("/").filter(Boolean);
-  for (const segment of target.split("/")) {
-    if (segment === "." || segment === "") continue;
-    if (segment === "..") segments.pop();
-    else segments.push(segment);
-  }
-  return segments.join("/");
-}
-
-type Relationship = { target: string; type: string };
-
-function parseRelationships(relsXml: string | null, baseDir: string): Map<string, Relationship> {
-  const rels = new Map<string, Relationship>();
-  if (!relsXml) return rels;
-  const doc = parseXml(relsXml);
-  if (!doc) return rels;
-  for (const rel of elementsNS(doc, "Relationship")) {
-    const id = rel.getAttribute("Id");
-    const target = rel.getAttribute("Target");
-    if (!id || !target) continue;
-    // External relationships (a linked video on a share) name no package part.
-    if ((rel.getAttribute("TargetMode") ?? "").toLowerCase() === "external") continue;
-    rels.set(id, { target: resolvePartPath(baseDir, target), type: rel.getAttribute("Type") ?? "" });
-  }
-  return rels;
-}
 
 /* ── Geometry ──────────────────────────────────────────────────────────── */
 
@@ -353,13 +334,22 @@ function parseTextShape(shape: Element, ctx: SlideParseContext): PptxTextShape |
   };
 }
 
-function parseTableShape(shape: Element, ctx: SlideParseContext): PptxTableShape | null {
+function parseTableShape(shape: Element, ctx: SlideParseContext, notices: PptxSlideNotices): PptxTableShape | null {
   const table = firstElementNS(shape, "tbl");
   if (!table) return null;
   const rows: string[][] = [];
+  let trimmed = false;
   for (const row of elementsNS(table, "tr")) {
+    if (rows.length >= MAX_TABLE_ROWS) {
+      trimmed = true;
+      break;
+    }
     const cells: string[] = [];
     for (const cell of elementsNS(row, "tc")) {
+      if (cells.length >= MAX_TABLE_COLUMNS) {
+        trimmed = true;
+        break;
+      }
       const texts: string[] = [];
       for (const paragraph of elementsNS(cell, "p")) {
         const runs: string[] = [];
@@ -373,6 +363,7 @@ function parseTableShape(shape: Element, ctx: SlideParseContext): PptxTableShape
     rows.push(cells);
   }
   if (rows.length === 0) return null;
+  if (trimmed) notices.trimmedTables += 1;
   const tblPr = firstElementNS(table, "tblPr");
   const firstRowAttr = tblPr?.getAttribute("firstRow");
   return {
@@ -415,7 +406,7 @@ function parseShapeChildren(container: Element, ctx: SlideParseContext, notices:
         shapes.push(parsePictureShape(child, ctx));
         break;
       case "graphicFrame": {
-        const table = parseTableShape(child, ctx);
+        const table = parseTableShape(child, ctx, notices);
         if (table) {
           shapes.push(table);
           break;
@@ -542,7 +533,7 @@ export async function openPptx(bytes: Uint8Array): Promise<PptxDeck> {
       break;
     }
 
-    const notices: PptxSlideNotices = { charts: 0, media: 0, groups: 0, pictures: 0 };
+    const notices: PptxSlideNotices = { charts: 0, media: 0, groups: 0, pictures: 0, trimmedTables: 0 };
     const ctx: SlideParseContext = {
       slideWidthEmu,
       slideHeightEmu,
@@ -558,12 +549,14 @@ export async function openPptx(bytes: Uint8Array): Promise<PptxDeck> {
     const outline: string[] = [];
     let title = "";
     for (const shape of shapes) {
+      if (outline.length >= MAX_OUTLINE_LINES) break;
       if (shape.kind === "text") {
         for (const paragraph of shape.paragraphs) {
           const text = paragraphText(paragraph).trim();
           if (!text) continue;
           outline.push(text);
           if (!title && shape.isTitle) title = text;
+          if (outline.length >= MAX_OUTLINE_LINES) break;
         }
       } else if (shape.kind === "table") {
         // A table's cells are slide content; leaving them out of the outline
@@ -571,6 +564,7 @@ export async function openPptx(bytes: Uint8Array): Promise<PptxDeck> {
         for (const row of shape.rows) {
           const line = row.filter(Boolean).join(" ").trim();
           if (line) outline.push(line);
+          if (outline.length >= MAX_OUTLINE_LINES) break;
         }
       }
     }

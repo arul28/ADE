@@ -1,11 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowSquareOut, Table } from "@phosphor-icons/react";
+import { Table } from "@phosphor-icons/react";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
-import { streamFileBytes } from "../streamBytes";
-import { DocumentSurface } from "./DocumentSurface";
-import { ooxmlFailureMessage } from "./office/ooxmlError";
 import type { SpreadsheetWindow, SpreadsheetWorkbook } from "./office/xlsx";
+import { DocumentSurface } from "./DocumentSurface";
+import { OoxmlPreviewShell, ViewerCenteredMessage } from "./OoxmlPreviewShell";
 import type { ViewerProps } from "./types";
 
 /** Matches the PDF viewer's streaming ceiling; past this, open externally. */
@@ -14,142 +13,123 @@ const ROW_HEIGHT = 26;
 const HEADER_HEIGHT = 24;
 const GUTTER_WIDTH = 52;
 
-type WorkbookState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; workbook: SpreadsheetWorkbook };
+/**
+ * `.xlsx` preview: virtualized grid with Excel's own chrome (column letters,
+ * row numbers, sheet tabs, date/number formatting).
+ *
+ * The parse is deliberately tiered so a preview never becomes a stall: the
+ * workbook's small parts load first (sheet names), the sheet body is scanned
+ * on demand per tab, and the grid only ever materializes the window the reader
+ * is scrolling through. The heavy module (fflate) is imported by the parser on
+ * demand, so this viewer costs the Files route nothing until a workbook is
+ * actually opened.
+ */
+export function SpreadsheetViewer(props: ViewerProps) {
+  const { files, workspaceId, tab, rootPath, content } = props;
+  const declaredSize = content.totalSize ?? content.size;
+
+  return (
+    <OoxmlPreviewShell<SpreadsheetWorkbook>
+      files={files}
+      workspaceId={workspaceId}
+      path={tab.path}
+      byteCap={MAX_SPREADSHEET_STREAM_BYTES}
+      declaredSize={declaredSize}
+      loadingLabel={`Loading ${tab.title}…`}
+      fallback={{ rootPath, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
+      load={async (bytes) => {
+        // Imported here, not at module scope: opening the Files tab must not
+        // download a spreadsheet reader nobody asked for.
+        const { openXlsx } = await import("./office/xlsx");
+        return openXlsx(bytes);
+      }}
+    >
+      {(workbook) => (
+        <WorkbookGrid
+          workbook={workbook}
+          rootPath={rootPath}
+          relativePath={tab.path}
+          title={tab.title}
+          mimeType={content.mimeType ?? null}
+          size={content.size}
+        />
+      )}
+    </OoxmlPreviewShell>
+  );
+}
 
 type SheetState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; window: SpreadsheetWindow };
 
-/**
- * `.xlsx` preview: virtualized grid with Excel's own chrome (column letters,
- * row numbers, sheet tabs, date/number formatting).
- *
- * The parse is deliberately tiered so a preview never becomes a stall:
- * the workbook's small parts load first (sheet names), the sheet body is
- * scanned on demand per tab, and the grid only ever materializes the window
- * the reader is scrolling through. The heavy module (fflate) is imported by
- * the parser on demand, so this viewer costs the Files route nothing until a
- * workbook is actually opened.
- */
-export function SpreadsheetViewer(props: ViewerProps) {
-  const { files, workspaceId, tab, rootPath, content } = props;
-  const [state, setState] = useState<WorkbookState>({ status: "loading" });
-  const [sheetIndex, setSheetIndex] = useState(0);
+function WorkbookGrid({
+  workbook,
+  rootPath,
+  relativePath,
+  title,
+  mimeType,
+  size,
+}: {
+  workbook: SpreadsheetWorkbook;
+  rootPath: string;
+  relativePath: string;
+  title: string;
+  mimeType: string | null;
+  size: number;
+}) {
+  const [sheetIndex, setSheetIndex] = useState(workbook.defaultSheetIndex);
   const [sheet, setSheet] = useState<SheetState>({ status: "loading" });
-  const [reloadKey, setReloadKey] = useState(0);
 
-  // Bytes → workbook. One read of the file, capped, cancellable. The parser
-  // itself is imported here, not at module scope: opening the Files tab must
-  // not download a spreadsheet reader nobody asked for.
+  // Sheet body, on demand and cached (bounded) by the workbook object.
   useEffect(() => {
     let cancelled = false;
-    setState({ status: "loading" });
     setSheet({ status: "loading" });
-    (async () => {
-      try {
-        const bytes = await streamFileBytes(files, workspaceId, tab.path, {
-          isCancelled: () => cancelled,
-          maxBytes: MAX_SPREADSHEET_STREAM_BYTES,
-        });
-        if (cancelled) return;
-        const { openXlsx } = await import("./office/xlsx");
-        const workbook = await openXlsx(bytes);
-        if (cancelled) return;
-        setSheetIndex(workbook.defaultSheetIndex);
-        setState({ status: "ready", workbook });
-      } catch (err) {
-        if (!cancelled) setState({ status: "error", message: ooxmlFailureMessage(err) });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [files, workspaceId, tab.path, reloadKey]);
-
-  // Sheet body, on demand and cached by the workbook object.
-  useEffect(() => {
-    if (state.status !== "ready") return;
-    let cancelled = false;
-    setSheet({ status: "loading" });
-    state.workbook
+    workbook
       .readSheet(sheetIndex)
       .then((window) => {
         if (!cancelled) setSheet({ status: "ready", window });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setSheet({ status: "error", message: ooxmlFailureMessage(err) });
+        if (!cancelled) {
+          setSheet({ status: "error", message: err instanceof Error && err.message ? err.message : "This sheet could not be read." });
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [state, sheetIndex]);
+  }, [workbook, sheetIndex]);
 
-  if (state.status === "loading") {
-    return <CenteredMessage>Loading {tab.title}…</CenteredMessage>;
-  }
-
-  if (state.status === "error") {
-    return (
-      <DocumentSurface
-        rootPath={rootPath}
-        relativePath={tab.path}
-        title={tab.title}
-        mimeType={content.mimeType ?? null}
-        size={content.size}
-        notice={state.message}
-        extraActions={(
-          <button
-            type="button"
-            onClick={() => setReloadKey((key) => key + 1)}
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-            style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-          >
-            Try again
-          </button>
-        )}
-      />
-    );
-  }
-
-  const { workbook } = state;
-
-  const stripText = sheet.status === "ready"
-    ? describeTruncation(sheet.window)
-    : null;
+  const stripText = sheet.status === "ready" ? describeTruncation(sheet.window) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {sheet.status === "ready" && sheet.window.notice ? (
-        <div className={VIEWER_STRIP_CLASS} style={VIEWER_STRIP_STYLE}>
-          {sheet.window.notice}
-        </div>
-      ) : null}
       {stripText ? (
-        <div className={VIEWER_STRIP_CLASS} style={VIEWER_STRIP_STYLE} title="A preview keeps a bounded window of the sheet; open the file externally for the whole thing.">
+        <div
+          className={VIEWER_STRIP_CLASS}
+          style={VIEWER_STRIP_STYLE}
+          title="A preview keeps a bounded window of the sheet; open the file externally for the whole thing."
+        >
           {stripText}
         </div>
       ) : null}
       <div className="min-h-0 flex-1">
         {sheet.status === "loading" ? (
-          <CenteredMessage>Loading sheet…</CenteredMessage>
+          <ViewerCenteredMessage>Loading sheet…</ViewerCenteredMessage>
         ) : sheet.status === "error" ? (
-          <CenteredMessage>
-            <span>{sheet.message}</span>
-            <button
-              type="button"
-              onClick={() => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: tab.path, target: "default" }).catch(() => {})}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-              style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-            >
-              <ArrowSquareOut size={14} /> Open externally
-            </button>
-          </CenteredMessage>
+          // One sheet can fail (an entry past the size cap) while the rest of
+          // the workbook is fine, so this is the shared card with the sheet
+          // tabs still under it — not a second hand-rolled failure state.
+          <DocumentSurface
+            rootPath={rootPath}
+            relativePath={relativePath}
+            title={title}
+            mimeType={mimeType}
+            size={size}
+            notice={sheet.message}
+          />
         ) : sheet.window.empty ? (
-          <CenteredMessage>This sheet is empty.</CenteredMessage>
+          <ViewerCenteredMessage>{sheet.window.notice ?? "This sheet is empty."}</ViewerCenteredMessage>
         ) : (
           <SheetGrid key={sheetIndex} window={sheet.window} />
         )}
@@ -185,14 +165,6 @@ export function describeTruncation(sheetWindow: SpreadsheetWindow): string | nul
   return `Showing the first ${parts.join(" and ")}.`;
 }
 
-function CenteredMessage({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center text-sm" style={{ color: COLORS.textDim }}>
-      {children}
-    </div>
-  );
-}
-
 /** A1-style column label for a 0-based index: 0 → A, 26 → AA. */
 export function columnName(index: number): string {
   let name = "";
@@ -206,7 +178,7 @@ export function columnName(index: number): string {
 }
 
 /** Numbers align right in Excel; everything else sits left. */
-export function isNumericCellText(text: string): boolean {
+function isNumericCellText(text: string): boolean {
   if (!text) return false;
   return /^-?\d[\d,]*(\.\d+)?%?$/.test(text);
 }

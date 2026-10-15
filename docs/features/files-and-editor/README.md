@@ -847,14 +847,16 @@ for one:
   load the same way. Neither the parser nor the zip library is on the Files
   route's startup path.
 - **Reads are scoped and capped.** Only the archive's central directory is held;
-  each part is inflated on demand, and the byte cap is enforced on the bytes as
-  they arrive rather than on the archive's declared size, so a crafted entry
-  cannot allocate past it. A file over 25 MB, an entry over 24 MB, or an
-  embedded image over 12 MB reports "too large" and falls back to the
-  open-externally card.
+  each part is inflated on demand, and the cap is enforced on the bytes as they
+  arrive (a declared-size check rejects the obvious case first, but the arriving
+  bytes are the guarantee — a deflate stream can expand past any header). One
+  budget spans the whole package, so 300 slide parts cannot add up to gigabytes.
+  A file over 25 MB, an entry over 24 MB, 64 MB of parts, or an embedded image
+  over 12 MB reports "too large" and falls back to the open-externally card.
 - **The model is bounded, not the file.** A sheet materializes at most
   2,000 rows × 64 columns and says "showing the first 2,000 of 5,000 rows"
-  instead of growing; a deck parses at most 300 slides and 120 shapes per slide.
+  instead of growing; a deck parses at most 300 slides, 120 shapes per slide,
+  50 table rows × 20 columns per table, and 200 outline lines per slide.
   The grid virtualizes rows (`@tanstack/react-virtual`), so the DOM stays one
   screenful however long the sheet is.
 - **Parsing yields.** A worksheet body is scanned in row chunks that yield to

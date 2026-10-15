@@ -2,12 +2,7 @@ import React from "react";
 import { ArrowSquareOut, Copy, FileText } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { joinDisplayPath } from "../pathDisplay";
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatBytes } from "../../../../../shared/formatting";
 
 /**
  * The honest "no in-app preview" card, shared by every viewer that cannot (or
