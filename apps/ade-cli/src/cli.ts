@@ -533,6 +533,10 @@ const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // How long "Reconnect this computer" waits for a sync-host start it kicked
 // off before answering with why nothing hosts sync.
 const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
+// A brain this CLI just spawned has to boot before its socket exists. A cold
+// start on a slow or busy machine takes longer than the 5 seconds an
+// already-running brain gets to answer.
+const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
 
 export type InvocationStep = {
   key: string;
@@ -20939,9 +20943,10 @@ function connectSocket(
   socketPath: string,
   timeoutMs: number,
   label: string,
+  connectWindowMs = 5000,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const connectTimeoutMs = Math.min(timeoutMs, 5000);
+    const connectTimeoutMs = Math.min(timeoutMs, connectWindowMs);
     const deadline = Date.now() + connectTimeoutMs;
     const attempt = () => {
       const socket = createSocketConnection(socketPath);
@@ -21023,8 +21028,9 @@ class SocketJsonRpcClient {
     socketPath: string,
     timeoutMs: number,
     label = "ADE endpoint",
+    connectWindowMs?: number,
   ): Promise<SocketJsonRpcClient> {
-    const socket = await connectSocket(socketPath, timeoutMs, label);
+    const socket = await connectSocket(socketPath, timeoutMs, label, connectWindowMs);
     return new SocketJsonRpcClient(
       socket,
       timeoutMs,
@@ -23161,6 +23167,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
@@ -23204,6 +23211,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
+        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
       );
       const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
