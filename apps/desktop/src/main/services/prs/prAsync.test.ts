@@ -2040,6 +2040,23 @@ describe("PR-origin merge lifecycle", () => {
     expect(f.pending("chat-500")).toBe(0);
     expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
   });
+
+  it("clears a stale origin whose chat moved lanes so the merged PR is still handled", async () => {
+    const f = await fixture(1, false); f.complete();
+    // The claimed chat is moved to another lane (updateMeta({ laneId })) while
+    // the origin row keeps the original lane. The commit guard would reject the
+    // mismatch after teardown on every poll, keeping the PR out of handledPrIds
+    // forever. The lookup must clear the stale binding and settle without it.
+    f.db.run(
+      "insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-elsewhere', 'proj-1', 'moved', 'main', 'moved', ?, 'active', '2026-03-24T12:00:00.000Z')",
+      ["/tmp/lane-elsewhere"],
+    );
+    f.db.run("update terminal_sessions set lane_id = 'lane-elsewhere' where id = 'chat-0'");
+    await f.poll();
+    expect(f.pending()).toBe(0);
+    // Settled through the normal path (chatSessionIds declares chat-0) without the origin guard.
+    expect(f.sessions.get("chat-0")?.settledAt).not.toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

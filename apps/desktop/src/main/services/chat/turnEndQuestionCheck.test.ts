@@ -125,6 +125,24 @@ describe("classifyTurnEndAsk", () => {
     ["a consequential permission needing context", "unsure", "Would you like me to delete the production database?", null],
     ["a direct blocking question", "ask", "Should I wait for your choice before continuing?", "Should I wait for your choice before continuing?"],
     [
+      "a blocking question after an offer question in the same block",
+      "ask",
+      "Would you like me to run another review? Should I merge into main?",
+      "Should I merge into main?",
+    ],
+    [
+      "a blocking approval request inside an optional offer",
+      "ask",
+      "Deployment is blocked until you approve it. If you want me to proceed, say the word.",
+      "If you want me to proceed, say the word.",
+    ],
+    [
+      "an optional offer with no blocking gate stays non-ask",
+      "not_ask",
+      "Say the word if you would rather I run the independent delta re-review first, since that is the one step I shortened.",
+      null,
+    ],
+    [
       "a question that only appears in quotes, then a progress note",
       "unsure",
       "The FAQ says “Why did it fail?”\n\nBoth agents are still running.",

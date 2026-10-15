@@ -57,6 +57,23 @@ const OPTIONAL_OFFER = new RegExp(
 
 const OFFER_QUESTION = /\b(?:would you (?:like|prefer)|do you want) me to\b/i;
 
+/**
+ * A closing that names a blocking prerequisite — work cannot proceed until the
+ * user approves, confirms, or answers. An optional offer elsewhere in the same
+ * block must not suppress it.
+ */
+const BLOCKING_CUE = new RegExp(
+  [
+    String.raw`\bblocked\b`,
+    String.raw`\buntil you (approve|confirm|decide|respond|answer|pick|choose)\b`,
+    String.raw`\b(needs?|requires?|waiting on) your (approval|go-ahead|ok|okay|decision|response|answer|input|call)\b`,
+    String.raw`\bcan'?t (proceed|continue|move forward|start|finish)\b`,
+    String.raw`\bhold(ing)? (until|waiting)\b`,
+    String.raw`\bparked (until|waiting)\b`,
+  ].join("|"),
+  "i",
+);
+
 /** The shapes of "work continues, I'll be back": no answer wanted. */
 const PROGRESS_NOTE = new RegExp(
   [
@@ -164,17 +181,29 @@ export function classifyTurnEndAsk(replyText: string | null | undefined): TurnEn
   const progress = PROGRESS_NOTE.test(closing);
   const closingAsk = askStrength(closing);
   const beforeAsk = askStrength(before);
+  const finalQuestion = questionFrom(closing);
 
-  // These can offer additional work or ask permission to take an action.
-  // A question mark alone cannot distinguish them; let the contextual check
-  // decide rather than raising attention before it can run.
-  if (beforeAsk === "none" && OFFER_QUESTION.test(closing)) return UNSURE;
-  if (closingAsk === "strong") return { verdict: "ask", question: questionFrom(closing) };
+  // A question-phrased offer ("Would you like me to…?") is only a non-blocking
+  // opt-in when it is the LAST thing asked. If a later sentence asks a genuine
+  // blocking question, that question must classify as the ask — the offer
+  // exception must not swallow it.
+  if (
+    beforeAsk === "none"
+    && OFFER_QUESTION.test(finalQuestion)
+    && !BLOCKING_CUE.test(closing)
+  ) return UNSURE;
+  if (closingAsk === "strong") return { verdict: "ask", question: finalQuestion };
   if (closingAsk === "weak") return UNSURE;
+  // A closing that names a blocking prerequisite ("blocked until you approve")
+  // is a genuine ask even when an optional offer or sign-off surrounds it. A
+  // progress note ("still running…") is exempt — it describes work, not a gate.
+  if (beforeAsk === "none" && BLOCKING_CUE.test(closing) && !progress) {
+    return { verdict: "ask", question: finalQuestion };
+  }
   // A conditional offer is optional unless the sentence explicitly asks a
   // question or the previous paragraph already asked for a decision.
   if (beforeAsk === "none") {
-    if (!closing.includes("?") && OPTIONAL_OFFER.test(closing)) return NOT_ASK;
+    if (!closing.includes("?") && OPTIONAL_OFFER.test(closing) && !BLOCKING_CUE.test(closing)) return NOT_ASK;
   }
   if (SOFT_ASK.test(closing)) {
     // "If you're happy with this, I'll…" usually closes a question asked just

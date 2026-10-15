@@ -257,6 +257,58 @@ export function createPrMergeAutoSettlementService(args: {
     }
   };
 
+  /**
+   * True when the origin's stored lane still matches the live PR, chat edge,
+   * and terminal session. A chat moved by `updateMeta({ laneId })` or a PR
+   * remapped to another lane leaves the origin pointing at a lane nothing
+   * occupies; `claimOriginForSettle` would then reject it after teardown on
+   * every poll, keeping the merged PR permanently unhandled. A stale binding is
+   * cleared here and reported false so both the normal path and the handled
+   * follow-up skip it instead of retrying forever.
+   */
+  const originBindingFresh = (origin: PendingOriginFollowup): boolean => {
+    const projectId = args.projectId;
+    const get = args.db.get;
+    const run = args.db.run;
+    if (!projectId || !get) return false;
+    try {
+      const aligned = get<{ ok: number }>(
+        `select 1 as ok
+           from pull_requests pr, terminal_sessions ts
+          where pr.id = ? and pr.project_id = ?
+            and ts.id = ?
+            and pr.lane_id = ?
+            and ts.lane_id = ?
+            and exists (
+              select 1 from pull_request_chat_sessions edge
+               where edge.project_id = ? and edge.pr_id = ?
+                 and edge.session_id = ? and edge.lane_id = ?
+            )
+          limit 1`,
+        [
+          origin.pr_id, projectId, origin.session_id, origin.lane_id, origin.lane_id,
+          projectId, origin.pr_id, origin.session_id, origin.lane_id,
+        ],
+      );
+      if (aligned) return true;
+      run?.(
+        `update pull_request_lane_chat_origins set merge_followup_pending = 0
+          where project_id = ? and pr_id = ? and claimed_session_id = ?`,
+        [projectId, origin.pr_id, origin.session_id],
+      );
+      return false;
+    } catch (error) {
+      if (/no such table/i.test(getErrorMessage(error))) return false;
+      args.logger?.warn?.("prs.origin_binding_check_failed", {
+        projectId,
+        prId: origin.pr_id,
+        sessionId: origin.session_id,
+        error: getErrorMessage(error),
+      });
+      return true;
+    }
+  };
+
   /** Indexed point lookup, independent of the bounded follow-up page. */
   const findPendingOriginForSession = (
     sessionId: string,
@@ -265,7 +317,7 @@ export function createPrMergeAutoSettlementService(args: {
     const get = args.db.get;
     if (!projectId || !get) return null;
     try {
-      return get<PendingOriginFollowup>(
+      const origin = get<PendingOriginFollowup>(
         `select origin.pr_id, origin.lane_id, origin.claimed_session_id as session_id
            from pull_request_lane_chat_origins origin
            join pull_requests pr on pr.id = origin.pr_id and pr.project_id = origin.project_id
@@ -275,6 +327,11 @@ export function createPrMergeAutoSettlementService(args: {
           limit 1`,
         [projectId, sessionId],
       ) ?? null;
+      if (!origin) return null;
+      // A stale binding is cleared and treated as "no origin", so the normal
+      // path settles the session without the origin commit guard.
+      if (!originBindingFresh(origin)) return null;
+      return origin;
     } catch (error) {
       if (/no such table/i.test(getErrorMessage(error))) return null;
       args.logger?.warn?.("prs.origin_merge_followup_candidate_read_failed", {
@@ -352,6 +409,9 @@ export function createPrMergeAutoSettlementService(args: {
     for (const followup of followups) {
       const pr = prsById.get(followup.pr_id);
       if (!pr) continue;
+      // A stale binding (chat moved lanes / PR remapped) is cleared here so
+      // `claimOriginForSettle` never rejects it after teardown on every poll.
+      if (!originBindingFresh(followup)) continue;
       const state = getPrMergeAutoSettlementState(args.db);
       if (
         pr.state !== "merged"
