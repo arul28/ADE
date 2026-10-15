@@ -12,6 +12,63 @@
  * fake. The worker passes the real `process`.
  */
 
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
+
+let commandsPatched = false;
+
+// Cursor's SDK invokes git/gh with execFile({ cwd, timeout }) and exposes no
+// child-process options. Hiding the forked worker does not hide those children
+// on Windows. Set the default before loading the SDK, only in this dedicated
+// worker; the brain and user-launched terminals keep their own spawn policy.
+export function ensureCursorSdkWorkerCommandsAreWindowless(): void {
+  if (commandsPatched || process.platform !== "win32") return;
+  commandsPatched = true;
+  const originalExecFile = childProcess.execFile;
+  const windowlessArgs = (args: unknown[]): unknown[] => {
+    // Drop a trailing callback first so the options slot cannot be mistaken for
+    // it. This is what keeps execFile(command, args, callback) from losing
+    // its callback when the options object is synthesized below.
+    const input = [...args];
+    const last = input[input.length - 1];
+    const hasCallback = typeof last === "function";
+    const core = hasCallback ? input.slice(0, -1) : input;
+    const callback = hasCallback ? last : undefined;
+
+    // The first argument after the executable is an args array only for
+    // execFile(file, args, ...) calls. Anything else occupies the options
+    // slot directly.
+    const hasCliArgs = Array.isArray(core[1]);
+    const optionsIndex = hasCliArgs ? 2 : 1;
+    const existing = core[optionsIndex];
+    if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+      const record = existing as Record<string, unknown>;
+      core[optionsIndex] = { ...record, windowsHide: record.windowsHide ?? true };
+    } else {
+      // Synthesize the options object whether the slot is empty or holds a
+      // callback: the original callback has already been removed from `core`.
+      core[optionsIndex] = { windowsHide: true };
+    }
+    if (callback !== undefined) core.push(callback);
+    return core;
+  };
+  const patchedExecFile = ((...args: unknown[]) => {
+    return Reflect.apply(originalExecFile, childProcess, windowlessArgs(args));
+  }) as typeof childProcess.execFile;
+  // Node's custom promisifier returns both stdout and stderr (and .child).
+  // Preserve it, while giving its underlying launch the same hidden options.
+  const custom = Object.getOwnPropertyDescriptor(originalExecFile, promisify.custom);
+  if (typeof custom?.value === "function") {
+    Object.defineProperty(patchedExecFile, promisify.custom, {
+      ...custom,
+      value: (...args: unknown[]) => Reflect.apply(custom.value, originalExecFile, windowlessArgs(args)),
+    });
+  }
+  childProcess.execFile = patchedExecFile;
+  syncBuiltinESMExports();
+}
+
 /**
  * The argv marker that names the brain which forked a worker.
  *

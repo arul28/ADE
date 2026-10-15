@@ -79,6 +79,7 @@ export const defaultResponsivenessProbe: ResponsivenessProbe = (args) => {
       env,
       timeout: args.timeoutMs + RESPONSIVENESS_PROBE_STARTUP_ALLOWANCE_MS,
       stdio: "ignore",
+      windowsHide: true,
     },
   );
   return result.status === 0 && !result.error;

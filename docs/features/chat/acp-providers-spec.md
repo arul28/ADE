@@ -726,14 +726,20 @@ chat's model token and effort.
   live list, `modelRegistry.ts` serves exactly that list: curated rows the
   list names keep their researched name, color and context window, and curated
   rows it does not name are hidden. The curated rows are the fallback for a
-  provider that has never reported (offline, never probed).
+  provider that has never reported (offline, never probed). Copilot background
+  model and auth probes first list MCP definitions without connecting, then
+  disable every listed server and all built-ins for the temporary process.
+  If that metadata cannot be read, ADE skips opening the probe session and
+  reports the failure. Real chat sessions continue to load configured MCPs.
 - **Copilot effort.** Copilot accepts `none`, `minimal`, `low`, `medium`,
   `high`, `xhigh` and `max` (`--effort` is its alias for
   `--reasoning-effort`), and exits at startup on any other value, so only
   those seven are passed. A live Copilot model gets the levels the session
   lists for it, else the levels ADE already learned, else all seven, except
   `Auto`, `gpt-3*`/`gpt-4*` and models the curated table marks as
-  non-reasoning.
+  non-reasoning. Cached Copilot models from older ADE builds receive the same
+  fallback when loaded, so thinking controls are available immediately after
+  an upgrade.
 
 - **Order after every entry** (`session/new`, `session/resume`,
   `session/load`): mode, then model, then effort. A resumed session comes
