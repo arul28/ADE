@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project move fixes: check agent model, banner scope, Codex trust (#1638).
 - Simulator cleanup stays on its original project (#1596).
 - Quiet provider checks and restored model controls (#1623).
+- OpenCode 2.0.29: accounts, cloud sign-ins, lane guard (#1617).
 
 ### iOS
 
