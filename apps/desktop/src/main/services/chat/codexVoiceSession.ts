@@ -368,8 +368,9 @@ export function createCodexVoiceSessions<
     // any other request, and routing it produced a chat turn explaining that
     // the agent could not end a call it was never able to end. The call ends
     // instead, whichever of the two notices arrives first.
-    if (session.narration.asksToEnd(text)) {
-      session.narration.requestEnd();
+    const endRequest = session.narration.endRequestOf(text);
+    if (endRequest) {
+      session.narration.requestEnd(endRequest);
       return;
     }
     if (session.mode === "host") {

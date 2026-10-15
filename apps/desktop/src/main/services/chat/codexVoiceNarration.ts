@@ -124,10 +124,13 @@ export type VoiceNarrator = {
   noteUserSpoke: (text: string) => void;
   /** The model's own audio. Counts as speaking, so the silence clock is honest. */
   noteModelSpoke: () => void;
-  /** True when the user's own words asked for the call to be over. */
-  asksToEnd: (text: string) => boolean;
-  /** The user asked, out loud, for the call to be over. */
-  requestEnd: () => void;
+  /** How the user's own words asked for the call to be over, or null. */
+  endRequestOf: (text: string) => "explicit" | "farewell" | null;
+  /**
+   * The user asked, out loud, for the call to be over. How they asked decides
+   * whether a later segment may call it off.
+   */
+  requestEnd: (kind?: "explicit" | "farewell") => void;
   /** True while the call is ending because the user asked for it to. */
   endedByVoice: () => boolean;
   /** A result, said now or as soon as the user stops. Never dropped. */
@@ -400,16 +403,18 @@ export function createVoiceNarration(options: {
     return line.split(/\s+/).length <= 6 && END_REQUEST_FAREWELL.test(line) ? "farewell" : null;
   };
 
-  /** True when the user's own words asked for the call to be over. */
-  const asksToEnd = (text: string): boolean => matchEndRequest(text) !== null;
-
   /**
    * The user asked, out loud, to hang up. The voice gets a moment to say
    * goodbye — the call stays open for `END_GRACE_MS` so that farewell is heard —
    * and the session then ends the way the End button ends it.
    */
   const requestEnd = (kind: "explicit" | "farewell" = "explicit"): void => {
-    if (endRequested) return;
+    if (endRequested) {
+      // Asking twice, the second time plainly, outranks an earlier "bye": the
+      // stronger request is the one the user meant.
+      if (kind === "explicit") endKind = "explicit";
+      return;
+    }
     endRequested = true;
     endKind = kind;
     logger.info("agent_chat.codex_realtime_end_requested", { sessionId, kind });
@@ -421,6 +426,7 @@ export function createVoiceNarration(options: {
   const cancelEnd = (): void => {
     if (!endRequested) return;
     endRequested = false;
+    endKind = "explicit";
     if (endTimer) clearTimeout(endTimer);
     endTimer = null;
     logger.info("agent_chat.codex_realtime_end_cancelled", { sessionId });
@@ -543,7 +549,7 @@ export function createVoiceNarration(options: {
     observeChatEvent,
     noteUserSpoke,
     noteModelSpoke: () => { lastSpokeAt = Date.now(); },
-    asksToEnd,
+    endRequestOf: matchEndRequest,
     requestEnd,
     endedByVoice: () => endRequested,
     say: speakResult,

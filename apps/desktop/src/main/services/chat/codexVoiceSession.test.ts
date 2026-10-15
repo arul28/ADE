@@ -704,6 +704,23 @@ describe("Codex voice ending on request", () => {
     }
   });
 
+  it("lets a later explicit request outrank an earlier farewell", async () => {
+    vi.useFakeTimers();
+    const harness = hostedVoiceHarness();
+    const result = await harness.sessions.start({ sessionId: harness.chat.session.id, sdp: "offer\r\n" });
+    try {
+      // A "bye" that is then said plainly is no longer a farewell that the next
+      // stray word can call off.
+      for (const text of ["that's all for now", "can you end the call", "actually hold on"]) {
+        harness.sessions.handleNotification(harness.chat, "thread/realtime/transcript/done", { role: "user", text });
+      }
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(harness.sessions.getState({ sessionId: harness.chat.session.id, token: result.token }).status).toBe("ended");
+    } finally {
+      await stopHostedVoiceHarness(harness, result.token);
+    }
+  });
+
   it("leaves the readable transcript in detail and the card's numbers beside it", async () => {
     vi.useFakeTimers();
     const harness = hostedVoiceHarness();
