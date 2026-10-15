@@ -242,7 +242,11 @@ function supersededVersionDirs(
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT" && code !== "ENOTDIR" && !unreadablePackageDirs.has(packageDir)) {
       unreadablePackageDirs.add(packageDir);
-      captureError(error, { tags: { area: "tools-cache" }, extra: { packageDir } });
+      captureError(error, {
+        tags: { area: "tools-cache", code: code ?? "unknown" },
+        fingerprint: ["tools-cache", "unreadable-package-dir", code ?? "unknown"],
+        extra: { packageDir },
+      });
     }
     return [];
   }

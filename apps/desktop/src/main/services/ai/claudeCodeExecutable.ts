@@ -124,7 +124,10 @@ function resolveOwnInstallClaudeBinary(args?: ClaudeBinaryLookupArgs): string | 
   } catch (error) {
     // Not installed (a packaged app ships no platform package) is the ordinary miss.
     if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") {
-      captureError(error, { tags: { area: "claude-executable" } });
+      captureError(error, {
+        tags: { area: "claude-executable" },
+        fingerprint: ["claude-executable", "own-install-lookup"],
+      });
     }
     return null;
   }

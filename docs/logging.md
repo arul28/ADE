@@ -549,15 +549,20 @@ How a context compaction ended records one coarse fact on the same
 the durable owner: the chat service's event commit, once per compaction that
 ends (`completed` or `failed`), for every provider. `mode` is `manual` when the
 user asked (`/compact`, **Compact now**, or Retry) and `automatic` otherwise,
-including ADE's own 97% fallback. A send made with the **Compact first** pill
+including ADE's own 97% fallback and the compaction "Always compact first" runs
+by itself while the prompt cache is still warm (`warmIdleCompactionScheduler.ts`,
+at most one per idle hour per chat). A send made with the **Compact first** pill
 records `action: "compact_first"` with the same two outcomes and
 `mode: "manual"`. `provider` is the existing coarse slug and `source` is
 `runtime`. The product questions are whether compaction works and how often
 people ask for it, so nothing finer crosses the boundary: no token counts, no
 summary, no failure text, no account, and no model. The compaction-point
-setting itself is not instrumented: it is a rare choice saved through the
-generic `ai.updateConfig` write, which has no per-key owner, and no dashboard
-needs it yet.
+setting itself is not instrumented, and neither is "Subagents compact at": both
+are rare choices saved through the generic `ai.updateConfig` or account-settings
+write, which has no per-key owner, and no dashboard needs them yet. Moving a
+chat onto or off a saved preset (`chat.updateSession` with `presetId`) is a
+model choice, which ADE does not record as a product fact: the only content-free
+property would be "changed", and a preset or model id cannot cross the boundary.
 
 Volume is bounded by a `chat_<action>:<session>:<outcome>:<mode>` deduplication
 key (hashed locally, never sent) with a ten-minute minimum interval, so a chat
