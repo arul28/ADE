@@ -25,7 +25,7 @@ validate_docs_failed() {
     -H "Accept: application/vnd.github+json" \
     -f per_page=100 \
     --paginate \
-    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // ""')"
+    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)"
   [ -n "$conclusion" ] && [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ] && [ "$conclusion" != "skipped" ]
 }
 
