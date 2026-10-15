@@ -35,6 +35,7 @@ import {
 import { providerActionMessage } from "../providerErrorMessage";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useApiCredentialsPin } from "./useApiCredentials";
+import "./customProviderOptions.css";
 
 const ENCODING_CHOICES: Array<{ value: AiCustomProviderEncoding | ""; label: string }> = [
   { value: "", label: "Off" },
@@ -65,15 +66,14 @@ function CustomProviderRequestOptions({
 }) {
   const name = entry.name || entry.id;
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, width: "100%" }}>
+    <div className="ade-custom-provider-options">
       <label
-        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}
+        className="ade-custom-provider-option"
         title="Compress each request. Only for endpoints that accept compressed bodies; the request fails otherwise."
       >
         Compression
         <select
           className="kit-input"
-          style={{ height: 24, padding: "0 6px", fontSize: 11 }}
           aria-label={`Compression for ${name}`}
           disabled={disabled}
           value={entry.encoding ?? ""}
@@ -89,13 +89,12 @@ function CustomProviderRequestOptions({
         </select>
       </label>
       <label
-        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}
+        className="ade-custom-provider-option"
         title="Mark the start of each prompt so the endpoint can cache it: later requests are cheaper and faster. Pick the style the endpoint documents."
       >
         Prompt caching
         <select
           className="kit-input"
-          style={{ height: 24, padding: "0 6px", fontSize: 11 }}
           aria-label={`Prompt caching for ${name}`}
           disabled={disabled}
           value={entry.cacheFormat ?? ""}

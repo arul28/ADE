@@ -145,6 +145,12 @@
   color: var(--kit-crit);
 }
 
+.ade-oc-acct-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+}
+
 .ade-oc-acct-hint {
   font-size: 11px;
   color: var(--kit-text-3);

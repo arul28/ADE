@@ -360,6 +360,11 @@ export async function clearProviderKey(
 ): Promise<{ ok: boolean; error?: string }> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
+  // Its cloud logins leave the ADE account too, or the next sync would set
+  // them up again. First, so a failed account write changes nothing.
+  if (!forgetSyncedCloudLoginsFor(deps, providerId)) {
+    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Try again.` };
+  }
   try {
     deleteStoredApiKey(providerId);
   } catch (err) {
@@ -376,9 +381,6 @@ export async function clearProviderKey(
   const credentialIds = readOpenCodeCredentials()
     .filter((credential) => credential.integrationId === providerId)
     .map((credential) => credential.id);
-  // Disconnecting removes its cloud logins from the account too, or the next
-  // sync would set them up again.
-  forgetSyncedCloudLoginsFor(deps, providerId);
   try {
     if (credentialIds.length) {
       const lease = await acquireAuthLease(deps);

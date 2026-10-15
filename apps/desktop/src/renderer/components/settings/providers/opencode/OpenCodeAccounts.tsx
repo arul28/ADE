@@ -69,6 +69,21 @@ export function openCodeAccountName(account: OpenCodeAccount, providerName: stri
   return account.kind === "subscription" ? `${providerName} subscription` : `${providerName} key`;
 }
 
+/** What signing a login out does, said before it happens. */
+function signOutMessage(args: {
+  synced: boolean;
+  inUse: boolean;
+  accountCount: number;
+  providerName: string;
+  machineName: string;
+}): string {
+  if (args.synced) return `It is removed from ${args.providerName} on all your computers.`;
+  if (args.inUse && args.accountCount > 1) {
+    return `${args.providerName} switches to your next account on ${args.machineName}.`;
+  }
+  return `${args.providerName} on ${args.machineName} stops using it.`;
+}
+
 /** One provider's OpenCode logins on the page's machine. Reloads when the machine changes. */
 export function useOpenCodeAccounts(providerId: string, pin: OpenProjectBinding | null) {
   const [accounts, setAccounts] = useState<OpenCodeAccount[]>([]);
@@ -296,11 +311,7 @@ export function OpenCodeAccountsSection({
       const synced = account.cloud?.synced === true;
       void confirmDialog({
         title: `Sign out ${name}?`,
-        message: synced
-          ? `It is removed from ${providerName} on all your computers.`
-          : account.active && accounts.length > 1
-            ? `${providerName} switches to your next account on ${machineName}.`
-            : `${providerName} on ${machineName} stops using it.`,
+        message: signOutMessage({ synced, inUse: account.active, accountCount: accounts.length, providerName, machineName }),
         confirmLabel: "Sign out",
         destructive: true,
       }).then((ok) => {
@@ -325,7 +336,15 @@ export function OpenCodeAccountsSection({
         </button>
       </header>
       {shownError ? (
-        <Banner layout="inline" model={{ id: `opencode-accounts-${providerId}`, tone: "error", title: shownError }} />
+        <Banner
+          layout="inline"
+          model={{
+            id: `opencode-accounts-${providerId}`,
+            tone: "error",
+            title: shownError,
+            actions: [{ label: "Retry", onClick: () => { setActionError(null); void reload(); }, variant: "secondary" }],
+          }}
+        />
       ) : null}
       {accounts.length ? (
         <ul className="ade-oc-acct-list">

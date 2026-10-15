@@ -111,12 +111,16 @@ async function reconcileCloudLogins(deps: OpenCodeAuthDeps): Promise<boolean> {
   const lease = await acquireAuthLease(deps);
   const location = { directory: deps.projectRoot };
   const changedProviders = new Set<string>();
+  // A removal that failed stays recorded as applied, so the next sync retries it.
+  const appliedAfter = new Set(syncedKeys);
   try {
     for (const credential of toRemove) {
       try {
         await lease.client.credential.remove({ credentialID: credential.id });
         changedProviders.add(credential.integrationId);
       } catch (err) {
+        const key = credentialCloudKey(credential);
+        if (key) appliedAfter.add(key);
         deps.logger.warn("opencode.cloud_login_sync_remove_failed", { providerId: credential.integrationId, error: errorMessage(err) });
       }
     }
@@ -144,7 +148,7 @@ async function reconcileCloudLogins(deps: OpenCodeAuthDeps): Promise<boolean> {
   } finally {
     lease.release();
   }
-  writeAppliedKeys(syncedKeys, deps);
+  writeAppliedKeys(appliedAfter, deps);
   for (const providerId of changedProviders) credentialsChanged(providerId);
   if (changedProviders.size) {
     deps.logger.info("opencode.cloud_logins_synced", { added: toAdd.length, removed: toRemove.length });
@@ -281,20 +285,23 @@ export async function removeOpenCodeAccount(
 ): Promise<OpenCodeAccountActionResult> {
   const credential = findCredential(args.id);
   if (!credential) return { ok: true };
+  // A synced login leaves the account first: signed out here but still in the
+  // account, the next sync would set it up again.
+  const key = credentialCloudKey(credential);
+  const synced = key ? readSyncedCloudLogins(deps) : null;
+  const remaining = key && synced?.some((login) => cloudLoginKey(login) === key)
+    ? synced.filter((login) => cloudLoginKey(login) !== key)
+    : null;
+  if (remaining && !writeSyncedCloudLogins(deps, remaining)) {
+    return { ok: false, error: `ADE could not remove ${credential.label} from your ADE account, so it stays signed in. Try again.` };
+  }
   try {
     await withCredentialClient(deps, (client) => client.credential.remove({ credentialID: credential.id }));
   } catch (err) {
+    // Already gone from the account: this machine's next sync removes it.
     return { ok: false, error: `OpenCode could not sign ${credential.label} out: ${errorMessage(err)}` };
   }
-  const key = credentialCloudKey(credential);
-  if (key) {
-    const synced = readSyncedCloudLogins(deps);
-    if (synced?.some((login) => cloudLoginKey(login) === key)) {
-      const remaining = synced.filter((login) => cloudLoginKey(login) !== key);
-      writeSyncedCloudLogins(deps, remaining);
-      writeAppliedKeys(remaining.map(cloudLoginKey), deps);
-    }
-  }
+  if (remaining) writeAppliedKeys(remaining.map(cloudLoginKey), deps);
   credentialsChanged(credential.integrationId);
   probeInventoryInBackground(deps, credential.integrationId);
   return { ok: true };

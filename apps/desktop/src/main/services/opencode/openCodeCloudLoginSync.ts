@@ -1,8 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeOpenCodeRuntimeRoot } from "../../../shared/opencodeDataHome";
-import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { accountSettingsCacheValue, readAccountSettingsCacheRows } from "../account/accountSettingsCacheFile";
 import { writeFileAtomic } from "../state/durableFile";
 import type { OpenCodeAuthDeps } from "./openCodeAuthService";
 import type { OpenCodeCredentialSummary } from "./openCodeCredentials";
@@ -75,18 +73,15 @@ function normalizeSyncedCloudLogins(value: unknown): SyncedCloudLogin[] {
 }
 
 /**
- * The account's cloud logins, or null when this machine cannot answer (signed
- * out of ADE, or the cache unreadable). Null never means "none": a caller that
- * removed local logins on a null would wipe them on a bad read.
+ * The account's cloud logins, or null when this process cannot both read and
+ * write them (no brain account store, or signed out of ADE). Null never means
+ * "none": a caller that removed local logins on a null would wipe them. Reading
+ * without being able to write would also let a login signed out here come back
+ * from the account at the next sync, so a read-only cache is not used.
  */
 export function readSyncedCloudLogins(deps: OpenCodeAuthDeps): SyncedCloudLogin[] | null {
-  if (deps.accountSettings) {
-    if (!deps.accountSettings.isSignedIn()) return null;
-    return normalizeSyncedCloudLogins(deps.accountSettings.get(ACCOUNT_SCOPE_ALL, OPENCODE_CLOUD_LOGINS_SETTING_KEY));
-  }
-  const rows = readAccountSettingsCacheRows(resolveMachineAdeDir());
-  if (!rows) return null;
-  return normalizeSyncedCloudLogins(accountSettingsCacheValue(rows, ACCOUNT_SCOPE_ALL, OPENCODE_CLOUD_LOGINS_SETTING_KEY));
+  if (!deps.accountSettings?.isSignedIn()) return null;
+  return normalizeSyncedCloudLogins(deps.accountSettings.get(ACCOUNT_SCOPE_ALL, OPENCODE_CLOUD_LOGINS_SETTING_KEY));
 }
 
 /** Save the list to the account. False when this process has no account store or no account. */
@@ -135,9 +130,11 @@ export function credentialCloudKey(credential: OpenCodeCredentialSummary): strin
  * Drop one provider's cloud logins from the account, when the provider is
  * disconnected here; otherwise the next sync would set them up again.
  */
-export function forgetSyncedCloudLoginsFor(deps: OpenCodeAuthDeps, providerId: string): void {
+export function forgetSyncedCloudLoginsFor(deps: OpenCodeAuthDeps, providerId: string): boolean {
   const synced = readSyncedCloudLogins(deps);
-  if (!synced?.some((login) => login.providerId === providerId)) return;
+  if (!synced?.some((login) => login.providerId === providerId)) return true;
   const remaining = synced.filter((login) => login.providerId !== providerId);
-  if (writeSyncedCloudLogins(deps, remaining)) writeAppliedKeys(remaining.map(cloudLoginKey), deps);
+  if (!writeSyncedCloudLogins(deps, remaining)) return false;
+  writeAppliedKeys(remaining.map(cloudLoginKey), deps);
+  return true;
 }
