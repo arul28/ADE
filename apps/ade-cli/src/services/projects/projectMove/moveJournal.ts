@@ -54,10 +54,18 @@ export function currentBootMinute(): number {
  * a reboot (a power cut mid-copy) may now belong to an unrelated process, so
  * a different boot means it is gone.
  */
-export function isMoveProcessAlive(record: Pick<ProjectMoveRecord, "pid" | "bootMinute">): boolean {
+/** Moves this process is running right now. A pid alone cannot say so: after a reboot it may be reused. */
+const activeMoveIds = new Set<string>();
+
+export function markMoveActive(moveId: string, active: boolean): void {
+  if (active) activeMoveIds.add(moveId);
+  else activeMoveIds.delete(moveId);
+}
+
+export function isMoveProcessAlive(record: Pick<ProjectMoveRecord, "moveId" | "pid" | "bootMinute">): boolean {
   const { pid } = record;
   if (!pid) return false;
-  if (pid === process.pid) return true;
+  if (pid === process.pid) return activeMoveIds.has(record.moveId);
   if (record.bootMinute != null && Math.abs(record.bootMinute - currentBootMinute()) > 1) return false;
   try {
     process.kill(pid, 0);
@@ -76,6 +84,23 @@ function recordPath(moveId: string): string {
 export function writeMoveRecord(record: ProjectMoveRecord): void {
   fs.mkdirSync(projectMovesDir(), { recursive: true });
   writeFileAtomic(recordPath(record.moveId), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+/**
+ * Records the kept original's size on the record as it is on disk now: the
+ * measurement can take minutes, and the person may have chosen what happens
+ * to the copy meanwhile. Never throws; a size is only shown, not relied on.
+ */
+export function recordOriginalBytes(moveId: string, bytes: number): void {
+  try {
+    const latest = readMoveRecord(moveId);
+    if (!latest) return;
+    latest.originalBytes = bytes;
+    writeMoveRecord(latest);
+  } catch (error) {
+    // The size stays as it was; the cleanup choice is what matters and is untouched.
+    console.warn(`[project-move] couldn't record the kept copy's size for ${moveId}:`, error);
+  }
 }
 
 export function readMoveRecord(moveId: string): ProjectMoveRecord | null {

@@ -380,7 +380,9 @@ export function MoveProjectDialog({
               tone: "error",
               title: error ?? "Something went wrong.",
               // Only the engine's own report proves the original was left alone.
-              detail: record ? "Your project wasn't changed." : "Check that the project opens where it was before you try again.",
+              detail: record && !record.originalParkedAt
+                ? "Your project wasn't changed."
+                : "Check that the project opens where it was before you try again.",
             }}
           />
         ) : null}

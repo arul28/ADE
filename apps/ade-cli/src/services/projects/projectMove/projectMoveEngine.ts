@@ -37,7 +37,9 @@ import {
   currentBootMinute,
   isMoveProcessAlive,
   listMoveRecords,
+  markMoveActive,
   ownsLeftoverCopy,
+  recordOriginalBytes,
   readMovedMarker,
   writeMovedMarker,
   writeMoveRecord,
@@ -319,7 +321,13 @@ async function switchOver(run: MoveRun): Promise<string> {
     throw new Error(`Couldn't put the copy in place: ${errorText(error)}`);
   }
   record.switched = true;
-  writeMoveRecord(record);
+  try {
+    writeMoveRecord(record);
+  } catch (error) {
+    // The copy is in place: recovery recognises that from the folders alone
+    // (parked original, destination present, no partial copy).
+    record.problems.push(`ADE couldn't save the move's progress: ${errorText(error)}`);
+  }
   return parked;
 }
 
@@ -363,15 +371,31 @@ export async function runProjectMove(args: {
     resume: { sourceSpellings: rootSpellings(sourceRoot), knownPaths: [sourceRoot], moveAgentHistory: args.moveAgentHistory, outsideLanes: [] },
   };
   writeMoveRecord(record);
+  markMoveActive(record.moveId, true);
+  try {
+    return await executeMove(record, sourceRoot, finalRoot, copyRoot, leftoverIsOurs, args.hooks);
+  } finally {
+    markMoveActive(record.moveId, false);
+  }
+}
+
+async function executeMove(
+  record: ProjectMoveRecord,
+  sourceRoot: string,
+  finalRoot: string,
+  copyRoot: string,
+  leftoverIsOurs: boolean,
+  hooks: ProjectMoveHooks,
+): Promise<ProjectMoveRecord> {
   const run: MoveRun = {
     record,
     sourceRoot,
     finalRoot,
     copyRoot,
     oldSpellings: rootSpellings(sourceRoot),
-    hooks: args.hooks,
+    hooks,
     step: "prepare",
-    progress: (message, extra = {}) => args.hooks.onProgress({ moveId: record.moveId, step: run.step, message, ...extra }),
+    progress: (message, extra = {}) => hooks.onProgress({ moveId: record.moveId, step: run.step, message, ...extra }),
   };
 
   let parked: string;
@@ -401,9 +425,13 @@ export async function runProjectMove(args: {
   finishSwitch(record);
   record.state = "done";
   record.finishedAt = Date.now();
-  writeMoveRecord(record);
+  try {
+    writeMoveRecord(record);
+  } catch (error) {
+    record.problems.push(`ADE couldn't save the move's record: ${errorText(error)}`);
+  }
   record.originalBytes = await diskUsageBytes(parked);
-  writeMoveRecord(record);
+  recordOriginalBytes(record.moveId, record.originalBytes);
   return record;
 }
 
@@ -463,7 +491,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
   const slowWork: Array<() => Promise<void>> = [];
   for (const record of listMoveRecords()) {
     if (record.state !== "running") continue;
-    if (record.pid !== process.pid && isMoveProcessAlive(record)) continue;
+    if (isMoveProcessAlive(record)) continue;
     record.problems ??= [];
     const copyRoot = copyLocation(record.destinationRoot);
     const placed = Boolean(record.switched)
@@ -477,21 +505,18 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
         record.state = "done";
         record.followUps.push("ADE stopped during the switch-over and finished it when it started again.");
         const parked = record.originalParkedAt;
-        if (parked) {
-          slowWork.push(async () => {
-            record.originalBytes = await diskUsageBytes(parked);
-            writeMoveRecord(record);
-          });
-        }
+        if (parked) slowWork.push(async () => recordOriginalBytes(record.moveId, await diskUsageBytes(parked)));
       } else {
         const parked = record.originalParkedAt ?? record.parkingAt;
         if (parked && !fs.existsSync(record.sourceRoot) && fs.existsSync(parked)) fs.renameSync(parked, record.sourceRoot);
         record.originalParkedAt = null;
         record.parkingAt = null;
-        if (record.copyCreated) {
-          slowWork.push(async () => {
-            if (fs.existsSync(copyRoot)) await fs.promises.rm(copyRoot, { recursive: true, force: true });
-          });
+        if (record.copyCreated && fs.existsSync(copyRoot)) {
+          // Out of the way at once, so a new move into the same place never
+          // meets it; the slow removal happens after ADE opens.
+          const removing = `${copyRoot}.removing-${record.moveId}`;
+          fs.renameSync(copyRoot, removing);
+          slowWork.push(() => fs.promises.rm(removing, { recursive: true, force: true }));
         }
         record.state = "failed";
         record.error = "ADE stopped during the move. Your project wasn't changed.";
@@ -503,6 +528,12 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
     record.finishedAt = Date.now();
     writeMoveRecord(record);
     settled.push(record);
+  }
+  // A removal an earlier start began and did not finish.
+  for (const record of listMoveRecords()) {
+    if (record.state !== "failed" || !record.copyCreated) continue;
+    const removing = `${copyLocation(record.destinationRoot)}.removing-${record.moveId}`;
+    if (fs.existsSync(removing)) slowWork.push(() => fs.promises.rm(removing, { recursive: true, force: true }));
   }
   const tidyUp = (async () => {
     for (const work of slowWork) await work();

@@ -45,8 +45,8 @@ export function projectDatabasePath(root: string): string {
 export async function snapshotProjectDatabase(sourceDbPath: string, destinationDbPath: string): Promise<void> {
   const { DatabaseSync, backup } = loadNodeSqlite();
   for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(`${destinationDbPath}${suffix}`, { force: true });
-  // Not read-only: a read-only open of a closed WAL database fails, since it
-  // cannot create the shared-memory file.
+  // The project is closed by now, so this is the only connection; its log is
+  // read through it, and the backup below carries every committed row.
   const source = new DatabaseSync(sourceDbPath);
   try {
     source.exec("PRAGMA busy_timeout = 5000");
@@ -179,17 +179,12 @@ export type DatabaseSummary = {
 /** Read-only look at a project's database, for the checks and the verification. */
 export function readProjectDatabaseSummary(dbPath: string): DatabaseSummary {
   const { DatabaseSync } = loadNodeSqlite();
-  let db: DatabaseSyncType;
-  try {
-    // A read-only open sees rows still in the write-ahead log of an open project.
-    db = new DatabaseSync(dbPath, { readOnly: true });
-    db.prepare("select 1").get();
-  } catch {
-    // A closed database has no shared-memory file for a read-only open to use.
-    // `immutable=1` then reads it without creating files or taking locks; a
-    // closed database has no log left to miss.
-    db = new DatabaseSync(`file:${encodeURI(dbPath)}?immutable=1`, { readOnly: true });
-  }
+  // A project ADE has open keeps rows in its write-ahead log, which only a
+  // normal (read-only) open sees. A closed one has no log, and `immutable=1`
+  // reads it without leaving `-wal`/`-shm` files behind or taking locks.
+  const db = fs.existsSync(`${dbPath}-wal`)
+    ? new DatabaseSync(dbPath, { readOnly: true })
+    : new DatabaseSync(`file:${encodeURI(dbPath)}?immutable=1`, { readOnly: true });
   try {
     const projects = db.prepare("select id from projects").all() as Array<{ id: string }>;
     const lanes = hasTable(db, "lanes")

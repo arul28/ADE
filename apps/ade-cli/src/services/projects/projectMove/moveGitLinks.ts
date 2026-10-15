@@ -58,16 +58,19 @@ const caseInsensitiveRoots = new Map<string, boolean>();
 function ignoresCase(root: string): boolean {
   const cached = caseInsensitiveRoots.get(root);
   if (cached !== undefined) return cached;
-  const swapped = root.replace(/\p{L}/gu, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
+  // A root that is gone (a parked original, an unplugged drive) is probed
+  // through its nearest folder that still exists, on the same disk.
+  let probe = root;
+  while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
+  const swapped = probe.replace(/\p{L}/gu, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
+  if (swapped === probe) return false; // nothing to compare; not cached so a later probe can decide
   let result = false;
-  if (swapped !== root) {
-    try {
-      result = fs.existsSync(swapped) && fs.statSync(swapped).ino === fs.statSync(root).ino;
-    } catch {
-      result = false; // the root is gone: compare exactly
-    }
+  try {
+    result = fs.existsSync(swapped) && fs.statSync(swapped).ino === fs.statSync(probe).ino;
+  } catch {
+    result = false;
   }
-  caseInsensitiveRoots.set(root, result);
+  if (probe === root) caseInsensitiveRoots.set(root, result);
   return result;
 }
 
