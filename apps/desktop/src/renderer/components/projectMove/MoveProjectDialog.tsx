@@ -113,7 +113,9 @@ export function MoveProjectDialog({
     reasoningEffort: null,
     fastMode: false,
     sessionType: "chat",
-    nativeControls: defaultNativeControls("persistent_identity"),
+    // Ask-first permissions: the check promises to ask before it changes
+    // anything. The person can still widen them in the picker.
+    nativeControls: defaultNativeControls(),
   }));
   const checkModelId = checkConfig.modelId || defaultModelId;
   const checkRequest = useRef(0);

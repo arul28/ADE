@@ -298,9 +298,13 @@ function rewritePiHeaders(folder: string, oldCwd: string, newCwd: string): void 
   }
 }
 
+const TOML_ESCAPES: Record<string, string> = { "\\": "\\\\", "\"": "\\\"", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r" };
+
 /** A TOML basic-string key, as Codex writes `[projects."<path>"]`. */
 function tomlQuoted(value: string): string {
-  return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
+  const escaped = value.replace(/[\\"\u0000-\u001f\u007f]/gu, (char) =>
+    TOML_ESCAPES[char] ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `"${escaped}"`;
 }
 
 /**

@@ -47,8 +47,8 @@ export function formatReminder(at: number | undefined): string {
  * moved project, reinstalls dependencies, runs the build, and reports. The old
  * copy is off limits: deleting it is the person's choice, made in ADE.
  *
- * It goes into a new chat's message box, not straight to an agent: the person
- * reads it and picks the model, effort and permissions before sending.
+ * The Done step shows it in an editable box beside the model, effort and
+ * permission picker; the person starts the agent from there.
  */
 export function agentCheckPrompt(record: ProjectMoveRecord): string {
   const followUps = record.followUps.length
