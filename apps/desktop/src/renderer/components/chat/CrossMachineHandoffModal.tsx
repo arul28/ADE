@@ -195,9 +195,9 @@ export function CrossMachineHandoffModal({
   const providerLabel = providerDisplayLabel(sourceProvider);
   const forkModelIds = forkAvailableModelIds ?? availableModelIds;
   const modelIdsForMode = mode === "fork" ? forkModelIds : availableModelIds;
-  const forkModelFilter = useCallback((descriptor: ModelDescriptor) => (
-    Boolean(sourceProvider && resolveProviderGroupForModel(descriptor) === sourceProvider)
-  ), [sourceProvider]);
+  // Cross-provider (and native-less) moves are replay forks: every model is
+  // eligible now; the destination just replays the transcript onto its thread.
+  const forkModelFilter = useCallback((_descriptor: ModelDescriptor) => true, []);
 
   /**
    * Everything about the *destination* chat's controls is derived from the model
@@ -601,7 +601,7 @@ export function CrossMachineHandoffModal({
         {destinationPermissionPicker}
       </div>
       {mode === "fork" ? (
-        <span className="block text-[10px] leading-4 text-fg/40">Forked history stays with {providerLabel}; any {providerLabel} model is fine.</span>
+        <span className="block text-[10px] leading-4 text-fg/40">Full history replays onto the destination; any available model is fine.</span>
       ) : null}
     </div>
   ) : null;
