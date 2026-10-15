@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { claudeSubagentWindowIneffective, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
+import { claudeSubagentWindowIneffective, compactionIdleModeDefault, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
 import { providerSupportsManualCompact } from "../../../../shared/contextCompaction";
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { showToast } from "../../app/toast/toastStore";
@@ -8,6 +8,25 @@ const FIELD_CLASS = "rounded border border-border bg-background px-2 py-1 text-x
 const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
 /** Claude's compaction windows, in the 100k steps it accepts. */
 const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_000);
+
+/** Providers whose `/compact` ADE can run, so the idle offer can exist for them. */
+const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode"]);
+
+/**
+ * The window the pill waits out, named per provider from each vendor's own
+ * documented prompt-cache lifetime. Claude's is measured per chat instead of
+ * assumed (`shared/claudePromptCache.ts`).
+ */
+function compactFirstIdleHint(provider: string): string {
+  switch (provider) {
+    case "claude":
+      return "After an hour idle, or 5 minutes when the account uses the 5-minute cache. In Always, ADE also compacts a large chat 54 minutes in, while the cache is still warm.";
+    case "codex":
+      return "OpenAI's prompt cache lasts 30 minutes, so the pill offers to compact a large chat once it has been idle that long. Nothing runs on its own.";
+    default:
+      return "The window follows the model's vendor: 30 minutes on OpenAI models, an hour on Claude's. The pill only offers after that, and nothing runs on its own.";
+  }
+}
 
 /**
  * Reads a token-count field on blur. An empty field means "use the default"
@@ -75,11 +94,15 @@ export function CompactionSettings({ provider, value, account = false, onChange 
         <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
         <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
       </>}
-      {provider === "claude" ? <ModernRow title="After the cache expires" hint="After an hour idle, or 5 minutes when the account uses the 5-minute cache." control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? "ask"}
-        className={FIELD_CLASS}
-        onChange={(event) => void save({ ...settings, idleMode: event.target.value as "ask" | "always" | "never" })}>
-        <option value="ask">Ask (pill)</option><option value="always">Always compact first</option><option value="never">Never</option>
-      </select>} /> : null}
+      {COMPACT_FIRST_PROVIDERS.has(provider) ? <ModernRow title="After the cache expires"
+        hint={compactFirstIdleHint(provider)}
+        control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? compactionIdleModeDefault(provider)}
+          className={FIELD_CLASS}
+          onChange={(event) => void save({ ...settings, idleMode: event.target.value as "ask" | "always" | "never" })}>
+          <option value="ask">Ask (pill)</option>
+          <option value="always">{provider === "claude" ? "Always compact first" : "On by default"}</option>
+          <option value="never">Never</option>
+        </select>} /> : null}
     </> : null}
   </ModernRows>;
 }

@@ -1356,9 +1356,10 @@ chat pane mount, which happens either way.
   Droid, and ACP agents stay read-only. It is disabled while a turn or pending
   input is live; ADE already compacts Claude at 97% of `compactAtTokens` at a
   turn boundary.
-- **Compact first after the cache expires.** For a Claude chat whose prompt
-  cache has expired and whose last measured context is 200,000 tokens or more
-  (Claude Code's own idle-compaction floor), a
+- **Compact first after the cache expires.** For a chat of a provider whose
+  `/compact` ADE can run (Claude, Codex, Pi, OpenCode) whose prompt cache has
+  expired and whose last measured context is 200,000 tokens or more (Claude
+  Code's own idle-compaction floor), a
   `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
   one action, **Compact first**. The tooltip gives the trade: the next message
   re-sends all 412k tokens, or about 8k after compacting (the last `postTokens`
@@ -1370,35 +1371,55 @@ chat pane mount, which happens either way.
   `/compact` as its own turn and, once that turn is running, queues the message
   behind it like any message sent during a turn, so the send returns at once
   and the thread shows the message as queued, not sent. It is delivered when
-  the compaction ends. If the compaction fails or does not shrink the chat, the
+  the compaction ends. For Codex, Pi and OpenCode, `/compact` is an action
+  rather than a turn, so there is no queue to put the message behind: the brain
+  runs the same `/compact` the meter's **Compact now** sends, waits for the
+  compaction to end (up to `COMPACT_FIRST_INLINE_WAIT_MS`, 90 seconds), and then
+  sends the message. A failure, or a wait that runs long, sends the message with
+  the full chat and shows the notice below; the compaction keeps running either
+  way. If the compaction fails or does not shrink the chat, the
   messages queued behind it are kept and sent with the full chat, with the notice "Compaction did
   not finish, so your message was sent with the full chat." Stop during the
   compaction cancels it like any queued message. There is no ADE time limit;
   Stop ends the compaction, as for a typed `/compact`. A send whose call times
   out (`isRuntimeTransportTimeoutError`) does not go back in the composer
   unless it never appears in the chat within two minutes (if another chat is
-  open by then, or a new draft fills the composer, a toast says so instead). The Claude provider setting "After
+  open by then, or a new draft fills the composer, a toast says so instead). Each
+  provider page's setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
-  `never` (no chip). With `always`, ADE also does what Claude Code does by
+  `never` (no chip). Claude defaults to `ask` (the chip has shipped that way);
+  Codex, Pi and OpenCode default to `never`, so their offer appears only once
+  someone turns it on. With `always`, ADE also does what Claude Code does by
   itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
   cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and
   the compaction reads the chat at the cached price (`warmIdleCompactAtMs`,
-  `warmIdleCompactionScheduler.ts`). Claude's own timer cannot fire in ADE, which
+  `warmIdleCompactionScheduler.ts`). That timer is Claude's alone; the other
+  providers only ever offer. Claude's own timer cannot fire in ADE, which
   closes an idle Claude process after five minutes. A turn cancels the timer, a
   timer that fires more than a minute late (a machine that slept) is dropped,
   and a chat it misses compacts on the next send as before. Claude's
   `idleCompaction` setting is left alone. Only a send that carries `compactFirst: true` compacts
   first, so CLI, automation, and queued sends never do. When Claude's own
-  `resume_return` question is pending, ADE does not also compact. Thresholds:
+  `resume_return` question is pending, ADE does not also compact. ADE never
+  compacts a chat on its own while background work is live: the automatic timer
+  also asks `hasRuntimeActiveWorkload`, so a background shell or subagent is
+  never compacted underneath. Thresholds:
   `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
   The brain sends the floor to every client on the session summary
   (`compactFirstMinTokens`), so a client built with an older floor uses it.
   The idle clock starts at the cache's `since`, except that a `since` older than
   the start of the last finished turn (`lastFinishedTurnMs`) is from an earlier
-  turn whose summary has not caught up, so that turn's end is used instead; and
-  the chip stays hidden while a message is queued, since it sends on its own.
+  turn whose summary has not caught up, so that turn's end is used instead. The
+  cache window itself is per provider (`compactFirstIdleMs`): Claude's measured
+  per chat (5m/1h, see **The real cache lifetime** below), Codex 30 minutes
+  (OpenAI's `prompt_cache_options.ttl` — "The only supported value, `30m`, is
+  also the default"), and Pi/OpenCode the window of the model's own vendor (30
+  minutes on OpenAI models, an hour on Claude's or when the vendor is not
+  known, which only ever makes the offer later). The brain sends the window
+  too (`compactFirstIdleMs` on the summary) and the chip stays hidden while a
+  message is queued, since it sends on its own.
   Desktop, web, iOS and `ade code` (`/compact-first`, see the ade-code README)
-  share the rule. iOS fetches the summary for a Claude chat in another project
+  share the rule. iOS fetches the summary for a chat in another project
   too, since only the summary says whether its cache expired. To try it on a small chat, start the
   brain with `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`: the brain uses that limit and
   sends it to the clients on the session summary (`compactFirstMinTokens`).

@@ -105,11 +105,15 @@ export function toUsageViewModel(
     const last = input.usage.last ?? {};
     const total = input.usage.total ?? {};
     const exactInputTokens = nonNegative(last.inputTokens);
-    inputTokens = positive(last.inputTokens) ?? positive(total.inputTokens);
-    outputTokens = positive(last.outputTokens) ?? positive(total.outputTokens);
-    cacheReadTokens = positive(last.cacheReadTokens) ?? positive(total.cacheReadTokens);
-    cacheWriteTokens = positive(last.cacheWriteTokens) ?? positive(total.cacheWriteTokens);
-    reasoningTokens = positive(last.reasoningTokens) ?? positive(total.reasoningTokens);
+    // `last` only: the thread-cumulative `total` counts every request in the
+    // thread, so showing it as this turn's input would read as occupancy that
+    // is not there. A thread that has reported no per-request sample yet shows
+    // the window and nothing else.
+    inputTokens = positive(last.inputTokens);
+    outputTokens = positive(last.outputTokens);
+    cacheReadTokens = positive(last.cacheReadTokens);
+    cacheWriteTokens = positive(last.cacheWriteTokens);
+    reasoningTokens = positive(last.reasoningTokens);
     totalTokens = positive(total.totalTokens);
     runtimeWindow = positive(input.usage.modelContextWindow);
     // Codex inputTokens already includes the cached portion → it is the occupancy.

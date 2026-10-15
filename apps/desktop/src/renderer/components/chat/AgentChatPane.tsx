@@ -5221,7 +5221,7 @@ export function AgentChatPane({
     : EMPTY_CHAT_EVENTS;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
-  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache);
+  const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);
   const latestCompactionKey = useMemo(() => latestCompactionKeyOf(selectedEvents), [selectedEvents]);
 
   const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
@@ -16358,12 +16358,16 @@ export function AgentChatPane({
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
+  // OpenCode only offers `/compact` when its server lists the command, so a
+  // chat without it has nothing the offer could run.
+  const compactionOfferable = compactionIdleMode != null
+    && (selectedProvider !== "opencode" || selectedSession?.manualCompactAvailable === true);
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
-  // it only runs once a chat has sat an hour, when no deltas stream.
+  // it only runs once a chat has sat its cache window out, when no deltas stream.
   // A queued message is about to send on its own; the offer would only flash.
-  const idleCompactOffer = compactionIdleMode != null && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
-    ? compactFirstOffer({ provider: selectedProvider, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
+  const idleCompactOffer = compactionOfferable && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
+    ? compactFirstOffer({ provider: selectedProvider, model: selectedSession?.model, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, idleMs: selectedSession?.compactFirstIdleMs, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
   const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;
   const compactFirstEnabled = compactFirstChoice ? compactFirstChoice.value : selectedSession?.compactionIdleMode === "always";

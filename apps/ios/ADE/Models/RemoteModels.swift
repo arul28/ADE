@@ -1126,6 +1126,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var promptCache: AgentChatPromptCache? = nil
   /// Sent only by a brain started with a lowered Compact first limit (testing).
   var compactFirstMinTokens: Int? = nil
+  /// How long this chat's prompt cache lives, in ms. The brain resolves it per
+  /// provider (Claude measured 5m/1h, OpenAI 30m, an hour when unknown).
+  var compactFirstIdleMs: Int? = nil
   var manualCompactAvailable: Bool? = nil
   var id: String { sessionId }
   /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
@@ -1270,6 +1273,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.compactionIdleMode == rhs.compactionIdleMode
       && lhs.promptCache == rhs.promptCache
       && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
+      && lhs.compactFirstIdleMs == rhs.compactFirstIdleMs
       && lhs.manualCompactAvailable == rhs.manualCompactAvailable
       && lhs.laneId == rhs.laneId
       && lhs.provider == rhs.provider
