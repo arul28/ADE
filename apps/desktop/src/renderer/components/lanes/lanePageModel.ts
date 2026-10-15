@@ -1,4 +1,4 @@
-import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, laneIsOnBaseBranch } from "../../../shared/laneBaseResolution";
 import type {
   GitHubPrListItem,
   GitHubPrStackMembership,
@@ -11,6 +11,11 @@ import type {
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { isTerminalPrState } from "../../lib/prState";
 import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteState";
+
+// Re-exported because these names were this module's API first, and the lane
+// surfaces and their tests import them from here. The rule itself lives in
+// `shared/` so the host bridge and the CLI answer it the same way.
+export { laneIsOnBaseBranch };
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -224,15 +229,6 @@ export function normalizeLanePrBranch(ref: string | null | undefined): string {
   return branchNameFromLaneRef(ref).trim();
 }
 
-export function laneIsOnBaseBranch(
-  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
-): boolean {
-  if (lane.laneType !== "primary") return false;
-  const laneBranch = normalizeLanePrBranch(lane.branchRef);
-  const baseBranch = normalizeLanePrBranch(lane.baseRef);
-  return Boolean(laneBranch && baseBranch && laneBranch === baseBranch);
-}
-
 function prStateRank(state: PrSummary["state"]): number {
   if (state === "open" || state === "draft") return 0;
   if (state === "merged") return 1;
@@ -313,8 +309,11 @@ export function selectLanePrs(
   // deleted or archived, so anything still attached when it returns to `main`
   // (a merged PR a chat once linked, above all) would otherwise stay pinned to
   // it forever. The main-process single-PR selector
-  // (`selectLanePrDisplayCandidate`) already answers null for this state, and
-  // the Work/tab badges should not disagree with it.
+  // (`selectLanePrDisplayCandidate`) and the lane-link bridge answer null for
+  // this state too, and the Work/tab badges should not disagree with them. This
+  // gate reads the live checkout (`effectiveLanePrBranchRef`) because these
+  // surfaces show that branch's PRs; a lane parked on a drifted HEAD is still
+  // parked, and the lane record re-syncs to the live HEAD on the next list.
   if (laneIsOnBaseBranch({ ...lane, branchRef: effectiveLanePrBranchRef(lane) })) return [];
   return prs
     .filter((pr) => {

@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
-import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
+import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
@@ -4613,6 +4613,17 @@ export function createLaneService({
       [laneId, laneId],
     );
     db.run("delete from claude_sessions where lane_id = ?", [laneId]);
+    // A chat that goes with its lane takes its PR links with it. The detach
+    // above only clears edges for PRs THIS lane owns; a cross-lane link (a
+    // stack coordinator, an explicit pick) is keyed to another lane's PR, and
+    // once its session row is gone the dangling edge flips from a cross-lane
+    // reference to a claim — which pins that other lane's PR forever. Select
+    // the ids before the session rows go.
+    deletePullRequestChatLinksForSessions(
+      db,
+      db.all<{ id: string }>("select id from terminal_sessions where lane_id = ?", [laneId])
+        .map((session) => session.id),
+    );
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
     // The settle-lifecycle token table is local-only with no foreign key, so a
     // bulk session delete would otherwise leave permanent orphans. Sweep by

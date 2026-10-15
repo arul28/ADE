@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
+import { deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processRegistryService";
 import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
@@ -447,6 +449,7 @@ type SettleCommitGuard = (sessionId: string) => boolean;
 
 export function createSessionService({
   db,
+  logger,
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
@@ -454,6 +457,8 @@ export function createSessionService({
   listSubagentLinks,
 }: {
   db: AdeDb;
+  /** Optional: only the delete cascade's best-effort PR-link purge reports through it. */
+  logger?: Logger;
   /**
    * Stop the session's background work. Injected rather than per-call: teardown
    * is a service capability, not something a caller decides.
@@ -1059,23 +1064,6 @@ export function createSessionService({
       db.run("delete from session_settle_residue where session_id = ?", [sessionId]);
     } catch {
       // Diagnostics only.
-    }
-  };
-
-  /**
-   * PR links are live routing metadata for one chat: an edge or a tombstone for
-   * a session that no longer exists only misroutes later reads. Worse, the edge
-   * keeps counting as a chat claim, which pins the PR to its lane after the chat
-   * that opened it is gone — the primary lane can never shed those, because it
-   * cannot be deleted. The purge rides this cascade so it can never fail the
-   * delete: the row is already gone by the time it runs.
-   */
-  const clearSessionPrChatLinks = (sessionId: string): void => {
-    try {
-      db.run("delete from pull_request_chat_sessions where session_id = ?", [sessionId]);
-      db.run("delete from pull_request_chat_session_dismissals where session_id = ?", [sessionId]);
-    } catch {
-      // An older database may predate the PR link tables.
     }
   };
 
@@ -2634,9 +2622,18 @@ export function createSessionService({
       // already cascaded here.
       settleLifecycle.forget(trimmed);
       clearSettleResidue(trimmed);
-      // Same reason as the lifecycle token: a PR link outliving its chat is
-      // routing metadata aimed at nobody, and it pins the lane's PR badge.
-      clearSessionPrChatLinks(trimmed);
+      // PR links are routing metadata for one chat; a link outliving its chat
+      // pins its lane's PR (the primary lane can never shed those). The row is
+      // already gone, so a failed purge must not report the delete as failed —
+      // but it still says so, because the orphan it leaves is otherwise invisible.
+      try {
+        deletePullRequestChatLinksForSessions(db, [trimmed]);
+      } catch (error) {
+        logger?.warn("sessions.pr_chat_link_purge_failed", {
+          sessionId: trimmed,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       emitChanged({ sessionId: trimmed, reason: "deleted" });
       return true;
     },

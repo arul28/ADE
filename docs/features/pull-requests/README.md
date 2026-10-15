@@ -984,14 +984,19 @@ unedged current-branch PRs with no silent write, and it never shows a PR
 another chat claimed. PR cards, the desktop Work peek, TUI `/pr`, the iOS
 peek, and merge auto-settlement all use those explicit edges; rows created
 before this table existed fall back to the lane's recent eligible Work chat so
-old data stays useful. Deleting a lane or deleting a chat session
-(`sessionService.deleteSession`, the cascade every chat/CLI delete path lands
-in) removes that session's live routing edges and its unlink tombstones while
+old data stays useful. Deleting a chat (`sessionService.deleteSession`, the
+cascade every chat/CLI delete path lands in) or deleting a lane
+(`laneService.cleanupLaneDatabaseRows`, which removes that lane's sessions too)
+removes those sessions' live routing edges and unlink tombstones while
 preserving the PR row/history — a dead chat can neither claim a PR nor pin it
-to a lane. A session row this machine has never seen is deliberately NOT
-treated as deleted: it may simply live on another machine (see the stacked-PR
-claim rule), so the purge rides the delete cascade rather than a read-time
-guess.
+to a lane. Both doors call `deletePullRequestChatLinksForSessions` in
+`pullRequestRowCleanup`, the module that owns both link tables; the lane door
+matters most for a *cross-lane* link, which the lane's `pr_id`-keyed detach
+does not touch, and an unresolved dangling edge would flip from a cross-lane
+reference to a claim on the other lane's PR. A session row this machine has
+never seen is deliberately NOT treated as deleted: it may simply live on
+another machine (see the stacked-PR claim rule), so the purge rides the delete
+cascades rather than a read-time guess.
 
 The edge table is a CRR table with a primary-key-only uniqueness contract and
 is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.
