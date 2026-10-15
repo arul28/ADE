@@ -25,7 +25,7 @@ validate_docs_failed() {
     -H "Accept: application/vnd.github+json" \
     -f per_page=100 \
     --paginate \
-    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)"
+    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)" || return 0
   [ -n "$conclusion" ] && [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ] && [ "$conclusion" != "skipped" ]
 }
 
@@ -65,7 +65,7 @@ for _ in 1 2 3 4 5 6; do
     fi
     exit 0
   fi
-  if [ "$status" = "completed" ] && [ "$conclusion" != "cancelled" ]; then
+  if [ "$status" = "completed" ]; then
     if ! release_notes_only "$candidate" || validate_docs_failed "$candidate"; then
       echo "::error::ci-pass for $candidate is $status/$conclusion. Release packaging requires green CI. $url"
       exit 1

@@ -76,6 +76,7 @@ test("a tag builds only on green CI, borrowed across release-notes-only commits 
     ["notes commit still running, parent green", [["CHANGELOG.md", "running"]], true],
     ["notes commit whose CI was cancelled walks on", [["changelog/v1.mdx", "cancelled"], ["docs.json", null]], true],
     ["notes commit whose validate-docs failed", [["CHANGELOG.md", "failed", "failure"]], false],
+    ["cancelled notes commit whose validate-docs failed", [["CHANGELOG.md", "cancelled", "failure"]], false],
     ["notes commit whose CI failed elsewhere walks on", [["CHANGELOG.md", "failed", "success"]], true],
     ["code commit whose CI failed", [["src/app.ts", "failed", "success"]], false],
     ["code commit still running", [["src/app.ts", "running"]], false],
