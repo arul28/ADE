@@ -20,14 +20,21 @@ import {
   type ProjectMoveVolume,
 } from "../../../shared/types/projectMove";
 import { Dialog } from "../ui/dialog";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { issueChatLaunchArgs } from "../../lib/linearBatchLaunch";
+import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { SessionLaunchModelControls, type SessionLaunchModelConfig } from "../shared/SessionLaunchModelControls";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { showToast } from "../app/toast/toastStore";
 import { SettingsToggle } from "../settings/primitives";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { joinParentAndName } from "../../lib/pathUtils";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { Banner } from "../ui/notice";
-import { agentCheckLaunchArgs, announceProjectMoveChanged, displayPath, formatBytes, formatReminder, volumeFor } from "./projectMoveModel";
+import { agentCheckPrompt, announceProjectMoveChanged, displayPath, formatBytes, formatReminder, volumeFor } from "./projectMoveModel";
 import { OldCopyControls } from "./oldCopyActions";
 // The drive cards are the settings kit's choice cards; the dialog opens from anywhere.
 import "../settings/primitives/settingsModern.css";
@@ -91,6 +98,26 @@ export function MoveProjectDialog({
   const [record, setRecord] = useState<ProjectMoveRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [startingCheck, setStartingCheck] = useState(false);
+  // The check agent is set up in place, like the issue launchers: model,
+  // effort and permissions, and the prompt it starts from, all editable.
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [checkPrompt, setCheckPrompt] = useState("");
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const { recents } = useModelRecents();
+  const defaultModelId = useMemo(
+    () => recents[0] ?? getAppDefaultModelDescriptor()?.id ?? getDefaultModelDescriptor("claude")?.id ?? "",
+    [recents],
+  );
+  const [checkConfig, setCheckConfig] = useState<SessionLaunchModelConfig>(() => ({
+    modelId: "",
+    reasoningEffort: null,
+    fastMode: false,
+    sessionType: "chat",
+    // Ask-first permissions: the check promises to ask before it changes
+    // anything. The person can still widen them in the picker.
+    nativeControls: defaultNativeControls(),
+  }));
+  const checkModelId = checkConfig.modelId || defaultModelId;
   const checkRequest = useRef(0);
   const moveStarted = useRef(false);
 
@@ -197,8 +224,29 @@ export function MoveProjectDialog({
       const lanes = await window.ade.lanes.list({ includeStatus: false });
       const primary = lanes.find((lane) => lane.laneType === "primary");
       if (!primary) throw new Error("The moved project's main lane isn't ready yet. Try again in a moment.");
-      const defaults = await window.ade.agentChat.launchDefaults().catch(() => null);
-      const session = await window.ade.agentChat.launch(agentCheckLaunchArgs({ laneId: primary.id, defaults, record }));
+      if (!checkModelId && !checkConfig.presetId) throw new Error("Pick a model for the agent.");
+      const target = checkConfig.presetId ? resolveHarnessLaunchTarget(checkConfig.presetId, harnessPresets) : null;
+      if (checkConfig.presetId && !target) throw new Error("That custom provider is no longer available. Pick another one.");
+      await ensureHarnessPresetOnBrain(checkConfig.presetId ?? null, { targetsAnotherMachine: false });
+      // The same launch the issue launchers make; the chat shows the whole prompt.
+      const { permissionMode, ...launchArgs } = issueChatLaunchArgs({
+        laneId: primary.id,
+        config: {
+          modelId: checkModelId,
+          reasoningEffort: checkConfig.reasoningEffort,
+          fastMode: checkConfig.fastMode,
+          kickoffPrompt: checkPrompt,
+          branchOverride: "",
+          nativeControls: checkConfig.nativeControls,
+          presetLaunch: target ? { presetId: target.presetId, harness: target.harness, model: target.launchModelId } : null,
+        },
+        kickoffText: checkPrompt.trim() || agentCheckPrompt(record),
+      });
+      const session = await window.ade.agentChat.launch({
+        ...launchArgs,
+        ...(permissionMode != null ? { permissionMode } : {}),
+        title: "Check the project move",
+      });
       announceWorkChatSessionCreated(record.destinationRoot, session);
       onClose();
       window.location.hash = `#/work?sessionId=${encodeURIComponent(session.id)}&laneId=${encodeURIComponent(primary.id)}`;
@@ -407,11 +455,43 @@ export function MoveProjectDialog({
                     <div className="ade-pm-issue-title">Check it with an agent</div>
                     <div className="ade-pm-muted">Reinstalls, builds, finds old paths. Asks before changing anything.</div>
                   </div>
-                  <button type="button" className="kit-btn" disabled={startingCheck} onClick={() => void startAgentCheck()}>
-                    {startingCheck ? <CircleNotch size={12} className="animate-spin" /> : null}
-                    Start
-                  </button>
+                  {checkOpen ? null : (
+                    <button
+                      type="button"
+                      className="kit-btn"
+                      onClick={() => {
+                        setCheckPrompt((current) => current || agentCheckPrompt(record));
+                        setCheckOpen(true);
+                      }}
+                    >
+                      Set up…
+                    </button>
+                  )}
                 </div>
+                {checkOpen ? (
+                  <div className="ade-pm-check">
+                    <SessionLaunchModelControls
+                      config={{ ...checkConfig, modelId: checkModelId }}
+                      showSessionType={false}
+                      disabled={startingCheck}
+                      onChange={(patch) => setCheckConfig((current) => ({ ...current, ...patch }))}
+                    />
+                    <textarea
+                      className="ade-dialog-input ade-pm-check-prompt"
+                      aria-label="Prompt for the check agent"
+                      value={checkPrompt}
+                      disabled={startingCheck}
+                      onChange={(event) => setCheckPrompt(event.target.value)}
+                    />
+                    <div className="ade-pm-check-actions">
+                      <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={startingCheck} onClick={() => setCheckOpen(false)}>Cancel</button>
+                      <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={startingCheck} onClick={() => void startAgentCheck()}>
+                        {startingCheck ? <CircleNotch size={12} className="animate-spin" /> : null}
+                        Start agent
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="kit-rule" />
                 <div className="ade-pm-row">
                   <FolderSimple size={16} />
@@ -420,7 +500,10 @@ export function MoveProjectDialog({
                       Old copy <span className="ade-pm-muted kit-num">{formatBytes(record.originalBytes)}</span>
                     </div>
                     {record.cleanup.choice === "pending" ? (
-                      <div className="ade-pm-muted ade-pm-mono" title={record.originalParkedAt ?? ""}>{displayPath(record.originalParkedAt ?? "")}</div>
+                      <>
+                        <div className="ade-pm-muted ade-pm-mono" title={record.originalParkedAt ?? ""}>{displayPath(record.originalParkedAt ?? "")}</div>
+                        <div className="ade-pm-muted">No rush: you can clean it up later from Settings → Project location.</div>
+                      </>
                     ) : (
                       <div className="ade-pm-muted">
                         {record.cleanup.choice === "deleted" ? "Deleted"

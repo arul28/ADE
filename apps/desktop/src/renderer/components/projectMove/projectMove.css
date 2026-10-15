@@ -92,3 +92,6 @@
 .ade-pm-row-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 .ade-pm-controls { display: flex; align-items: center; gap: 6px; }
+.ade-pm-check { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px 38px; }
+.ade-pm-check-prompt { height: auto !important; min-height: 140px; max-height: 260px; resize: vertical; padding-top: 8px; padding-bottom: 8px; font-size: 11.5px; line-height: 1.5; }
+.ade-pm-check-actions { display: flex; justify-content: flex-end; gap: 6px; }

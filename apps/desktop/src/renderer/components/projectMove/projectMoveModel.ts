@@ -1,9 +1,4 @@
-import type {
-  AgentChatLaunchArgs,
-  AgentChatLaunchDefaults,
-} from "../../../shared/types";
 import type { ProjectMoveRecord, ProjectMoveVolume } from "../../../shared/types/projectMove";
-import { resolveLaunchProviderAndModel } from "../../lib/linearBatchLaunch";
 import { isPathEqualOrDescendant } from "../../lib/pathUtils";
 
 /** Window event the move surfaces fire so the Location row and the banner re-read. */
@@ -51,6 +46,9 @@ export function formatReminder(at: number | undefined): string {
  * What the check agent is asked to do. It confirms the move from inside the
  * moved project, reinstalls dependencies, runs the build, and reports. The old
  * copy is off limits: deleting it is the person's choice, made in ADE.
+ *
+ * The Done step shows it in an editable box beside the model, effort and
+ * permission picker; the person starts the agent from there.
  */
 export function agentCheckPrompt(record: ProjectMoveRecord): string {
   const followUps = record.followUps.length
@@ -72,31 +70,6 @@ export function agentCheckPrompt(record: ProjectMoveRecord): string {
       : "- The old copy is already gone; work only in the moved project.",
     "- Keep the report short: what works, what you fixed (only with my OK), what I need to do.",
     "",
-    "Finish by telling me: when I'm happy, I can choose Delete, Remind me later or Keep in ADE's banner about the old copy.",
+    "Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ADE's banner or Settings → Project location.",
   ].join("\n");
-}
-
-/**
- * Launch arguments for the check agent: the person's own default model, in
- * the mode that asks before running commands or editing files, so the check
- * never changes anything without a yes.
- */
-export function agentCheckLaunchArgs(args: {
-  laneId: string;
-  defaults: AgentChatLaunchDefaults | null;
-  record: ProjectMoveRecord;
-}): AgentChatLaunchArgs {
-  const modelId = args.defaults?.modelId ?? "anthropic/claude-sonnet-5-5";
-  const { provider, model } = resolveLaunchProviderAndModel(modelId);
-  return {
-    laneId: args.laneId,
-    provider,
-    model,
-    modelId,
-    title: "Check the project move",
-    reasoningEffort: args.defaults?.reasoningEffort ?? null,
-    permissionMode: "default",
-    kickoffText: agentCheckPrompt(args.record),
-    kickoffDisplayText: "Check that the project works at its new location.",
-  };
 }

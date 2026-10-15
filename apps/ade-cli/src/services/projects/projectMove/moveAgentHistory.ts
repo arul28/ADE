@@ -6,6 +6,7 @@ import type { ProjectMoveAgentHistory } from "../../../../../desktop/src/shared/
 import { cursorProjectSlug } from "../../../../../desktop/src/shared/cursorProjectSlug";
 import {
   claudeConfigHome,
+  codexConfigHome,
   factoryConfigHome,
   grokSessionsDir,
   qwenConfigHome,
@@ -226,7 +227,7 @@ export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: stri
     label: "Codex, OpenCode, GitHub Copilot and Muse",
     count: 0,
     handling: "nothing",
-    detail: "Their chats keep resuming. Codex and Copilot may ask you to trust the new folder once.",
+    detail: "Their chats keep resuming. ADE carries Codex's trust over to the new folder; Copilot may ask you to trust it once.",
   });
   if (kimiHasProject(oldSpellings, os.homedir())) {
     summary.push({
@@ -295,4 +296,64 @@ function rewritePiHeaders(folder: string, oldCwd: string, newCwd: string): void 
     fs.writeFileSync(temp, JSON.stringify(header) + (newline < 0 ? "" : content.slice(newline)));
     fs.renameSync(temp, file);
   }
+}
+
+const TOML_ESCAPES: Record<string, string> = { "\\": "\\\\", "\"": "\\\"", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r" };
+
+/** A TOML basic-string key, as Codex writes `[projects."<path>"]`. */
+function tomlQuoted(value: string): string {
+  const escaped = value.replace(/[\\"\u0000-\u001f\u007f]/gu, (char) =>
+    TOML_ESCAPES[char] ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `"${escaped}"`;
+}
+
+const TOML_UNESCAPES: Record<string, string> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "\"": "\"", "\\": "\\" };
+
+/**
+ * The path a `[projects."<path>"]` header names, however it is spelled: a
+ * basic or literal string key, spaces inside the brackets, a trailing comment.
+ * Null for any other line.
+ */
+function projectsHeaderKey(line: string): string | null {
+  const match = line.match(/^\s*\[\s*projects\s*\.\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*\]\s*(?:#.*)?$/u);
+  if (!match) return null;
+  if (match[2] !== undefined) return match[2];
+  return match[1]!.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/gu, (_, code: string) =>
+    code.length > 1 ? String.fromCodePoint(Number.parseInt(code.slice(1), 16)) : TOML_UNESCAPES[code] ?? code);
+}
+
+/**
+ * Codex keeps folder trust in `config.toml` as `[projects."<path>"]` with a
+ * `trust_level`. After a move the new path has no entry and Codex asks again,
+ * so the old path's trust is added for the new one. Only appended: the old
+ * entry stays (the old copy still exists), and an existing entry for the new
+ * path is never touched. Returns whether it wrote anything.
+ */
+export function carryCodexTrust(args: { oldSpellings: string[]; newRoot: string }): boolean {
+  const file = path.join(codexConfigHome(), "config.toml");
+  if (!fs.existsSync(file)) return false;
+  const content = fs.readFileSync(file, "utf8");
+  const lines = content.split(/\r?\n/u);
+  const headerIndex = (root: string) => lines.findIndex((line) => projectsHeaderKey(line) === root);
+  if (headerIndex(args.newRoot) >= 0) return false;
+  let trustLevel: string | null = null;
+  for (const spelling of args.oldSpellings) {
+    const start = headerIndex(spelling);
+    if (start < 0) continue;
+    for (let index = start + 1; index < lines.length && !lines[index]!.trim().startsWith("["); index += 1) {
+      const match = lines[index]!.match(/^\s*trust_level\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$/u);
+      if (match) {
+        trustLevel = match[1] ?? match[2]!;
+        break;
+      }
+    }
+    if (trustLevel) break;
+  }
+  if (!trustLevel) return false;
+  const separator = content.endsWith("\n") ? "\n" : "\n\n";
+  const next = `${content}${separator}[projects.${tomlQuoted(args.newRoot)}]\ntrust_level = "${trustLevel}"\n`;
+  const temp = `${file}.ade-move-${process.pid}`;
+  fs.writeFileSync(temp, next, { mode: fs.statSync(file).mode & 0o777 });
+  fs.renameSync(temp, file);
+  return true;
 }
