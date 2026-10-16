@@ -8613,8 +8613,8 @@ export function createAdeRpcRequestHandler(args: {
       // Name the call for the loop watchdog, so a wedge a local `ade` command
       // causes is reported as that command instead of "idle". Only remote sync
       // commands were tracked before.
-      const domain = typeof actionArgs.domain === "string" ? actionArgs.domain : null;
-      const domainAction = typeof actionArgs.action === "string" ? actionArgs.action : null;
+      const domain = asOptionalTrimmedString(actionArgs.domain);
+      const domainAction = asOptionalTrimmedString(actionArgs.action);
       const stopTrackingCommand = trackBrainLoopWatchdogCommand(
         domain && domainAction ? `${domain}.${domainAction}` : actionName,
       );

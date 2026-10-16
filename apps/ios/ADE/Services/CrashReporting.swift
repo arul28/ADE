@@ -120,20 +120,15 @@ enum CrashReporting {
     SentrySDK.setUser(user)
   }
 
-  /// A non-fatal hang longer than iOS lets a foreground app block was measured
-  /// across a suspension (the main thread sat idle in its run loop). A real
-  /// block that long ends in a watchdog kill, which arrives as a fatal hang and
-  /// is kept.
-  private static let maxNonFatalHangSeconds = 60.0
-
+  /// A non-fatal hang whose main thread was waiting for work in its run loop,
+  /// not blocked: the app was suspended while the detector kept counting. A
+  /// hang with real work on the stack is kept, however long it claims to be.
   private static func isSuspendedAppHang(_ event: Sentry.Event) -> Bool {
     guard let exception = event.exceptions?.last,
           exception.type?.hasPrefix("App Hang") == true,
-          let value = exception.value else { return false }
-    // "App hanging between 124.1 and 124.9 seconds."
-    let words = value.split(separator: " ")
-    guard words.count > 3, let shortest = Double(words[3]) else { return false }
-    return shortest >= maxNonFatalHangSeconds
+          let frames = exception.stacktrace?.frames, let top = frames.last?.function,
+          top == "mach_msg2_trap" || top == "mach_msg_trap" else { return false }
+    return frames.suffix(6).contains { $0.function == "__CFRunLoopServiceMachPort" }
   }
 
   // MARK: - Configuration helpers

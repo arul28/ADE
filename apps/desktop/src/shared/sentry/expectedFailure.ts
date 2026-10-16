@@ -121,7 +121,10 @@ function causeTexts(error: Error): string[] | null {
     const address = typeof socket?.remoteAddress === "string" ? ` ${socket.remoteAddress}` : "";
     texts.push(`${next.name}: ${next.message}${typeof code === "string" ? ` (${code})` : ""}${address}`);
     pending.push(next.cause);
-    if (Array.isArray(errors)) pending.push(...errors.slice(0, MAX_CAUSES));
+    if (Array.isArray(errors)) {
+      if (errors.length > MAX_CAUSES) return null;
+      pending.push(...errors);
+    }
   }
   return texts;
 }
