@@ -7196,7 +7196,7 @@ export function AgentChatComposer({
                 if (attachment.type === "jira_issue") {
                   const issue = attachment.issue;
                   const ref = jiraIssueRef(issue.siteUrl, issue.key, issue.url);
-                  if (ref) openIssueRef({ ref, source: "chip" });
+                  if (ref) openIssueRef({ ref, source: "chip", pin: composerMachineBinding });
                 }
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}

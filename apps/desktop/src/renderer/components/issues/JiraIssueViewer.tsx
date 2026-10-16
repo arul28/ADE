@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Hash, LinkSimple, MarkdownLogo, TreeStructure } from "@phosphor-icons/react";
 import type { JiraCreateMeta, JiraIssueDetail, JiraTransition, JiraUser } from "../../../shared/types/jira";
 import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
@@ -23,6 +23,7 @@ import {
   loadJiraCreateMeta,
   loadJiraLabels,
   loadJiraIssue,
+  loadJiraIssueTransitions,
   transitionJiraIssue,
   useJiraIssue,
 } from "./jiraIssueStore";
@@ -40,13 +41,17 @@ type JiraRef = Extract<IssueRef, { provider: "jira" }>;
 
 export function JiraIssueViewer({
   jiraRef,
+  pin,
   variant,
   onAttachToChat,
   onViewAll,
   onClose,
   onOpenRelated,
 }: IssueViewerProps & { jiraRef: JiraRef }) {
-  const entry = useJiraIssue(jiraRef);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const entry = useJiraIssue(jiraRef, pin);
   const issue = entry.issue;
   const [transitions, setTransitions] = useState<JiraTransition[]>([]);
   const [assignees, setAssignees] = useState<JiraUser[]>([]);
@@ -59,37 +64,37 @@ export function JiraIssueViewer({
     : issue?.permissions.edit ? null : "This Jira account does not have permission to edit this issue.";
 
   const loadTransitions = useCallback(async () => {
-    if (!issue || !window.ade?.jira?.listTransitions) return;
+    if (!issue) return;
     try {
-      setTransitions(await window.ade.jira.listTransitions({ key: issue.key }));
+      setTransitions(await loadJiraIssueTransitions(entry.projectRoot, jiraRef.siteUrl, issue.key, pinRef.current));
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't load ${issue.key} statuses`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
-  }, [issue]);
+  }, [entry.projectRoot, issue, jiraRef.siteUrl, pinKey]);
   const loadAssignees = useCallback(async () => {
     if (!issue) return;
     try {
-      setAssignees(await loadJiraAssignableUsers(entry.projectRoot, { projectKey: issue.projectKey, key: issue.key }));
+      setAssignees(await loadJiraAssignableUsers(entry.projectRoot, { projectKey: issue.projectKey, key: issue.key }, pinRef.current));
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't load assignees for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
-  }, [entry.projectRoot, issue]);
+  }, [entry.projectRoot, issue, pinKey]);
   const loadLabels = useCallback(async () => {
     if (!issue) return;
     try {
-      setLabels(await loadJiraLabels(entry.projectRoot));
+      setLabels(await loadJiraLabels(entry.projectRoot, "", pinRef.current));
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't load labels for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
-  }, [entry.projectRoot, issue]);
+  }, [entry.projectRoot, issue, pinKey]);
   const loadCreateMeta = useCallback(async () => {
     if (!issue) return;
     try {
-      setCreateMeta(await loadJiraCreateMeta(entry.projectRoot, issue.projectKey));
+      setCreateMeta(await loadJiraCreateMeta(entry.projectRoot, issue.projectKey, false, pinRef.current));
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't load priorities for ${issue.key}`, message: jiraErrorMessage(error, "Jira request failed.") });
     }
-  }, [entry.projectRoot, issue]);
+  }, [entry.projectRoot, issue, pinKey]);
 
   const editing = useMemo<JiraIssueEditing | undefined>(() => {
     if (!issue) return undefined;
@@ -99,7 +104,7 @@ export function JiraIssueViewer({
       message: jiraErrorMessage(error, "Jira rejected the change."),
     });
     const edit = (patch: Parameters<typeof editJiraIssue>[3], optimistic: Partial<JiraIssueDetail>) => {
-      void editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, patch, optimistic).catch(fail);
+      void editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, patch, optimistic, { pin: pinRef.current }).catch(fail);
     };
     return {
       readOnlyReason,
@@ -114,8 +119,8 @@ export function JiraIssueViewer({
       onNeedAssignees: loadAssignees,
       onNeedLabels: loadLabels,
       onNeedCreateMeta: loadCreateMeta,
-      onSaveTitle: async (title) => { await editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, { title }, { title }); },
-      onSaveDescription: async (description) => { await editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, { description }, { description }); },
+      onSaveTitle: async (title) => { await editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, { title }, { title }, { pin: pinRef.current }); },
+      onSaveDescription: async (description) => { await editJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, { description }, { description }, { pin: pinRef.current }); },
       onSetAssignee: (accountId) => {
         const assignee = accountId ? assignees.find((user) => user.accountId === accountId) ?? issue.assignee : null;
         edit({ assigneeAccountId: accountId }, { assignee });
@@ -127,11 +132,11 @@ export function JiraIssueViewer({
       onSetLabels: (nextLabels) => edit({ labels: nextLabels }, { labels: nextLabels }),
       onSetDueDate: (dueDate) => edit({ dueDate }, { dueDate }),
       onTransition: (transition) => {
-        void transitionJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, transition).catch(fail);
+        void transitionJiraIssue(entry.projectRoot, jiraRef.siteUrl, issue, transition, { pin: pinRef.current }).catch(fail);
       },
-      onComment: (body) => addJiraIssueComment(entry.projectRoot, jiraRef.siteUrl, issue, body),
+      onComment: (body) => addJiraIssueComment(entry.projectRoot, jiraRef.siteUrl, issue, body, pinRef.current),
     };
-  }, [assignees, createMeta, entry.projectRoot, issue, jiraRef.siteUrl, labels, loadAssignees, loadCreateMeta, loadLabels, loadTransitions, readOnlyReason, transitions]);
+  }, [assignees, createMeta, entry.projectRoot, issue, jiraRef.siteUrl, labels, loadAssignees, loadCreateMeta, loadLabels, loadTransitions, pinKey, readOnlyReason, transitions]);
 
   const copyEntries = useMemo<ContextMenuEntry[]>(() => (issue ? jiraCopyEntries(issue, variant) : []), [issue, variant]);
   const header = (
@@ -162,6 +167,7 @@ export function JiraIssueViewer({
           issue={issue}
           siteUrl={jiraRef.siteUrl}
           projectRoot={entry.projectRoot}
+          pin={pin}
           onOpenRelated={onOpenRelated}
           editing={editing}
         />

@@ -10,7 +10,7 @@ import { LinearMark, LinearStateIcon } from "../lanes/linearBrand";
 import { GitHubIssueStateIcon } from "../lanes/githubBrand";
 import { JiraMark, JiraStatusIcon } from "../lanes/jiraBrand";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
-import { dismissToast, showToast } from "./toast/toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast } from "./toast/toastStore";
 
 /** One batch at a time, so a new launch (or retry) takes over the same card. */
 export const BATCH_LAUNCH_TOAST_ID = "issue-batch-launch";
@@ -194,7 +194,7 @@ export function BatchLaunchStatusToast({
   useEffect(() => {
     if (!rows.length) return;
     if (inFlight || failedCount > 0 || attentionCount > 0) return;
-    const timer = window.setTimeout(onDismiss, 3200);
+    const timer = window.setTimeout(onDismiss, READABLE_TOAST_DURATION_MS);
     return () => window.clearTimeout(timer);
   }, [rows.length, inFlight, failedCount, attentionCount, onDismiss]);
 

@@ -38,20 +38,31 @@ export function UsageLimitChip({
     return () => window.clearInterval(intervalId);
   }, [refreshMs]);
 
-  // An action belongs to the state and chat it was pressed for.
-  React.useEffect(() => { setBusy(false); }, [resume.state, sessionId]);
+  // An action belongs to the state and chat it was pressed for. Bumping the run
+  // token orphans one still in flight, so its late result neither speaks about
+  // a state nobody is looking at nor clears a newer press's `busy`.
+  const runTokenRef = React.useRef(0);
+  React.useEffect(() => {
+    runTokenRef.current += 1;
+    setBusy(false);
+  }, [resume.state, sessionId]);
 
   const run = (action: () => Promise<string | null>) => {
     if (busy) return;
+    const token = runTokenRef.current;
     setBusy(true);
     void action()
       .then((refusal) => {
+        if (token !== runTokenRef.current) return;
         if (refusal) showToast({ tone: "warning", title: "Usage limit", message: refusal });
       })
       .catch((error: unknown) => {
+        if (token !== runTokenRef.current) return;
         showToast({ tone: "error", title: "Couldn't change auto-resume", message: error instanceof Error ? error.message : String(error) });
       })
-      .finally(() => setBusy(false));
+      .finally(() => {
+        if (token === runTokenRef.current) setBusy(false);
+      });
   };
 
   const actions: StatusChipAction[] = [];

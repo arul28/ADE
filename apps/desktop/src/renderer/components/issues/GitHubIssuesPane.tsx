@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import { relativeWhen } from "../../lib/format";
@@ -7,14 +7,14 @@ import { GitHubIssueStateIcon } from "../lanes/githubBrand";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { IssueViewer } from "./IssueViewer";
-import { buildGitHubLaunchIssue } from "../../lib/linearBatchLaunch";
-import { requestIssueLaunch } from "../../lib/issueLaunchRequests";
 import {
   useGitHubIssueList,
   type GitHubIssueDetail,
   type GitHubIssueStateFilter,
   type GitHubRepo,
 } from "./githubIssueStore";
+import { buildGitHubLaunchIssue } from "../../lib/linearBatchLaunch";
+import { useIssueLaunchSelection } from "./useIssueLaunchSelection";
 
 /**
  * The GitHub Issues pane body: the project's issues on the left, the issue
@@ -85,8 +85,6 @@ export function GitHubIssuesPane({
   const [label, setLabel] = useState(ANY);
   const [milestone, setMilestone] = useState(ANY);
   const [selected, setSelected] = useState<number | null>(null);
-  const [launchSelected, setLaunchSelected] = useState<Set<number>>(() => new Set());
-  const launchSelectionAnchor = useRef<number | null>(null);
   const list = useGitHubIssueList(repo, state);
   const { refresh } = list;
 
@@ -124,47 +122,20 @@ export function GitHubIssuesPane({
       && (milestone === ANY || issue.milestone === milestone));
   }, [assignee, label, list.issues, milestone, query]);
 
+  const {
+    selectedCount: launchSelectedCount,
+    isSelected: isLaunchSelected,
+    toggleAt: toggleLaunchSelection,
+    launchSelectedIssues,
+  } = useIssueLaunchSelection({
+    visibleItems: visible,
+    launchItems: list.issues,
+    getKey: (issue: GitHubIssueDetail) => issue.number,
+    toLaunchIssue: buildGitHubLaunchIssue,
+    canSelect: (issue: GitHubIssueDetail) => !issue.isPullRequest,
+  });
+
   const selectedIssue = visible.find((issue) => issue.number === selected) ?? visible[0] ?? null;
-
-  useEffect(() => {
-    if (launchSelected.size === 0) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      setLaunchSelected(new Set());
-      launchSelectionAnchor.current = null;
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [launchSelected.size]);
-
-  const toggleLaunchSelection = (number: number, index: number, shiftKey: boolean) => {
-    setLaunchSelected((current) => {
-      const next = new Set(current);
-      const anchorIndex = visible.findIndex((issue) => issue.number === launchSelectionAnchor.current);
-      if (shiftKey && anchorIndex >= 0) {
-        const [start, end] = [Math.min(anchorIndex, index), Math.max(anchorIndex, index)];
-        for (const issue of visible.slice(start, end + 1)) {
-          if (!issue.isPullRequest) next.add(issue.number);
-        }
-      } else if (next.has(number)) {
-        next.delete(number);
-      } else {
-        next.add(number);
-      }
-      launchSelectionAnchor.current = number;
-      return next;
-    });
-  };
-
-  const launchSelectedIssues = (laneOnly: boolean) => {
-    const launchIssues = list.issues
-      .filter((issue) => launchSelected.has(issue.number))
-      .map(buildGitHubLaunchIssue)
-      .filter((issue) => issue !== null);
-    requestIssueLaunch(launchIssues, { laneOnly });
-    setLaunchSelected(new Set());
-    launchSelectionAnchor.current = null;
-  };
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
@@ -198,7 +169,7 @@ export function GitHubIssuesPane({
             <FilterSelect label="Milestone" value={milestone} options={options.milestones} onChange={setMilestone} />
           </div>
         </div>
-        <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelected.size > 0 && "pb-12")} role="list" aria-label="Issues">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelectedCount > 0 && "pb-12")} role="list" aria-label="Issues">
           {list.status === "error" && list.issues.length === 0 ? (
             <div className="p-2">
               <Banner
@@ -224,13 +195,13 @@ export function GitHubIssuesPane({
                 <div className={cn(
                   "group/row kit-row !items-start !gap-2 !py-2",
                   issue.number === selectedIssue?.number && "!bg-[color:var(--kit-active)]",
-                  launchSelected.has(issue.number) && "!bg-[color:var(--kit-hover)]",
+                  isLaunchSelected(issue.number) && "!bg-[color:var(--kit-hover)]",
                 )}>
                   <button
                     type="button"
                     role="checkbox"
-                    aria-label={launchSelected.has(issue.number) ? `Deselect #${issue.number}` : `Select #${issue.number} for launch`}
-                    aria-checked={launchSelected.has(issue.number)}
+                    aria-label={isLaunchSelected(issue.number) ? `Deselect #${issue.number}` : `Select #${issue.number} for launch`}
+                    aria-checked={isLaunchSelected(issue.number)}
                     disabled={issue.isPullRequest}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -240,13 +211,13 @@ export function GitHubIssuesPane({
                   >
                     <span className={cn(
                       "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
-                      launchSelected.has(issue.number)
+                      isLaunchSelected(issue.number)
                         ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
-                        : launchSelected.size > 0
+                        : launchSelectedCount > 0
                           ? "border-fg/[0.18] bg-transparent group-hover/row:border-white/35"
                           : "border-fg/[0.12] bg-transparent group-hover/row:border-white/35",
                     )}>
-                      {launchSelected.has(issue.number) ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
+                      {isLaunchSelected(issue.number) ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
                     </span>
                   </button>
                   <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" onClick={() => setSelected(issue.number)}>
@@ -269,15 +240,15 @@ export function GitHubIssuesPane({
             ))
           )}
         </div>
-        {launchSelected.size > 0 ? (
+        {launchSelectedCount > 0 ? (
           <div className="kit-card absolute bottom-[30px] left-2 right-2 z-10">
             <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
-              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelected.size} selected</span>
+              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelectedCount} selected</span>
               <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
-                <Rocket size={12} /> Launch agents ({launchSelected.size})
+                <Rocket size={12} /> Launch agents ({launchSelectedCount})
               </button>
               <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
-                Lanes only ({launchSelected.size})
+                Lanes only ({launchSelectedCount})
               </button>
             </div>
           </div>

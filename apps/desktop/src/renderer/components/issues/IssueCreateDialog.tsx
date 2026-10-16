@@ -25,7 +25,6 @@ import {
 } from "./githubIssueStore";
 import { requestGitHubIssueLaunch } from "./githubIssueLaunch";
 import {
-  ChipPicker,
   GitHubCreateChips,
   GitHubMoreFields,
   JiraCreateChips,
@@ -34,6 +33,7 @@ import {
   LinearMoreFields,
   linearTeamProjects,
 } from "./issueCreateChips";
+import { ChipPicker } from "./issuePickerChip";
 import {
   initialIssueForm,
   rememberIssueProvider,

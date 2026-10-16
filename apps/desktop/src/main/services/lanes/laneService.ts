@@ -5921,6 +5921,65 @@ export function createLaneService({
       return getSessionJiraIssueLinks(args.chatSessionId);
     },
 
+    /** Read a bounded, rotating page of every tracker linked to one session. */
+    listLinkedIssueSnapshotReferences(args: {
+      chatSessionId: string;
+      offset: number;
+      limit: number;
+    }): { references: IssueRef[]; totalCount: number; scanned: number } {
+      const sessionId = args.chatSessionId.trim();
+      if (!sessionId) return { references: [], totalCount: 0, scanned: 0 };
+      const limit = Math.min(12, Math.max(1, Math.floor(args.limit)));
+      const countRow = db.get<{ count: number }>(
+        `
+          select
+            (select count(*) from session_linear_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_github_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_jira_issues where project_id = ? and session_id = ?) as count
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId],
+      );
+      const totalCount = Math.max(0, Number(countRow?.count) || 0);
+      if (!totalCount) return { references: [], totalCount: 0, scanned: 0 };
+
+      const offset = Math.max(0, Math.floor(args.offset)) % totalCount;
+      const readPage = (pageLimit: number, pageOffset: number) => db.all<{ provider: string; issue_json: string }>(
+        `
+          select provider, issue_json
+          from (
+            select 'linear' as provider, issue_json, role, updated_at, issue_id
+            from session_linear_issues where project_id = ? and session_id = ?
+            union all
+            select 'github' as provider, issue_json, role, updated_at, issue_id
+            from session_github_issues where project_id = ? and session_id = ?
+            union all
+            select 'jira' as provider, issue_json, role, updated_at, issue_id
+            from session_jira_issues where project_id = ? and session_id = ?
+          ) as linked_issues
+          order by case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc, provider, issue_id
+          limit ? offset ?
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId, pageLimit, pageOffset],
+      );
+      const rows = readPage(limit, offset);
+      if (rows.length < limit && offset > 0) rows.push(...readPage(limit - rows.length, 0));
+      const references: IssueRef[] = [];
+      for (const row of rows) {
+        if (row.provider === "linear") {
+          const issue = parseLaneLinearIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "linear", identifier: issue.identifier, url: issue.url });
+        } else if (row.provider === "github") {
+          const issue = parseLaneGitHubIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url });
+        } else if (row.provider === "jira") {
+          const issue = parseLaneJiraIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "jira", siteUrl: issue.siteUrl, key: issue.key, url: issue.url });
+        }
+      }
+      return { references, totalCount, scanned: rows.length };
+    },
+
     listJiraIssuesForLaneSessions(args: { laneId: string }): SessionJiraIssueLink[] {
       const id = args.laneId.trim();
       if (!id) return [];

@@ -2323,6 +2323,7 @@ export async function createAdeRuntime(args: {
         linearIssueTracker: headlessLinearServices.linearIssueTracker,
         githubService: headlessLinearServices.githubService,
         jiraService: jiraServiceRef,
+        issueTrackerService,
         prService: headlessLinearServices.prService,
         diskPressureMonitor,
         // Sleep is a machine fact, so every chat in this brain reads the one

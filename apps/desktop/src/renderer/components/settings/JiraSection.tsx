@@ -8,7 +8,7 @@ import {
   rememberJiraConnectionStatus,
 } from "../issues/jiraIssueStore";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
-import { ChipPicker } from "../issues/issueCreateChips";
+import { ChipPicker } from "../issues/issuePickerChip";
 import { JiraMark } from "../lanes/jiraBrand";
 import { ModernPage, ModernRow, ModernRows, ModernSection, SettingsTextField, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";

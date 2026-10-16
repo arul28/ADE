@@ -282,6 +282,9 @@ import type { GithubService } from "../github/githubService";
 import type { createJiraService } from "../jira/jiraService";
 import type { createLaneService } from "../lanes/laneService";
 import { issueRefKey, type IssueRef } from "../../../shared/issueRefs";
+import { createIssueTrackerService } from "../issueTrackers/issueTrackerService";
+import { IssueTrackerError } from "../issueTrackers/issueTrackerError";
+import type { IssueTrackerService } from "../../../shared/types/issueTrackers";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
 import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
@@ -10491,6 +10494,8 @@ export function createAgentChatService(args: {
   linearIssueTracker?: IssueTracker | null;
   githubService?: Pick<GithubService, "getIssue" | "getStatus"> | null;
   jiraService?: Pick<ReturnType<typeof createJiraService>, "getConnectionStatus" | "getIssue"> | null;
+  /** The brain's one tracker layer; built from the three services above when absent. */
+  issueTrackerService?: Pick<IssueTrackerService, "isConnected" | "get"> | null;
   /**
    * Lazy accessor for the universal search service; may be null in runtimes
    * where search is not wired.
@@ -21443,29 +21448,51 @@ export function createAgentChatService(args: {
     logger,
   });
 
+  const linkedIssueTrackerService = args.issueTrackerService ?? createIssueTrackerService({
+    linearIssueTracker: args.linearIssueTracker,
+    githubService: args.githubService as unknown as GithubService | null,
+    jiraService: args.jiraService as unknown as ReturnType<typeof createJiraService> | null,
+  });
   const linkedIssueSnapshotReads = new Map<string, number>();
   const linkedIssueSnapshotCursors = new Map<string, number>();
+  const linkedIssueSnapshotWarnings = new Map<string, number>();
+  const warnLinkedIssueSnapshotFailure = (sessionId: string, tracker: string, error: unknown): void => {
+    if (error instanceof IssueTrackerError && (error.reason === "not-connected" || error.reason === "not-found")) return;
+    const now = Date.now();
+    const warningKey = `${sessionId}:${tracker}`;
+    const lastWarning = linkedIssueSnapshotWarnings.get(warningKey);
+    if (lastWarning != null && now - lastWarning < 60_000) return;
+    linkedIssueSnapshotWarnings.delete(warningKey);
+    linkedIssueSnapshotWarnings.set(warningKey, now);
+    for (const [key, warnedAt] of linkedIssueSnapshotWarnings) {
+      if (now - warnedAt >= 60_000) linkedIssueSnapshotWarnings.delete(key);
+    }
+    while (linkedIssueSnapshotWarnings.size > 512) {
+      const oldest = linkedIssueSnapshotWarnings.keys().next().value;
+      if (oldest == null) break;
+      linkedIssueSnapshotWarnings.delete(oldest);
+    }
+    logger.warn("agent_chat.linked_issue_snapshot_refresh_failed", {
+      sessionId,
+      tracker,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
   const refreshLinkedIssueSnapshots = async (sessionId: string): Promise<void> => {
     if (!args.linearIssueTracker && !args.githubService && !args.jiraService) return;
-    const candidates: Array<{ reference: IssueRef; key: string }> = [];
+    const cursor = linkedIssueSnapshotCursors.get(sessionId) ?? 0;
+    let page: ReturnType<typeof laneService.listLinkedIssueSnapshotReferences>;
     try {
-      for (const link of laneService.listLinearIssuesForSession({ chatSessionId: sessionId })) {
-        candidates.push({ reference: { provider: "linear", identifier: link.issue.identifier, url: link.issue.url }, key: "linear" });
-      }
-      for (const link of laneService.listGitHubIssuesForSession({ chatSessionId: sessionId })) {
-        candidates.push({ reference: { provider: "github", owner: link.issue.owner, repo: link.issue.repo, number: link.issue.number, url: link.issue.url }, key: "github" });
-      }
-      for (const link of laneService.listJiraIssuesForSession({ chatSessionId: sessionId })) {
-        candidates.push({ reference: { provider: "jira", siteUrl: link.issue.siteUrl, key: link.issue.key, url: link.issue.url }, key: "jira" });
-      }
-    } catch {
+      page = laneService.listLinkedIssueSnapshotReferences({ chatSessionId: sessionId, offset: cursor, limit: 12 });
+    } catch (error) {
+      warnLinkedIssueSnapshotFailure(sessionId, "all", error);
       return;
     }
-    const unique = [...new Map(candidates.map((candidate) => [issueRefKey(candidate.reference), candidate])).values()];
-    if (!unique.length) return;
-    const start = (linkedIssueSnapshotCursors.get(sessionId) ?? 0) % unique.length;
-    const bounded = Array.from({ length: Math.min(12, unique.length) }, (_unused, index) => unique[(start + index) % unique.length]!);
-    linkedIssueSnapshotCursors.set(sessionId, (start + bounded.length) % unique.length);
+    if (!page.totalCount) return;
+    const pageStart = cursor % page.totalCount;
+    const unique = [...new Map(page.references.map((reference) => [issueRefKey(reference), { reference, key: reference.provider }])).values()];
+    const bounded = unique.slice(0, 12);
+    linkedIssueSnapshotCursors.set(sessionId, (pageStart + page.scanned) % page.totalCount);
     while (linkedIssueSnapshotCursors.size > 512) {
       const oldestSession = linkedIssueSnapshotCursors.keys().next().value;
       if (oldestSession == null) break;
@@ -21474,10 +21501,9 @@ export function createAgentChatService(args: {
 
     const connectionResults = await Promise.all([...new Set(bounded.map((candidate) => candidate.key))].map(async (kind) => {
       try {
-        if (kind === "linear") return [kind, Boolean((await args.linearIssueTracker?.getConnectionStatus())?.connected)] as const;
-        if (kind === "github") return [kind, Boolean((await args.githubService?.getStatus())?.connected)] as const;
-        return [kind, Boolean((await args.jiraService?.getConnectionStatus())?.connected)] as const;
-      } catch {
+        return [kind, await linkedIssueTrackerService.isConnected(kind)] as const;
+      } catch (error) {
+        warnLinkedIssueSnapshotFailure(sessionId, kind, error);
         return [kind, false] as const;
       }
     }));
@@ -21508,33 +21534,15 @@ export function createAgentChatService(args: {
         if (!candidate) continue;
         try {
           const { reference } = candidate;
-          if (reference.provider === "linear") {
-            const issue = await args.linearIssueTracker?.fetchIssueById(reference.identifier);
-            if (issue) laneService.refreshLinkedIssueSnapshot({
-              reference,
-              title: issue.title,
-              state: { name: issue.stateName, type: issue.stateType },
-              updatedAt: issue.updatedAt,
-            });
-          } else if (reference.provider === "github") {
-            const issue = await args.githubService?.getIssue(reference.owner, reference.repo, reference.number);
-            if (issue) laneService.refreshLinkedIssueSnapshot({
-              reference,
-              title: issue.title,
-              state: { name: issue.state, type: issue.state === "closed" ? "completed" : "open" },
-              updatedAt: issue.updated_at,
-            });
-          } else {
-            const issue = await args.jiraService?.getIssue({ key: reference.key });
-            if (issue) laneService.refreshLinkedIssueSnapshot({
-              reference,
-              title: issue.title,
-              state: { name: issue.status.name, type: issue.status.category },
-              updatedAt: issue.updatedAt,
-            });
-          }
-        } catch {
-          // Snapshot refresh is best-effort and never changes the turn result.
+          const issue = await linkedIssueTrackerService.get({ reference });
+          laneService.refreshLinkedIssueSnapshot({
+            reference,
+            title: issue.title,
+            state: issue.state ? { name: issue.state.name, type: issue.state.type } : null,
+            updatedAt: issue.updatedAt,
+          });
+        } catch (error) {
+          warnLinkedIssueSnapshotFailure(sessionId, candidate.key, error);
         }
       }
     };
@@ -21605,7 +21613,9 @@ export function createAgentChatService(args: {
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
       settleClaudeGoalOnTurnEnd(managed, event.status);
-      void refreshLinkedIssueSnapshots(managed.session.id).catch(() => {});
+      void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
+        warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
+      });
     }
     if (event.type === "done" && managed.session.provider === "claude") {
       // A turn that wrote no cache but read it restarted the same lifetime:

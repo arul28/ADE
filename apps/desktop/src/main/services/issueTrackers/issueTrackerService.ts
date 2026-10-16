@@ -18,7 +18,8 @@ import type {
   IssueTrackerService,
   IssueUpdateArgs,
 } from "../../../shared/types/issueTrackers";
-import { IssueTrackerError, withIssueTrackerError } from "./issueTrackerError";
+import { IssueTrackerError, normalizeIssueTrackerError, withIssueTrackerError } from "./issueTrackerError";
+import { normalizeJiraSiteUrl } from "../jira/jiraClient";
 import {
   createGithubIssueTrackerAdapter,
   createJiraIssueTrackerAdapter,
@@ -71,6 +72,8 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
 
   const connectedInFlight = new Map<IssueTrackerKind, Promise<boolean>>();
   let jiraProjects: { keys: Set<string>; expiresAt: number } | null = null;
+  let jiraProjectFetchError: IssueTrackerError | null = null;
+  let jiraProjectRetryAt = 0;
   let linearTeams: { keys: Set<string>; expiresAt: number } | null = null;
 
   const getProjectConfig = () => {
@@ -106,20 +109,24 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     return status?.siteUrl ?? null;
   };
 
-  const jiraProjectKeys = async (): Promise<Set<string>> => {
+  const jiraProjectKeys = async (): Promise<{ keys: Set<string>; fetchError: IssueTrackerError | null }> => {
     const configured = getProjectConfig()?.issueTrackers?.jira?.projectKeys ?? [];
     const keys = new Set(configured.map((key) => key.trim().toUpperCase()).filter(Boolean));
-    if (!args.jiraService || !(await isConnected("jira"))) return keys;
-    if (!jiraProjects || jiraProjects.expiresAt <= Date.now()) {
+    if (!args.jiraService || !(await isConnected("jira"))) return { keys, fetchError: null };
+    const currentTime = Date.now();
+    if ((!jiraProjects || jiraProjects.expiresAt <= currentTime) && jiraProjectRetryAt <= currentTime) {
       try {
         const projects = await args.jiraService.listProjects();
         jiraProjects = { keys: new Set(projects.map((project) => project.key.toUpperCase())), expiresAt: Date.now() + JIRA_PROJECT_CACHE_MS };
-      } catch {
-        jiraProjects = { keys: new Set(), expiresAt: Date.now() + JIRA_PROJECT_CACHE_MS };
+        jiraProjectFetchError = null;
+        jiraProjectRetryAt = 0;
+      } catch (error) {
+        jiraProjectFetchError = normalizeIssueTrackerError("jira", "resolve", error);
+        jiraProjectRetryAt = Date.now() + JIRA_PROJECT_CACHE_MS;
       }
     }
-    for (const key of jiraProjects.keys) keys.add(key);
-    return keys;
+    for (const key of jiraProjects?.keys ?? []) keys.add(key);
+    return { keys, fetchError: jiraProjectFetchError };
   };
 
   const linearTeamKeys = async (): Promise<Set<string>> => {
@@ -139,7 +146,13 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     if (typeof input !== "string") {
       const parsed = parseStoredIssueRef(input);
       if (!parsed) throw new IssueTrackerError("linear", "resolve", "invalid", "The issue reference is malformed.");
-      return await validateTrackerSite(parsed);
+      // Keep the original Jira base URL for site validation. The persisted-ref
+      // parser canonicalizes Jira refs for identity, but that drops a
+      // self-hosted context path that is part of the configured site.
+      const reference = parsed.provider === "jira" && input.provider === "jira"
+        ? { ...parsed, siteUrl: input.siteUrl }
+        : parsed;
+      return await validateTrackerSite(reference);
     }
     const raw = input.trim();
     const parsed = parseReferenceString(raw);
@@ -157,9 +170,10 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     if (jiraKey && prefix) {
       const teams = await linearTeamKeys();
       if (teams.has(prefix)) return { provider: "linear", identifier: normalizeLinearIdentifier(raw)! };
-      const projectKeys = await jiraProjectKeys();
+      const projects = await jiraProjectKeys();
       const siteUrl = await getJiraSiteUrl();
-      if (projectKeys.has(prefix) && siteUrl) return { provider: "jira", siteUrl, key: jiraKey };
+      if (projects.keys.has(prefix) && siteUrl) return { provider: "jira", siteUrl, key: jiraKey };
+      if (projects.fetchError) throw projects.fetchError;
     }
     throw new IssueTrackerError("linear", "resolve", "not-found", `Could not identify an issue tracker for '${raw}'.`);
   };
@@ -168,7 +182,14 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     if (reference.provider !== "jira") return reference;
     const connectedSite = await getJiraSiteUrl();
     if (!connectedSite) throw new IssueTrackerError("jira", "resolve", "not-connected", "Connect the Jira site before resolving this issue.");
-    if (connectedSite.replace(/\/$/, "").toLocaleLowerCase() !== reference.siteUrl.replace(/\/$/, "").toLocaleLowerCase()) {
+    const normalizeSite = (siteUrl: string): string | null => {
+      try {
+        return normalizeJiraSiteUrl(siteUrl).toLowerCase();
+      } catch {
+        return null;
+      }
+    };
+    if (normalizeSite(connectedSite) !== normalizeSite(reference.siteUrl)) {
       throw new IssueTrackerError("jira", "resolve", "not-connected", `The issue is on ${reference.siteUrl}, but the connected Jira site is ${connectedSite}.`);
     }
     return { ...reference, siteUrl: connectedSite };

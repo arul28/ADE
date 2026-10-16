@@ -94,7 +94,7 @@ export function UserMessageIssueContext({
           }
           if (attachment.type === "jira_issue") {
             const ref = jiraIssueRef(attachment.issue.siteUrl, attachment.issue.key, attachment.issue.url);
-            if (ref) openIssueRef({ ref, source: "chip" });
+            if (ref) openIssueRef({ ref, source: "chip", pin: machinePin });
           }
         }}
         onRemoveContext={sessionId ? detachContext : undefined}

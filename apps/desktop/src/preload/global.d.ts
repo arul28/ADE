@@ -2154,10 +2154,10 @@ declare global {
           source?: string;
           includeInPr?: boolean;
           closeOnMerge?: boolean;
-        }) => Promise<SessionJiraIssueLink[]>;
+        }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
         detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listJiraIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
-        listJiraIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionJiraIssueLink[]>;
+        listJiraIssuesForLaneSessions: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;

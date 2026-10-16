@@ -202,13 +202,20 @@ export function createJiraService(args: {
     checkedAt,
   });
 
+  // Bumped whenever the saved credentials change, so a request or status probe
+  // that started under the old ones cannot write its outcome over the new ones.
+  let credentialGeneration = 0;
+
   async function run<T>(callback: () => Promise<T>): Promise<T> {
+    const generation = credentialGeneration;
     try {
       const result = await callback();
+      if (generation !== credentialGeneration) return result;
       lastError = null;
       checkedAt = new Date(now()).toISOString();
       return result;
     } catch (error) {
+      if (generation !== credentialGeneration) throw error;
       // Only a refused credential says the connection is broken; a missing
       // issue, bad JQL or a rate limit is about that one request.
       const parsed = parseJiraError(error);
@@ -236,17 +243,23 @@ export function createJiraService(args: {
       && now() - Date.parse(checkedAt) > CONNECTION_RECHECK_MS;
     if (checkedAt === null || (!account && !lastError) || staleFailure) {
       if (!connectionProbe) {
-        connectionProbe = (async () => {
+        const generation = credentialGeneration;
+        const probe: Promise<void> = (async () => {
+          let nextAccount: JiraUser | null = null;
+          let nextError: JiraConnectionStatus["error"] = null;
           try {
-            const myself = await client.get<unknown>("rest/api/3/myself");
-            account = mapUser(myself);
-            lastError = account ? null : { reason: "failed", message: "Jira did not return an account." };
+            nextAccount = mapUser(await client.get<unknown>("rest/api/3/myself"));
+            if (!nextAccount) nextError = { reason: "failed", message: "Jira did not return an account." };
           } catch (error) {
             const parsed = parseJiraError(error);
-            lastError = parsed ? { reason: parsed.reason, message: parsed.message } : { reason: "failed", message: asError(error).message };
+            nextError = parsed ? { reason: parsed.reason, message: parsed.message } : { reason: "failed", message: asError(error).message };
           }
+          if (generation !== credentialGeneration) return;
+          account = nextAccount;
+          lastError = nextError;
           checkedAt = new Date(now()).toISOString();
-        })().finally(() => { connectionProbe = null; });
+        })().finally(() => { if (connectionProbe === probe) connectionProbe = null; });
+        connectionProbe = probe;
       }
       await connectionProbe;
     }
@@ -260,10 +273,15 @@ export function createJiraService(args: {
       apiToken: input.apiToken.trim(),
     };
     if (!credentials.email || !credentials.apiToken) throw createJiraError("invalid", "Enter your Atlassian account email and API token.");
-    const myself = await run(() => client.get<unknown>("rest/api/3/myself", credentials));
-    account = mapUser(myself);
-    if (!account) throw createJiraError("failed", "Jira did not return an account for these credentials.");
+    // Candidate credentials are isolated from the saved connection diagnostics:
+    // `run` records auth failures against whichever connection status is live.
+    const myself = await client.get<unknown>("rest/api/3/myself", credentials);
+    const candidateAccount = mapUser(myself);
+    if (!candidateAccount) throw createJiraError("failed", "Jira did not return an account for these credentials.");
     args.credentials.setCredentials(credentials);
+    credentialGeneration += 1;
+    connectionProbe = null;
+    account = candidateAccount;
     checkedAt = new Date(now()).toISOString();
     lastError = null;
     projectCache.clear();
@@ -273,6 +291,8 @@ export function createJiraService(args: {
 
   function disconnect(): JiraConnectionStatus {
     args.credentials.clearCredentials();
+    credentialGeneration += 1;
+    connectionProbe = null;
     account = null;
     lastError = null;
     checkedAt = new Date(now()).toISOString();

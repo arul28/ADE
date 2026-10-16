@@ -1,4 +1,5 @@
 import type { IssueRef } from "../../shared/issueRefs";
+import type { OpenProjectBinding } from "../../shared/types";
 import { createPendingRequestChannel } from "./pendingRequestChannel";
 
 /**
@@ -32,6 +33,8 @@ export type IssueOpenRequest = {
   laneId?: string | null;
   /** A branch hint carried by `ade://linear-issue/<id>?branch=…` deeplinks. */
   branch?: string | null;
+  /** The machine that owns the chat when an issue opens from its transcript. */
+  pin?: OpenProjectBinding | null;
   source?: IssueOpenSource;
 };
 

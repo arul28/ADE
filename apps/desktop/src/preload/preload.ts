@@ -6889,15 +6889,18 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "listGitHubIssuesForLaneSessions", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListGitHubIssuesForLaneSessions, args),
       ),
-    attachJiraIssueToSession: async (args: {
-      chatSessionId: string;
-      issues: LaneJiraIssue[];
-      role?: string;
-      source?: string;
-      includeInPr?: boolean;
-      closeOnMerge?: boolean;
-    }): Promise<SessionJiraIssueLink[]> =>
-      callProjectRuntimeActionOr("lane", "attachJiraIssueToSession", { args }, () =>
+    attachJiraIssueToSession: async (
+      args: {
+        chatSessionId: string;
+        issues: LaneJiraIssue[];
+        role?: string;
+        source?: string;
+        includeInPr?: boolean;
+        closeOnMerge?: boolean;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionJiraIssueLink[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "attachJiraIssueToSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesAttachJiraIssueToSession, args),
       ),
     detachJiraIssueFromSession: async (
@@ -6914,8 +6917,11 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "listJiraIssuesForSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListJiraIssuesForSession, args),
       ),
-    listJiraIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionJiraIssueLink[]> =>
-      callProjectRuntimeActionOr("lane", "listJiraIssuesForLaneSessions", { args }, () =>
+    listJiraIssuesForLaneSessions: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionJiraIssueLink[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "listJiraIssuesForLaneSessions", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListJiraIssuesForLaneSessions, args),
       ),
     unlinkLinearIssues: async (args: { laneId: string; issueId?: string }): Promise<boolean> =>

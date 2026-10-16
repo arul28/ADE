@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
 import { IssueSheetHost } from "../issues/IssueSheetHost";
 import { IssueCreateHost } from "../issues/IssueCreateHost";
-import { IssueLaunchHost } from "./BatchLaunchModal";
+import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";

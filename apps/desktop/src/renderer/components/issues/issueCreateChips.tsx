@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React from "react";
 import type {
   CtoGetLinearIssuePickerDataResult,
   GitHubIssueTypeOption,
@@ -9,10 +9,11 @@ import type { JiraCreateMeta, JiraProject, JiraUser } from "../../../shared/type
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { PRIORITY_CHOICES } from "../app/linearIssueBrowserModel";
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
-import { cn } from "../ui/cn";
-import { PickerMenu, type PickerOption, githubLabelOptions, githubPersonOptions } from "./IssuePickerMenu";
+import { githubLabelOptions, githubPersonOptions } from "./IssuePickerMenu";
 import type { GitHubRepoCatalog } from "./githubIssueStore";
 import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft";
+import { ChipPicker } from "./issuePickerChip";
+import { IssueDueDatePicker } from "./issueDueDatePicker";
 
 /**
  * The create composer's property chips: a chip shows the value and opens the
@@ -21,86 +22,6 @@ import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft"
  */
 
 /* ── Small pieces ──────────────────────────────────────────────────────── */
-
-function Chip({
-  label,
-  children,
-  anchorRef,
-  onClick,
-  muted,
-  disabled,
-}: {
-  label: string;
-  children: React.ReactNode;
-  anchorRef?: React.RefObject<HTMLButtonElement>;
-  onClick: () => void;
-  muted?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      ref={anchorRef}
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-7 min-w-0 max-w-[220px] items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11.5px] transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.05]",
-        muted ? "text-[color:var(--kit-text-3)]" : "text-fg/85",
-        disabled && "cursor-not-allowed opacity-50 hover:border-fg/[0.08] hover:bg-fg/[0.02]",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** A chip that opens a filterable picker. */
-export function ChipPicker({
-  label,
-  display,
-  options,
-  selected,
-  multi,
-  placeholder,
-  onOpen,
-  onPick,
-  muted,
-  disabled,
-}: {
-  label: string;
-  display: React.ReactNode;
-  options: PickerOption[];
-  selected: string[];
-  multi?: boolean;
-  placeholder: string;
-  onOpen?: () => void;
-  onPick: (id: string) => void;
-  muted?: boolean;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
-  return (
-    <>
-      <Chip label={label} anchorRef={ref} muted={muted} disabled={disabled} onClick={() => { if (disabled) return; onOpen?.(); setOpen(true); }}>{display}</Chip>
-      <PickerMenu
-        open={open && !disabled}
-        anchorRef={ref}
-        onClose={() => setOpen(false)}
-        options={options}
-        selectedIds={new Set(selected)}
-        multi={multi}
-        placeholder={placeholder}
-        onPick={(id) => {
-          if (!multi) setOpen(false);
-          onPick(id);
-        }}
-      />
-    </>
-  );
-}
 
 export function toggle(list: string[], id: string): string[] {
   return list.includes(id) ? list.filter((entry) => entry !== id) : [...list, id];
@@ -269,16 +190,14 @@ export function LinearMoreFields({
           onPick={(id) => setLinear((current) => ({ ...current, estimate: id === "" ? null : Number(id) }))}
         />
       ) : null}
-      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+      <div className="inline-flex h-7 items-center gap-1.5 text-[11.5px] text-[color:var(--kit-text-3)]">
         Due
-        <input
-          type="date"
-          aria-label="Due date"
-          className="bg-transparent text-fg/85 outline-none [color-scheme:dark]"
-          value={linear.dueDate}
-          onChange={(event) => setLinear((current) => ({ ...current, dueDate: event.target.value }))}
+        <IssueDueDatePicker
+          ariaLabel="Linear due date"
+          value={linear.dueDate || null}
+          onPick={(dueDate) => setLinear((current) => ({ ...current, dueDate: dueDate ?? "" }))}
         />
-      </label>
+      </div>
       <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
         Parent
         <input
@@ -475,16 +394,14 @@ export function JiraCreateChips({
 export function JiraMoreFields({ jira, setJira, parentLocked }: { jira: JiraFields; setJira: Setter<JiraFields>; parentLocked: boolean }) {
   return (
     <>
-      <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
+      <div className="inline-flex h-7 items-center gap-1.5 text-[11.5px] text-[color:var(--kit-text-3)]">
         Due
-        <input
-          type="date"
-          aria-label="Jira due date"
-          className="bg-transparent text-fg/85 outline-none [color-scheme:dark]"
-          value={jira.dueDate}
-          onChange={(event) => setJira((current) => ({ ...current, dueDate: event.target.value }))}
+        <IssueDueDatePicker
+          ariaLabel="Jira due date"
+          value={jira.dueDate || null}
+          onPick={(dueDate) => setJira((current) => ({ ...current, dueDate: dueDate ?? "" }))}
         />
-      </label>
+      </div>
       <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.08] px-2 text-[11.5px] text-[color:var(--kit-text-3)]">
         Parent
         <input

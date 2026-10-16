@@ -50,7 +50,11 @@ export function IssueSheetHost() {
   }, [open]);
 
   const close = useCallback(() => setRequest(null), []);
-  const openRelated = useCallback((ref: IssueRef) => setRequest({ ref, source: "issue-viewer" }), []);
+  const openRelated = useCallback((ref: IssueRef) => setRequest({
+    ref,
+    source: "issue-viewer",
+    ...(ref.provider === "jira" ? { pin: request?.pin ?? null } : {}),
+  }), [request?.pin]);
   const provider = request?.ref.provider ?? null;
   const viewAll = useCallback(() => {
     setRequest(null);
@@ -79,6 +83,7 @@ export function IssueSheetHost() {
         <IssueViewer
           key={issueRefKey(request.ref)}
           issueRef={request.ref}
+          pin={request.pin}
           variant="sheet"
           onOpenRelated={openRelated}
           onViewAll={viewAll}

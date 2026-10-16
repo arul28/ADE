@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect } from "react";
 import { X } from "@phosphor-icons/react";
-import type { AgentChatContextAttachment } from "../../../shared/types";
+import type { AgentChatContextAttachment, OpenProjectBinding } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { issueRefKey, issueRefLabel, type IssueRef } from "../../../shared/issueRefs";
 import {
@@ -48,19 +48,21 @@ export function IssuesToolPanel({
 }) {
   const projectRoot = useActiveProjectRoot();
   const scope = issueTabsScopeKey(projectRoot, laneId);
-  const { refs, activeKey } = useIssueTabs(scope);
+  const tabs = useIssueTabs(scope);
+  const { refs, activeKey } = tabs;
 
   useEffect(() => {
     const pending = takePendingIssueToolRequest();
-    if (pending) openIssueTab(scope, pending.ref);
+    if (pending) openIssueTab(scope, pending.ref, pending.pin);
     return subscribeIssueToolRequests((request) => {
       clearPendingIssueToolRequest();
-      openIssueTab(scope, request.ref);
+      openIssueTab(scope, request.ref, request.pin);
     });
   }, [scope]);
 
-  const openRelated = useCallback((ref: IssueRef) => openIssueTab(scope, ref), [scope]);
   const active = refs.find((ref) => issueRefKey(ref) === activeKey) ?? refs[refs.length - 1] ?? null;
+  const activePin = active ? tabs.pins?.[issueRefKey(active)] ?? null : null;
+  const openRelated = useCallback((ref: IssueRef) => openIssueTab(scope, ref, ref.provider === "jira" ? activePin : null), [activePin, scope]);
 
   if (!active) {
     return (
@@ -91,6 +93,7 @@ export function IssuesToolPanel({
           <IssueTabChip
             key={issueRefKey(ref)}
             issueRef={ref}
+            pin={tabs.pins?.[issueRefKey(ref)] ?? null}
             active={issueRefKey(ref) === issueRefKey(active)}
             onSelect={() => activateIssueTab(scope, issueRefKey(ref))}
             onClose={() => closeIssueTab(scope, issueRefKey(ref))}
@@ -101,6 +104,7 @@ export function IssuesToolPanel({
         <IssueViewer
           key={issueRefKey(active)}
           issueRef={active}
+          pin={activePin}
           variant="tool"
           onAttachToChat={onAttachToChat}
           onOpenRelated={openRelated}
@@ -112,18 +116,20 @@ export function IssuesToolPanel({
 
 function IssueTabChip({
   issueRef,
+  pin,
   active,
   onSelect,
   onClose,
 }: {
   issueRef: IssueRef;
+  pin: OpenProjectBinding | null;
   active: boolean;
   onSelect: () => void;
   onClose: () => void;
 }) {
   const linearIssue = useLinearIssuePeek(issueRef.provider === "linear" ? issueRef.identifier : null);
   const githubIssue = useGitHubIssuePeek(issueRef.provider === "github" ? { owner: issueRef.owner, repo: issueRef.repo, number: issueRef.number } : null);
-  const jiraIssue = useJiraIssuePeek(issueRef.provider === "jira" ? issueRef : null);
+  const jiraIssue = useJiraIssuePeek(issueRef.provider === "jira" ? issueRef : null, pin);
   const label = issueRefLabel(issueRef);
   const title = linearIssue?.title ?? githubIssue?.title ?? jiraIssue?.title ?? null;
   const dragAttachment = linearIssue

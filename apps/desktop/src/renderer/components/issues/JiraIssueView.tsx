@@ -1,21 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarBlank, CaretDown, CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type { JiraComment, JiraCreateMeta, JiraIssueDetail, JiraTransition, JiraUser } from "../../../shared/types/jira";
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { IssueRef } from "../../../shared/issueRefs";
 import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { PickerMenu, type PickerOption } from "./IssuePickerMenu";
 import { JiraStatusIcon } from "../lanes/jiraBrand";
 import { cn } from "../ui/cn";
-import { AnchoredMenu } from "../ui/AnchoredMenu";
-import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
-import { Z_LAYERS } from "../ui/zLayers";
 import { Banner } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { EditableIssueBody, EditableIssueTitle, IssueCommentComposer } from "./issueEditing";
 import { IssueMarkdown } from "./issueMarkdown";
 import { formatIssueDate } from "./LinearIssueView";
 import { loadJiraIssueComments } from "./jiraIssueStore";
+import { IssueDueDatePicker } from "./issueDueDatePicker";
 import "./issueViewer.css";
 
 export type JiraIssueEditing = {
@@ -42,7 +41,6 @@ export type JiraIssueEditing = {
 };
 
 type PickerId = "status" | "assignee" | "priority" | "labels";
-const JIRA_DUE_DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
 
 function commentErrorModel(id: string, error: string, retry: () => void) {
   const parsed = parseJiraError(error);
@@ -115,133 +113,17 @@ function JiraLabels({ labels }: { labels: string[] }) {
   );
 }
 
-function isoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function dateFromIso(value: string | null): Date | null {
-  if (!value) return null;
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return null;
-  const date = new Date(year, month - 1, day);
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
-}
-
-function JiraDueDatePicker({ value, disabled, onPick }: { value: string | null; disabled: boolean; onPick: (value: string | null) => void }) {
-  const [open, setOpen] = useState(false);
-  const [month, setMonth] = useState(() => {
-    const selected = dateFromIso(value) ?? new Date();
-    return new Date(selected.getFullYear(), selected.getMonth(), 1);
-  });
-  const anchorRef = useRef<HTMLButtonElement>(null);
-  const selected = dateFromIso(value);
-  const weekdayOffset = (month.getDay() + 6) % 7;
-  const dayCount = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
-  const cellCount = Math.ceil((weekdayOffset + dayCount) / 7) * 7;
-  const cells = Array.from({ length: cellCount }, (_, index) => {
-    const day = index - weekdayOffset + 1;
-    return day > 0 && day <= dayCount ? new Date(month.getFullYear(), month.getMonth(), day) : null;
-  });
-  const monthLabel = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(month);
-
-  return (
-    <>
-      <button
-        ref={anchorRef}
-        type="button"
-        aria-label="Due date"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => {
-          const date = dateFromIso(value) ?? new Date();
-          setMonth(new Date(date.getFullYear(), date.getMonth(), 1));
-          setOpen(true);
-        }}
-        className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.05] disabled:cursor-default disabled:opacity-70"
-      >
-        <CalendarBlank size={12} className="shrink-0 text-[color:var(--kit-text-3)]" />
-        <span className="truncate">{selected ? JIRA_DUE_DATE_FORMAT.format(selected) : "None"}</span>
-      </button>
-      <AnchoredMenu
-        open={open}
-        anchorRef={anchorRef}
-        onClose={() => setOpen(false)}
-        zIndex={Z_LAYERS.dialogPopover}
-        className={`${MENU_SURFACE_CLASS} w-[248px] p-2`}
-      >
-        <div className="mb-2 flex items-center justify-between">
-          <button
-            type="button"
-            aria-label="Previous month"
-            className="kit-icon-btn h-6 w-6"
-            onClick={() => setMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
-          >
-            <CaretLeft size={12} />
-          </button>
-          <span className="text-[11.5px] font-medium text-fg/85">{monthLabel}</span>
-          <button
-            type="button"
-            aria-label="Next month"
-            className="kit-icon-btn h-6 w-6"
-            onClick={() => setMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
-          >
-            <CaretRight size={12} />
-          </button>
-        </div>
-        <div className="grid grid-cols-7 gap-0.5 text-center text-[9.5px] text-muted-fg/55" aria-hidden="true">
-          {["M", "T", "W", "T", "F", "S", "S"].map((day, index) => <span key={`${day}-${index}`} className="py-1">{day}</span>)}
-        </div>
-        <div className="grid grid-cols-7 gap-0.5" role="grid" aria-label={monthLabel}>
-          {cells.map((date, index) => {
-            if (!date) return <span key={`empty-${index}`} aria-hidden="true" />;
-            const dayValue = isoDate(date);
-            const isSelected = value === dayValue;
-            const isToday = dayValue === isoDate(new Date());
-            return (
-              <button
-                key={dayValue}
-                type="button"
-                role="gridcell"
-                aria-label={date.toLocaleDateString()}
-                aria-selected={isSelected}
-                onClick={() => { onPick(dayValue); setOpen(false); }}
-                className={cn(
-                  "grid h-7 place-items-center rounded-md text-[11px] transition-colors hover:bg-fg/[0.08]",
-                  isSelected && "bg-[color:var(--color-accent)] text-accent-fg hover:bg-[color:var(--color-accent)]",
-                  isToday && !isSelected && "border border-fg/[0.18]",
-                )}
-              >
-                {date.getDate()}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-2 flex items-center justify-between border-t border-fg/[0.06] pt-2">
-          <button type="button" className="kit-btn kit-btn-ghost h-6 px-2 text-[10.5px]" onClick={() => { onPick(isoDate(new Date())); setOpen(false); }}>
-            Today
-          </button>
-          <button type="button" className="kit-btn kit-btn-ghost h-6 px-2 text-[10.5px]" disabled={!value} onClick={() => { onPick(null); setOpen(false); }}>
-            Clear
-          </button>
-        </div>
-      </AnchoredMenu>
-    </>
-  );
-}
-
 function Activity({
   issue,
   siteUrl,
   projectRoot,
+  pin,
   editing,
 }: {
   issue: JiraIssueDetail;
   siteUrl: string;
   projectRoot: string | null;
+  pin?: OpenProjectBinding | null;
   editing?: JiraIssueEditing;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -251,7 +133,10 @@ function Activity({
   const [commentError, setCommentError] = useState<string | null>(null);
   const [initialError, setInitialError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(false);
-  const identity = `${siteUrl}:${issue.key}`;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const identity = `${pinKey ?? ""}:${siteUrl}:${issue.key}`;
   const previousIdentity = useRef(identity);
   if (previousIdentity.current !== identity) {
     previousIdentity.current = identity;
@@ -272,7 +157,7 @@ function Activity({
     setLoadingOlder(true);
     setCommentError(null);
     try {
-      const page = await loadJiraIssueComments(projectRoot, siteUrl, issue.key, nextCursor);
+      const page = await loadJiraIssueComments(projectRoot, siteUrl, issue.key, nextCursor, pinRef.current);
       setComments((current) => {
         const existing = new Set(current.map((comment) => comment.id));
         return [...page.comments.filter((comment) => !existing.has(comment.id)), ...current];
@@ -289,7 +174,7 @@ function Activity({
     setInitialLoading(true);
     setInitialError(null);
     try {
-      const page = await loadJiraIssueComments(projectRoot, siteUrl, issue.key, null);
+      const page = await loadJiraIssueComments(projectRoot, siteUrl, issue.key, null, pinRef.current);
       setComments(page.comments);
       setNextCursor(page.nextCursor);
     } catch (error) {
@@ -297,7 +182,7 @@ function Activity({
     } finally {
       setInitialLoading(false);
     }
-  }, [issue.key, projectRoot, siteUrl]);
+  }, [issue.key, pinKey, projectRoot, siteUrl]);
 
   useEffect(() => {
     if (!expanded || issue.totalComments === 0 || comments.length > 0 || initialLoading || initialError) return;
@@ -365,12 +250,14 @@ export function JiraIssueView({
   issue,
   siteUrl,
   projectRoot,
+  pin,
   onOpenRelated,
   editing,
 }: {
   issue: JiraIssueDetail;
   siteUrl: string;
   projectRoot: string | null;
+  pin?: OpenProjectBinding | null;
   onOpenRelated: (ref: IssueRef) => void;
   editing?: JiraIssueEditing;
 }) {
@@ -473,7 +360,7 @@ export function JiraIssueView({
               ) : <span className="text-[color:var(--kit-text-3)]">None</span>}
             </SideRow>
             <SideRow label="Due date">
-              <JiraDueDatePicker value={issue.dueDate} disabled={!editable} onPick={(dueDate) => editing?.onSetDueDate(dueDate)} />
+              <IssueDueDatePicker value={issue.dueDate} disabled={!editable} onPick={(dueDate) => editing?.onSetDueDate(dueDate)} />
             </SideRow>
           </dl>
           <div className="kit-rule my-2" />
@@ -501,7 +388,7 @@ export function JiraIssueView({
         </div>
         <div className="ade-issue-view-body">
           <EditableIssueBody value={issue.description} onSave={editable ? editing?.onSaveDescription : undefined} />
-          <Activity issue={issue} siteUrl={siteUrl} projectRoot={projectRoot} editing={editing} />
+          <Activity issue={issue} siteUrl={siteUrl} projectRoot={projectRoot} pin={pin} editing={editing} />
         </div>
       </div>
 
