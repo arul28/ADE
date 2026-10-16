@@ -469,6 +469,38 @@ describe("openKvDb against a peer holding the database", () => {
     expect(db.getJson<{ ok: boolean }>("wal:contended")).toEqual({ ok: true });
   });
 
+  // A peer holding an EXCLUSIVE lock refuses reads as well as the conversion, so
+  // the open's first journal-mode read is refused too. That read must not fail
+  // the open: the conversion is retried (or deferred), and the open still succeeds.
+  it("opens while a peer holds an EXCLUSIVE lock, without throwing on the first read", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-wal-exclusive-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    (await openKvDb(dbPath, createLogger() as any)).close();
+    const reset = new DatabaseSync(dbPath);
+    reset.exec("PRAGMA journal_mode = DELETE");
+    reset.close();
+
+    const peer = new DatabaseSync(dbPath);
+    peer.exec("BEGIN EXCLUSIVE");
+    let peerInTransaction = true;
+    const release = () => {
+      if (!peerInTransaction) return;
+      peerInTransaction = false;
+      peer.exec("ROLLBACK");
+    };
+    const releaseTimer = setTimeout(release, 0);
+    activeDisposers.push(async () => {
+      clearTimeout(releaseTimer);
+      release();
+      peer.close();
+    });
+
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    db.setJson("wal:exclusive", { ok: true });
+    expect(db.getJson<{ ok: boolean }>("wal:exclusive")).toEqual({ ok: true });
+  });
+
   it("defers the WAL conversion after one attempt when the budget runs out, and still opens", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-wal-budget-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
