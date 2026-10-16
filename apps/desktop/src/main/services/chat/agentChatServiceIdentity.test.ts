@@ -828,6 +828,29 @@ describe("createAgentChatService", () => {
       expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
     });
 
+    it("does not wait for the best-effort HEAD lookup before creating a chat", async () => {
+      let finishGit!: (result: { stdout: string; stderr: string; exitCode: number }) => void;
+      vi.mocked(runGit).mockImplementation(() => new Promise((resolve) => {
+        finishGit = resolve;
+      }));
+
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+
+      expect(session.id).toBeTruthy();
+      expect(sessionService.setHeadShaStart).not.toHaveBeenCalled();
+
+      finishGit({ stdout: "lane-1-sha\n", stderr: "", exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(sessionService.setHeadShaStart).toHaveBeenCalledWith(session.id, "lane-1-sha");
+      });
+    });
+
     it("ignores native provider permission overrides for pinned identities on create", async () => {
       const { service } = createService();
       // Callers over IPC could previously pass through `claudePermissionMode:

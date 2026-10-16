@@ -45741,10 +45741,15 @@ export function createAgentChatService(args: {
     );
     managedSessions.set(sessionId, managed);
 
-    const headStart = await computeHeadShaBestEffort(laneId).catch(() => null);
-    if (headStart) {
-      sessionService.setHeadShaStart(sessionId, headStart);
-    }
+    // This SHA is best-effort session metadata. Do not hold chat creation (and
+    // the first user message) on a git subprocess that can take seconds on a
+    // remote or busy worktree. The first turn captures its own before-SHA when
+    // it starts; this session-level baseline can land independently.
+    void computeHeadShaBestEffort(laneId)
+      .then((headStart) => {
+        if (headStart) sessionService.setHeadShaStart(sessionId, headStart);
+      })
+      .catch(() => {});
 
     if (effectiveProvider === "claude") {
       ensureClaudeSessionRuntime(managed);
