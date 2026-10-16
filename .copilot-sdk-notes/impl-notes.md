@@ -127,6 +127,22 @@ isolated ADE home. All chat calls below used `--personal`.
   the isolated desktop displayed ADE sign-in, and starting it opened the primary
   DB, so I stopped it before acting in the UI.
 
+The a–h receipts came from these live ADE entry points and observed results:
+
+| Check | ADE command/API exercised | Observed receipt |
+| --- | --- | --- |
+| a | `chat.create` / `chat.read` (`--personal`, Copilot Auto) | Session `2527d2eb-1a7c-473f-925c-7475c1752564`: one assistant `ok` event, then completed status and done. |
+| b | `personalChats.pendingInputs` and answer action | Deny card named `Copilot shell permission`; denial produced no output. Accept-once produced `approved-and-over-60`, exit 0. |
+| c | `chat.interrupt` then chat read/summary | Interrupted notice and done status; summary returned idle with `runtimeAlive: true`. |
+| d | `chat.create`, `chat.send`, `chat.read` before and after runtime stop/start | Session `4705f1e5-41ea-4464-9296-853d9ed56c8d` transcript contains `before-restart` then `after-restart` across restart. |
+| e | Built SDK worker `CopilotClient.resumeSession` using the persisted ACP-era id | Same SDK session id and 10 history events; no ADE-managed resume/send, so this remains a partial FAIL. |
+| f | ADE chat permission answer plus approved shell request | `sleep 70; echo approved-and-over-60` took 71 seconds and completed with the expected shell output. |
+| g | Production `runProviderTask` session-title path with marker workspace | Returned `Review the effect of urban tree planting on summer heat.`; marker file stayed absent. |
+| h | `chat.models --provider copilot` and `ai.getStatus` | One Auto row and authenticated login `arul28`; visual Settings/model-picker check was not reached. |
+
+The runtime was stopped after the checks with
+`node scripts/dev-runtime-stop.mjs --socket /tmp/ade-runtime-copilot-review5.sock`.
+
 ## Files changed
 
 - Shared chat types and permission ladder; main chat runtime, persistence,
