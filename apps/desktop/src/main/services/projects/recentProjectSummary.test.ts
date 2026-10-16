@@ -3,9 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { openKvDb } from "../state/kvDb";
 import {
   cleanGitConfigValue,
+  clearAdeProjectMemoForTests,
   clearGitOriginCacheForTests,
+  inspectRecentProject,
   parseGitOriginUrlFromConfig,
   readGitOriginUrl,
   resolveGitConfigDirectory,
@@ -58,10 +62,12 @@ function writeLinkedWorktree(
 
 beforeEach(() => {
   clearGitOriginCacheForTests();
+  clearAdeProjectMemoForTests();
 });
 
 afterEach(() => {
   clearGitOriginCacheForTests();
+  clearAdeProjectMemoForTests();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
@@ -272,5 +278,201 @@ describe("toShallowRecentProjectSummary", () => {
 
     expect(summary.kind).toBe("remote");
     expect(summary.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inspectRecentProject — the memoized database read
+//
+// The read is memoized on a fingerprint of the project database, but the lane
+// count is recomputed from disk on every call. These cases pin the second
+// half of that split: nothing that changes what the count *is* may be served
+// from the memo. A wrong-but-fast recent-projects list is worse than a slow
+// one, so each row here is a way the fast path could lie.
+// ---------------------------------------------------------------------------
+
+const MEMO_NOW = "2026-04-02T12:00:00.000Z";
+
+function createLogger() {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  } as any;
+}
+
+function memoEntry(rootPath: string) {
+  return { rootPath, displayName: path.basename(rootPath), lastOpenedAt: MEMO_NOW };
+}
+
+type LaneProjectDb = Awaited<ReturnType<typeof openKvDb>>;
+
+type LaneProjectFixture = {
+  projectRoot: string;
+  layout: ReturnType<typeof resolveAdeLayout>;
+  /** Held open across both inspections so the writes stay in the WAL. */
+  db: LaneProjectDb;
+  lanePath: string;
+};
+
+function insertProject(db: LaneProjectDb, projectId: string, projectRoot: string): void {
+  db.run(
+    "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+    [projectId, projectRoot, path.basename(projectRoot), "main", MEMO_NOW, MEMO_NOW],
+  );
+}
+
+function insertLane(
+  db: LaneProjectDb,
+  args: {
+    laneId: string;
+    projectId: string;
+    laneType: "primary" | "worktree";
+    worktreePath: string;
+    status?: string;
+    archivedAt?: string | null;
+  },
+): void {
+  db.run(
+    `
+      insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      args.laneId,
+      args.projectId,
+      args.laneId,
+      null,
+      args.laneType,
+      "main",
+      `feature/${args.laneId}`,
+      args.worktreePath,
+      null,
+      args.laneType === "primary" ? 1 : 0,
+      null,
+      null,
+      null,
+      null,
+      args.status ?? "active",
+      MEMO_NOW,
+      args.archivedAt ?? null,
+    ],
+  );
+}
+
+/**
+ * A project with one primary lane and one worktree lane that exists on disk,
+ * so a correct summary reports a lane count of 2.
+ */
+async function seedLaneProject(): Promise<LaneProjectFixture> {
+  const projectRoot = makeTempDir();
+  const layout = resolveAdeLayout(projectRoot);
+  const lanePath = path.join(layout.worktreesDir, "lane-managed");
+  fs.mkdirSync(lanePath, { recursive: true });
+
+  const db = await openKvDb(layout.dbPath, createLogger());
+  insertProject(db, "proj-memo", projectRoot);
+  insertLane(db, {
+    laneId: "lane-primary",
+    projectId: "proj-memo",
+    laneType: "primary",
+    worktreePath: projectRoot,
+  });
+  insertLane(db, {
+    laneId: "lane-managed",
+    projectId: "proj-memo",
+    laneType: "worktree",
+    worktreePath: lanePath,
+  });
+  return { projectRoot, layout, db, lanePath };
+}
+
+describe("inspectRecentProject lane count is never served stale", () => {
+  const mutations: {
+    change: string;
+    expectedAfter: number;
+    mutate: (fixture: LaneProjectFixture) => void;
+  }[] = [
+    {
+      // The database is still open, so this write lands only in `ade.db-wal`
+      // and leaves `ade.db`'s mtime and size untouched. A fingerprint taken
+      // from the main file alone would keep reporting the old count.
+      change: "a lane is added while the store is open",
+      expectedAfter: 3,
+      mutate: (fixture) => {
+        const addedPath = path.join(fixture.layout.worktreesDir, "lane-added");
+        fs.mkdirSync(addedPath, { recursive: true });
+        insertLane(fixture.db, {
+          laneId: "lane-added",
+          projectId: "proj-memo",
+          laneType: "worktree",
+          worktreePath: addedPath,
+        });
+      },
+    },
+    {
+      change: "a lane is archived",
+      expectedAfter: 1,
+      mutate: (fixture) => {
+        fixture.db.run(
+          "update lanes set status = 'archived', archived_at = ? where id = 'lane-managed'",
+          [MEMO_NOW],
+        );
+      },
+    },
+    {
+      // Nothing in the database changes here at all, so no fingerprint can
+      // catch it: the count has to be recomputed against the disk each call.
+      change: "a lane's worktree is deleted from disk",
+      expectedAfter: 1,
+      mutate: (fixture) => {
+        fs.rmSync(fixture.lanePath, { recursive: true, force: true });
+      },
+    },
+  ];
+
+  it.each(mutations)("reflects the change when $change", async ({ mutate, expectedAfter }) => {
+    const fixture = await seedLaneProject();
+    try {
+      expect(inspectRecentProject(memoEntry(fixture.projectRoot)).summary.laneCount).toBe(2);
+
+      mutate(fixture);
+
+      expect(inspectRecentProject(memoEntry(fixture.projectRoot)).summary.laneCount).toBe(expectedAfter);
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  it("picks up a project database created after an earlier summary", async () => {
+    const projectRoot = makeTempDir();
+    const layout = resolveAdeLayout(projectRoot);
+
+    expect(inspectRecentProject(memoEntry(projectRoot)).projectId).toBeNull();
+
+    const db = await openKvDb(layout.dbPath, createLogger());
+    try {
+      insertProject(db, "proj-late", projectRoot);
+
+      expect(inspectRecentProject(memoEntry(projectRoot)).projectId).toBe("proj-late");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("still reports a project root that disappears after a summary", async () => {
+    const fixture = await seedLaneProject();
+    fixture.db.close();
+
+    expect(inspectRecentProject(memoEntry(fixture.projectRoot)).summary.exists).toBe(true);
+
+    fs.rmSync(fixture.projectRoot, { recursive: true, force: true });
+
+    const summary = inspectRecentProject(memoEntry(fixture.projectRoot)).summary;
+    expect(summary.exists).toBe(false);
+    expect(summary.laneCount).toBeUndefined();
   });
 });
