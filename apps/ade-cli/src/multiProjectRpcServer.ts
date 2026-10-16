@@ -1831,7 +1831,7 @@ export function createMultiProjectRpcRequestHandler(
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
     const scope = targetProjectId
       ? scopeRegistry.getIfReady?.(targetProjectId)
-        ?? await scopeRegistry.getIfBooted(targetProjectId)?.catch(() => null)
+        ?? await scopeRegistry.getIfBooted?.(targetProjectId)?.catch(() => null)
       : null;
     // Only consult the ordinary resolver when no precise recovery target is
     // known. A missing target scope must never redirect a destructive action.

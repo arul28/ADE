@@ -205,7 +205,7 @@ describe("multi-project RPC server", () => {
     const scopeRegistry = {
       getActiveSyncHostProjectId: vi.fn(() => null),
       getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
-      getIfBooted: vi.fn(() => null),
+      getIfReady: vi.fn(() => null),
       resolveActiveSyncHost: vi.fn(async () => ({ registryProjectId: record.projectId, record, runtime, dispose: vi.fn() })),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
@@ -215,7 +215,6 @@ describe("multi-project RPC server", () => {
     await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.getStatus", params: {} }))
       .resolves.toEqual({ role: "brain", label: "healthy-active" });
     expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledOnce();
-    expect(scopeRegistry.getIfBooted).toHaveBeenCalledOnce();
     handler.dispose();
   });
 
@@ -2447,8 +2446,11 @@ describe("multi-project RPC server", () => {
     fs.mkdirSync(otherRoot, { recursive: true });
     const other = registry.add(otherRoot);
     const activeRuntime = makeRuntime("active");
+    const requestedRuntime = makeRuntime("requested-project");
+    const requestedScope = { registryProjectId: other.projectId, record: other, runtime: requestedRuntime, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
+      getIfReady: vi.fn((id: string) => id === other.projectId ? requestedScope : null),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
       resolveActiveSyncHost: vi.fn(async () => ({
@@ -2478,7 +2480,7 @@ describe("multi-project RPC server", () => {
       id: 2,
       method: "sync.getStatus",
       params: { projectId: other.projectId },
-    })).toEqual({ role: "brain", label: "active" });
+    })).toEqual({ role: "brain", label: "requested-project" });
 
     expect(await handler({
       jsonrpc: "2.0",
@@ -2487,7 +2489,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: other.projectId },
     })).toEqual([{ deviceId: "active-device" }]);
 
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(2);
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
