@@ -3502,14 +3502,23 @@ export function appendCollapsedChatTranscriptEvent(
       return;
     }
     if (event.type === "tool_result") {
-      // With a context, the set answers. Without one (a caller that collapses a
-      // single event), the script row already in the list answers — a
-      // per-call context would not survive to this event, so the row is the
-      // only durable record that this call's script has its own line.
-      const scriptRowExists = rows.some((row) => (
-        row.event.type === "workflow_script" && row.event.itemId === event.itemId
-      ));
-      if (scriptRowExists || context?.workflowScriptItemIds.has(event.itemId)) return;
+      // With a context, the set answers, and it is the only source consulted:
+      // a `workflow_script` row is pushed in exactly one place (above), which
+      // records its item id in this set in the same breath. Scanning the rows
+      // for one would walk the whole transcript once per tool result, which is
+      // quadratic over a long chat — and backfill re-collapses the whole
+      // transcript on every page it lands.
+      //
+      // Without a context (a caller that collapses a single event), the script
+      // row already in the list answers — a per-call context would not survive
+      // to this event, so the row is the only durable record that this call's
+      // script has its own line.
+      const scriptRowExists = context
+        ? context.workflowScriptItemIds.has(event.itemId)
+        : rows.some((row) => (
+            row.event.type === "workflow_script" && row.event.itemId === event.itemId
+          ));
+      if (scriptRowExists) return;
     }
     appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp), context);
     return;

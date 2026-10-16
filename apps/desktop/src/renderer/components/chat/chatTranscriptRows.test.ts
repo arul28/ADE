@@ -5759,4 +5759,38 @@ describe("workflow script rows", () => {
 
     expect(rows.map((row) => row.event.type)).toEqual(["workflow_script"]);
   });
+
+  /**
+   * Every collapse the app itself runs carries a shared context (a chat opening,
+   * a streamed turn, a backfilled page), and there the context's own
+   * `workflowScriptItemIds` set is what says the call already owns a script row.
+   * The row list is the answer only for the context-less per-event append above.
+   * Both must swallow the result, and the incremental path must agree with a
+   * full pass — the two are required to be byte-identical.
+   */
+  it("swallows a Workflow result through the shared collapse context too", () => {
+    const stream = [
+      env("2026-10-16T10:00:00.000Z", {
+        type: "tool_call", tool: "Workflow", args: { script }, itemId: "wf-1", turnId: "turn-1",
+      }),
+      env("2026-10-16T10:00:01.000Z", {
+        type: "tool_result", tool: "Workflow", result: { ok: true }, itemId: "wf-1", turnId: "turn-1", status: "completed",
+      }),
+      env("2026-10-16T10:00:02.000Z", { type: "text", text: "all done", messageId: "m-1", turnId: "turn-1" }),
+    ];
+    const full = collapseChatTranscriptEvents(stream);
+    expect(full.map((row) => row.event.type)).toEqual(["workflow_script", "text"]);
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let { rows, context } = collapseChatTranscriptEventsWithContext(prevEvents);
+    for (const event of stream) {
+      const nextEvents = [...prevEvents, event];
+      const result = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, rows, context);
+      prevEvents = nextEvents;
+      rows = result.rows;
+      context = result.context;
+    }
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script", "text"]);
+    expect(rows).toEqual(full);
+  });
 });
