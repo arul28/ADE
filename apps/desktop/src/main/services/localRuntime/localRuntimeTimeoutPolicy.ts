@@ -88,6 +88,36 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
+
+/**
+ * The longest a machine-scope sync STATUS READ waits for the local runtime
+ * before the desktop answers for itself.
+ *
+ * `sync.getLocalStatus` is the only source for the This-Machine card and the
+ * app shell's connection indicator, and the renderer re-reads it on every
+ * `sync-status` broadcast. A healthy answer is milliseconds — the whole family
+ * is local file work — so the read has no work to wait out, only a wedged
+ * runtime to stop waiting on. On the 30s IPC default the two budgets were the
+ * same 30s and the IPC timer, which starts first (at handler entry, before the
+ * runtime is even connected), always won: it replaced the read's own legible
+ * reason with `IPC handler for 'ade.sync.getLocalStatus' timed out after
+ * 30000ms` for six users across 1.2.104–1.2.107, so the synthesized
+ * machine-only snapshot the handler already builds for an unreachable runtime
+ * never got the chance to answer. Bounding the read here restores the chain's
+ * invariant —
+ * every budget expires monotonically outward, inner before outer — with 3.75x
+ * of headroom under that IPC timer for building the fallback snapshot and
+ * delivering it. 8s matches LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS, the existing
+ * budget for "a local runtime read that must not hold its caller".
+ *
+ * The bound covers the whole read, `connect()` included: on Windows a cold
+ * runtime start is allowed 30s inside `connect` alone, so a transport-only
+ * budget would still race the IPC timer. A read that loses the race lands in
+ * the already-designed degraded state (buildMachineOnlySyncSnapshot), whose
+ * `degradedReason` tells the renderer's shared reader to back off and retry —
+ * never in a snapshot that claims the machine is healthy or reachable.
+ */
+export const LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 /**
