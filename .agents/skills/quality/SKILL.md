@@ -197,6 +197,11 @@ Before the review starts, follow **Early PR and harvests → Open** in
 review (not a draft), and write the ship state with `status: "prepping"`. Then
 start Phase 1 immediately — do not wait for CI or the bots.
 
+When the diff touches Windows-specific code (named pipes, PowerShell, the
+Windows service manager or installer, path/drive handling, `win32` branches),
+open the PR with `--label windows` so CI runs the native Windows job; other PRs
+skip it.
+
 Skip this step only when the branch is `main`, the tree holds changes that do
 not belong to this lane, or the user asked for no PR. Say which one applied.
 When a PR already exists, push the checkpoint only if HEAD is ahead of the
@@ -323,6 +328,15 @@ Cite the doc section in the finding.
    A long chain of re-reviews usually chases fix-induced regressions, not real
    progress. The cap never moves a finding to the gate; only step 8's three
    reasons do that.
+
+   **Check pass — once, here.** Do not typecheck or run tests after each fix in
+   steps 6–7. When the last fix is in, run one pass (see **Running checks** in
+   `AGENTS.md`): the typecheck of each package the branch touched, and the test
+   files that cover the touched code (colocated `*.test.ts(x)` and the tests
+   that import it). Never the full suite or all shards; CI is the full gate.
+   On a failure, fix it and re-run only the failed files and the typecheck that
+   failed. This is the branch's only local check pass; `/test` and `/ship`
+   re-check only their own fixes.
 8. **Gate — the narrow exception, not the escape hatch.** Only three kinds of
    accepted finding may go to the gate unfixed:
    - it needs a **product decision you cannot make** (which of two valid
@@ -386,6 +400,7 @@ the two permitted reasons — not findings you chose to defer.
 - Re-review passes: [n]
 - Reviewed head: `qualityReviewedSha` [sha]
 - Leftovers (Low from the last capped check that could not be fixed, each with the reason): [list | none]
+- Check pass: typecheck [packages] [PASS | FAIL]; tests [n files, n tests] [PASS | FAIL]
 
 ### PR harvest
 - PR: #[n] ([opened by this run | existing | skipped — reason])

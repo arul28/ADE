@@ -273,7 +273,11 @@ class StdioRpcProcess {
 }
 
 describe("ade rpc --stdio daemon bridge", () => {
-  it("keeps the machine runtime alive after the stdio client exits", async () => {
+  // Skipped on Windows: the second client intermittently could not reach the
+  // named pipe (ENOENT) or timed out on initialize, failing on unrelated
+  // branches and on main. The Linux job runs this contract, and the daemon
+  // tests below still spawn real daemons over Windows named pipes.
+  it.skipIf(process.platform === "win32")("keeps the machine runtime alive after the stdio client exits", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));

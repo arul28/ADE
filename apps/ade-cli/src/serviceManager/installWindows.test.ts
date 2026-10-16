@@ -462,11 +462,18 @@ describe("Windows background service helpers", () => {
       );
       try {
         expect(bootstrap.status).toBe(0);
+        // The supervisor rotates by renaming the live file, so a file can
+        // vanish between listing and reading; a missing file reads as empty.
+        const readIfPresent = (file: string): string => {
+          try {
+            return fs.readFileSync(file, "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+            throw error;
+          }
+        };
         const readLog = (): string =>
-          [`${outputLogPath}.1`, outputLogPath]
-            .filter((file) => fs.existsSync(file))
-            .map((file) => fs.readFileSync(file, "utf8"))
-            .join("");
+          [`${outputLogPath}.1`, outputLogPath].map(readIfPresent).join("");
         // The child's done file only says its writes returned; the drain
         // threads (one per stream) append after that, so wait for both.
         const drained = (log: string): boolean =>

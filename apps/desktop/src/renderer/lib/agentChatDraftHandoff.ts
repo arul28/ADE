@@ -59,7 +59,3 @@ export function takeAgentChatDraftHandoff(
   if (Date.now() - pending.queuedAt > pending.maxAgeMs) return null;
   return pending.text;
 }
-
-export function clearAgentChatDraftHandoffsForTest(): void {
-  pendingByTarget.clear();
-}

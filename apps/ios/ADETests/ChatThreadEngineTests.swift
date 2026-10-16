@@ -1540,7 +1540,7 @@ private func chatThreadFramePresentationMismatch(
 /// the engine's pre-merged reasoning rows produce the builder's cards.
 @MainActor
 final class WorkReasoningFragmentMergeTests: XCTestCase {
-  // Desktop parity: the same cases as shared/chatActivityPhase.test.ts.
+  // Desktop parity: the same rule as `mergeReasoningFragment` in shared/chatActivityPhase.ts.
   func testMatchesDesktopMergeReasoningFragment() {
     XCTAssertEqual(mergeWorkReasoningFragment("The same thought.", "The same thought."), "The same thought.")
     XCTAssertEqual(mergeWorkReasoningFragment("The same", "The same thought."), "The same thought.")

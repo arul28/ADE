@@ -119,6 +119,7 @@ Therefore, when verifying a fix:
 - **CI failure** → run only the failing test file: `npx vitest run path/to/that.test.ts`. If a shard reported multiple failures, run those specific files. Never re-run the whole shard.
 - **Typecheck/lint/build failure** → run only the package-level command for the package whose file you touched (`cd apps/desktop && npx tsc --noEmit -p .`, etc.). Never run all three packages.
 - **Review-only edits with no CI link** → run colocated/directly-affected tests when they exist (the `*.test.ts(x)` neighbor of the file you touched). Otherwise, run only the smallest package typecheck/lint that covers the touched surface. If you suspect adjacent tests might break, run only those *suspected* files — not the whole package.
+- **Once per push, not once per edit.** Batch every fix for the iteration, then run the targets above once on the combined diff, right before the push. Fix agents run only the one failing file they fixed; the package typecheck runs once, by the lead. After a failure, re-run only what failed.
 - **Suite-wide rerun is forbidden inside the loop.** If you genuinely think the change is broad enough to need it, that's a signal the change is out of scope for an iteration; revert the speculative parts and narrow.
 
 `ci-fix-agent` and `review-fix-agent` prompts should both cite this section by name and forbid the agent from running anything broader than the narrowest target that proves its fix.
@@ -1158,7 +1159,11 @@ before merging. If the gate is non-empty or unavailable, exit
 and disclose deferred findings afterwards.
 
 For a Windows-relevant diff, the bound head must have a terminal-green native
-`windows-foundation` check. Also require the packaged Windows job when the diff
+`windows-foundation` check. That job runs on a pull request only with the
+`windows` label: add it (`gh pr edit <n> --add-label windows`) when you open
+the PR, so the first push runs it. Added later, it takes effect on the next
+push; a re-run replays the old event and its old labels, so push (an empty
+commit works). Other PRs skip the job; it still runs on every push to `main`. Also require the packaged Windows job when the diff
 changes packaging, native bundle contents, or release-contract inputs. Record
 Computer Use evidence by capability: native screenshot/video/OS GUI control
 may be explicitly unavailable on Windows while App Control and proof-file

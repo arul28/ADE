@@ -106,10 +106,6 @@ type AdeProjectMemoEntry = {
 const ADE_PROJECT_MEMO_LIMIT = 256;
 const adeProjectMemo = new Map<string, AdeProjectMemoEntry>();
 
-export function clearAdeProjectMemoForTests(): void {
-  adeProjectMemo.clear();
-}
-
 /**
  * Every errno means "treat this file as absent", deliberately and with no log
  * line: ENOENT is the designed path (most projects have no `.ade/ade.db`) and
@@ -348,10 +344,6 @@ type GitOriginCacheEntry = {
 // pure waste when it almost never changes — key on its mtime.
 const GIT_ORIGIN_CACHE_LIMIT = 256;
 const gitOriginCache = new Map<string, GitOriginCacheEntry>();
-
-export function clearGitOriginCacheForTests(): void {
-  gitOriginCache.clear();
-}
 
 /**
  * Reads `origin` straight out of the repo's git config.

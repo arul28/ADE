@@ -270,12 +270,9 @@ Renderer:
   deleting it, so the hunk keeps its order and its own `@@` start and counts
   stay exact. A file left with no change lines shows a
   "whitespace-only changes hidden" state instead of an empty diff.
-- `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
-  `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
-  — renderer workbench state and model-lifetime tests, including
-  `filesTreeCache.test.ts` (cache budgets / pinning / eviction),
+- `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` — renderer
+  workbench state tests, including
   `viewerRegistry.test.ts` (viewer + editability resolution),
-  `ViewerHost.test.tsx` (payload-driven `readOnly`),
   `EditorGroup.test.tsx` (clean-model save guard), and
   `FilesSearchPanel.test.tsx` (independent name/content requests, the
   include-ignored toggle, keyboard navigation).

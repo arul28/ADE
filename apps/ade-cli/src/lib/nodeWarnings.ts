@@ -18,8 +18,6 @@
 const SHOW_WARNINGS_ENV = "ADE_SHOW_NODE_WARNINGS";
 
 let installed = false;
-/** The unwrapped emitter, kept so a reset can put the process back as it was. */
-let originalEmitWarning: typeof process.emitWarning | null = null;
 
 function warningType(
   warning: string | Error,
@@ -96,7 +94,6 @@ export function installNodeWarningFilter(
   if (env[SHOW_WARNINGS_ENV] === "1") return;
   installed = true;
 
-  originalEmitWarning = process.emitWarning;
   const original = process.emitWarning.bind(process);
   process.emitWarning = ((
     warning: string | Error,
@@ -105,16 +102,6 @@ export function installNodeWarningFilter(
     if (isSuppressedNodeWarning(warning, rest)) return;
     (original as (...args: unknown[]) => void)(warning, ...rest);
   }) as typeof process.emitWarning;
-}
-
-/** Test-only: lets a suite install the filter against a fresh module state. */
-export function resetNodeWarningFilterForTests(): void {
-  installed = false;
-  // Clearing the flag alone is not a reset: the wrapper stays on `process` and
-  // the next install wraps it again, so the chain grows by one frame per reset
-  // and every warning is filtered as many times as the suite has reset.
-  if (originalEmitWarning) process.emitWarning = originalEmitWarning;
-  originalEmitWarning = null;
 }
 
 // Self-installing on import, deliberately. `node:sqlite` emits its warning the

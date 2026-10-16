@@ -276,10 +276,6 @@ Measured Work run `work-chat-controls-20260512-02`:
   assigning `input.value`, because DOM-only value changes can leave the picker
   state at `Type to search files...`. Text-file chips cover select/remove only;
   `open-preview` and `copy-image` need an image attachment fixture.
-- `ChatAttachmentTray.test.tsx` is valid focused fixture evidence for image
-  attachment preview/copy behavior: it mocks `getImageDataUrl`, verifies the
-  image lightbox opens, and verifies `writeClipboardImage` is called from the
-  copy control.
 - `AgentChatMessageList.test.tsx` has valid focused fixture evidence for
   transcript message copy, cloud PR browser navigation, file-link routing,
   transcript code-block copy, tool-call disclosure expansion, full-prompt
@@ -294,8 +290,8 @@ Measured Work run `work-chat-controls-20260512-02`:
   `ChatWorkLogBlock` row path.
 - `AgentChatPane.submit.test.tsx` has valid focused fixture evidence for
   selecting chat tabs in the Work chat pane. Its CLI-created terminal tests only
-  auto-reveal terminal tabs; use `ChatTerminalDrawer.test.tsx` for terminal
-  drawer toggle, resize, and manual tab-switch evidence.
+  auto-reveal terminal tabs; terminal drawer toggle, resize, and manual
+  tab-switch need live evidence.
 - `AgentChatPane.companionDrawers.test.tsx` covers chat companion iOS, App
   Control, proof drawer open/close, right-pane split resize, archived-chat
   restore, and persistent identity `Clear view` through the real
@@ -315,12 +311,6 @@ Measured Work run `work-chat-controls-20260512-02`:
   separate from focused Files chrome coverage.
 - `SessionListPane.test.tsx` can cover the stale running-session warning, child
   shell section collapse/expand, and bulk restore footer wiring.
-  `PackedSessionGrid.test.tsx` covers persisted tile resize, while
-  `WorkViewArea.test.tsx` covers selecting a tiled grid session by clicking its
-  body, closing an ended tab from the tab strip, and embedded floating-pane
-  minimize/expand through the actual `FloatingPane` chrome context.
-- `WorkStartSurface.test.tsx` can cover the `lanes=[]` no-lanes empty state
-  without mutating the perf-pass lane database.
 - Browser back/forward/reload can use a localhost two-page fixture. For
   `Stop loading`, do not count a URL-open click while the toolbar is still
   `busy`; that leaves the real Stop button disabled. Use direct browser API
@@ -433,10 +423,6 @@ Measured Work run `work-chat-controls-20260512-02`:
 - `LaneGitActionsPane.test.tsx` can cover the staged/unstaged `Show all`
   controls for large change lists by asserting row 300 is hidden under the cap,
   clicking `Show all`, and verifying that row renders.
-- `LaneDiffPane.test.tsx` can cover commit-diff `Show all` for large commit
-  file lists and the visible `Retry` action for a failed working-tree diff. It
-  is not evidence for opening the selected diff in Files or saving edited
-  working-tree diffs.
 - Embedded Work Files chrome does not render the non-embedded header controls
   such as `files-editor-theme-toggle` or `TRUST & EDIT`; record explicit fail
   markers if probing those rows from the Work tools pane. The embedded editor
