@@ -2751,6 +2751,23 @@ describe("prService.ingestGithubWebhook", () => {
     expect(db.run).not.toHaveBeenCalled();
   });
 
+  it("prunes webhook deliveries at most once across a delivery burst", async () => {
+    const db = makeMockDb();
+    const { service } = buildService({ db });
+    const pruneStatements = () => db.run.mock.calls.filter(
+      ([sql]: unknown[]) => String(sql).includes("delete from github_webhook_deliveries"),
+    ).length;
+
+    for (let index = 0; index < 50; index += 1) {
+      await service.ingestGithubWebhook({
+        eventName: "ping",
+        deliveryId: `burst-${index}`,
+        payload: { zen: "keep it logically awesome" },
+      });
+    }
+    expect(pruneStatements()).toBeLessThanOrEqual(2);
+  });
+
   it("allows errored GitHub webhook deliveries to retry with the same delivery id", async () => {
     const db = makeMockDb();
     db.get.mockImplementation((sql: string) => {

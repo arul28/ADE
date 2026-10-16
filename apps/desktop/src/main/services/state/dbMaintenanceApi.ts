@@ -28,6 +28,42 @@ export const INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT = 10_000;
 export const PR_SNAPSHOT_RETENTION_DAYS = 60;
 
 /**
+ * Hot-path writers (relay dispatch, webhook ingestion) run their retention
+ * sweeps at most once per interval, or once per budget of writes, whichever
+ * comes first. The bounds are a ceiling, so the worst case is a row count of
+ * cap + budget and an age overrun of one interval; nothing is dropped early.
+ */
+export const RETENTION_PRUNE_INTERVAL_MS = 10 * 60 * 1_000;
+export const RETENTION_PRUNE_WRITE_BUDGET = 500;
+
+/**
+ * Per-key gate for a retention sweep on a hot write path (key = project id).
+ * Call `isDue(key)` once per write; it returns true when that key's sweep
+ * should run now. The first write for a key is always due.
+ */
+export function createRetentionPruneGate(
+  nowMs: () => number = () => Date.now(),
+): { isDue: (key: string) => boolean } {
+  const state = new Map<string, { lastRunMs: number; writesSinceRun: number }>();
+  return {
+    isDue: (key) => {
+      const now = nowMs();
+      const entry = state.get(key);
+      if (
+        entry
+        && entry.writesSinceRun + 1 < RETENTION_PRUNE_WRITE_BUDGET
+        && now - entry.lastRunMs < RETENTION_PRUNE_INTERVAL_MS
+      ) {
+        entry.writesSinceRun += 1;
+        return false;
+      }
+      state.set(key, { lastRunMs: now, writesSinceRun: 0 });
+      return true;
+    },
+  };
+}
+
+/**
  * Run the two ingress-event overflow DELETEs for a single project and return
  * the total rows removed. The caps work together:
  *

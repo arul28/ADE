@@ -65,6 +65,7 @@ import {
   AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_MS,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
+  createRetentionPruneGate,
   pruneIngressEventRowsForProject,
 } from "../state/dbMaintenanceApi";
 import type { createLaneService } from "../lanes/laneService";
@@ -1610,6 +1611,9 @@ export function createAutomationService({
     "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1",
     [tableName],
   ));
+
+  // Gates the insert-path sweep so a relay burst pays for one prune, not one per event.
+  const ingressPruneGate = createRetentionPruneGate();
 
   const pruneExpiredIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {
     const cutoff = new Date(referenceTime.getTime() - INGRESS_EVENT_RETENTION_MS).toISOString();
@@ -4978,22 +4982,27 @@ export function createAutomationService({
     let existing: AutomationIngressEventRow | null = null;
     db.run("begin immediate");
     try {
-      // Prune before dedupe so an event can be replayed after the retention
-      // window. Keeping both operations in this write transaction also avoids
-      // racing the unique (project, source, event_key) index.
-      pruneExpiredIngressEventsForProject(projectId, new Date(receivedAt));
+      // A row older than the retention window is not a dedupe hit, so an event
+      // can be replayed after it. The bulk age sweep is throttled below; this
+      // per-key check keeps that replay rule exact without a table-wide DELETE.
+      const expiredBefore = new Date(Date.parse(receivedAt) - INGRESS_EVENT_RETENTION_MS).toISOString();
       existing = db.get<AutomationIngressEventRow>(
         `
           select
             id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
             cursor, received_at
           from automation_ingress_events
-          where project_id = ? and source = ? and event_key = ?
+          where project_id = ? and source = ? and event_key = ? and received_at >= ?
           limit 1
         `,
-        [projectId, args.source, eventKey]
+        [projectId, args.source, eventKey, expiredBefore]
       );
       if (!existing) {
+        // Clear an expired row holding this key so the unique index admits the insert.
+        db.run(
+          "delete from automation_ingress_events where project_id = ? and source = ? and event_key = ? and received_at < ?",
+          [projectId, args.source, eventKey, expiredBefore],
+        );
         db.run(
           `
             insert into automation_ingress_events(
@@ -5012,7 +5021,9 @@ export function createAutomationService({
             receivedAt,
           ]
         );
-        pruneIngressEventOverflowForProject(projectId);
+        // Housekeeping only: deferring it keeps extra rows a little longer, which
+        // can only add dedupe hits. No row is dropped early.
+        if (ingressPruneGate.isDue(projectId)) pruneIngressEventsForProject(projectId, new Date(receivedAt));
       }
       db.run("commit");
     } catch (error) {
