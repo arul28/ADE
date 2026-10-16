@@ -138,7 +138,9 @@ export function buildMachineOnlySyncSnapshot(error: unknown): SyncRoleSnapshot {
       accountDirectory: createSyncAccountDirectoryHealth("no_active_sync_scope", reason),
     },
     client: {
-      state: "disconnected",
+      // Not a reading of the client: the runtime that would report it could not
+      // be read, so "disconnected" would be an invented answer.
+      state: "unknown",
       host: null,
       port: null,
       connectedAt: null,
