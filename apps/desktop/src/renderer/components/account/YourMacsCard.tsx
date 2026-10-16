@@ -927,6 +927,11 @@ export function YourMacsCard() {
             id: "this-computer-reconnect-outcome",
             tone: reconnectOutcome.tone === "danger" ? "error" : reconnectOutcome.tone,
             title: reconnectOutcome.message,
+            extra: reconnectOutcome.offerRepair && repair.available ? (
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                <BrainRepairButton repair={repair} height={30} />
+              </div>
+            ) : undefined,
           }}
         />
       ) : null}
