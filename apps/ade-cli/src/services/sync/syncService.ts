@@ -422,9 +422,7 @@ const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
-const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
-const STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
-const GHOST_BRAIN_LAST_SEEN_MS = 60 * 60_000;
+const STALE_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
 
 /**
  * This project follows another machine's sync brain, so this machine cannot
@@ -543,13 +541,13 @@ export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
 }): boolean {
   if (!args.hostStartupEnabled || !args.crdtSyncAvailable) return false;
   if (!isViewerDraftTransportError(args.error)) return false;
-  const originalLastSeenRaw = args.brain?.lastSeenAt ?? args.brain?.updatedAt;
+  const originalLastSeenRaw = args.brain?.lastSeenAt;
   const originalLastSeenMs = originalLastSeenRaw ? Date.parse(originalLastSeenRaw) : Number.NaN;
   const lastSeenMs = args.brain?.lastSeenAt ? Date.parse(args.brain.lastSeenAt) : Number.NaN;
   const staleByOriginalRule = args.cluster != null
     && args.cluster.brainDeviceId !== args.localDevice.deviceId
-    && (!args.brain || !Number.isFinite(originalLastSeenMs)
-      || (args.now ?? Date.now()) - originalLastSeenMs > STALE_BRAIN_LAST_SEEN_MS);
+    && Number.isFinite(originalLastSeenMs)
+    && (args.now ?? Date.now()) - originalLastSeenMs > STALE_BRAIN_LAST_SEEN_MS;
   // Preserve the original recovery for a draft that explicitly points back
   // to this device; no cluster or the original stale check is enough.
   if (isDraftTargetLocalDevice(args.draft, args.localDevice) && (!args.cluster || staleByOriginalRule)) return true;
@@ -562,18 +560,18 @@ export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
     typeof args.brain?.metadata.hostname === "string" ? args.brain.metadata.hostname : null,
   );
   const unseenForMs = Number.isFinite(lastSeenMs) ? (args.now ?? Date.now()) - lastSeenMs : Number.NaN;
-  // Default macOS hostnames collide, so require a distinct device id and a
-  // full hour without a heartbeat before treating a matching name as a ghost.
+  // Default macOS hostnames collide, so a matching name only strengthens the
+  // stale-device evidence after the full three-day quiet period.
   if (
     localHostname
     && brainHostname === localHostname
     && args.cluster.brainDeviceId !== args.localDevice.deviceId
-    && unseenForMs >= GHOST_BRAIN_LAST_SEEN_MS
+    && unseenForMs > STALE_BRAIN_LAST_SEEN_MS
   ) return true;
-  // A remote machine may be offline for hours; the longer threshold avoids
-  // disrupting ordinary reconnects while still clearing abandoned clusters.
+  // A remote machine may be offline for hours; three days avoids disrupting
+  // ordinary reconnects while still clearing abandoned clusters.
   return Number.isFinite(unseenForMs)
-    && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
+    && unseenForMs > STALE_BRAIN_LAST_SEEN_MS;
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
@@ -1361,15 +1359,19 @@ export function createSyncService(args: SyncServiceArgs) {
     if (cluster?.brainDeviceId === localDevice.deviceId) return null;
     const savedDraft = readSavedDraft();
     if (savedDraft) {
-      // A draft aimed at this machine is a leftover the refresh reclaims once
-      // the dial fails, so it ends with this machine hosting. The reclaim only
-      // runs when the cluster record is absent or names a brain stale by the
-      // ordinary five-minute rule. A fresh record naming another machine wins,
-      // and refresh leaves this project a viewer.
-      if (
-        isDraftTargetLocalDevice(savedDraft, localDevice)
-        && (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId))
-      ) return null;
+      // A failed viewer dial may lead this project to host. Use the same
+      // stale-host criteria as refresh so the pre-switch guard agrees.
+      if (shouldReclaimStaleViewerDraftAfterTransportFailure({
+        hostStartupEnabled,
+        crdtSyncAvailable: isCrdtSyncAvailable(),
+        cluster,
+        localDevice,
+        brain: cluster ? deviceRegistryService.getDevice(cluster.brainDeviceId) : null,
+        draft: savedDraft,
+        error: Object.assign(new Error("Synthetic transport failure for blocker evaluation."), {
+          code: "ECONNREFUSED",
+        }),
+      })) return null;
       return {
         reason: "saved_connection",
         host: savedDraft.host,

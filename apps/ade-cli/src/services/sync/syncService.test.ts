@@ -126,7 +126,7 @@ describe("createSyncService", () => {
       cluster: { brainDeviceId: "ghost-brain" },
       localDevice,
       brain: {
-        lastSeenAt: new Date(now - 2 * 60 * 60_000).toISOString(),
+        lastSeenAt: new Date(now - 7 * 24 * 60 * 60_000).toISOString(),
         updatedAt: new Date(now).toISOString(),
         metadata: { hostname: "MacBook-Pro-567.local" },
       },
@@ -172,7 +172,7 @@ describe("createSyncService", () => {
     })).toBe(false);
   });
 
-  it("keeps the no-draft five-minute stale-brain failover", async () => {
+  it("reclaims a no-draft brain after three days without a heartbeat", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
     cleanupRoots.push(projectRoot);
     const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
@@ -186,7 +186,7 @@ describe("createSyncService", () => {
       deviceType: "desktop",
       siteId: "dead-site",
       dbVersion: 1,
-    } as any, { lastSeenAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+    } as any, { lastSeenAt: new Date(Date.now() - 4 * 24 * 60 * 60_000).toISOString() });
     registry.setClusterState({ brainDeviceId: "dead-brain", brainEpoch: 3 });
     try {
       await service.reevaluateHostRole();
