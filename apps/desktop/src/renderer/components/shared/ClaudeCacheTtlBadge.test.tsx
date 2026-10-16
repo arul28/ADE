@@ -134,8 +134,8 @@ describe("ClaudeCacheTtlBadge", () => {
           ))}
         </>,
       );
-      // One timer per mounted, unexpired badge.
-      expect(vi.getTimerCount()).toBe(baseline + count);
+      // Every mounted, unexpired badge shares one one-second timer.
+      expect(vi.getTimerCount()).toBe(baseline + 1);
 
       // After expiry every badge self-clears; no wakeups remain.
       act(() => {
