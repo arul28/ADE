@@ -176,7 +176,7 @@ describe("multi-project RPC server", () => {
     const scopeRegistry = {
       getActiveSyncHostProjectId: vi.fn(() => null),
       getMostRecentFailingSyncHostProjectId: vi.fn(() => projectB.projectId),
-      getIfBooted: vi.fn((id: string) => Promise.resolve(id === projectA.projectId ? scopeA : scopeB)),
+      getIfReady: vi.fn((id: string) => id === projectA.projectId ? scopeA : scopeB),
       resolveActiveSyncHost: vi.fn(async () => {
         throw new Error("Sync host activation timed out");
       }),
