@@ -4879,7 +4879,33 @@ button, [role="button"] {
   scroll-behavior: smooth;
 }
 
+/* A scene being drawn (SceneDrawingBox.tsx): a soft band sweeping across the
+   box. Transform only, so it composites without repainting the box, and
+   stepped like the thinking shimmer so it costs little on high refresh. */
+.ade-scene-drawing-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.ade-scene-drawing-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: var(--chat-streaming-shimmer);
+  transform: translateX(-100%);
+  animation: ade-scene-drawing-sweep 2.4s steps(72) infinite;
+  pointer-events: none;
+}
+@keyframes ade-scene-drawing-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(330%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .ade-scene-drawing-sweep::after {
+    animation: none;
+    display: none;
+  }
   .ade-thinking-shimmer {
     animation: none;
     background-image: none;

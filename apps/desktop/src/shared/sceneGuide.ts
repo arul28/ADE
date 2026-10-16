@@ -38,6 +38,25 @@ Charts
       series: [{ name: "Build", values: [4, 5] }], stacked: true, suffix: "m" });
   type is bar, line, area, donut or spark. One series: values: [...].
 
+3D
+  Only when depth is the point. THREE is a global (do not import it), with
+  THREE.OrbitControls. One call sets up renderer, camera, lights and orbit:
+    var view = ade.three.view("#el", { height: 360 });
+    var mat = ade.three.paint(new THREE.MeshStandardMaterial(), "accent");
+    view.scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), mat));
+    view.fit();                       // frame the scene; kept on resize
+    view.onFrame(function (dt) { /* move things */ });   // only for motion
+  options: height, camera [x,y,z], target [x,y,z], fov, lights: false,
+    controls: false. view: scene, camera, controls, render(), fit(object?),
+    onFrame(fn) -> stop(), dispose().
+  Colors: ade.three.paint(material, "chart-2") paints from the theme and
+    repaints on a theme switch; ade.three.color(name) for a one-off Color.
+    Any variable name works (accent, fg, fg-muted, chart-1 ... chart-6).
+  It draws only on change: view.render() after edits outside onFrame. Never
+  your own WebGLRenderer or animation loop. Transparent background. No model
+  files or remote textures; build geometry in code. Readers drag to orbit,
+  right-drag to pan, pinch to zoom.
+
 Asking
   For a larger decision, give options as buttons. A click writes a draft
   reply into the user's prompt box; they can edit it, and they send it.

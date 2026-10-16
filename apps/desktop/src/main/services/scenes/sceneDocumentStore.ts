@@ -31,6 +31,14 @@ export const MCP_APP_VIEW_HOST = "app";
  */
 export const SCENE_STORE_CAPACITY = 64;
 
+/**
+ * And by size. A 3D scene carries three.js inline (most of a megabyte), so a
+ * count alone no longer bounds the store: 64 of those would be ~60 MB. This
+ * keeps the worst case where it was before 3D (64 × the old 400 KB cap).
+ * Measured in UTF-16 code units, which is what the strings cost in memory.
+ */
+export const SCENE_STORE_BUDGET_CHARS = 25_000_000;
+
 /** What the protocol handler should send. Plain data so tests never need `Response`. */
 export type SceneResponseDescriptor = {
   status: number;
@@ -99,6 +107,8 @@ export function parseSceneRequestId(requestUrl: string, host: string = SCENE_VIE
 
 export function createSceneDocumentStore(options: {
   capacity?: number;
+  /** Total characters held across documents; the oldest go first past it. */
+  budgetChars?: number;
   /** Injectable only so tests can assert eviction order deterministically. */
   makeId?: () => string;
   /** The URL host this store's documents are served under. */
@@ -106,7 +116,9 @@ export function createSceneDocumentStore(options: {
 } = {}): SceneDocumentStore {
   const host = options.host ?? SCENE_VIEW_HOST;
   const capacity = Math.max(1, Math.floor(options.capacity ?? SCENE_STORE_CAPACITY));
+  const budgetChars = Math.max(1, Math.floor(options.budgetChars ?? Number.POSITIVE_INFINITY));
   const makeId = options.makeId ?? (() => randomUUID().replace(/-/g, ""));
+  let heldChars = 0;
   // Insertion-ordered, so the first key is always the oldest document.
   const documents = new Map<string, { html: string; policy: string }>();
 
@@ -117,12 +129,19 @@ export function createSceneDocumentStore(options: {
     const id = makeId();
     // Re-inserting a colliding id would keep its original position in the map
     // and make it evict out of order; delete first so insertion order is real.
+    const previous = documents.get(id);
+    if (previous) heldChars -= previous.html.length;
     documents.delete(id);
-    documents.set(id, { html: String(html ?? ""), policy: servedPolicy });
-    while (documents.size > capacity) {
-      const oldest = documents.keys().next();
+    const stored = String(html ?? "");
+    documents.set(id, { html: stored, policy: servedPolicy });
+    heldChars += stored.length;
+    // The newest document always stays, even alone over the budget: it is the
+    // one a frame is about to load.
+    while (documents.size > capacity || (heldChars > budgetChars && documents.size > 1)) {
+      const oldest = documents.entries().next();
       if (oldest.done) break;
-      documents.delete(oldest.value);
+      heldChars -= oldest.value[1].html.length;
+      documents.delete(oldest.value[0]);
     }
     return { id, url: `${SCENE_PROTOCOL_SCHEME}://${host}/${id}` };
   };
@@ -158,7 +177,10 @@ export function createSceneDocumentStore(options: {
     get,
     respond,
     size: () => documents.size,
-    clear: () => documents.clear(),
+    clear: () => {
+      documents.clear();
+      heldChars = 0;
+    },
   };
 }
 
@@ -169,7 +191,7 @@ export function createSceneDocumentStore(options: {
  * in is {@link prepareSceneDocument}, which is what makes "a scene is always
  * served with the scene policy" true.
  */
-const sceneDocumentStore = createSceneDocumentStore();
+const sceneDocumentStore = createSceneDocumentStore({ budgetChars: SCENE_STORE_BUDGET_CHARS });
 
 /**
  * The store behind `ade-scene://app/<id>`: the pages of MCP Apps.

@@ -1,6 +1,7 @@
 import React, { useCallback, useContext, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { remarkCachedParse } from "./remarkCachedParse";
 import { FileCode } from "@phosphor-icons/react";
 
@@ -22,6 +23,8 @@ import {
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
+import { normalizeMathDelimiters } from "./chatMath";
+import { MathFormula } from "./MathFormula";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneAnswerContext, SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
@@ -234,9 +237,15 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
   const remarkPlugins = useMemo(
-    () => [remarkCachedParse, remarkGfm, [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
+    // Single-dollar math stays off: `normalizeMathDelimiters` decides which `$`
+    // are math (money is not) and rewrites those to `$$`.
+    () => [remarkCachedParse, remarkGfm, [remarkMath, { singleDollarTextMath: false }], [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
     [entityLookup],
   );
+
+  // Memoized per body, so the settled half is rewritten once, not per tick.
+  const mathMarkdown = useMemo(() => normalizeMathDelimiters(markdown), [markdown]);
+  const mathTail = useMemo(() => (tailMarkdown ? normalizeMathDelimiters(tailMarkdown) : tailMarkdown), [tailMarkdown]);
 
   const components: MarkdownComponents = useMemo(() => ({
     ...(thought
@@ -316,6 +325,10 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     ),
     code: ({ className, children }) => {
       const text = String(children ?? "");
+      // remark-math hands formulas over as code with these classes.
+      if (typeof className === "string" && className.includes("language-math")) {
+        return <MathFormula tex={text} display={className.includes("math-display")} />;
+      }
       const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
       const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
       const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
@@ -446,8 +459,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         "prose-blockquote:border-l-2 prose-blockquote:border-l-(color:--chat-ink)/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-(color:--chat-ink)/[0.08]",
       )}
     >
-      <MarkdownBody markdown={markdown} components={components} remarkPlugins={remarkPlugins} />
-      {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} remarkPlugins={remarkPlugins} /> : null}
+      <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />
+      {mathTail ? <MarkdownBody markdown={mathTail} components={components} remarkPlugins={remarkPlugins} /> : null}
       {linkContextMenu}
     </div>
   );

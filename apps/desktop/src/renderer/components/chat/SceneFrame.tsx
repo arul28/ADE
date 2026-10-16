@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { ArrowsOutSimple, Camera, Sparkle, WarningCircle } from "@phosphor-icons/react";
 
 import { buildSceneDocument } from "../../../shared/chatSceneDocument";
+import { sceneUsesThree } from "../../../shared/chatSceneThree";
 import {
   isSceneParseFailure,
   parseSceneFence,
@@ -39,6 +40,7 @@ import {
   watchOutsidePresses,
 } from "./sandboxedFrame";
 import { SceneDataFeed } from "./sceneData";
+import { SceneDrawingBox } from "./SceneDrawingBox";
 import {
   cachedPreparedUrl,
   cachedSceneDocument,
@@ -51,6 +53,7 @@ import {
 } from "./sceneDocumentCache";
 import { loadSceneFontFaceCss, sceneFontFaceCssNow } from "./sceneFonts";
 import { readSceneStill, rememberSceneStill } from "./sceneStillStore";
+import { claimThreeFrameSlot, loadSceneThreeSource, sceneThreeSourceNow } from "./sceneThree";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { useSceneStillLatch } from "./useSceneStillLatch";
@@ -184,6 +187,7 @@ export function SceneFrame({
   const canFileProof = chatRunsOnThisComputer(chatScope);
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
+  const usesThree = !failed && sceneUsesThree(parsed.html);
   const title = (!failed && parsed.title) || "Generated view";
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -246,7 +250,29 @@ export function SceneFrame({
   // Off while collapsed: the collapsed banner has no wrapper, and the observer
   // must re-attach to the scene's wrapper when Retry or Show anyway brings it back.
   const onScreen = useSceneOnScreen(wrapperRef, !expandedVariant && !failed && !streaming && !collapsed, { ignoreScroll: live });
-  const wantFrame = (expandedVariant || onScreen) && !collapsed;
+  const wantsLive = (expandedVariant || onScreen) && !collapsed;
+
+  // A 3D scene also needs one of the few live-3D slots (`sceneThree.ts`). Told
+  // to stand down, it shows its still until it next leaves and re-enters the
+  // screen, which is when it asks again.
+  const [threeEvicted, setThreeEvicted] = useState(false);
+  useEffect(() => {
+    if (!wantsLive) setThreeEvicted(false);
+  }, [wantsLive]);
+  useEffect(() => {
+    if (!usesThree || !wantsLive || threeEvicted) return;
+    return claimThreeFrameSlot(() => setThreeEvicted(true));
+  }, [usesThree, wantsLive, threeEvicted]);
+  const wantFrame = wantsLive && !threeEvicted;
+
+  // three.js is loaded the first time a 3D scene is about to run, not before.
+  const [threeSource, setThreeSource] = useState<string | null>(sceneThreeSourceNow);
+  useEffect(() => {
+    if (!usesThree || !wantFrame || threeSource !== null) return;
+    let cancelled = false;
+    void loadSceneThreeSource().then((source) => { if (!cancelled) setThreeSource(source); });
+    return () => { cancelled = true; };
+  }, [usesThree, wantFrame, threeSource]);
 
   /**
    * Whether the document should skip its entrance. Read at build time through
@@ -260,9 +286,11 @@ export function SceneFrame({
   // frame that reloads on every tick.
   const doc = useMemo(() => {
     if (failed || streaming || undecided || !wantFrame || fontFaceCss === null) return null;
+    if (usesThree && threeSource === null) return null;
     const builtTheme = themeRef.current;
     const restored = restoredRef.current;
-    const key = `${scopeKey ?? ""}|${attempt}|${restored ? 1 : 0}|${sceneThemeSignature(builtTheme)}|${fontFaceCss.length}|${source}`;
+    const withThree = usesThree ? threeSource ?? "" : "";
+    const key = `${scopeKey ?? ""}|${attempt}|${restored ? 1 : 0}|${sceneThemeSignature(builtTheme)}|${fontFaceCss.length}|${withThree.length}|${source}`;
     const { html, nonce } = cachedSceneDocument(key, (fresh) => buildSceneDocument({
       html: parsed.html,
       title: parsed.title,
@@ -271,10 +299,11 @@ export function SceneFrame({
       nonce: fresh,
       restored,
       fontFaceCss,
+      ...(withThree ? { threeSource: withThree } : {}),
     }));
     return { html, nonce, theme: builtTheme, restored };
     // `source` is in the key, so `parsed` adds nothing; theme is applied live.
-  }, [failed, streaming, undecided, wantFrame, fontFaceCss, parsed, scopeKey, source, attempt]);
+  }, [failed, streaming, undecided, wantFrame, fontFaceCss, usesThree, threeSource, parsed, scopeKey, source, attempt]);
 
   /**
    * The document the frame is currently showing, and the nonce that document
@@ -709,20 +738,11 @@ export function SceneFrame({
     // not a broken scene, and saying so mid-stream would be a lie that corrects
     // itself a second later.
     return (
-      <div className="my-3 w-screen max-w-full" data-testid="chat-scene" data-scene-status="drawing">
-        <div
-          className="flex items-end rounded-md px-3 py-2"
-          style={{ height: knownSceneHeight(scopeKey) ?? MIN_HEIGHT, background: COLORS.recessedBg }}
-        >
-          <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
-            <Sparkle size={10} weight="fill" style={{ color: COLORS.accent }} />
-            {title}
-            <span style={{ color: COLORS.textDim }}>
-              · drawing · {source.split("\n").length} lines · {Math.max(1, Math.round(source.length / 1024))} KB
-            </span>
-          </span>
-        </div>
-      </div>
+      <SceneDrawingBox
+        testId="chat-scene"
+        status="drawing"
+        height={knownSceneHeight(scopeKey) ?? MIN_HEIGHT}
+      />
     );
   }
 

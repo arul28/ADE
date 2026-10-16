@@ -174,6 +174,7 @@ is in the prompt box.
 | `ade.animate(target, keyframes, options)` | Web Animations, collapsed to the end state under reduced motion or restore. |
 | `ade.countUp(target, to, { from, duration, decimals })` | Counts a number up. |
 | `ade.chart(target, options)` | Draws a bar, line, area, donut or sparkline chart in ADE's look. See "Charts". |
+| `ade.three.view(target, options)` | A 3D view with three.js (`THREE`), lights and drag-to-orbit. See "3D". |
 | `ade.resize()` | Re-measures the scene and asks the host for the new height. Call it after you change the content's size. |
 | `ade.ready()` | Call it when your first paint is done. |
 
@@ -221,6 +222,57 @@ the theme, and refits when the reader resizes the chat.
   the chart once and call `update` from `ade.on("data", ...)`.
 - Give the chart's container no fixed width. Put two charts side by side with
   a CSS grid.
+
+## 3D
+
+Use 3D only when depth is the point: a molecule, a mechanical part, a 3D
+layout, a surface plot, a spatial dataset. A bar chart is never better in 3D.
+
+Use three.js through `ade.three.view`. The global `THREE` is there as soon as
+a scene mentions it (`THREE.OrbitControls` included); do not import it.
+
+```html
+<div id="model"></div>
+<script>
+  var view = ade.three.view("#model", { height: 320 });
+  var cube = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    ade.three.paint(new THREE.MeshStandardMaterial(), "accent"),
+  );
+  view.scene.add(cube);
+  view.fit();                                                   // frame it
+  view.onFrame(function (dt) { cube.rotation.y += dt * 0.6; }); // optional
+  ade.ready();
+</script>
+```
+
+- `view` gives you `scene`, `camera`, `renderer`, `controls`, `render()`,
+  `fit(object?, { margin })`, `onFrame(fn)` (returns a stop function) and
+  `dispose()`. Options: `height` (px, default 320), `camera` and `target`
+  (`[x, y, z]`), `fov`, `lights: false` to light it yourself, `controls:
+  false` for no orbit. The reader drags to orbit, right-drags to pan, and
+  pinches (or cmd/ctrl + scroll) to zoom; a plain scroll scrolls the chat.
+- `view.fit()` frames the whole scene (or the object you pass) to the view's
+  width and height, and keeps it framed when the chat is resized, until the
+  reader moves the camera. Pass the object that matters when the scene has
+  far-off decoration such as a starfield.
+- It draws only when something changes. Changed the scene outside
+  `onFrame`? Call `view.render()`. Use `onFrame` only for real motion, and
+  make the still frame read well: an idle scene runs a few frames a second.
+- Never create your own `WebGLRenderer` or `requestAnimationFrame` loop.
+  That redraws every frame for as long as the chat is open.
+- Colors: `ade.three.paint(material, "chart-2")` sets a material's color from
+  the theme and repaints it when the theme switches (a third argument names
+  another color property, such as `"emissive"`). `ade.three.color(name)`
+  returns a one-off `THREE.Color`. Any theme variable works, with or without
+  `--`: `accent`, `fg`, `fg-muted`, `success`, `chart-1` … `chart-6`. Alpha
+  is dropped (a material color has none); fade with `material.opacity`. The
+  background stays transparent, so the chat shows through.
+- Build geometry in code. There is no network, so no model files or remote
+  textures; a texture must be a canvas or a `data:` URL.
+- Keep it light: a few thousand objects at most, and share geometries and
+  materials. One 3D view per reply. Past four live 3D views on screen, the
+  oldest one shows its still picture.
 
 ## Live ADE data
 
@@ -292,6 +344,7 @@ so the preview shows real lanes, chats and PRs.
   `allow-same-origin`. `ade.open`, `ade.reply` and the data feed are the only bridges.
 - **No external libraries.** They cannot be fetched. Native CSS animations,
   SVG, canvas and the Web Animations API are what you have, and they are enough.
+  three.js is the one exception, built in for 3D (see "3D").
 
 ## Lifetime
 
