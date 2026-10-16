@@ -123,6 +123,7 @@ Run without the app (`scripts/perf/service/`).
 | Files quick-open index build (this repo) | `file-index.bench.mts` | 17.5 s, ~540 git processes | 120–183 ms, 1 git process | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | — | 2–13 ms | 50 ms |
 | Project registry: one read per project (35) | `registry-read.bench.mts` | 360 ms | 0.3 ms | 5 ms |
+| Recent-project summary: one pass over the recents, each opening its project database (10 real recents, 6 with an `ade.db`) | one-off in-process `vitest` loop over `inspectRecentProject` (no bench file yet) | — | 0.5 ms (25.3 ms before the memo, PR #1661) | 5 ms |
 | Machine roster, warm (11 projects, 23 chats) | `roster.bench.mts` | 43 ms | 2.5–4.2 ms | 10 ms |
 | Machine roster, cold | `roster.bench.mts` | — | 70 ms | 150 ms |
 | Reading a 10 MB request, Content-Length framed | `rpc-read.bench.mts` | 240 ms | 10.8 ms | 30 ms |
