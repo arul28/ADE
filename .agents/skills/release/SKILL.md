@@ -527,8 +527,17 @@ release-docs commit does **not** wait for its own CI: run
 `verify` still fails when the tagged commit's `ci-pass` is red, or when a commit
 that changes anything else has no green `ci-pass` yet. In that case wait:
 
+**Pin the release to the notes commit.** Right after the release-docs commit
+lands on `main`, record its SHA once and use that SHA for the tag, the CI
+checks, and the iOS tag: `RELEASE_SHA=<the notes commit's SHA>`. Never
+re-read `origin/main` for it. PRs may keep merging while a release runs; do
+not freeze `main`, and do not chase them. A commit that lands after the notes
+commit is not in this release. It ships in the next one, because the next
+scope diff starts at this tag. Do not add it to the notes, do not wait for its
+CI, and do not cancel or move the tag because of it.
+
 ```bash
-RELEASE_SHA=$(git rev-parse origin/main)
+# RELEASE_SHA was recorded when the notes commit landed; do not re-read origin/main.
 gh api "repos/arul28/ADE/commits/$RELEASE_SHA/check-runs" \
   --jq '.check_runs[] | select(.name=="ci-pass") | {status,conclusion,html_url}'
 ```
@@ -540,8 +549,9 @@ matters here; each step below came from a release that waited on CI.
   rerun only that job once the run finishes
   (`gh run rerun "$RUN_ID" --failed`). GitHub refuses the rerun while any job
   in the run is still going, so in parallel start a fresh CI run on `main`'s
-  head, which is the release-notes commit:
-  `gh workflow run ci.yml --repo arul28/ADE --ref main`. A green `ci-pass` on
+  head, but only while that head is still `RELEASE_SHA`:
+  `gh workflow run ci.yml --repo arul28/ADE --ref main`. If other PRs have
+  merged since, a run on `main` tests their code, not this release's. A green `ci-pass` on
   either commit lets the tag through; tag on whichever lands first.
 - **The run is queued behind other CI:** cancel runs the release does not need,
   such as open PRs' CI and the release-notes commit's own push run (the tag
@@ -559,7 +569,8 @@ After release docs are committed on `main`:
 ```bash
 git fetch origin --tags --prune
 git status --short
-RELEASE_SHA=$(git rev-parse origin/main)
+: "${RELEASE_SHA:?set RELEASE_SHA to the release-notes commit, not origin/main}"
+git merge-base --is-ancestor "$RELEASE_SHA" origin/main
 git rev-parse --verify "v<VERSION>" >/dev/null && {
   echo "Tag v<VERSION> already exists"
   exit 1
