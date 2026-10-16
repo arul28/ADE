@@ -256,6 +256,11 @@ export type ComposerDraftEditIntent = {
   selectionEnd: number;
 };
 
+// The textarea token overlay mirrors the full draft into a second layout tree.
+// At measured lengths above this limit, one ultrathink token makes every key
+// pay that full-draft layout cost. Large drafts keep the native textarea text.
+const MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS = 2_048;
+
 // Attachment ceilings are not a renderer constant any more: they depend on the
 // leg the bytes take, which depends on the machine that owns the chat. See
 // `chatAttachmentStaging.ts` and `shared/chatAttachmentLimits.ts`.
@@ -3133,9 +3138,17 @@ export function AgentChatComposer({
     plainUltrathinkExcludedRangesRef.current = plainUltrathinkExcludedRanges;
   }, [plainUltrathinkExcludedRanges]);
   // "ultrathink" painted in colour over the plain textarea, where Claude reads
-  // it. A word inside a chip token stays part of that chip.
+  // it. A word inside a chip token stays part of that chip. Keep ordinary
+  // drafts letter-colored, but avoid mirroring a large draft into the overlay:
+  // layout cost grows with the whole draft on every keystroke.
   const plainUltrathinkTokens = useMemo(() => {
-    if (useRichComposer || !draft || !providerReadsUltrathink(sessionProvider) || parallelChatMode) return [];
+    if (
+      useRichComposer
+      || !draft
+      || draft.length > MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS
+      || !providerReadsUltrathink(sessionProvider)
+      || parallelChatMode
+    ) return [];
     return ultrathinkKeywordRanges(draft)
       .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
       .map((range) => ({ ...range, kind: "ultrathink" as const }));
