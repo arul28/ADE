@@ -682,6 +682,9 @@ export function WorkSidebar({
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
       data-maximized={maximized ? "true" : undefined}
+      // The Work page's keyboard template reaches this pane with `T`; the
+      // marker is how it finds the element to focus.
+      data-work-tools-pane=""
       // Focusable only programmatically (`selectTool`), and never ringed for
       // it: this is a focus fallback, not a stop on the tab order.
       tabIndex={-1}
