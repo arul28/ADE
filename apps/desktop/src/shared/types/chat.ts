@@ -1826,7 +1826,7 @@ export type AgentChatEvent =
       /** Runtime provider of an ADE chat spawned as this child. Runtime-native
        * agents leave this unset and inherit their host session's provider. */
       provider?: string;
-      /** True when a completed tracked CLI child is being resumed as a new run. */
+      /** True when a settled spawned child (a tracked CLI or a chat) starts a new run. */
       resumed?: boolean;
       /** Claude SDK parent session that owns this native child transcript. */
       providerSessionId?: string;

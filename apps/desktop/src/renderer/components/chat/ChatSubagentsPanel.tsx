@@ -1420,7 +1420,8 @@ export function ChatSubagentsPanel({
   const subagentGroups = useMemo(() => {
     const grouped = groupPaneSectionItems(subagents, {
       isEarlier: isEarlierSubagentSnapshot,
-      isCleared: (snapshot) => clearedSubagentIds.has(snapshot.taskId),
+      // Clear hides finished rows; a row that is running again comes back.
+      isCleared: (snapshot) => snapshot.status !== "running" && clearedSubagentIds.has(snapshot.taskId),
       isPinned: (snapshot) =>
         pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot)),
     });

@@ -230,6 +230,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const agentId = event.agentId ?? existing?.agentId;
       const spawnKind = event.spawnKind ?? existing?.spawnKind;
       const workflowProgress = workflowProgressForSnapshot(event, existing);
+      // A settled spawned child that starts again is a new run of the same row.
+      const resumed = event.resumed === true;
       snapshots.set(key, {
         taskId,
         childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
@@ -243,10 +245,10 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
-        startedAt: existing?.startedAt ?? envelope.timestamp,
+        startedAt: resumed ? envelope.timestamp : existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
-        summary: existing?.summary ?? null,
-        finalSummary: existing?.finalSummary ?? null,
+        summary: resumed ? null : existing?.summary ?? null,
+        finalSummary: resumed ? null : existing?.finalSummary ?? null,
         lastToolName: existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
