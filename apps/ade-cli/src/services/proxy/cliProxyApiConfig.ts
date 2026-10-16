@@ -8,7 +8,7 @@ import {
   securePrivatePath,
   type PrivateFileSecurityOptions,
 } from "../../lib/trustedWindowsTools";
-import { withCredentialFileLock } from "../credentials/credentialFileIo";
+import { withCredentialFileLock, withCredentialFileLockAsync } from "../credentials/credentialFileIo";
 import type { CliProxyApiRelease, CliProxyApiReleaseAsset } from "./cliProxyApiRelease";
 
 const PROXY_HOST = "127.0.0.1" as const;
@@ -51,6 +51,11 @@ export const CLI_PROXY_API_UPSTREAM_SECTIONS = ["openai-compatibility", "claude-
 /** Serialize config read-modify-write operations across ADE runtimes. */
 export function withCliProxyApiConfigLock<T>(configPath: string, fn: () => T): T {
   return withCredentialFileLock(`${configPath}.lock`, fn);
+}
+
+/** Async counterpart for proxy lifecycle work that must not stall the brain. */
+export function withCliProxyApiConfigLockAsync<T>(configPath: string, fn: () => T | Promise<T>): Promise<T> {
+  return withCredentialFileLockAsync(`${configPath}.lock`, fn);
 }
 
 export type CliProxyApiState = {

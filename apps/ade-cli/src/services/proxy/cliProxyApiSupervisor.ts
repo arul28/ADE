@@ -30,7 +30,7 @@ import {
   pathsFor,
   readCliProxyApiConfig,
   readCliProxyApiState,
-  withCliProxyApiConfigLock,
+  withCliProxyApiConfigLockAsync,
   writeCliProxyApiConfig,
   writeCliProxyApiState,
   type CliProxyApiConfig,
@@ -474,7 +474,7 @@ export class CliProxyApiSupervisor {
     // must survive a restart.
     const managementKey = randomBytes(32).toString("hex");
     const port = await findFreeLoopbackPort();
-    return withCliProxyApiConfigLock(this.paths.configPath, () => {
+    return withCliProxyApiConfigLockAsync(this.paths.configPath, () => {
       if (fs.existsSync(this.paths.configPath)) {
         const existing = configSummary(this.paths.configPath);
         const config: CliProxyApiConfig = {
