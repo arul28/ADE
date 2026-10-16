@@ -83,7 +83,10 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /GitHub API request failed \(HTTP 5\d\d\)/,
 ];
 
-const NETWORK_FAILURE = /\b(ConnectTimeoutError|Connect Timeout Error|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT)\b/;
+// Each of these names the address or host it failed to reach, so a loopback
+// target is visible. A reset or a closed socket mid-request is not on the list:
+// its message names no address.
+const NETWORK_FAILURE = /\b(ConnectTimeoutError|Connect Timeout Error|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b/;
 const LOOPBACK_ADDRESS = /(^|[\s(\[,])(127\.\d+\.\d+\.\d+|::1|localhost)(?=[\s:)\],]|$)/;
 
 /**
@@ -97,17 +100,28 @@ export function isOfflineFetchFailure(message: string, causes: readonly string[]
     && !causes.some((cause) => LOOPBACK_ADDRESS.test(cause));
 }
 
-/** The text of each error under `error`: its `cause` chain and an AggregateError's members. */
-function causeTexts(error: unknown): string[] {
+const MAX_CAUSES = 16;
+
+/**
+ * The text of each error under `error` (its `cause` chain and an
+ * AggregateError's members), with undici's socket address when it kept one.
+ * Bounded, so a huge or cyclic chain cannot slow the report; past the bound the
+ * failure is not classed as offline and stays an issue.
+ */
+function causeTexts(error: Error): string[] | null {
   const texts: string[] = [];
-  const pending: unknown[] = error instanceof Error ? [error.cause] : [];
-  while (pending.length > 0 && texts.length < 16) {
+  const seen = new Set<unknown>();
+  const pending: unknown[] = [error.cause];
+  while (pending.length > 0) {
     const next = pending.shift();
-    if (!(next instanceof Error)) continue;
-    const { code, errors } = next as Error & { code?: unknown; errors?: unknown };
-    texts.push(`${next.name}: ${next.message}${typeof code === "string" ? ` (${code})` : ""}`);
+    if (!(next instanceof Error) || seen.has(next)) continue;
+    if (seen.size >= MAX_CAUSES) return null;
+    seen.add(next);
+    const { code, errors, socket } = next as Error & { code?: unknown; errors?: unknown; socket?: { remoteAddress?: unknown } };
+    const address = typeof socket?.remoteAddress === "string" ? ` ${socket.remoteAddress}` : "";
+    texts.push(`${next.name}: ${next.message}${typeof code === "string" ? ` (${code})` : ""}${address}`);
     pending.push(next.cause);
-    if (Array.isArray(errors)) pending.push(...errors);
+    if (Array.isArray(errors)) pending.push(...errors.slice(0, MAX_CAUSES));
   }
   return texts;
 }
@@ -124,7 +138,10 @@ export function isExpectedOutcomeText(text: string): boolean {
 /** An answer the caller gets, worth a Sentry Log but not an issue. */
 export function isExpectedOutcome(error: unknown): boolean {
   const text = failureText(error);
-  return isExpectedOutcomeText(text) || isOfflineFetchFailure(text, causeTexts(error));
+  if (isExpectedOutcomeText(text)) return true;
+  if (text !== "fetch failed" || !(error instanceof Error)) return false;
+  const causes = causeTexts(error);
+  return causes !== null && isOfflineFetchFailure(text, causes);
 }
 
 export function isExpectedFailure(error: unknown): boolean {
