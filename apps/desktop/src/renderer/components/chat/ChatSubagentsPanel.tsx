@@ -4,6 +4,7 @@ import {
   CaretDown,
   CaretRight,
   CircleDashed,
+  DotsThree,
   Clock,
   CopySimple,
   Images,
@@ -12,6 +13,7 @@ import {
   Pause,
   Play,
   Square,
+  Terminal,
   TerminalWindow,
   TreeStructure,
   X,
@@ -58,7 +60,10 @@ import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { ChatShellsSection } from "./ChatShellsSection";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
+import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
@@ -76,7 +81,7 @@ type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | 
 
 const EMPTY_PANE_UI_STATE: PaneUiStorageState = { collapsed: {}, earlier: {} };
 const EMPTY_PANE_CLEARED_STATE: PaneClearedStorageState = { subagents: [], background: [], schedule: [] };
-const PANE_SECTION_KEYS: PaneSectionKey[] = ["progress", "tasks", "subagents", "background", "schedule"];
+const PANE_SECTION_KEYS: PaneSectionKey[] = ["progress", "tasks", "subagents", "shells", "background", "schedule"];
 const PANE_EARLIER_SECTION_KEYS = ["subagents", "background", "schedule"] as const;
 
 function subagentIdentity(snapshot: ChatSubagentSnapshot): string {
@@ -180,11 +185,12 @@ type GlyphCategory = "subagent" | "background";
 
 /* ── Section header — sentence case, paper-section feel ── */
 
-type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "proof" | "sources" | "neutral";
+type SectionTone = "subagent" | "shells" | "background" | "workflow" | "scheduled" | "proof" | "sources" | "neutral";
 
 /** Each section's icon, drawn left of its label in the section's color. */
 const SECTION_ICON: Record<SectionTone, { Icon: Icon; className: string }> = {
   subagent: { Icon: TreeStructure, className: "text-[color:var(--color-accent,#A78BFA)]/80" },
+  shells: { Icon: Terminal, className: "text-cyan-300/75" },
   background: { Icon: TerminalWindow, className: "text-cyan-300/75" },
   workflow: { Icon: ListChecks, className: "text-amber-300/75" },
   scheduled: { Icon: Clock, className: "text-sky-300/75" },
@@ -1093,6 +1099,12 @@ function SubagentRow({
   );
 }
 
+/**
+ * One attached shell in the actions pane: the same row vocabulary the Work list
+ * uses (status glyph, title, elapsed), and the same two gestures — click opens
+ * the shell in the Work tab, right-click (or the ⋯ button) raises the Work
+ * list's own menu, host and handlers included.
+ */
 /* ── Main component ── */
 
 export type SubagentSelection = {
@@ -1136,6 +1148,11 @@ export function ChatSubagentsPanel({
   sessionModelLabel = null,
   runtimeAlive,
   childChatStatuses,
+  workflowPlans,
+  shells = [],
+  shellsPin = null,
+  shellsLoadError = false,
+  onRetryShells,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -1198,6 +1215,23 @@ export function ChatSubagentsPanel({
   runtimeAlive?: boolean;
   /** Session status by spawned-chat session id, for rows that are ADE chats. */
   childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
+  /**
+   * Each dynamic workflow's declared script plan, keyed by workflow task id —
+   * the phases a run's script names, shown in the workflow section when the
+   * provider publishes no live `workflow_progress`.
+   */
+  workflowPlans?: ReadonlyMap<string, ChatWorkflowScriptPlan>;
+  /**
+   * Terminals attached to this chat, newest first. The Work list no longer
+   * files these under their parent, so this section is where a chat's shells
+   * live; each row opens one or raises the Work list's own context menu.
+   */
+  shells?: TerminalSessionSummary[];
+  /** The chat's machine, for a shell row's open and menu requests. */
+  shellsPin?: OpenProjectBinding | null;
+  /** The shells read failed: state it with a retry, never an empty section. */
+  shellsLoadError?: boolean;
+  onRetryShells?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1544,6 +1578,7 @@ export function ChatSubagentsPanel({
   const backgroundRunningCount = backgroundGroups.active.filter((item) => item.status === "running").length;
   const backgroundFailedCount = backgroundGroups.active.filter((item) => item.status === "failed").length;
   const scheduleRunningCount = scheduleGroups.active.filter((item) => item.status === "running").length;
+  const shellRunningCount = shells.filter((shell) => shell.status === "running").length;
   const scheduleFailedCount = scheduleGroups.active.filter((item) => item.status === "failed").length;
 
   const stickyHeaders = variant === "pane";
@@ -1554,7 +1589,8 @@ export function ChatSubagentsPanel({
   const hasSubagents = subagents.length > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || shells.length > 0
+    || shellsLoadError || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1590,6 +1626,7 @@ export function ChatSubagentsPanel({
     <div className="flex flex-col font-sans">
       <ChatWorkflowActiveCard
         snapshots={snapshots}
+        plans={workflowPlans}
         onSelectSubagent={handleRowClick}
         onStopWorkflow={onStopSubagent}
       />
@@ -1653,6 +1690,25 @@ export function ChatSubagentsPanel({
           hasPrecedingSection={Boolean(hasGoal || hasTasks)} showAllLabel={`${cappedSubagents.hiddenCount} running`}
           animateEarlierRows subagentTaskIdOf={(snap) => snap.taskId}
         />
+      ) : null}
+
+      {/* ── Shells (terminals attached to this chat) ──────────────── */}
+      {shells.length > 0 || shellsLoadError ? (
+        <section className="pb-3" data-testid="chat-info-shells">
+          <SectionHeader
+            label="Shells"
+            hint={shellRunningCount > 0 ? `${shellRunningCount} running` : `${shells.length}`}
+            tone="shells"
+            emphasized
+            sticky={stickyHeaders}
+          />
+          <ChatShellsSection
+            shells={shells}
+            pin={shellsPin}
+            loadError={shellsLoadError}
+            onRetry={onRetryShells}
+          />
+        </section>
       ) : null}
 
       {/* ── Background (background command tasks) ─────────────────── */}

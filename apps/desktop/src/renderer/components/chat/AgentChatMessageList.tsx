@@ -194,6 +194,10 @@ import {
   formatThinkingElapsed,
 } from "./ThinkingPreview";
 import { renderSubagentTimelineRow, type SpawnedChatProviderProps } from "./chatSubagentTimelineRenderer";
+import { WorkflowScriptRow } from "./WorkflowScriptRow";
+import type { WorkflowScriptRenderEvent } from "./chatTranscriptRows";
+import { SUBAGENT_RUN_HEADER_MIN } from "./SubagentActivityCards";
+import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -1227,7 +1231,8 @@ type RenderEnvelope = {
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent
   | TurnDetailsRenderEvent
-  | TaskListRenderEvent;
+  | TaskListRenderEvent
+  | WorkflowScriptRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
   /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
@@ -3097,6 +3102,11 @@ function renderEvent(
   /* ── Turn details: the turn's diagnostics and recovery receipt, one row ── */
   if (event.type === "turn_details") {
     return <TurnDetailsDisclosure event={event} />;
+  }
+
+  /* ── A dynamic workflow's script: the run's plan, one quiet line ── */
+  if (event.type === "workflow_script") {
+    return <WorkflowScriptRow event={event} />;
   }
 
   /* ── Subagent cards: running (spawn) and settled (result), which is the
@@ -5229,10 +5239,23 @@ export function estimateTranscriptRowHeight(
     case "codex_image_view":
       // One compact line; a group or a picture opens inline only on a click.
       return 28;
+    case "workflow_script":
+      // One compact line; the script opens inline only on a click.
+      return 26;
     case "subagent_card_grid": {
+      const workflow = workflowRunShape(event.members);
+      if (workflow) {
+        // Workflow run view: a header, one block per phase (label + one line
+        // per agent), and a line for queued agents.
+        const blocks = workflow.blocks.length + (workflow.unphased.length > 0 ? 1 : 0);
+        const rows = event.members.length - 1;
+        return (workflow.queued > 0 ? 22 : 0) + 30 + blocks * 22 + rows * 60 + workflow.foreign.length * 60;
+      }
       // Cards in one grid row share its height; rows stack with an 8px gap.
       const gridRows = Math.ceil(event.members.length / subagentCardGridColumns(event.members.length, width));
-      return gridRows * 96 + (gridRows - 1) * 8;
+      // A long run leads with the rollup line (SubagentRunHeader) above its cards.
+      const headRow = event.members.length >= SUBAGENT_RUN_HEADER_MIN ? 26 : 0;
+      return headRow + gridRows * 96 + (gridRows - 1) * 8;
     }
     default:
       return ESTIMATED_ROW_HEIGHT;

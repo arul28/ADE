@@ -857,7 +857,7 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
@@ -869,6 +869,13 @@ export function createSessionService({
     if (status) {
       where.push("s.status = ?");
       params.push(status);
+    }
+    // One chat's attached shells. A shell is owned by exactly one chat, so this
+    // is the pane's read for its Shells section.
+    const trimmedChatSessionId = typeof chatSessionId === "string" ? chatSessionId.trim() : "";
+    if (trimmedChatSessionId) {
+      where.push("s.chat_session_id = ?");
+      params.push(trimmedChatSessionId);
     }
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
     const fetchRows = (
@@ -1340,6 +1347,43 @@ export function createSessionService({
     db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
     emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     return true;
+  };
+
+  /**
+   * The attached shells a chat owns: live (non-archived) terminal sessions whose
+   * `chat_session_id` is this chat, excluding chat-kind tool types so a tracked
+   * CLI child can never be mistaken for a shell. Ordered oldest first.
+   */
+  const listAttachedShellIds = (chatSessionId: string): string[] => {
+    const trimmed = chatSessionId.trim();
+    if (!trimmed) return [];
+    const rows = db.all<{ id: string; toolType: string | null }>(
+      `
+        select id, tool_type as toolType
+        from terminal_sessions
+        where chat_session_id = ?
+          and archived_at is null
+        order by started_at asc
+      `,
+      [trimmed],
+    );
+    return rows
+      .filter((row) => !isChatToolType(row.toolType))
+      .map((row) => row.id);
+  };
+
+  /**
+   * Archive every shell attached to a chat that is going away. Archive only sets
+   * `archived_at`: the row and its transcript stay, so nothing is lost and the
+   * step is reversible. Never deletes, and never touches a child chat — a child
+   * chat is work, a shell is a tool of the chat that ran it.
+   */
+  const archiveAttachedShellsForChat = (chatSessionId: string): string[] => {
+    const archived: string[] = [];
+    for (const sessionId of listAttachedShellIds(chatSessionId)) {
+      if (archiveSession(sessionId)) archived.push(sessionId);
+    }
+    return archived;
   };
 
   const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
@@ -2176,6 +2220,10 @@ export function createSessionService({
     },
 
     archiveSession,
+
+    listAttachedShellIds,
+
+    archiveAttachedShellsForChat,
 
     agentShells,
 

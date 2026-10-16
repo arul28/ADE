@@ -10576,7 +10576,10 @@ export function createAgentChatService(args: {
     // `previewTerminal` serve composer @-mentions (and a CLI child's report
     // tail); `onExit` lets a tracked CLI child close its parent's card. Each
     // degrades to "nothing" when the runtime supplies a reduced pty surface.
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill">>
+    // `dispose` + `isSessionOwnedByLivePeerRuntime` let chat delete stop the
+    // shells that chat owns (see the shell cleanup below); without them the
+    // rows are still archived, only the processes are left alone.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "dispose" | "isSessionOwnedByLivePeerRuntime">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   /**
@@ -63438,6 +63441,38 @@ export function createAgentChatService(args: {
     }
     mcpApps.deleteSession(trimmedSessionId);
     mcpRegistryNoticeBySession.delete(trimmedSessionId);
+
+    // A chat's attached shells are tools of that chat, so they leave with it:
+    // each is stopped (when this runtime owns its PTY) and its row is ARCHIVED —
+    // never deleted, so output survives — because the lane list must not keep
+    // rows pretending the chat is still there, and the sweeper that cleans up
+    // agent shells stops seeing a row the moment its owner is gone. Child chats
+    // are deliberately untouched: a child chat is work, not a tool.
+    try {
+      const attachedShellIds = sessionService.listAttachedShellIds(trimmedSessionId);
+      for (const shellId of attachedShellIds) {
+        const shell = sessionService.get(shellId);
+        const ptyId = typeof shell?.ptyId === "string" ? shell.ptyId.trim() : "";
+        if (!shell || !ptyId || !ptyService?.dispose) continue;
+        if (ptyService.isSessionOwnedByLivePeerRuntime?.(shell)) continue;
+        try {
+          ptyService.dispose({ ptyId, sessionId: shellId });
+        } catch (error) {
+          logger.warn("agent_chat.shell_stop_before_delete_failed", {
+            chatSessionId: trimmedSessionId,
+            shellSessionId: shellId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      sessionService.archiveAttachedShellsForChat(trimmedSessionId);
+    } catch (error) {
+      // Cleanup of a chat's shells never blocks the delete it belongs to.
+      logger.warn("agent_chat.shell_archive_before_delete_failed", {
+        chatSessionId: trimmedSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);

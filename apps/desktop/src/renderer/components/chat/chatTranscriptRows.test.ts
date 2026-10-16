@@ -13,6 +13,7 @@ import {
 import { arrangeComputerUseRuns, hasComputerUseEntries } from "./chatComputerUseRows";
 import { foldTurnFailureRows } from "./turnFailureRows";
 import {
+  appendCollapsedChatTranscriptEvent,
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
@@ -40,6 +41,7 @@ import {
   summarizeInlineText,
   summarizeTurnDetails,
   type ChatTranscriptGroupedEnvelope,
+  type ChatTranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
 
 function groupEvents(events: AgentChatEventEnvelope[]) {
@@ -5708,5 +5710,53 @@ describe("scheduled work presentation (wake loops)", () => {
       "Checking sooner.",
       "Still queued.",
     ]);
+  });
+});
+
+describe("workflow script rows", () => {
+  const script = [
+    "const meta = { name: 'skate-build', phases: [{ title: 'Scan' }, { title: 'Report' }] }",
+    "export default async function run() {}",
+  ].join("\n");
+
+  /**
+   * A dynamic workflow's script gets its own row — it is the only description
+   * of what the run was asked to do — and the call's result is swallowed with
+   * it, because a generic "Workflow" tool row underneath says nothing.
+   *
+   * The per-event append carries no shared collapse context (a caller folding
+   * one event at a time has none), so the row list is the only record that this
+   * call already owns a script row. Without looking there, the result drew a
+   * second, generic row under the script.
+   */
+  it("gives a Workflow call one script row, and no generic row for its result", () => {
+    const rows: ChatTranscriptRenderEnvelope[] = [];
+    appendCollapsedChatTranscriptEvent(rows, {
+      sessionId: "session-1",
+      timestamp: "2026-10-16T10:00:00.000Z",
+      event: { type: "tool_call", tool: "Workflow", args: { script }, itemId: "wf-1", turnId: "turn-1" },
+    }, "row-wf-1");
+
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script"]);
+    expect(rows[0]!.event).toMatchObject({
+      type: "workflow_script",
+      name: "skate-build",
+      phases: ["Scan", "Report"],
+    });
+
+    appendCollapsedChatTranscriptEvent(rows, {
+      sessionId: "session-1",
+      timestamp: "2026-10-16T10:00:01.000Z",
+      event: {
+        type: "tool_result",
+        tool: "Workflow",
+        result: { ok: true },
+        itemId: "wf-1",
+        turnId: "turn-1",
+        status: "completed",
+      },
+    }, "row-wf-1-result");
+
+    expect(rows.map((row) => row.event.type)).toEqual(["workflow_script"]);
   });
 });

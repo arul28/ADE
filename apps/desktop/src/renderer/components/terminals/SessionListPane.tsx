@@ -116,7 +116,6 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import {
-  attachedShellSectionId,
   nestedSubagentSectionId,
   parentsWithBusySubagents,
   workNestingDrawers,
@@ -2267,15 +2266,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   useEffect(() => {
     if (!selectedSessionId || drawerRevealedForRef.current === selectedSessionId) return;
     const subagentParent = workNesting.nestedChildToRootParentId.get(selectedSessionId);
-    let sectionId = subagentParent ? nestedSubagentSectionId(subagentParent) : null;
-    if (!sectionId) {
-      for (const [parentId, shells] of workNesting.shellsByParentId) {
-        if (shells.some((shell) => shell.id === selectedSessionId)) {
-          sectionId = attachedShellSectionId(parentId);
-          break;
-        }
-      }
-    }
+    // Only subagents have a drawer to reveal: a chat's shells live in its
+    // actions pane, and focusing one opens the shell itself.
+    const sectionId = subagentParent ? nestedSubagentSectionId(subagentParent) : null;
     // Not filed yet (the roster is still loading): try again on the next update.
     if (!sectionId && !allSessionsUnfiltered.some((session) => session.id === selectedSessionId)) return;
     drawerRevealedForRef.current = selectedSessionId;
@@ -2287,14 +2280,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     session: TerminalSessionSummary,
     drawers: WorkNestingDrawers<TerminalSessionSummary> = workNesting,
   ): string[] => {
-    const shells = drawers.shellsByParentId.get(session.id) ?? [];
     const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
     const ids = [session.id];
     if (subagents.length > 0 && !isNestedDrawerCollapsed(nestedSubagentSectionId(session.id))) {
       ids.push(...subagents.map((child) => child.id));
-    }
-    if (shells.length > 0 && !isNestedDrawerCollapsed(attachedShellSectionId(session.id))) {
-      ids.push(...shells.map((child) => child.id));
     }
     return ids;
   }, [isNestedDrawerCollapsed, workNesting]);
@@ -2632,16 +2621,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     return list
       .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
       .map((session) => {
-        const shells = drawers.shellsByParentId.get(session.id) ?? [];
         const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
         const card = renderCardCore(session, cardOptions);
-        if (shells.length === 0 && subagents.length === 0) return card;
+        if (subagents.length === 0) return card;
         return (
           <div key={`group-${session.id}`}>
             {card}
             <NestedDrawers
               parentId={session.id}
-              shells={shells}
               subagents={subagents}
               isCollapsed={isNestedDrawerCollapsed}
               onToggle={toggleWorkSectionCollapsed}

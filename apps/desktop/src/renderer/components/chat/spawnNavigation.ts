@@ -1,4 +1,5 @@
 import type { OpenProjectBinding } from "../../../shared/types";
+import { focusWorkSession } from "../../lib/workSessionRequests";
 
 /**
  * Canonical navigation to a spawned child chat. Every spawn surface (inline
@@ -14,14 +15,5 @@ export function navigateToSpawnedChat(
   laneId?: string | null,
   binding?: OpenProjectBinding | null,
 ): void {
-  if (!sessionId) return;
-  try {
-    window.dispatchEvent(
-      new CustomEvent("ade:work:select-session", {
-        detail: { sessionId, laneId: laneId ?? null, ...(binding ? { binding } : {}) },
-      }),
-    );
-  } catch {
-    /* no-op */
-  }
+  focusWorkSession(sessionId, laneId, binding);
 }

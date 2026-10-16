@@ -141,6 +141,28 @@ describe("agent shell cleanup sweep", () => {
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
   });
 
+  it("archives a crashed shell whose chat was deleted, instead of waiting for it forever", async () => {
+    // Deleting a chat does NOT clear the shell's `chat_session_id` (the column
+    // has no foreign key), so the shell keeps an id whose row is gone. The
+    // unclean end is the case `parentQuiet` decides: before this rule that
+    // shell could never archive, because the parent it was waiting to settle
+    // no longer existed.
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "orphan-crashed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
+
+    expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([id]);
+    expect(archivedAt(db, id)).not.toBeNull();
+  });
+
+  it("never archives a shell somebody typed into, chat or no chat", async () => {
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "orphan-typed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
+    agentShells.markUserInput(id);
+
+    expect(agentShells.sweep(NOW_MS + GRACE * 4)).toEqual([]);
+    expect(archivedAt(db, id)).toBeNull();
+  });
+
   it("treats an ADE stop as a clean end, waiting out the same grace period", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "stopped", chatSessionId: "chat-1", status: "failed", exitCode: 1 });

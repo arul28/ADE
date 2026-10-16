@@ -4,9 +4,10 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, CodexWebSearchResult } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, AgentChatWorkflowProgress, CodexWebSearchResult } from "../../../shared/types";
 import {
   deriveSubagentCardName,
+  isAgentChatWorkflowProgress,
   isBackgroundShellCommand,
   isGenericSubagentName,
   isRealSubagent,
@@ -20,6 +21,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
@@ -234,6 +236,29 @@ export type SubagentSpawnAnchorRenderEvent = {
   spawnKind: AgentChatSpawnKind | null;
   /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
   parentLabel?: string | null;
+  /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
+  workflowProgress?: AgentChatWorkflowProgress | null;
+  /** The workflow's `meta.name`, when this card is a workflow task. */
+  workflowName?: string | null;
+};
+
+/**
+ * The script a dynamic workflow ran, as the Workflow tool call carried it.
+ * One row in the transcript, above the workflow's own card: the script is the
+ * run's plan (`meta.name`, `meta.phases`), and reading it is the only way to
+ * see what a run was asked to do when the provider never publishes live phase
+ * telemetry (`workflow_progress`).
+ */
+export type WorkflowScriptRenderEvent = {
+  type: "workflow_script";
+  /** `meta.name` from the script, when it parses. */
+  name: string | null;
+  /** The phases the script declares, in order. Planned, not live. */
+  phases: ReadonlyArray<string>;
+  lines: number;
+  script: string;
+  /** The Workflow tool call this script came from. */
+  itemId: string | null;
 };
 
 /**
@@ -245,6 +270,7 @@ export type SubagentSpawnAnchorRenderEvent = {
  * summary arrives later. Jumps that name `subagent-result:${agentKey}` resolve
  * to whichever key the card holds (`subagentCardRowKeyCandidates`).
  */
+
 export type SubagentResultCardRenderEvent = {
   type: "subagent_result_card";
   agentKey: string;
@@ -285,6 +311,16 @@ export type SubagentResultCardRenderEvent = {
   childSessionId: string | null;
   /** Cosmetic relationship; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /**
+   * Provider task id, carried over from the running card so a settled card can
+   * still be recognized (stop, workflow grouping). Optional: older stored
+   * events and hand-built fixtures predate it.
+   */
+  taskId?: string | null;
+  /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
+  workflowProgress?: AgentChatWorkflowProgress | null;
+  /** The workflow's `meta.name`, when this card is a workflow task. */
+  workflowName?: string | null;
 };
 
 /** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
@@ -583,6 +619,7 @@ export type ChatTranscriptRenderEvent =
   | WorkLogRenderEvent
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
+  | WorkflowScriptRenderEvent
   | BackgroundJobLineRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent
@@ -753,6 +790,14 @@ type SubagentAnchorState = {
   worktreePath: string | null;
   /** Parent agent id carried on any lifecycle event; resolves the parent label. */
   parentAgentId: string | null;
+  /**
+   * Claude dynamic-workflow snapshot carried on the workflow task's own
+   * lifecycle events (`meta.name` lands in `workflowName`). Null for every
+   * ordinary subagent. Phases + per-agent phase titles live here, which is how
+   * the timeline groups a workflow run.
+   */
+  workflowProgress: AgentChatWorkflowProgress | null;
+  workflowName: string | null;
 };
 
 type CollapseTranscriptContext = {
@@ -761,6 +806,11 @@ type CollapseTranscriptContext = {
   subagentAnchors: Map<string, SubagentAnchorState>;
   /** Semantic provider failures already rendered for a specific turn. */
   errorKeysByTurn: Set<string>;
+  /**
+   * Item ids of Workflow tool calls whose script already has its own row, so
+   * the call and its result do not also render as generic tool rows.
+   */
+  workflowScriptItemIds: Set<string>;
   /** Durable user-message lifecycle rows keyed by ADE steer id. */
   userMessageRowIndexBySteer: Map<string, number>;
   /** Resolution events that arrived before their durable user-message row. */
@@ -867,6 +917,7 @@ export function createCollapseTranscriptContext(
     latestTodoItemsByTurn: new Map(),
     subagentAnchors: new Map(),
     errorKeysByTurn: new Set(),
+    workflowScriptItemIds: new Set(),
     userMessageRowIndexBySteer: new Map(),
     unmatchedUserMessageResolutionsBySteer: new Map(),
     turnDetailsRowIndexByTurn: new Map(),
@@ -908,6 +959,7 @@ function cloneCollapseTranscriptContext(context: CollapseTranscriptContext): Col
     latestTodoItemsByTurn: new Map(context.latestTodoItemsByTurn),
     subagentAnchors,
     errorKeysByTurn: new Set(context.errorKeysByTurn),
+    workflowScriptItemIds: new Set(context.workflowScriptItemIds),
     userMessageRowIndexBySteer: new Map(context.userMessageRowIndexBySteer),
     unmatchedUserMessageResolutionsBySteer: new Map(context.unmatchedUserMessageResolutionsBySteer),
     turnDetailsRowIndexByTurn: new Map(context.turnDetailsRowIndexByTurn),
@@ -1632,6 +1684,22 @@ function toolResultWebResults(
     })),
     resultsTotal: web.length,
   };
+}
+
+/**
+ * The script a `Workflow` tool call carries, or null for any other call. The
+ * tool name is Claude's; the args hold one `script` string whose `meta` block
+ * names the run and its phases.
+ */
+function readWorkflowScriptCall(
+  event: Extract<AgentChatEvent, { type: "tool_call" }>,
+): Omit<WorkflowScriptRenderEvent, "type" | "itemId"> | null {
+  if (event.tool !== "Workflow") return null;
+  const args = readRecord(event.args);
+  const script = typeof args?.script === "string" ? args.script : null;
+  const plan = readWorkflowScriptPlan(script);
+  if (!plan || !script) return null;
+  return { name: plan.name, phases: plan.phases, lines: plan.lines, script };
 }
 
 function buildToolWorkLogEvent(
@@ -2386,6 +2454,8 @@ function spawnAnchorEvent(
     taskId: state.taskId,
     spawnKind: state.spawnKind,
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
+    workflowProgress: state.workflowProgress,
+    workflowName: state.workflowName,
   };
 }
 
@@ -2434,6 +2504,11 @@ function enrichSubagentStateFromEvent(
   }
   const parentAgentId = subagentText((event as { parentAgentId?: unknown }).parentAgentId);
   if (parentAgentId) state.parentAgentId = parentAgentId;
+  const workflowName = subagentText((event as { workflowName?: unknown }).workflowName);
+  if (workflowName) state.workflowName = workflowName;
+  // The workflow snapshot rides the workflow task's own events, newest wins.
+  const workflowProgress = (event as { workflowProgress?: unknown }).workflowProgress;
+  if (isAgentChatWorkflowProgress(workflowProgress)) state.workflowProgress = workflowProgress;
 }
 
 /**
@@ -2537,6 +2612,8 @@ function handleSubagentLifecycleEvent(
       worktreeBranch: null,
       worktreePath: null,
       parentAgentId: null,
+      workflowProgress: null,
+      workflowName: null,
     };
     anchors.set(agentKey, state);
     if (taskId) anchors.set(taskId, state);
@@ -2730,6 +2807,9 @@ function handleSubagentLifecycleEvent(
     resultLanded: resultLandedBeforeStop,
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
+    taskId: state.taskId,
+    workflowProgress: state.workflowProgress,
+    workflowName: state.workflowName,
   };
   // Settle IN PLACE: the card row keeps its position and key, so a grid keeps
   // its cards in order and React
@@ -3407,6 +3487,30 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
+    // A dynamic workflow's script gets its own row (the run's plan), and the
+    // call's result is swallowed with it: "Workflow" as a generic tool line
+    // says nothing, and the script is the only description of what the run was
+    // asked to do.
+    const workflowScript = event.type === "tool_call" ? readWorkflowScriptCall(event) : null;
+    if (workflowScript) {
+      context?.workflowScriptItemIds.add(event.itemId);
+      rows.push({
+        key: rowKey,
+        timestamp: envelope.timestamp,
+        event: { type: "workflow_script", ...workflowScript, itemId: event.itemId },
+      });
+      return;
+    }
+    if (event.type === "tool_result") {
+      // With a context, the set answers. Without one (a caller that collapses a
+      // single event), the script row already in the list answers — a
+      // per-call context would not survive to this event, so the row is the
+      // only durable record that this call's script has its own line.
+      const scriptRowExists = rows.some((row) => (
+        row.event.type === "workflow_script" && row.event.itemId === event.itemId
+      ));
+      if (scriptRowExists || context?.workflowScriptItemIds.has(event.itemId)) return;
+    }
     appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp), context);
     return;
   }

@@ -499,7 +499,8 @@ Shared types and IPC:
   again. Cross-lane children stay top-level. A quiet parent (snoozed or
   settled) pulls not-done children up; done children stay nested. Grandchildren
   flatten into the root parent's one drawer. Collapse keys:
-  `chat-subagents:<parentId>` vs shells `chat:<parentId>`. It also owns
+  `chat-subagents:<parentId>` (the shells key `chat:<parentId>` is retired: a
+  chat's shells are drawn in its actions pane now). It also owns
   `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
   subagents are not) so filing can run in shared rather than the renderer, and
   `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
@@ -1104,9 +1105,10 @@ Renderer surfaces:
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
   enter a bulk action accidentally.
   In by-lane list mode, same-lane `spawnKind: "subagent"` chats (and tracked
-  CLI `--type subagent` sessions) nest under the parent in an expanded-by-default
-  **N subagents** drawer (`chat-subagents:<parentId>`), above the attached-shells
-  drawer (`chat:<parentId>`). Compact nested rows keep the identicon, title,
+  CLI `--type subagent` sessions) nest under the parent in a collapsed-by-default
+  **N subagents** drawer (`chat-subagents:<parentId>`). Attached shells are not
+  drawn here: they live in the chat's actions pane (**Shells**), while the list
+  keeps them out of the top-level rows by filing them under their chat. Compact nested rows keep the identicon, title,
   then the provider glyph on the right of the card (same seat as every other
   session card), plus the status glyph; they spell Needs you / Failed only.
   The drawer header is empty, a needs-you pip, or the red word **Failed**
@@ -2974,13 +2976,28 @@ user client, or a hand resume — and it is never archived. The RPC server strip
 it around. The ledger is per machine and never replicates; nothing is ever
 deleted, only hidden.
 
+A shell is a tool of the chat that ran it, so deleting that chat stops and
+archives its shells (`sessionService.listAttachedShellIds` /
+`archiveAttachedShellsForChat`, called from the chat delete path). A shell of
+another machine's live runtime is left running — ownership decides who may stop
+it — but its row is still archived here. Nothing is deleted, so output survives
+and the archive can put the row back. Deleting the chat never touches a child
+chat: a child chat is work, not a tool. Two consequences worth knowing: a
+shell's `chat_session_id` carries no foreign key, so deleting its chat leaves the
+id dangling rather than clearing it — the sweeper therefore treats a *missing
+owner row* as a quiet parent, which is what lets a dead agent shell whose chat
+was deleted archive after the same grace period instead of waiting forever; and
+lane deletion removes every session row in that lane, archived or not.
+
 Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every
-archived item across lanes, chats, and shells. A chat's shell and subagent
-drawers start collapsed behind their full header strip — kind icon, kind label
-and count, plus failed/needs-you/running — and collapsing only hides the child
-rows; a selection that lands inside a collapsed drawer opens it once so the
-selected row is on screen.
+archived item across lanes, chats, and shells. A chat's attached shells are
+listed in its actions pane's **Shells** section (open, or right-click for the
+Work list's own menu) rather than as rows or a drawer in the Work list; its
+subagent drawer starts collapsed behind its full header strip — kind icon, kind
+label and count, plus failed/needs-you/running — and collapsing only hides the
+child rows; a selection that lands inside it opens it once so the selected row
+is on screen.
 
 ## Cross-links
 

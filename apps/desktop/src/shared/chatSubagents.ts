@@ -132,7 +132,7 @@ export function isAgentChatWorkflowProgress(value: unknown): value is AgentChatW
   ));
 }
 
-export type PaneSectionKey = "progress" | "tasks" | "subagents" | "background" | "schedule";
+export type PaneSectionKey = "progress" | "tasks" | "subagents" | "shells" | "background" | "schedule";
 
 export function groupPaneSectionItems<T>(items: T[], opts: {
   isEarlier: (item: T) => boolean;

@@ -354,7 +354,16 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     if (event.id.startsWith("background:")) backgroundShellIds.add(event.id.slice("background:".length));
   }
   return [...snapshots.values()]
-    .filter((snapshot) => !(backgroundShellIds.has(snapshot.taskId) && !snapshot.agentType))
+    .filter((snapshot) => !(
+      backgroundShellIds.has(snapshot.taskId)
+      && !snapshot.agentType
+      // A dynamic workflow is not a background shell. It has no `agentType`
+      // (the CLI reports it as a `local_workflow` task), so this rule used to
+      // swallow it: the host writes a `background:<taskId>` row for a workflow
+      // it launched in the background, and the run then vanished from the whole
+      // actions pane — no workflow card, no subagents section. The run stays.
+      && snapshot.taskType !== "local_workflow"
+    ))
     .sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
 }
 

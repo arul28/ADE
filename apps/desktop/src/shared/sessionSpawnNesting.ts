@@ -67,7 +67,6 @@ export type SpawnNestingIndex<T extends SpawnNestingSession = SpawnNestingSessio
 
 export type WorkNestingDrawers<T extends SpawnNestingSession = SpawnNestingSession> = {
   subagentsByParentId: Map<string, T[]>;
-  shellsByParentId: Map<string, T[]>;
   nestedChildIds: Set<string>;
   nestedChildToRootParentId: Map<string, string>;
   excludedTopLevelIds: Set<string>;
@@ -306,19 +305,16 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     visibleParentIds,
   );
   // Every attached shell is filed under its chat, so none resurfaces as a
-  // top-level card. An archived one is then left out of the drawer: dead agent
-  // shells are archived on purpose (`agentShellCleanup`) to keep it quiet, and
-  // the transcript stays on disk.
+  // top-level card.
+  // Attached shells are filed — and only filed: the desktop draws them in the
+  // chat's actions pane now, so the drawers carry their exclusion from the
+  // top-level rows and nothing else.
   const excludedTopLevelIds = new Set(index.nestedChildIds);
-  const shellsByParentId = new Map<string, T[]>();
-  for (const [parentId, list] of attachedShellsByParentId) {
+  for (const list of attachedShellsByParentId.values()) {
     for (const child of list) excludedTopLevelIds.add(child.id);
-    const listed = list.filter((child) => !child.archivedAt);
-    if (listed.length > 0) shellsByParentId.set(parentId, listed);
   }
   return {
     subagentsByParentId: index.childrenByRootParentId,
-    shellsByParentId,
     nestedChildIds: index.nestedChildIds,
     nestedChildToRootParentId: index.nestedChildToRootParentId,
     excludedTopLevelIds,
