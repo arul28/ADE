@@ -21037,7 +21037,7 @@ final class ADETests: XCTestCase {
     let opus55 = groups.first(where: { $0.key == "claude" })?.providers.first?.models.first
     XCTAssertEqual(opus55?.id, "claude-opus-5-5")
     XCTAssertEqual(opus55?.displayName, "Claude Opus 5.5")
-    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus55?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(opus55?.defaultReasoningEffort, "medium")
     XCTAssertTrue(opus55?.supportsCodexFastMode == true)
 
