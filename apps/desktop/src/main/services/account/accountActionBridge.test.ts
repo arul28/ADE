@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ACCOUNT_ACTION_TIMEOUT_MS } from "./accountActionBridge";
 import {
   ACCOUNT_SETTINGS_REJECTED_MESSAGE,
   ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
@@ -185,6 +186,102 @@ describe("accountSettingsSync (main)", () => {
       action: "get",
       error: "connection closed",
     });
+  });
+});
+
+/**
+ * The bound, not the error path.
+ *
+ * A brain that is wedged rather than absent used to hold the caller for the
+ * renderer's full 30-second IPC timer, which surfaced to users as
+ * `IPC handler for 'ade.accountSettings.sync' timed out after 30000ms`. These
+ * tests pin the wait itself: how long it lasts, that it ends in the module's
+ * ordinary unavailable answer, and that a slow-but-answering brain is not
+ * caught by it.
+ */
+describe("accountActionBridge call bound (main)", () => {
+  /** A brain that accepts the call and never answers. */
+  function stalledPool() {
+    return { callActionForRoot: vi.fn(() => new Promise<{ result: unknown }>(() => {})) };
+  }
+
+  it("stops waiting at the bound and answers the ordinary unavailable result", async () => {
+    vi.useFakeTimers();
+    try {
+      const debug = vi.fn();
+      const service = createAccountSettingsSyncService({
+        getPool: stalledPool,
+        getRootPath: () => "/repo",
+        logger: { debug },
+      });
+
+      let settled = false;
+      const pending = service.sync().then((value) => {
+        settled = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual({
+        ok: false,
+        unavailable: true,
+        message: ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
+      });
+      expect(debug).toHaveBeenCalledWith("account_settings.call_timed_out", {
+        action: "sync",
+        timeoutMs: ACCOUNT_ACTION_TIMEOUT_MS,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers a stalled write as unavailable, not rejected, and runs no post-write hook", async () => {
+    vi.useFakeTimers();
+    try {
+      const onHarnessPresetsChanged = vi.fn();
+      const service = createAccountSettingsSyncService({
+        getPool: stalledPool,
+        getRootPath: () => "/repo",
+        onHarnessPresetsChanged,
+      });
+
+      const pending = service.set("all", "harnessPresets", []);
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_TIMEOUT_MS);
+
+      // Unavailable, not rejected: the caller's local value is intact and still
+      // queued, so it must not be rolled back or reported as a refused write.
+      expect(await pending).toEqual({
+        ok: false,
+        unavailable: true,
+        message: ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
+      });
+      expect(onHarnessPresetsChanged).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still answers a brain that lands inside the bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = createAccountSettingsSyncService({
+        getPool: () => ({
+          callActionForRoot: () => new Promise<{ result: unknown }>((resolve) => {
+            setTimeout(() => resolve({ result: [] }), ACCOUNT_ACTION_TIMEOUT_MS - 1);
+          }),
+        }),
+        getRootPath: () => "/repo",
+      });
+
+      const pending = service.list();
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_TIMEOUT_MS - 1);
+      expect(await pending).toEqual({ ok: true, value: [] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
