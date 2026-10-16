@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { DotsThree } from "@phosphor-icons/react";
+import { Banner } from "../ui/notice";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { canonicalInputFromSummary, sessionCanonicalUiState, sessionStatusDisplay } from "../../lib/terminalAttention";
 import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
@@ -40,18 +41,20 @@ export function ChatShellsSection({
   const visible = showAll ? shells : shells.slice(0, SHELLS_ACTIVE_CAP);
 
   if (loadError) {
+    // The shared inline notice, not a hand-styled line: a failed read is a state
+    // of this section, and the error tone renders it with role="alert".
     return (
-      <div className="px-4 pb-2" data-testid="chat-shells-error">
-        <span className="font-sans text-[11px] text-fg/45">Couldn&rsquo;t load this chat&rsquo;s shells.</span>
-        {onRetry ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="ml-1.5 font-sans text-[11px] text-fg/60 underline-offset-2 transition-colors hover:text-fg/85 hover:underline"
-          >
-            Retry
-          </button>
-        ) : null}
+      <div className="px-2 pb-1">
+        <Banner
+          layout="inline"
+          testId="chat-shells-error"
+          model={{
+            id: "chat-shells-load",
+            tone: "error",
+            title: "Couldn’t load this chat’s shells.",
+            actions: onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined,
+          }}
+        />
       </div>
     );
   }
