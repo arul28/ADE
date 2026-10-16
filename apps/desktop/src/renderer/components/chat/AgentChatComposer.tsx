@@ -142,6 +142,7 @@ import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPick
 import {
   addUltrathinkKeyword,
   hasUltrathinkKeyword,
+  hasUltrathinkKeywordInEditableText,
   paintUltrathinkHighlights,
   providerReadsUltrathink,
   removeUltrathinkKeyword,
@@ -3119,20 +3120,28 @@ export function AgentChatComposer({
       isMention: isChatMentionTokenBody,
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
+  const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
+    ? codexUserShellChipRange(draft)
+    : null;
+  const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
+  const plainUltrathinkExcludedRanges = useMemo(() => [
+    ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
+    ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),
+  ], [plainComposerTokens, plainUserShellChipRange]);
+  const plainUltrathinkExcludedRangesRef = useRef(plainUltrathinkExcludedRanges);
+  useLayoutEffect(() => {
+    plainUltrathinkExcludedRangesRef.current = plainUltrathinkExcludedRanges;
+  }, [plainUltrathinkExcludedRanges]);
   // "ultrathink" painted in colour over the plain textarea, where Claude reads
   // it. A word inside a chip token stays part of that chip.
   const plainUltrathinkTokens = useMemo(() => {
     if (useRichComposer || !draft || !providerReadsUltrathink(sessionProvider) || parallelChatMode) return [];
     return ultrathinkKeywordRanges(draft)
-      .filter((range) => !plainComposerTokens.some((token) => range.start < token.end && token.start < range.end))
+      .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
       .map((range) => ({ ...range, kind: "ultrathink" as const }));
-  }, [draft, parallelChatMode, plainComposerTokens, sessionProvider, useRichComposer]);
+  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, useRichComposer]);
   const plainOverlayTokenCount = plainComposerTokens.length + plainUltrathinkTokens.length;
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
-  const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
-    ? codexUserShellChipRange(draft)
-    : null;
-  const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
   useLayoutEffect(() => {
     if (!plainOverlayTokenCount && !plainUserShellChipRange) return;
     setPlainOverlayScrollTop(textareaRef.current?.scrollTop ?? 0);
@@ -3745,13 +3754,25 @@ export function AgentChatComposer({
   // switch adds or removes the word, typing it turns the switch on, and sending
   // clears it with the draft. It works the same on any machine.
   const ultrathinkReadable = providerReadsUltrathink(sessionProvider) && !parallelChatMode;
-  const ultrathinkActive = ultrathinkReadable && hasUltrathinkKeyword(draft);
+  const [richUltrathinkActive, setRichUltrathinkActive] = useState(false);
+  useLayoutEffect(() => {
+    if (useRichComposer && ultrathinkReadable) {
+      setRichUltrathinkActive(hasUltrathinkKeywordInEditableText(richEditorRef.current));
+    }
+  }, [draft, ultrathinkReadable, useRichComposer]);
+  const ultrathinkActive = ultrathinkReadable && (useRichComposer
+    ? richUltrathinkActive
+    : hasUltrathinkKeyword(draft, plainUltrathinkExcludedRanges));
   const ultrathinkDraftRef = useRef(draft);
-  ultrathinkDraftRef.current = draft;
+  useLayoutEffect(() => {
+    ultrathinkDraftRef.current = draft;
+  }, [draft]);
   const setUltrathinkKeyword = useCallback((enabled: boolean) => {
     if (!useRichComposer) {
       const currentDraft = ultrathinkDraftRef.current;
-      onDraftChange(enabled ? addUltrathinkKeyword(currentDraft) : removeUltrathinkKeyword(currentDraft));
+      onDraftChange(enabled
+        ? addUltrathinkKeyword(currentDraft, plainUltrathinkExcludedRangesRef.current)
+        : removeUltrathinkKeyword(currentDraft, plainUltrathinkExcludedRangesRef.current));
       return;
     }
     const editor = richEditorRef.current;
@@ -3759,7 +3780,7 @@ export function AgentChatComposer({
     // Edit the editor's text nodes in place so chips and links survive.
     if (enabled) {
       const text = serializeRichEditor();
-      if (hasUltrathinkKeyword(text)) return;
+      if (hasUltrathinkKeywordInEditableText(editor)) return;
       if (text.trimStart().startsWith("/")) {
         editor.append(document.createTextNode(/\s$/.test(text) || !text ? "ultrathink" : " ultrathink"));
       } else {
@@ -3788,30 +3809,6 @@ export function AgentChatComposer({
     paintUltrathinkHighlights(ultrathinkHighlightOwner, editor);
     if (!editor) return;
     const observer = new MutationObserver((records) => {
-      const textChangesAffectHighlights = (previous: string, current: string): boolean => {
-        const previousRanges = ultrathinkKeywordRanges(previous);
-        const currentRanges = ultrathinkKeywordRanges(current);
-        if (previousRanges.length !== currentRanges.length) return true;
-        if (previousRanges.some((range, index) =>
-          range.start !== currentRanges[index]?.start || range.end !== currentRanges[index]?.end
-        )) return true;
-        if (!previousRanges.length || previous === current) return false;
-
-        // DOM Ranges adjust themselves when text is inserted before or after a
-        // highlighted word. Only rebuild the shared registry when an edit
-        // touches a word; typing elsewhere in the same text node needs no work.
-        let prefix = 0;
-        while (prefix < previous.length && prefix < current.length && previous[prefix] === current[prefix]) prefix += 1;
-        let suffix = 0;
-        while (
-          suffix < previous.length - prefix && suffix < current.length - prefix &&
-          previous[previous.length - suffix - 1] === current[current.length - suffix - 1]
-        ) suffix += 1;
-        const oldEnd = previous.length - suffix;
-        const newEnd = current.length - suffix;
-        return previousRanges.some((range) => prefix <= range.end && oldEnd >= range.start) ||
-          currentRanges.some((range) => prefix <= range.end && newEnd >= range.start);
-      };
       const nodeContainsKeyword = (node: Node): boolean => {
         if (node instanceof Element && node.closest("[contenteditable='false']")) return false;
         return hasUltrathinkKeyword(node.textContent ?? "");
@@ -3820,7 +3817,10 @@ export function AgentChatComposer({
         if (record.type === "characterData") {
           const text = record.target as Text;
           if (text.parentElement?.closest("[contenteditable='false']")) return false;
-          return textChangesAffectHighlights(record.oldValue ?? "", text.data);
+          // Repaint only when the edited node used to contain, or now contains,
+          // a keyword. This catches edits inside, beside, and across the word;
+          // unrelated text mutations leave CSS Ranges alone.
+          return hasUltrathinkKeyword(record.oldValue ?? "") || hasUltrathinkKeyword(text.data);
         }
         return [...record.addedNodes, ...record.removedNodes].some(nodeContainsKeyword);
       });

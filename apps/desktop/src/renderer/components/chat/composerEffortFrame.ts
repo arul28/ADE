@@ -6,7 +6,6 @@ import { reasoningEffortToneRgb } from "../shared/ModelPicker/ReasoningEffortPic
  * effort level, so it stacks on whichever level is selected. ADE sends the
  * word as part of the message; the composer only shows that it is there.
  */
-const ULTRATHINK_PATTERN = /\bultrathink\b/i;
 const ULTRATHINK_PATTERN_GLOBAL = /\bultrathink\b/gi;
 /** The word plus the separator the switch adds after it. */
 const ULTRATHINK_WITH_SEPARATOR = /\bultrathink\b:?[ \t]?/gi;
@@ -22,8 +21,13 @@ export const ULTRATHINK_LETTER_COLORS = [
   "#c084fc",
 ] as const;
 
-export function hasUltrathinkKeyword(text: string): boolean {
-  return ULTRATHINK_PATTERN.test(text);
+export function hasUltrathinkKeyword(
+  text: string,
+  excludedRanges: readonly { start: number; end: number }[] = [],
+): boolean {
+  return ultrathinkKeywordRanges(text).some((range) =>
+    !excludedRanges.some((excluded) => range.start < excluded.end && excluded.start < range.end)
+  );
 }
 
 export function ultrathinkKeywordRanges(text: string): Array<{ start: number; end: number }> {
@@ -39,21 +43,40 @@ export function ultrathinkKeywordRanges(text: string): Array<{ start: number; en
  * Adds the keyword to a draft. A slash command must stay first in the message,
  * so the keyword goes after it there and in front of everything else.
  */
-export function addUltrathinkKeyword(text: string): string {
-  if (hasUltrathinkKeyword(text)) return text;
+export function addUltrathinkKeyword(
+  text: string,
+  excludedRanges: readonly { start: number; end: number }[] = [],
+): string {
+  if (hasUltrathinkKeyword(text, excludedRanges)) return text;
   if (text.trimStart().startsWith("/")) {
     return /\s$/.test(text) ? `${text}ultrathink` : `${text} ultrathink`;
   }
   return `ultrathink ${text}`;
 }
 
-export function removeUltrathinkKeyword(text: string): string {
-  return text.replace(ULTRATHINK_WITH_SEPARATOR, "");
+export function removeUltrathinkKeyword(
+  text: string,
+  excludedRanges: readonly { start: number; end: number }[] = [],
+): string {
+  return text.replace(ULTRATHINK_WITH_SEPARATOR, (match, offset: number) => {
+    const end = offset + "ultrathink".length;
+    return excludedRanges.some((range) => offset < range.end && range.start < end) ? match : "";
+  });
 }
 
 /** Only Claude Code reads the keyword. */
 export function providerReadsUltrathink(provider: string | null | undefined): boolean {
   return provider === "claude";
+}
+
+export function hasUltrathinkKeywordInEditableText(root: HTMLElement | null): boolean {
+  if (!root) return false;
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node as Text;
+    if (!text.parentElement?.closest("[contenteditable='false']") && hasUltrathinkKeyword(text.data)) return true;
+  }
+  return false;
 }
 
 export type ComposerEffortFrame =
