@@ -4826,8 +4826,8 @@ describe("turn fold (desktop adapter)", () => {
     }
   });
 
-  it("keeps subagent results, proof and computer-use actions visible, and never folds rows after the answer", () => {
-    const { display } = fold([
+  it("folds a turn's computer-use work, keeps subagent results and proof visible, and never folds rows after the answer", () => {
+    const { display, folds } = fold([
       ev({ type: "user_message", text: "fan out", turnId: "t1" }),
       ev({ type: "command", command: "ade screen click --label Save", cwd: "/r", output: 'hit: AXButton "Save" (e1)', itemId: "c1", turnId: "t1", status: "completed" }),
       ev({ type: "reasoning", text: "Clicked.", turnId: "t1" }),
@@ -4839,16 +4839,19 @@ describe("turn fold (desktop adapter)", () => {
       ev({ type: "reasoning", text: "Late thought.", turnId: "t1" }),
       ev({ type: "done", turnId: "t1", status: "completed" }),
     ]);
+    // The computer-use group is work, not answer: it folds with the turn, so its
+    // row is a hidden key of the fold. A subagent result card and a filed proof
+    // stay visible — the reader keeps both.
     expect(types(display)).toEqual([
       "user_message",
       "turn_fold",
-      "work_log_group",
       "subagent_result_card",
       "ade_card",
       "text",
       "reasoning",
       "done",
     ]);
+    expect([...folds[0]!.hiddenKeys].some((key) => key.includes("c1"))).toBe(true);
     const foldRow = display[1]!.event;
     if (foldRow.type !== "turn_fold") throw new Error("expected fold row");
     expect(foldRow.subagentCount).toBe(1);

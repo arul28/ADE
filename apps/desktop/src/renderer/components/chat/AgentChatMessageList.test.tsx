@@ -2516,7 +2516,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.scroll(transcript);
 
     const jumpButton = await screen.findByRole("button", { name: "Jump to latest message" });
-    expect(jumpButton.textContent).toContain("Jump To Latest");
+    expect(jumpButton.textContent).toContain("Jump to latest");
     fireEvent.click(jumpButton);
     expect(onReturnToLatest).toHaveBeenCalledTimes(1);
 
@@ -2605,7 +2605,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   it.each([
     { chips: 1, docked: true },
     { chips: 0, docked: false },
-  ])("docks Jump To Latest in the composer's chip row only while it shows a chip (chips: $chips)", async ({ chips, docked }) => {
+  ])("docks Jump to latest in the composer's chip row only while it shows a chip (chips: $chips)", async ({ chips, docked }) => {
     const footer = (
       <div data-chat-composer-dock="">
         <div data-chat-composer-chip-row="">
@@ -2923,8 +2923,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       </MemoryRouter>,
     );
 
-    const pill = screen.getByRole("button", { name: "2 new · Jump To Latest" });
-    expect(pill.textContent).toContain("2 new · Jump To Latest");
+    const pill = screen.getByRole("button", { name: "2 new · Jump to latest" });
+    expect(pill.textContent).toContain("2 new · Jump to latest");
 
     fireEvent.click(pill);
     await waitFor(() => {
@@ -7200,14 +7200,14 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
         expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
 
         rerenderList(view, [...liveTurn()], { showStreamingIndicator: true });
-        expect(screen.getByRole("button", { name: "2 new · Jump To Latest" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "2 new · Jump to latest" })).toBeTruthy();
 
         // The turn ends and folds the anchor row away: the answer and the turn
         // end are still new; the fold row (above the anchor) and hidden rows are not.
         const ended = [...liveTurn(), done()];
         rerenderList(view, ended);
         expect(rowKeys()).not.toContain(rowKeyOf(ended, 5));
-        expect(screen.getByRole("button", { name: "2 new · Jump To Latest" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "2 new · Jump to latest" })).toBeTruthy();
       } finally {
         restoreScrollBox();
       }
