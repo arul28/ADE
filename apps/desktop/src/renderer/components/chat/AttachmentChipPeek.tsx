@@ -12,7 +12,7 @@ import { createPortal } from "react-dom";
 import type { AgentChatFileRef } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /** Edge of the hover peek. Large enough to recognize, small enough to stay out of the way. */
 const PEEK_SIZE_PX = 160;
@@ -87,23 +87,23 @@ export function AttachmentPeekCard({
 
   if (!anchor || !src || !position || typeof document === "undefined") return null;
   return createPortal(
-    <div
-      aria-hidden
-      className="pointer-events-none overflow-hidden rounded-md border border-white/[0.12] bg-black/70 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
-      // A hover card, so the tooltip layer. Positioned inline rather than with
-      // the `fixed` class: it tracks a chip, it is not an app overlay.
-      style={{
-        position: "fixed",
-        zIndex: Z_LAYERS.tooltip,
-        left: position.left,
-        top: position.top,
-        width: PEEK_SIZE_PX,
-        height: PEEK_SIZE_PX,
-      }}
-      data-chat-attachment-peek=""
-    >
-      <img src={src} alt={name} className="h-full w-full object-contain" draggable={false} />
-    </div>,
+    // The shared host owns the viewport anchoring and the tooltip layer, so
+    // the card is placed inside it at the viewport point computed above.
+    <ViewportOverlayHost layer="tooltip">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute overflow-hidden rounded-md border border-white/[0.12] bg-black/70 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+        style={{
+          left: position.left,
+          top: position.top,
+          width: PEEK_SIZE_PX,
+          height: PEEK_SIZE_PX,
+        }}
+        data-chat-attachment-peek=""
+      >
+        <img src={src} alt={name} className="h-full w-full object-contain" draggable={false} />
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }
