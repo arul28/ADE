@@ -145,8 +145,8 @@ because an agent's shell looks the same as a person's terminal.
   provider with `permissionFieldsForLevel`. A provider that can't express the
   level steps down the ladder (`resolvePermissionLevel`), never up, so a Claude
   chat at "ask before changes" moving to Codex runs there at Codex's
-  ask-level sandbox and approval policy. Kimi and Copilot can't run
-  auto-accept edits, so it steps down to ask there. The generic
+  ask-level sandbox and approval policy. Kimi can't run
+  auto-accept edits, so it steps down to ask there. Copilot can run auto edit. The generic
   `permissionMode` for the same level always travels too, so a destination
   that ignores the provider's own field can't fall back to the source's
   broader one. An ACP model's `acpPermissionMode` rides the capsule's

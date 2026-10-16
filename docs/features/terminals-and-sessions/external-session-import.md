@@ -9,7 +9,9 @@ ADE imports sessions from 11 providers:
 
 - Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, Pi, and
   Muse Code.
-- The ACP providers: Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
+- The ACP-era CLI stores: Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
+  Copilot's chat runtime is an SDK provider now; its CLI history is imported the
+  same way ([Copilot SDK provider](../chat/copilot-sdk-provider.md)).
 
 Every import has two choices:
 
@@ -601,9 +603,10 @@ runtime opens the pointer from the store that the CLI writes:
   take a new turn (`OpenCodeSessionInPersonalStoreError`).
 - Pi: `piSessionId`, opened by `SessionManager.list(cwd)` over the one Pi
   session store that chat and CLI share.
-- Copilot: `acpSessionId`, opened by `session/load` on `copilot --acp`, which
-  reads the same `~/.copilot/session-state`. ADE already holds the transcript,
-  so it suppresses the load replay.
+- Copilot: the SDK session id saved as `acpSessionId` (older chats), opened by
+  `resumeSession` through the Copilot SDK. The SDK reads the same
+  `~/.copilot/session-state`. ADE already holds the transcript, so the resume
+  does not replay it.
 
 The importer refuses a native continue when the session folder is not the lane
 root, and when the requested model is from another family. The model is the

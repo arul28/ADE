@@ -300,7 +300,7 @@ and in tests.
   OpenCode by reading the user's own OpenCode SQLite store directly and
   read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`;
   ADE never starts a 2.0 server on that store), Pi sessions in the shared Pi
-  store, and the ACP stores of Qwen, Kimi, Grok, and Copilot
+  store, and the ACP-era CLI stores of Qwen, Kimi, Grok, and Copilot
   (`discoverQwen/Kimi/Grok/Copilot.ts` over `discoverAcpShared.ts`). The
   provider roots come from `services/shared/providerConfigHomes.ts` so
   `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `FACTORY_HOME_OVERRIDE`, `QWEN_HOME`,
@@ -410,7 +410,8 @@ Shared types and IPC:
   | OpenCode SDK | Current permission mode | Available outside Plan and external `config-toml` modes |
   | Pi SDK | No current-mode signal | Available in non-personal POSIX sessions outside Plan when Bash is allowlisted and the ADE CLI resolves |
   | ACP Qwen | Structured ACP configuration | Not currently offered: ADE injects its CLI path but does not wire verified activity guidance or a command tool |
-  | ACP Kimi / Grok / Copilot | Structured configuration varies by provider | Not currently offered: ADE does not wire activity guidance or a session-scoped command tool; these providers share pooled processes |
+  | ACP Kimi / Grok | Structured configuration varies by provider | Not currently offered: ADE does not wire activity guidance or a session-scoped command tool; these providers share pooled processes |
+  | Copilot SDK | Not wired by the SDK worker | Not currently offered, like the ACP providers. Copilot chats run on one shared SDK worker, not a pooled CLI process |
   | Tracked PTY CLI | No Plan inference from terminal text | Activity guidance for Codex and OpenCode outside Plan / external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and Cursor launches with an initial prompt. Windows guidance includes PowerShell and cmd forms plus a PowerShell bridge for Git Bash, and tells the agent to use only the form matching its command shell; if none applies, it leaves activity unchanged. Claude is omitted because its shell fallback drops the activity instruction, and blank Cursor launches remain omitted. `ADE_ACTIVITY_SESSION_ID` scopes reports to the terminal row while `ADE_CHAT_SESSION_ID` remains the owning chat. |
 
   ACP omission is an ADE wiring gap, not a protocol impossibility. ADE passes

@@ -51,6 +51,7 @@ for vendored runtimes without changing the union.
 | `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
+| `copilot` | The installed `copilot` CLI driven through `@github/copilot-sdk` over stdio. One forked worker serves every Copilot chat on the machine, keyed by the CLI path, `COPILOT_HOME`, and the token environment. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's four levels (plan, ask, auto edit, full access). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
 | `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
@@ -1895,18 +1896,19 @@ about 8s for a native provider title, then ADE-name if the title is
 still the default. CLI sessions are always ADE-named. `ade chat
 generate-names` regenerates title, lane name, and status line.
 
-ACP model selection is provider-specific. Copilot receives the selected model
-through its native `session/set_model` request when the installed CLI supports
-it; its older ACP builds can accept the request without changing inference and
-then remain on Copilot Auto. ACP metadata generation uses the provider's own
-one-shot CLI: Qwen uses safe mode and receives its prompt over stdin, Kimi uses
-its model alias plus supported non-interactive prompt mode, Grok uses its model
-plus plan mode, and Copilot
-receives the selected model with tools and MCP servers disabled and its prompt
-over stdin. Qwen, Kimi, and Grok one-shot metadata routes are text-only; an
-image-backed metadata request is rejected explicitly so the naming fallback can
-try another provider instead of silently discarding the image. Copilot's
-one-shot route forwards supported image attachments.
+ACP model selection is provider-specific. Qwen, Kimi and Grok receive the
+selected model through their own ACP requests. ACP metadata generation uses the
+provider's own one-shot CLI: Qwen uses safe mode and receives its prompt over
+stdin, Kimi uses its model alias plus supported non-interactive prompt mode, and
+Grok uses its model plus plan mode. Qwen, Kimi, and Grok one-shot metadata routes
+are text-only; an image-backed metadata request is rejected explicitly so the
+naming fallback can try another provider instead of silently discarding the
+image.
+
+Copilot is an SDK provider. It selects its model with `session.setModel`, and its
+one-shot metadata runs on a utility SDK session with tools and every configured
+MCP server disabled. It forwards supported image attachments. See
+[copilot-sdk-provider.md](copilot-sdk-provider.md).
 
 Both stages walk `buildSessionIntelligenceModelCandidates` in
 `sessionNaming.ts`. A provider-level failure condemns every remaining

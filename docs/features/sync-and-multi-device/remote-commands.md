@@ -1217,9 +1217,10 @@ without fetching them separately.
 `parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
 (`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
 When `chat.create` is missing an explicit model, `resolveChatCreateModel`
-forwards `activateRuntime: true` only for `opencode`, `pi`, and the ACP
-providers (`qwen`, `kimi`, `grok`, `copilot`), whose model rows are gated on
-a CLI auth pass that activation refreshes (for OpenCode it launches the
+forwards `activateRuntime: true` only for `opencode`, `pi`, the ACP
+providers (`qwen`, `kimi`, `grok`), and `copilot`. The ACP rows are gated on
+a CLI auth pass, and Copilot's rows come from an SDK model read; activation
+refreshes both (for OpenCode it launches the
 probe server). All other providers use passive (cache-only) resolution;
 see the chat README for the passive/active contract. The iOS companion's
 `chat.models` request sets `activateRuntime: true` for cursor/droid and
