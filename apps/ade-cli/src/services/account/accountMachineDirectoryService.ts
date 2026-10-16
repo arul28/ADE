@@ -113,7 +113,7 @@ export function reconcileAccountOwnedMachineTrust(
 
 export type AccountMachinePairOptions = Pick<
   PairWithAccountMachineOptions,
-  "connectTimeoutMs" | "pairingTimeoutMs" | "signal" | "onStage"
+  "connectTimeoutMs" | "pairingTimeoutMs" | "signal" | "onStage" | "logger"
 >;
 
 export type AccountMachineListOptions = {
@@ -477,7 +477,12 @@ export class AccountMachineDirectoryService {
     query: string,
     options: AccountMachinePairOptions = {},
   ): Promise<AdeAccountMachinePairResult> {
+    const directoryStartedAt = Date.now();
     const listed = await this.listMachines(options);
+    options.logger?.info("account.pair.directory", {
+      state: listed.state,
+      durationMs: Date.now() - directoryStartedAt,
+    });
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
       throw new Error("Not signed in — run `ade login`. Direct local and SSH routes stay reachable meanwhile.");
     }

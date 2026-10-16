@@ -23,9 +23,13 @@ import {
 } from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
-import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import {
+  accountMachineDisplayName,
+  type AccountMachineAdoptionRoute,
+} from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createFileLogger, type Logger } from "../logging/logger";
+import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -468,6 +472,36 @@ export type AccountBridgePairMachineOptions = {
   onProgress?: (progress: AdeAccountPairMachineProgress) => void;
 };
 
+/**
+ * The whole pairing budget, measured from the Connect click.
+ *
+ * The renderer stops waiting on `ade.account.pairMachine` at the 30 s IPC
+ * ceiling, and then the user sees only `IPC handler ... timed out`. 25 s keeps
+ * the answer inside that window with 5 s to spare for delivery. One route can
+ * run up to 28 s (10 s connect + 3 s challenge + 15 s hello), so this can cut a
+ * route that would have succeeded in its last seconds. Nothing is lost by
+ * that: the renderer had already given up at 30 s, and a retry reuses the saved
+ * pairing rather than starting over.
+ */
+const PAIR_MACHINE_DEADLINE_MS = 25_000;
+
+function pairRouteLabel(kind: AccountMachineAdoptionRoute["kind"]): string {
+  if (kind === "tailnet") return "Tailscale";
+  if (kind === "lan") return "the local network";
+  return "ADE Relay";
+}
+
+function pairTimeoutMessage(
+  machineName: string | null,
+  stalledRoute: AccountMachineAdoptionRoute["kind"] | null,
+): string {
+  const name = machineName ?? "that computer";
+  const seconds = Math.round(PAIR_MACHINE_DEADLINE_MS / 1000);
+  return stalledRoute
+    ? `Couldn't reach ${name} over ${pairRouteLabel(stalledRoute)} (timed out after ${seconds}s). Make sure ADE is open on that computer, then try again.`
+    : `Couldn't reach ${name} (timed out after ${seconds}s before connecting). Check your internet connection, then try again.`;
+}
+
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
   const secretsDir = resolveMachineAdeLayout().secretsDir;
   const pairMachineProgressListeners = new Set<
@@ -776,36 +810,97 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           }
         }
       };
-      const result = await directoryService().pairMachine(machineKey, {
-        onStage: ({ kind, phase }) => {
-          const machineName = accountMachineNames.get(machineKey)
-            ?? accountMachineNames.get(machineKey.trim().toLowerCase())
-            ?? machineKey;
-          if (phase === "verifying") {
-            emitProgress({
-              machineKey,
-              stage: "verifying",
-              label: `Verifying it's really ${machineName}…`,
-            });
-            return;
-          }
-          emitProgress({
-            machineKey,
-            stage: kind,
-            label: kind === "relay"
-              ? "Connecting through ADE relay…"
-              : kind === "tailnet"
-                ? "Trying Tailscale…"
-                : "Trying local network…",
+      const machineName = (): string | null => accountMachineNames.get(machineKey)
+        ?? accountMachineNames.get(machineKey.trim().toLowerCase())
+        ?? null;
+      const startedAt = Date.now();
+      const controller = new AbortController();
+      // Mutated from callbacks, so read through the object: a plain `let` would
+      // be narrowed to its initial value at the catch below.
+      const attempt: {
+        lastStage: { kind: AccountMachineAdoptionRoute["kind"]; phase: string } | null;
+        deadlineFired: boolean;
+      } = { lastStage: null, deadlineFired: false };
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      // Rejects at the deadline, and aborts the legs so they stop instead of
+      // running on after the renderer has been answered.
+      const deadline = new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(() => {
+          attempt.deadlineFired = true;
+          const error = new Error("Pairing deadline reached.");
+          controller.abort(error);
+          reject(error);
+        }, PAIR_MACHINE_DEADLINE_MS);
+      });
+      logMachineEvent("info", "account.pair_machine.started", {
+        deadlineMs: PAIR_MACHINE_DEADLINE_MS,
+      });
+      try {
+        const result = await Promise.race([
+          directoryService().pairMachine(machineKey, {
+            signal: controller.signal,
+            logger: {
+              info: (event, meta) => logMachineEvent("info", event, meta),
+              warn: (event, meta) => logMachineEvent("warn", event, meta),
+            },
+            onStage: (stage) => {
+              const { kind, phase } = stage;
+              attempt.lastStage = { kind, phase };
+              logMachineEvent("info", "account.pair_machine.stage", {
+                route: kind,
+                phase,
+                elapsedMs: Date.now() - startedAt,
+              });
+              if (phase === "verifying") {
+                emitProgress({
+                  machineKey,
+                  stage: "verifying",
+                  label: `Verifying it's really ${machineName() ?? machineKey}…`,
+                });
+                return;
+              }
+              emitProgress({
+                machineKey,
+                stage: kind,
+                label: kind === "relay"
+                  ? "Connecting through ADE relay…"
+                  : kind === "tailnet"
+                    ? "Trying Tailscale…"
+                    : "Trying local network…",
+              });
+            },
+          }),
+          deadline,
+        ]);
+        logMachineEvent("info", "account.pair_machine.ok", {
+          durationMs: Date.now() - startedAt,
+          route: attempt.lastStage?.kind ?? null,
+        });
+        emitProgress({
+          machineKey,
+          stage: "opening",
+          label: "Opening connection…",
+        });
+        return result;
+      } catch (error) {
+        const durationMs = Date.now() - startedAt;
+        if (attempt.deadlineFired) {
+          logMachineEvent("warn", "account.pair_machine.timed_out", {
+            durationMs,
+            stalledRoute: attempt.lastStage?.kind ?? null,
+            stalledPhase: attempt.lastStage?.phase ?? null,
           });
-        },
-      });
-      emitProgress({
-        machineKey,
-        stage: "opening",
-        label: "Opening connection…",
-      });
-      return result;
+          throw new Error(pairTimeoutMessage(machineName(), attempt.lastStage?.kind ?? null));
+        }
+        logMachineEvent("warn", "account.pair_machine.failed", {
+          durationMs,
+          route: attempt.lastStage?.kind ?? null,
+          error: error instanceof Error ? error.message : String(error ?? ""),
+        });
+        throw error;
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
     },
 
     onPairMachineProgress: (listener) => {

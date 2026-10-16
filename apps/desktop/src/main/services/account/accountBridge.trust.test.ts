@@ -48,6 +48,13 @@ const observedDirectoryBaseUrls = vi.hoisted(() => [] as Array<string | null>);
 const resolveOfficialAccountDirectoryBaseUrl = vi.hoisted(() => vi.fn(
   () => "https://ade-account-directory-production.arulsharma1028.workers.dev",
 ));
+const logMachineEvent = vi.hoisted(() => vi.fn());
+
+// Keeps pairing logs out of the real ~/.ade/runtime/desktop-main.jsonl.
+vi.mock("../logging/machineLogger", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logging/machineLogger")>()),
+  logMachineEvent,
+}));
 
 vi.mock(
   "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
@@ -445,6 +452,7 @@ describe("desktop account machine lifecycle", () => {
     deleteMachine.mockReset();
     listMachines.mockReset().mockResolvedValue({ state: "ok", machines: [], message: null });
     pairMachine.mockReset();
+    logMachineEvent.mockClear();
     observedDirectoryBaseUrls.splice(0);
     resolveOfficialAccountDirectoryBaseUrl.mockClear();
   });
@@ -647,6 +655,58 @@ describe("desktop account machine lifecycle", () => {
     unsubscribe();
     await bridge.pairMachine("machine-a");
     expect(listener).toHaveBeenCalledTimes(5);
+  });
+
+  it("answers a stalled pairing with a named, timed message before the IPC ceiling", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      machines: [machine({
+        machineKey: "machine-a",
+        deviceId: "device-a",
+        name: "Studio",
+      })],
+      message: null,
+    });
+    pairMachine.mockImplementation(async (
+      _machineKey: string,
+      options?: {
+        onStage?: (stage: {
+          kind: "relay" | "tailnet" | "lan";
+          phase: "connecting" | "verifying";
+        }) => void;
+      },
+    ) => {
+      options?.onStage?.({ kind: "tailnet", phase: "connecting" });
+      return new Promise<never>(() => {});
+    });
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+    await bridge.listMachines();
+
+    vi.useFakeTimers();
+    try {
+      const pairing = bridge.pairMachine("machine-a").catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(24_999);
+      expect(logMachineEvent).not.toHaveBeenCalledWith(
+        "warn",
+        "account.pair_machine.timed_out",
+        expect.anything(),
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await pairing;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "Couldn't reach Studio over Tailscale (timed out after 25s). Make sure ADE is open on that computer, then try again.",
+      );
+      expect(logMachineEvent).toHaveBeenCalledWith(
+        "warn",
+        "account.pair_machine.timed_out",
+        { durationMs: 25_000, stalledRoute: "tailnet", stalledPhase: "connecting" },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("preserves a classified directory auth failure for the desktop surface", async () => {
