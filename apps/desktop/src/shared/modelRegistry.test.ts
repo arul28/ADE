@@ -748,10 +748,14 @@ describe("modelRegistry", () => {
         outputPricePer1M: 20,
         defaultReasoningEffort: "medium",
       });
-      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus55?.serviceTiers).toEqual(["fast"]);
       expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
       expect(getRuntimeModelRefForDescriptor(opus55!, "claude")).toBe("claude-opus-5-5");
+
+      expect(getModelById("anthropic/claude-haiku-5-5")?.reasoningTiers).toEqual([
+        "low", "medium", "high", "xhigh", "max", "ultracode",
+      ]);
 
       const opus5 = getModelById("anthropic/claude-opus-5");
       expect(opus5).toBeTruthy();
@@ -767,7 +771,7 @@ describe("modelRegistry", () => {
         outputPricePer1M: 25,
         defaultReasoningEffort: "high",
       });
-      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus5?.serviceTiers).toEqual(["fast"]);
       expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
       expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
@@ -797,7 +801,7 @@ describe("modelRegistry", () => {
         providerModelId: "claude-sonnet-5-5",
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
-        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
         defaultReasoningEffort: "high",
         inputPricePer1M: 2,
         outputPricePer1M: 10,
