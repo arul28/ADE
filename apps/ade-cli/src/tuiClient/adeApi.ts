@@ -835,10 +835,12 @@ export async function getAvailableModels(
     // IDs such as `claude-opus-4-6-fast`, not a separate service-tier toggle.
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
-    // The four ACP providers are here too, but they never spawn an agent for a
-    // model list: `activateRuntime` only forces a fresh CLI auth pass, which is
-    // what gates their curated rows (see loadAvailableModels in
-    // agentChatService). Muse answers MSP `model/list` from its live host.
+    // Qwen, Kimi and Grok are ACP providers here: they never spawn an agent for
+    // a model list, because `activateRuntime` only forces a fresh CLI auth pass,
+    // which is what gates their curated rows (see loadAvailableModels in
+    // agentChatService). Copilot reads its model list from the SDK at runtime,
+    // like Droid, so it is here too. Muse answers MSP `model/list` from its live
+    // host.
     activateRuntime: provider === "cursor"
       || provider === "muse"
       || provider === "droid"

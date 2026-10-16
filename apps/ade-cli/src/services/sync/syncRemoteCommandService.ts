@@ -4198,9 +4198,10 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
-    // ACP providers are here for the same reason as OpenCode/Pi: their model
-    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
-    // pass. It does not spawn an agent for them.
+    // Qwen, Kimi and Grok are here for the same reason as OpenCode/Pi: their
+    // model rows are gated on a CLI auth pass, and `activateRuntime` refreshes
+    // that pass. It does not spawn an agent for them. Copilot reads its models
+    // from the SDK, so `activateRuntime` refreshes that read.
     ...(
       payload.provider === "opencode"
       || payload.provider === "pi"
