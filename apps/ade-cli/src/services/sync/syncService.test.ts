@@ -13,7 +13,10 @@ import {
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
 import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
-import { createSyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types";
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncRoleSnapshot,
+} from "../../../../desktop/src/shared/types";
 import { removeTestTree } from "../../test/filesystem";
 
 vi.mock("../../../../desktop/src/main/services/state/crsqliteExtension", async (importOriginal) => {
@@ -153,6 +156,60 @@ describe("createSyncService", () => {
       const records = JSON.parse(fs.readFileSync(pairedDevicesPath, "utf8")) as Record<string, unknown>;
       expect(records["phone-1"]).toBeUndefined();
     } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
+  it("reaches the sync-host role without waiting on the status snapshot", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-activation-drain-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    // Keep the listener itself out of this test: it pins the drain, not the host.
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    const sessionList = vi.fn(() => []);
+    let releaseEnumeration: () => void = () => undefined;
+    const enumeration = new Promise<unknown[]>((resolve) => {
+      releaseEnumeration = () => resolve([]);
+    });
+    let signalEmitted: (snapshot: SyncRoleSnapshot) => void = () => undefined;
+    const emittedOnce = new Promise<SyncRoleSnapshot>((resolve) => {
+      signalEmitted = resolve;
+    });
+    const service = createService(db, projectRoot, {
+      sessionService: {
+        list: sessionList,
+        get: vi.fn(() => null),
+        readTranscriptTail: vi.fn(async () => ""),
+      } as any,
+      agentChatService: { listSessions: vi.fn(() => enumeration) } as any,
+      onStatusChanged: (snapshot) => signalEmitted(snapshot),
+    });
+
+    try {
+      vi.useFakeTimers();
+      let activationSettled = false;
+      const activation = service.setHostStartupEnabled(true).then(() => {
+        activationSettled = true;
+      });
+      // Flushes microtasks only: the status snapshot's chat enumeration is
+      // still pending, so nothing below can have run.
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(activationSettled).toBe(true);
+      expect(sessionList).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
+      releaseEnumeration();
+      await activation;
+      const snapshot = await emittedOnce;
+
+      // The snapshot is offered after the role, not instead of it: it is still
+      // the real, complete one, readiness included.
+      expect(snapshot.transferReadiness.ready).toBe(true);
+      expect(sessionList).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
       await service.dispose();
       db.close();
     }
