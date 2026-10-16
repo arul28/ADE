@@ -418,6 +418,58 @@ describe("openKvDb SQL binding", () => {
   });
 });
 
+describe("openKvDb against a peer holding the database", () => {
+  // `PRAGMA journal_mode = WAL` needs an EXCLUSIVE lock, which a sibling ADE
+  // process (the brain and the desktop main process both open the same
+  // `<project>/.ade/ade.db`) can refuse for the whole write timeout. A peer
+  // transaction on a database that is not yet in WAL is exactly that case.
+  it("waits a peer out for WAL instead of failing on its lock", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-wal-contended-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const peer = new DatabaseSync(dbPath);
+    peer.exec("create table peer_probe(value integer)");
+    peer.exec("insert into peer_probe(value) values (1)");
+    peer.exec("BEGIN");
+    peer.prepare("select * from peer_probe").all();
+    let peerInTransaction = true;
+    const release = () => {
+      if (!peerInTransaction) return;
+      peerInTransaction = false;
+      peer.exec("ROLLBACK");
+    };
+    // The peer finishes its transaction as soon as the open first yields. The
+    // old open never yielded: it blocked inside the native busy handler for the
+    // whole 5,000 ms write timeout and then threw.
+    const releaseTimer = setTimeout(release, 0);
+    activeDisposers.push(async () => {
+      clearTimeout(releaseTimer);
+      release();
+      peer.close();
+    });
+
+    const warnings: string[] = [];
+    const logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (event: string) => { warnings.push(event); },
+      error: () => {},
+    };
+    const startedAt = Date.now();
+    const db = await openKvDb(dbPath, logger as never);
+    const elapsedMs = Date.now() - startedAt;
+    activeDisposers.push(async () => db.close());
+
+    // The conversion still won — an open left in rollback mode would make every
+    // later write wait on the peer instead — and it did so without spending the
+    // connection's 5,000 ms write timeout on one blocked call.
+    expect(db.all<{ journal_mode: string }>("pragma journal_mode")[0]?.journal_mode).toBe("wal");
+    expect(elapsedMs).toBeLessThan(3000);
+    expect(warnings).not.toContain("db.wal_conversion_deferred");
+    db.setJson("wal:contended", { ok: true });
+    expect(db.getJson<{ ok: boolean }>("wal:contended")).toEqual({ ok: true });
+  });
+});
+
 describe("GitHub stacked pull request schema", () => {
   it("stores repository stacks and their ordered pull requests locally", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-github-stacks-");
