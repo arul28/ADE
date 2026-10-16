@@ -1268,6 +1268,7 @@ export async function createAdeRuntime(args: {
       logger,
       accountAuthService,
       getAccountAccessToken,
+      onAccountSettingsChanged: () => pushEvent("runtime", { type: "account_settings_changed" }),
       getContexts: () => [{
         project: { rootPath: projectRoot },
         linearCredentialService: linearCredentialServiceForAccount,

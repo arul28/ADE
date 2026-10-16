@@ -2809,6 +2809,12 @@ const remoteAgentChatEventFanout = createRemoteRuntimeFanout<AgentChatEventEnvel
   extract: (payload) => toAgentChatEventEnvelope(payload),
   invalidate: () => agentChatSummaryCache.clear(),
 });
+const remoteAccountSettingsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
+  eventType: "account_settings_changed",
+  label: "account settings",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => payload.type === "account_settings_changed" ? {} : null,
+});
 const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
   eventType: "terminal_session_changed",
   label: "session",
@@ -3045,6 +3051,7 @@ const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRe
  */
 export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAgentChatEventFanout,
+  remoteAccountSettingsChangedFanout,
   remoteSessionChangedFanout,
   remoteLaneDeleteEventFanout,
   remoteLaneLifecycleEventFanout,
@@ -12574,6 +12581,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
+    onChanged: (cb: () => void): (() => void) =>
+      remoteAccountSettingsChangedFanout.subscribe(() => cb()),
   },
   /**
    * Settings > MCP servers. Secret values go in; none come out. Each call

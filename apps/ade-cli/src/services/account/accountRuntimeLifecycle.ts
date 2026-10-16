@@ -49,6 +49,7 @@ export type AccountRuntimeLifecycleOptions = {
   teardown: { push(release: () => void): void };
   relay?: AccountSettingsRelay & AccountVaultRelay;
   purgeAccountApiKeys?: () => void;
+  onAccountSettingsChanged?: () => void;
 };
 
 /** Adapt the headless machine-local vault to the bridge shared with desktop. */
@@ -150,7 +151,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         logger: options.logger,
       }),
     );
-    options.teardown.push(accountSettingsStore.startPeriodicSync());
+    options.teardown.push(accountSettingsStore.startPeriodicSync(undefined, options.onAccountSettingsChanged));
 
     accountVaultStore = getSharedAccountVaultStore(
       options.accountStoreAdeDir,
