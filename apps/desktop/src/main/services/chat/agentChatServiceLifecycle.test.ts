@@ -25,6 +25,24 @@ import {
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { createJiraCredentialService } from "../jira/jiraCredentialService";
+import { createJiraService } from "../jira/jiraService";
+import { createIssueTrackerService } from "../issueTrackers/issueTrackerService";
+
+class MemoryJiraCredentialStore implements SyncCredentialStore {
+  private values = new Map<string, string>();
+  async get(key: string): Promise<string | null> { return this.getSync(key); }
+  async set(key: string, value: string): Promise<void> { this.setSync(key, value); }
+  async delete(key: string): Promise<void> { this.deleteSync(key); }
+  getSync(key: string): string | null { return this.values.get(key) ?? null; }
+  setSync(key: string, value: string): void { this.values.set(key, value); }
+  deleteSync(key: string): void { this.values.delete(key); }
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    const next = Object.fromEntries(this.values);
+    if (updater(next) !== false) this.values = new Map(Object.entries(next));
+  }
+}
 
 describe("createAgentChatService", () => {
   describe("hasRetainableSessions", () => {
@@ -863,6 +881,71 @@ describe("createAgentChatService", () => {
       service.cleanupStaleAttachments();
 
       expect(fs.existsSync(stashedImage)).toBe(true);
+    });
+  });
+
+  describe("turn-end linked Jira issue refresh", () => {
+    it("skips Jira snapshots whose site differs from the connected site", async () => {
+      installClaudeResponseFixture({ sdkSessionId: "sdk-linked-jira-site", responseText: "Done." });
+      const jiraFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/myself")) throw new Error(`Unexpected Jira request: ${url.pathname}`);
+        return new Response(JSON.stringify({ accountId: "jira-account", displayName: "Jira User" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      const credentials = createJiraCredentialService({ credentialStore: new MemoryJiraCredentialStore() });
+      const jiraService = createJiraService({ credentials, fetchImpl: jiraFetch });
+      await jiraService.connect({
+        siteUrl: "https://connected.atlassian.net",
+        email: "user@example.test",
+        apiToken: "jira-test-token",
+      });
+      const actualTrackerService = createIssueTrackerService({ jiraService });
+      let resolveRead!: () => void;
+      const readFinished = new Promise<void>((resolve) => { resolveRead = resolve; });
+      let readFailure: unknown;
+      const reference = {
+        provider: "jira" as const,
+        siteUrl: "https://other.atlassian.net",
+        key: "OTHER-1",
+        url: "https://other.atlassian.net/browse/OTHER-1",
+      };
+      const observedTrackerService = {
+        isConnected: actualTrackerService.isConnected.bind(actualTrackerService),
+        get: async (args: Parameters<typeof actualTrackerService.get>[0]) => {
+          try {
+            return await actualTrackerService.get(args);
+          } catch (error) {
+            readFailure = error;
+            throw error;
+          } finally {
+            resolveRead();
+          }
+        },
+      };
+      const { service, laneService } = createService({
+        issueTrackerService: observedTrackerService,
+        jiraService,
+      });
+      const listReferences = vi.fn(() => ({ references: [reference], totalCount: 1, scanned: 1 }));
+      const refreshSnapshot = vi.fn();
+      laneService.listLinkedIssueSnapshotReferences = listReferences as any;
+      laneService.refreshLinkedIssueSnapshot = refreshSnapshot as any;
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      try {
+        await service.runSessionTurn({ sessionId: session.id, text: "Read the linked issue." });
+        await readFinished;
+
+        expect(listReferences).toHaveBeenCalledWith({ chatSessionId: session.id, offset: 0, limit: 12 });
+        expect(readFailure).toMatchObject({ name: "IssueTrackerError", tracker: "jira", reason: "not-connected" });
+        expect(jiraFetch).toHaveBeenCalledTimes(1);
+        expect(refreshSnapshot).not.toHaveBeenCalled();
+      } finally {
+        service.forceDisposeAll();
+      }
     });
   });
 

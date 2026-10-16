@@ -782,13 +782,14 @@ dashboard contract change.
 An issue made in ADE's create composer records the existing `ade_feature_used`
 event with `feature: "issues"`, `action: "issue_created"`,
 `source: "renderer_route"`, and the tracker on a closed `outcome`:
-`tracker_linear` or `tracker_github`. It is captured in
+`tracker_linear`, `tracker_github` or `tracker_jira`. It is captured in
 `IssueCreateDialog.tsx` only after the tracker accepted the issue; an issue an
-agent makes through `ade linear create` or `ade github issue create` is not
+agent makes through `ade linear create`, `ade github issue create` or
+`ade jira create` is not
 counted, because the question is whether people file issues from ADE's own
 form. Nothing about the issue crosses: no repository, team, title, labels,
 number or id. A per-tracker one-minute deduplication key folds a "Create more"
-burst into one event, so the worst case is two events a minute, inside the
+burst into one event, so the worst case is three events a minute, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
 raised and no dashboard card asks this yet.
 

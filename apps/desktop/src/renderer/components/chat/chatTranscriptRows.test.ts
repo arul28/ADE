@@ -11,6 +11,7 @@ import {
   moveScheduledWorkToTurnEnds,
 } from "./chatScheduledWorkRows";
 import { arrangeComputerUseRuns, hasComputerUseEntries } from "./chatComputerUseRows";
+import { foldTurnFailureRows } from "./turnFailureRows";
 import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
@@ -46,6 +47,77 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  const failureRows = (events: AgentChatEventEnvelope[]) => foldTurnFailureRows(groupEvents(events));
+
+  it("drops usage-limit error rows and marks their done row", () => {
+    const rows = failureRows([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "Continue after the limit clears.", turnId: "turn-limit" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "You have reached your usage limit.", turnId: "turn-limit", errorInfo: { category: "rate_limit" } },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-08T19:28:02.000Z",
+        sequence: 3,
+        event: { type: "done", status: "failed", turnId: "turn-limit" },
+      },
+    ]);
+
+    expect(rows.filter((row) => row.event.type === "error")).toHaveLength(0);
+    expect(rows.filter((row) => row.event.type === "user_message")).toHaveLength(1);
+    expect(rows.find((row) => row.event.type === "done")).toMatchObject({ endedAtUsageLimit: true });
+  });
+
+  it("folds an identical failed retry into the newest prompt and done row", () => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: "Provider unavailable.", turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const prompts = rows.filter((row) => row.event.type === "user_message");
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.event).toMatchObject({ text: "Retry this prompt", turnId: "turn-2" });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ repeatCount: 2, event: { turnId: "turn-2" } });
+  });
+
+  it.each([
+    ["a different failure", "Retry this prompt", "A different provider failure."],
+    ["a different prompt", "Try a new prompt", "Provider unavailable."],
+  ])("does not fold retries with %s", (_reason, retryText, retryFailure) => {
+    const rows = failureRows([
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:00.000Z", sequence: 1, event: { type: "user_message", text: "Retry this prompt", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:01.000Z", sequence: 2, event: { type: "error", message: "Provider unavailable.", turnId: "turn-1", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:28:02.000Z", sequence: 3, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:00.000Z", sequence: 4, event: { type: "user_message", text: retryText, turnId: "turn-2" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:01.000Z", sequence: 5, event: { type: "error", message: retryFailure, turnId: "turn-2", errorInfo: "responseStreamDisconnected" } },
+      { sessionId: "session-1", timestamp: "2026-09-08T19:29:02.000Z", sequence: 6, event: { type: "done", status: "failed", turnId: "turn-2" } },
+    ]);
+    const errors = rows.filter((row) => row.event.type === "error");
+    const done = rows.filter((row) => row.event.type === "done");
+
+    expect(errors).toHaveLength(2);
+    expect(done).toHaveLength(2);
+    expect(errors.every((row) => row.repeatCount === undefined)).toBe(true);
+    expect(done.every((row) => row.repeatCount === undefined)).toBe(true);
+  });
+
   /**
    * A scene's still is a FILE, named by the key derived here, looked up again
    * on every reopen.

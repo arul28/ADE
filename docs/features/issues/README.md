@@ -227,9 +227,9 @@ cross the sync channel, capped at 10 MB) and inserts the markdown. GitHub has no
 
 ## Starting work from an issue
 
-Linear, GitHub and Jira issues start lanes and agents through one launcher. It
-is `IssueLaunchHost` (in `components/app/BatchLaunchModal.tsx`), mounted once by
-`AppShell`. Nothing else renders the dialog. A caller asks for a launch with
+Linear, GitHub and Jira issues start lanes and agents through one launcher.
+`IssueLaunchHost` in `components/app/IssueLaunchHost.tsx` owns the flow and is
+mounted once by `AppShell`; `BatchLaunchModal.tsx` renders its dialog. A caller asks for a launch with
 `requestIssueLaunch(issues, { laneOnly })` (`lib/issueLaunchRequests.ts`). The
 asks come from the "Launch agent" and "Lane only" buttons in each viewer, from
 the multi-select in the GitHub and Jira panes, from the Linear pane, and from
@@ -432,8 +432,13 @@ Issues tab and the sheet. Turning Linear off is signing out.
     action dock (Launch agent, Lane only, Attach to chat), copy-with-toast, and
     "Linked in ADE" (`lanesCarryingIssue`).
   - `IssuePickerMenu.tsx` — the filterable picker every property chip opens,
-    and the GitHub label and person options.
-  - `issueTopBarPreferences.ts` — the two top-bar toggles.
+    with tracker-specific label and person options.
+  - `issuePickerChip.tsx` — the shared chip and picker control used by issue
+    creation and Jira property editing.
+  - `issueDueDatePicker.tsx` — the Jira due-date control.
+  - `useIssueLaunchSelection.ts` — shared selection and launch-request state for
+    multi-select issue panes.
+  - `issueTopBarPreferences.ts` — the three tracker visibility toggles.
   - `issueEditing.tsx` — inline title, description and the comment box, shared
     by both providers; `issueMarkdown.tsx` — the markdown renderer they share.
     A failed image retries three times: a picture GitHub has just taken fails
@@ -448,9 +453,11 @@ Issues tab and the sheet. Turning Linear off is signing out.
     `LaunchIssue` and asks the shared launcher. It keeps the old call sites
     working; it renders no dialog of its own.
   - `JiraIssueViewer.tsx` launches through the same request (`requestIssueLaunch`).
-- `apps/desktop/src/renderer/components/app/BatchLaunchModal.tsx` —
-  `IssueLaunchHost`, the one shared launch dialog and runner, and its status
-  toast. It is mounted by `AppShell`.
+- `apps/desktop/src/renderer/components/app/IssueLaunchHost.tsx` — the
+  app-wide owner for launch configuration, execution, and status; `AppShell`
+  mounts it once.
+- `apps/desktop/src/renderer/components/app/BatchLaunchModal.tsx` — the shared
+  launch dialog rendered by `IssueLaunchHost`.
 - `apps/desktop/src/renderer/lib/issueLaunchRequests.ts` — `requestIssueLaunch`
   and the launch progress and cancel events the host publishes.
 - `apps/desktop/src/renderer/lib/linearBatchLaunch.ts` — `LaunchIssue`, the
@@ -492,7 +499,7 @@ Issues tab and the sheet. Turning Linear off is signing out.
   held request on mount or from the broadcast. The page must not clear the
   hold, or a panel that was not mounted yet would miss the request.
 - **One launch dialog.** Every launch goes to `IssueLaunchHost`, which owns the
-  dialog, the runner and the status. Nothing else mounts `BatchLaunchModal`.
+  dialog, runner and status. The host is the only owner of that flow.
 - **Cancelling a launch returns to the Linear pane only for a launch that
   came from it.** The request carries `returnToLinearPane` for the Linear pane,
   and the host reports the cancel back to that pane.

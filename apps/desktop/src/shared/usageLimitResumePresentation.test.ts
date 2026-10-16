@@ -10,6 +10,7 @@ import {
   usageLimitResumePill,
   usageLimitResumeProviderLabel,
   usageLimitResumeRowStatus,
+  usageLimitChip,
   usageLimitTurnFooterLabel,
 } from "./usageLimitResumePresentation";
 
@@ -144,13 +145,27 @@ describe("usageLimitResumeRowStatus", () => {
     });
   });
 
-  it("declines the row for states that are not waiting for anything", () => {
-    // The row falls back to its ordinary failed/idle presentation: a chat the
-    // user switched off, or one with no reset to wait for, is not "waiting".
-    expect(usageLimitResumeRowStatus(resume({ state: "opted_out" }), NOW)).toBeNull();
-    expect(usageLimitResumeRowStatus(resume({ state: "no_reset" }), NOW)).toBeNull();
+  it("keeps opted-out and no-reset limits visible as attention rows", () => {
+    const expected = { label: "Usage limit", tone: "attention", glyph: "waiting" };
+    expect(usageLimitResumeRowStatus(resume({ state: "opted_out" }), NOW)).toEqual(expected);
+    expect(usageLimitResumeRowStatus(resume({ state: "no_reset" }), NOW)).toEqual(expected);
     expect(usageLimitResumeRowStatus(null, NOW)).toBeNull();
     expect(usageLimitResumeRowStatus(undefined, NOW)).toBeNull();
+  });
+});
+
+describe("usageLimitChip", () => {
+  it.each([
+    ["armed", {}, "resumes in 3 min", "Cancel", false],
+    ["resuming", {}, "resuming…", null, null],
+    ["paused", { attempts: 2 }, "paused after 2 tries", "Try again", true],
+    ["opted_out", {}, "auto-resume off", "Resume in 3 min", true],
+    ["no_reset", { fireAt: null, resetAt: null }, "Claude", null, null],
+  ] as const)("models the %s state and its available toggle", (state, patch, detail, toggleLabel, enable) => {
+    const model = usageLimitChip(resume({ state, ...patch }), NOW);
+    expect(model.detail).toBe(detail);
+    expect(model.toggle?.label ?? null).toBe(toggleLabel);
+    expect(model.toggle?.enable ?? null).toBe(enable);
   });
 });
 

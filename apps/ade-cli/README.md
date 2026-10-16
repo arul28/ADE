@@ -584,6 +584,13 @@ ade chat send <B> --after <A> "start the review"             # send B this once 
 ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
+ade issue list --tracker jira --scope PROJ --text     # tracker-neutral issue reads and writes for Linear, GitHub, or Jira
+ade issue view PROJ-123 --text
+ade jira status --text
+ade jira connect --site https://acme.atlassian.net --email dev@example.com --token-stdin < jira-token.txt
+ade jira list --project PROJ --state open --text
+ade jira issue PROJ-123 --text
+ade jira transition PROJ-123 --to Done
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
 ade linear comment "Pushed a fix; CI running"          # write back through the attached runtime
 ade linear set-state ENG-431 <state-id>

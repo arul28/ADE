@@ -357,8 +357,8 @@ func workUsageLimitSheetBodyLines(
 /// The Work / hub row status for a chat waiting on a usage limit, or nil when
 /// the row should fall through to the ordinary phase table.
 ///
-/// `opted_out` and `no_reset` fall through on purpose: nothing is scheduled, so
-/// the row's real state (idle, failed) is the honest thing to show.
+/// `opted_out` and `no_reset` still own the row status slot: the chat is stopped
+/// on a usage limit even though nothing will restart it automatically.
 struct WorkUsageLimitRowStatus: Equatable {
   let label: String
   let glyph: ActivityGlyph
@@ -391,7 +391,9 @@ func workUsageLimitRowStatus(
     )
   case .paused:
     return WorkUsageLimitRowStatus(label: "Paused · limit", glyph: .parked, tone: .amber)
-  case .optedOut, .noReset, .unknown:
+  case .optedOut, .noReset:
+    return WorkUsageLimitRowStatus(label: "Usage limit", glyph: .parked, tone: .amber)
+  case .unknown:
     return nil
   }
 }

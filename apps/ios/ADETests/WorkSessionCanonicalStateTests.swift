@@ -492,12 +492,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(paused.tone, .amber)
     XCTAssertEqual(paused.status?.label, "Paused · limit")
 
-    // States with nothing scheduled hand the slot back: the row is a plain
-    // failure again, capsule and all.
-    summary.usageLimitResume = AgentChatUsageLimitResume(state: .optedOut, provider: "claude")
-    let optedOut = workSessionRowPresentation(session: session, summary: summary, now: now)
-    XCTAssertEqual(optedOut.badge?.kind, .failed)
-    XCTAssertEqual(optedOut.tone, .red)
+    // These states have no automatic resume, but the stopped chat is still
+    // waiting on a usage limit rather than a failed turn.
+    for state in [AgentChatUsageLimitResumeState.optedOut, .noReset] {
+      summary.usageLimitResume = AgentChatUsageLimitResume(state: state, provider: "claude")
+      let limited = workSessionRowPresentation(session: session, summary: summary, now: now)
+      XCTAssertNil(limited.badge)
+      XCTAssertEqual(limited.tone, .amber)
+      XCTAssertEqual(limited.status?.label, "Usage limit")
+      XCTAssertEqual(limited.status?.glyph, .parked)
+    }
   }
 
   /// A raised hand outranks an appointment. Desktop returns

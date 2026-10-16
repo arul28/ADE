@@ -75,6 +75,8 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
   let jiraProjectFetchError: IssueTrackerError | null = null;
   let jiraProjectRetryAt = 0;
   let linearTeams: { keys: Set<string>; expiresAt: number } | null = null;
+  let linearTeamFetchError: IssueTrackerError | null = null;
+  let linearTeamRetryAt = 0;
 
   const getProjectConfig = () => {
     try {
@@ -129,17 +131,23 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     return { keys, fetchError: jiraProjectFetchError };
   };
 
-  const linearTeamKeys = async (): Promise<Set<string>> => {
-    if (!args.linearIssueTracker || !(await isConnected("linear"))) return new Set();
-    if (!linearTeams || linearTeams.expiresAt <= Date.now()) {
+  // Like the Jira project keys: an outage keeps the last good set and is
+  // reported, instead of being cached as "no teams" and read as not-found.
+  const linearTeamKeys = async (): Promise<{ keys: Set<string>; fetchError: IssueTrackerError | null }> => {
+    if (!args.linearIssueTracker || !(await isConnected("linear"))) return { keys: new Set(), fetchError: null };
+    const currentTime = Date.now();
+    if ((!linearTeams || linearTeams.expiresAt <= currentTime) && linearTeamRetryAt <= currentTime) {
       try {
         const states = await args.linearIssueTracker.listWorkflowStates();
         linearTeams = { keys: new Set(states.map((state) => state.teamKey.toUpperCase())), expiresAt: Date.now() + TEAM_KEY_CACHE_MS };
-      } catch {
-        linearTeams = { keys: new Set(), expiresAt: Date.now() + TEAM_KEY_CACHE_MS };
+        linearTeamFetchError = null;
+        linearTeamRetryAt = 0;
+      } catch (error) {
+        linearTeamFetchError = normalizeIssueTrackerError("linear", "resolve", error);
+        linearTeamRetryAt = Date.now() + TEAM_KEY_CACHE_MS;
       }
     }
-    return linearTeams.keys;
+    return { keys: linearTeams?.keys ?? new Set(), fetchError: linearTeamFetchError };
   };
 
   const resolve = async (input: string | IssueRef): Promise<IssueRef> => {
@@ -169,10 +177,11 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
     const prefix = issueProjectPrefix(raw);
     if (jiraKey && prefix) {
       const teams = await linearTeamKeys();
-      if (teams.has(prefix)) return { provider: "linear", identifier: normalizeLinearIdentifier(raw)! };
+      if (teams.keys.has(prefix)) return { provider: "linear", identifier: normalizeLinearIdentifier(raw)! };
       const projects = await jiraProjectKeys();
       const siteUrl = await getJiraSiteUrl();
       if (projects.keys.has(prefix) && siteUrl) return { provider: "jira", siteUrl, key: jiraKey };
+      if (teams.fetchError) throw teams.fetchError;
       if (projects.fetchError) throw projects.fetchError;
     }
     throw new IssueTrackerError("linear", "resolve", "not-found", `Could not identify an issue tracker for '${raw}'.`);

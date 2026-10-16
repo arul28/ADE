@@ -4802,23 +4802,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Provider capacity")).toBeTruthy();
-    // The failed-turn card is host-authored now: it says what went wrong and
-    // what to do, and never titles the row "Error". The failure class still
-    // has a home in the identity footer asserted above.
+    expect(await screen.findByText("Model at capacity")).toBeTruthy();
+    // Capacity failures use the same retry/details line as other provider
+    // failures; model selection stays in the composer.
     expect(screen.queryByText("Error")).toBeNull();
-    expect(screen.getByText("This turn stopped")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 
-    const modelTrigger = screen.getByRole("button", { name: /^Select model/ });
-    fireEvent.click(screen.getByRole("button", { name: "Choose model" }));
-    await waitFor(() => expect(modelTrigger.getAttribute("aria-expanded")).toBe("true"));
-    fireEvent.click(modelTrigger);
-
-    const retryButton = screen.getByRole("button", { name: "Retry turn" }) as HTMLButtonElement;
-    const chooseModelButton = screen.getByRole("button", { name: "Choose model" }) as HTMLButtonElement;
+    const retryButton = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     act(() => {
       emitChatEvent({
         sessionId: session.sessionId,
@@ -4829,7 +4823,6 @@ describe("AgentChatPane submit recovery", () => {
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(true);
-      expect(chooseModelButton.disabled).toBe(true);
     });
     fireEvent.click(retryButton);
     expect(send).not.toHaveBeenCalled();
@@ -4850,7 +4843,6 @@ describe("AgentChatPane submit recovery", () => {
     });
     await waitFor(() => {
       expect(retryButton.disabled).toBe(false);
-      expect(chooseModelButton.disabled).toBe(false);
     });
 
     fireEvent.click(retryButton);
@@ -4886,20 +4878,15 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("floats the usage-limit pill above the composer and opts out through updateSession", async () => {
-    // The pill renders from the host's `usageLimitResume` ALONE. It used to be
-    // an amber block inside the transcript's failure card, anchored to a
-    // client-side walk for the newest usage-limit error — which meant the one
-    // control that says when this chat comes back scrolled away with the row
-    // that armed it.
+  it("shows the usage-limit composer chip and lets the user cancel auto-resume", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
       usageLimitResume: {
         state: "armed",
         provider: "codex",
-        fireAt: "2026-07-10T20:30:00.000Z",
-        resetAt: "2026-07-10T20:28:30.000Z",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
         scheduleId: "auto-resume:session-1",
         attempts: 1,
         providerDetail: "Resets at 4:30 PM ET",
@@ -4931,20 +4918,23 @@ describe("AgentChatPane submit recovery", () => {
               errorInfo: { category: "rate_limit" as const, provider: "Codex" },
             },
           },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.5" },
+          },
         ],
       },
     });
 
     renderPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
-    // The old amber block is gone; the failure card keeps only its recovery
-    // affordances.
-    expect(screen.queryByTestId("auto-resume-scheduled")).toBeNull();
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
+    expect(screen.queryByText("Rate limited by Codex.")).toBeNull();
 
-    fireEvent.click(pill);
-    fireEvent.click(await screen.findByTestId("usage-limit-resume-opt-out"));
+    fireEvent.click(await screen.findByTestId("usage-limit-auto-resume-toggle"));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
@@ -4953,15 +4943,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("shows the pill on the first paint, before the session list has arrived", async () => {
-    // The mount flash, in the TABBED pane: the pane knows the chat is parked on
-    // a limit from `initialSessionSummary` long before `listSessions` answers
-    // (the locked single-session mode seeds its list from that summary, the
-    // tabbed one does not). Deriving the resume state from the SELECTED session
-    // — which only ever comes out of that list — left the pill missing, and the
-    // failed turn wearing a red FAILED line instead of its quiet footer, for
-    // the whole round trip. `renderedSession` carries the same fallback the
-    // transcript is already rendered from.
+  it("shows the usage-limit chip on first paint before the session list arrives", async () => {
     const session = buildSession("session-1", {
       status: "idle",
       awaitingInput: false,
@@ -4981,21 +4963,58 @@ describe("AgentChatPane submit recovery", () => {
 
     renderTabbedPane(session);
 
-    const pill = await screen.findByTestId("usage-limit-resume-pill");
-    expect(pill.getAttribute("data-usage-limit-state")).toBe("armed");
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("armed");
   });
 
-  it("renders no pill at all when the host reports no live usage limit", async () => {
+  it("resumes an opted-out limit and offers the available alternate account", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      awaitingInput: false,
+      usageLimitResume: {
+        state: "opted_out",
+        provider: "codex",
+        fireAt: "2099-07-10T20:30:00.000Z",
+        resetAt: "2099-07-10T20:28:30.000Z",
+        scheduleId: null,
+        attempts: 0,
+        providerDetail: null,
+        turnId: "turn-limit",
+        updatedAt: "2026-07-10T18:19:00.000Z",
+        alternateAccount: { instanceId: "account-work", label: "Work account" },
+      },
+    });
+    const { updateSession } = installAdeMocks({ sessions: [session] });
+    const continueOnAlternate = vi.fn().mockResolvedValue({ ok: true });
+    window.ade.agentChat.continueUsageLimitOnAlternate = continueOnAlternate as any;
+
+    renderPane(session);
+
+    const chip = await screen.findByTestId("usage-limit-chip");
+    expect(chip.getAttribute("data-usage-limit-state")).toBe("opted_out");
+    const resumeButton = await screen.findByTestId("usage-limit-auto-resume-toggle");
+    expect(resumeButton.textContent).toMatch(/^Resume in /);
+    fireEvent.click(resumeButton);
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      autoContinueAtUsageLimit: true,
+    }, null));
+
+    fireEvent.click(await screen.findByTestId("usage-limit-continue-on-account"));
+    await waitFor(() => expect(continueOnAlternate).toHaveBeenCalledWith({ sessionId: session.sessionId }, null));
+  });
+
+  it("renders no usage-limit chip when the host reports no live usage limit", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     installAdeMocks({ sessions: [session] });
 
     renderPane(session);
 
     await screen.findByTestId("work-chat-session-header");
-    expect(screen.queryByTestId("usage-limit-resume-pill")).toBeNull();
+    expect(screen.queryByTestId("usage-limit-chip")).toBeNull();
   });
 
-  it("renders the usage-limit failure card for Codex's raw `usageLimitReached` errorInfo", async () => {
+  it("suppresses Codex's raw usage-limit error row and shows the turn footer", async () => {
     // The exact shape Codex forwards: no structured `errorInfo.category`, just
     // the opaque provider string, and it spells the limit "usageLimitReached"
     // — not "usageLimitExceeded". The host computes `usageLimitResume` off
@@ -5033,13 +5052,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Usage limit")).toBeTruthy();
+    expect(await screen.findByText(/^Usage limit$/)).toBeTruthy();
+    expect(screen.queryByText("You've hit your usage limit.")).toBeNull();
   });
 
 
-  it("drops the scheduled-wake marker when the user retries an auto-resumed turn", async () => {
-    // Otherwise the replayed marker makes the host treat a user-initiated retry
-    // as the schedule's own turn and skip the cancel it promises.
+  it("drops the scheduled-wake marker when the user retries a resumed turn", async () => {
+    // A non-limit provider failure can make an auto-resumed prompt retryable;
+    // replaying its marker would make the host mistake the human retry for a
+    // scheduler send and skip its cleanup.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -5072,9 +5093,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-resumed",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5089,7 +5110,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5099,12 +5120,10 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("drops the manual-resume marker when the user retries a Resume now turn", async () => {
-    // `usageLimitResume: "manual"` is the OTHER host-only exemption: the Resume
-    // now path cancels the durable row itself and awaits it, so its own send
-    // must skip the sweep. A user Retry of that same turn is not that path —
-    // replaying the marker leaves the armed row alive to fire an unattended
-    // prompt later. Neither host-only key may survive a replay.
+  it("drops the manual-resume marker when the user retries a resumed turn", async () => {
+    // `usageLimitResume: "manual"` is a host-only exemption for the original
+    // continue send. A later retry after a different provider failure is a
+    // user send and must not inherit that exemption.
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send } = installAdeMocks({
       sessions: [session],
@@ -5133,9 +5152,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5150,7 +5169,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
     expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
@@ -5186,9 +5205,9 @@ describe("AgentChatPane submit recovery", () => {
             sequence: 2,
             event: {
               type: "error" as const,
-              message: "Usage limit exceeded again.",
+              message: "The response stream disconnected.",
               turnId: "turn-manual-resume",
-              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+              errorInfo: "responseStreamDisconnected",
             },
           },
           {
@@ -5203,14 +5222,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
     expect(send.mock.calls[0]![0]).not.toHaveProperty("metadata");
   });
 
   it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    const { send } = installAdeMocks({
+    const { send, steer } = installAdeMocks({
       sessions: [session],
       sendError: new Error("turn is already active"),
       eventHistory: {
@@ -5258,80 +5277,17 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
       }), null);
     });
+    expect(steer).not.toHaveBeenCalled();
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
     );
-  });
-
-  it("does not carry a pending provider-failure model request into another session", async () => {
-    const failedSession = buildSession("session-failed", { status: "idle", awaitingInput: false });
-    const nextSession = buildSession("session-next", { status: "idle", awaitingInput: false });
-    installAdeMocks({
-      sessions: [failedSession, nextSession],
-      eventHistory: ({ sessionId }) => ({
-        sessionId,
-        truncated: false,
-        sessionFound: true,
-        events: sessionId === failedSession.sessionId
-          ? [
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.000Z",
-              sequence: 1,
-              event: {
-                type: "error",
-                message: "Selected model is at capacity. Please try a different model.",
-                turnId: "turn-capacity",
-                errorInfo: "serverOverloaded",
-              },
-            },
-            {
-              sessionId,
-              timestamp: "2026-07-10T18:18:53.066Z",
-              sequence: 2,
-              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
-            },
-          ]
-          : [],
-      }),
-    });
-
-    const view = render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={failedSession.laneId}
-          lockSessionId={failedSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={failedSession}
-          modelSelectionLocked
-        />
-      </MemoryRouter>,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Choose model" }));
-    expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={nextSession.laneId}
-          lockSessionId={nextSession.sessionId}
-          hideSessionTabs
-          initialSessionSummary={nextSession}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).getAttribute("aria-expanded")).toBe("false");
-    });
   });
 
   it.each([
