@@ -41,7 +41,6 @@ function renderDrawers(subagents: TerminalSessionSummary[], collapsed: boolean) 
   const view = render(
     <NestedDrawers
       parentId="parent-1"
-      shells={[]}
       subagents={subagents}
       isCollapsed={() => collapsed}
       onToggle={onToggle}
@@ -62,8 +61,7 @@ describe("NestedDrawers", () => {
     rerender(
       <NestedDrawers
         parentId="parent-1"
-        shells={[]}
-        subagents={children}
+          subagents={children}
         isCollapsed={() => false}
         onToggle={vi.fn()}
         nowMs={NOW_MS}

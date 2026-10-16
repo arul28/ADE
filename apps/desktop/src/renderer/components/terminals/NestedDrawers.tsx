@@ -14,13 +14,18 @@ import { cn } from "../ui/cn";
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 
 /**
- * A chat's shell and subagent drawers in the Work list.
+ * A chat's subagent drawer in the Work list.
  *
- * They default to COLLAPSED: a busy agent can hang a dozen App Control shells
- * and subagents off one chat, and listing every one pushed the other chats off
- * the screen. A collapsed drawer keeps the full header strip — kind icon, kind
- * label and count, and the one state worth seeing (`nestedDrawerStatus`) — and
- * simply hides its rows. An opened drawer lists its rows below that same strip.
+ * Attached shells are NOT drawn here: a shell is a tool of the chat that ran
+ * it, so it lives in that chat's actions pane (Shells section) instead of
+ * hanging off the chat's card. The list still files shells under their parent
+ * (`excludedTopLevelIds`), which is what keeps them out of the top-level rows.
+ *
+ * The drawer defaults to COLLAPSED: a busy agent can spawn a dozen subagents,
+ * and listing every one pushed the other chats off the screen. A collapsed
+ * drawer keeps the full header strip — kind icon, kind label and count, and the
+ * one state worth seeing (`nestedDrawerStatus`) — and simply hides its rows. An
+ * opened drawer lists its rows below that same strip.
  */
 
 export type NestedDrawerKind = "shells" | "subagents";
@@ -66,7 +71,6 @@ function StatusMark({ status }: { status: NestedDrawerStatus }) {
 
 export function NestedDrawers({
   parentId,
-  shells,
   subagents,
   isCollapsed,
   onToggle,
@@ -74,7 +78,6 @@ export function NestedDrawers({
   renderChild,
 }: {
   parentId: string;
-  shells: TerminalSessionSummary[];
   subagents: TerminalSessionSummary[];
   isCollapsed: (sectionId: string) => boolean;
   /** Receives the open marker to toggle in the persisted section list. */
@@ -82,7 +85,7 @@ export function NestedDrawers({
   nowMs: number;
   renderChild: (child: TerminalSessionSummary, kind: NestedDrawerKind) => React.ReactNode;
 }) {
-  const drawers = ([["subagents", subagents], ["shells", shells]] as const)
+  const drawers = ([["subagents", subagents]] as const)
     .filter(([, children]) => children.length > 0)
     .map(([kind, children]) => {
       const sectionId = nestedDrawerSectionId(parentId, kind);

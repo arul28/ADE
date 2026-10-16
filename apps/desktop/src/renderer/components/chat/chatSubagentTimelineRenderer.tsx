@@ -1,9 +1,13 @@
 import type { ReactNode } from "react";
 import {
+  SUBAGENT_RUN_HEADER_MIN,
   SubagentCardGrid,
   SubagentResultCard,
+  SubagentRunHeader,
   SubagentSpawnCard,
   SubagentStoppedGroupCard,
+  SubagentWorkflowRun,
+  workflowRunParent,
 } from "./SubagentActivityCards";
 import type {
   SubagentCardGridEvent,
@@ -87,10 +91,25 @@ export function renderSubagentTimelineRow(
   const members: SubagentCardGridMember[] = event.type === "subagent_card_grid"
     ? event.members
     : [{ key: envelope.key, timestamp: envelope.timestamp, event }];
-  return (
+  const renderCard = (member: SubagentCardGridMember) => renderSubagentCard(member.event, options);
+  // A workflow's own run draws as one group: its name, its phases, its agents.
+  const workflowParent = workflowRunParent(members);
+  if (workflowParent) {
+    return <SubagentWorkflowRun parent={workflowParent} members={members} renderCard={renderCard} />;
+  }
+  const grid = (
     <SubagentCardGrid
       members={members}
-      renderCard={(member) => renderSubagentCard(member.event, options)}
+      renderCard={renderCard}
     />
+  );
+  // A long run gets the rollup line above its cards, so a fan-out reads as one
+  // group instead of a wall of cards. Shorter runs keep just the cards.
+  if (members.length < SUBAGENT_RUN_HEADER_MIN) return grid;
+  return (
+    <>
+      <SubagentRunHeader members={members} />
+      {grid}
+    </>
   );
 }

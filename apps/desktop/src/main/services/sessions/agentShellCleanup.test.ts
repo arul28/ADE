@@ -141,6 +141,39 @@ describe("agent shell cleanup sweep", () => {
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
   });
 
+  it("archives an ownerless shell once its chat is gone", async () => {
+    // Deleting the owner chat leaves `chat_session_id` null (the FK nulls it).
+    // Nothing will ever settle that row again, so "no owner" has to count as
+    // quiet or a dead App Control shell stays in the lane list forever.
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "orphan", chatSessionId: null, status: "completed", exitCode: 0 });
+
+    expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([]);
+    expect(archivedAt(db, id)).toBeNull();
+    expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
+    expect(archivedAt(db, id)).not.toBeNull();
+  });
+
+  it("archives an ownerless shell that crashed, instead of waiting for a parent forever", async () => {
+    // The unclean path is the one `parentQuiet` decides: before this rule an
+    // ownerless crashed shell could never archive, because the parent it was
+    // waiting to settle no longer existed.
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "orphan-crashed", chatSessionId: null, status: "failed", exitCode: 1 });
+
+    expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([id]);
+    expect(archivedAt(db, id)).not.toBeNull();
+  });
+
+  it("never archives an ownerless shell somebody typed into", async () => {
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "orphan-typed", chatSessionId: null, status: "completed", exitCode: 0 });
+    agentShells.markUserInput(id);
+
+    expect(agentShells.sweep(NOW_MS + GRACE * 4)).toEqual([]);
+    expect(archivedAt(db, id)).toBeNull();
+  });
+
   it("treats an ADE stop as a clean end, waiting out the same grace period", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "stopped", chatSessionId: "chat-1", status: "failed", exitCode: 1 });

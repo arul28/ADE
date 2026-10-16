@@ -23,10 +23,6 @@
     "apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/ChatWorkflowActiveCard.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/chat/ComposerSmartLinkMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

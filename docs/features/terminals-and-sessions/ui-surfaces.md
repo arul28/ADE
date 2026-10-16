@@ -258,13 +258,21 @@ from the project tab's binding; a grouped header owns the glyph so its child
 cards do not repeat it. The singleton/header transition participates in the
 same layout animation as lane reordering. Headerless counting is top-level
 units only: attached shells and same-lane `spawnKind: "subagent"` chats (plus
-tracked CLI `--type subagent` sessions) nest under their parent and do not
+tracked CLI `--type subagent` sessions) are filed under their parent and do not
 summon a lane header of their own.
 
-In by-lane list mode, those subagent chats render in a second drawer under the
-parent, above the existing "N shells" drawer, labeled **N subagents**. The
-drawer starts expanded; collapse is stored under `chat-subagents:<parentId>`,
-separate from the shell key `chat:<parentId>`. Compact nested rows show the
+Attached shells are not drawn in the Work list at all: a shell is a tool of the
+chat that ran it, so it lives in that chat's actions pane (**Shells**, above
+Background) — click a row to open the shell, right-click it (or use its `⋯`) for
+the Work list's own menu, owner-archive and stop included. The list still
+*excludes* shells from top-level rows, so the pane is their one home; a shell
+whose chat is gone is archived with it (`sessionService`). The old `chat:<id>`
+shell drawer and its collapse key are gone.
+
+In by-lane list mode, those subagent chats render in a drawer under the parent,
+labeled **N subagents**. The drawer starts collapsed; a selection that lands on
+a nested row opens it once. Collapse is stored under `chat-subagents:<parentId>`.
+Compact nested rows show the
 subagent identicon, title, then the provider glyph on the right of the card
 (same seat as every other session card), status glyph, and elapsed — they
 spell **Needs you** or **Failed** and otherwise omit the status word. The

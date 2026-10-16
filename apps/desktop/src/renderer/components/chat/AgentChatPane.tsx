@@ -79,6 +79,7 @@ import {
   type AgentChatSendArgs,
   type ChatLaunchChatArgs,
   type ChatLaunchLaneConfig,
+  TerminalSessionSummary,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
@@ -232,6 +233,9 @@ import {
   resolveSnapshotHistoryCursor,
   trimChatEventHistory,
 } from "./chatHistoryWindow";
+/** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
+const NO_NESTING: ReadonlyMap<string, string> = new Map();
+
 export {
   advanceOlderHistoryCursor,
   mergeOlderChatHistoryPageWithCap,
@@ -277,6 +281,8 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
+import { readWorkflowScriptPlan, type ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
+import { attachedShellNestParentId } from "../../../shared/sessionSpawnNesting";
 import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -5468,6 +5474,29 @@ export function AgentChatPane({
     subagentDerivationRef.current = derivation;
     return derivation.snapshots;
   }, [selectedEvents]);
+  /**
+   * Each dynamic workflow's *declared* plan (`meta.name`, `meta.phases`), read
+   * from the `Workflow` tool call that launched it and keyed by the workflow
+   * task's id. Feeds the actions pane's workflow section when the provider
+   * publishes no live phase telemetry.
+   */
+  const selectedWorkflowPlans = useMemo(() => {
+    const plans = new Map<string, ChatWorkflowScriptPlan>();
+    const byToolUseId = new Map<string, ChatWorkflowScriptPlan>();
+    for (const envelope of selectedEvents) {
+      const event = envelope.event;
+      if (event.type !== "tool_call" || event.tool !== "Workflow") continue;
+      const args = event.args && typeof event.args === "object" ? event.args as { script?: unknown } : null;
+      const plan = readWorkflowScriptPlan(typeof args?.script === "string" ? args.script : null);
+      if (plan) byToolUseId.set(event.itemId, plan);
+    }
+    for (const snapshot of selectedSubagentSnapshots) {
+      if (snapshot.taskType !== "local_workflow") continue;
+      const plan = snapshot.parentToolUseId ? byToolUseId.get(snapshot.parentToolUseId) : undefined;
+      if (plan) plans.set(snapshot.taskId, plan);
+    }
+    return plans;
+  }, [selectedEvents, selectedSubagentSnapshots]);
   /**
    * Session status of every chat the roster knows, keyed by id, so the actions
    * pane can tell a spawned subagent row whose chat is still active apart from
@@ -15300,6 +15329,54 @@ export function AgentChatPane({
       : undefined,
   );
 
+  /**
+   * The shells attached to this chat, for the actions pane's Shells section.
+   * Fetched per chat (one bounded query, `session.list` filtered by owner) and
+   * refreshed on session changes — never polled: a shell is a tool of this
+   * chat, and the pane is where it lives now that the Work list no longer files
+   * them under their parent.
+   */
+  const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
+  useEffect(() => {
+    const sessionId = selectedSessionId?.trim();
+    if (!sessionId) {
+      setAttachedShells([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const pin = chatRuntimePinRef.current;
+        const rows = pin
+          ? await window.ade.sessions.list({ chatSessionId: sessionId, limit: 200 }, pin)
+          : await window.ade.sessions.list({ chatSessionId: sessionId, limit: 200 });
+        // The shared shell rule (`attachedShellNestParentId`) is what the Work
+        // list files by: a shell is a session whose owner chat is NOT itself —
+        // a chat's own row self-references in the database — and never a chat
+        // row. Keep the two surfaces agreeing on what a shell is.
+        if (!cancelled) {
+          setAttachedShells(rows.filter((row) => (
+            !row.archivedAt
+            && !isChatToolType(row.toolType ?? null)
+            && attachedShellNestParentId(row, NO_NESTING) === sessionId
+          )));
+        }
+      } catch {
+        // A pane that cannot read the list shows no shells rather than a stale
+        // set from the last chat it was on.
+        if (!cancelled) setAttachedShells([]);
+      }
+    };
+    void load();
+    const unsubscribe = window.ade.sessions.onChanged(() => {
+      void load();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [selectedSessionId]);
+
   // A personal pane has no lane by design; everything below handles that.
   if (!laneId && !personalScope) {
     return (
@@ -15343,6 +15420,8 @@ export function AgentChatPane({
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
+      workflowPlans={selectedWorkflowPlans}
+      shells={attachedShells}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}

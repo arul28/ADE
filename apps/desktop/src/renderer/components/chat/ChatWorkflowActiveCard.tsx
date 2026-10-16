@@ -1,22 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import {
-  CaretRight,
-  Check,
-  CheckCircle,
-  Circle,
-  CircleHalf,
-  CircleNotch,
-  Clock,
-  Lightning,
-  ListNumbers,
-  Stop,
-  TreeStructure,
-  UsersThree,
-  Wrench,
-  X,
-} from "@phosphor-icons/react";
+import { useMemo } from "react";
+import { CaretRight, Check, CircleNotch, Stop, TreeStructure, X } from "@phosphor-icons/react";
 import type { AgentChatWorkflowAgent, AgentChatWorkflowPhase, AgentChatWorkflowProgress } from "../../../shared/types";
+import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
+import { pluralCount } from "../../../shared/formatting";
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
@@ -265,354 +251,255 @@ function workflowAgentCounts(views: WorkflowAgentView[]): {
 }
 
 function WorkflowStatusIcon({ status }: { status: WorkflowStatus | WorkflowAgentDisplayStatus }) {
-  if (status === "completed") return <CheckCircle aria-hidden size={15} weight="fill" className="text-emerald-300/90" />;
-  if (status === "failed") return <X aria-hidden size={15} weight="bold" className="text-rose-300/90" />;
-  if (status === "stopped") return <Stop aria-hidden size={14} weight="fill" className="text-amber-300/85" />;
-  return <CircleNotch aria-hidden size={15} className="motion-safe:animate-spin text-violet-200/90 [animation-duration:1.25s]" />;
-}
-
-function WorkflowMetric({ icon: Icon, label, value }: { icon: typeof UsersThree; label: string; value: string }) {
-  return (
-    <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-fg/[0.055] bg-fg/[0.025] px-2 py-1.5">
-      <Icon aria-hidden size={13} className="shrink-0 text-fg/35" />
-      <div className="min-w-0">
-        <div className="truncate text-[9px] uppercase tracking-[0.08em] text-fg/30">{label}</div>
-        <div className="truncate text-[11px] tabular-nums text-fg/72">{value}</div>
-      </div>
-    </div>
-  );
+  if (status === "completed") return <Check aria-hidden size={12} weight="bold" className="text-emerald-300/85" />;
+  if (status === "failed") return <X aria-hidden size={12} weight="bold" className="text-rose-300/85" />;
+  if (status === "stopped") return <Stop aria-hidden size={11} weight="fill" className="text-amber-300/80" />;
+  return <CircleNotch aria-hidden size={12} className="motion-safe:animate-spin text-[color:var(--color-accent-bright,#C4B5FD)]/90 [animation-duration:1.25s]" />;
 }
 
 export function ChatWorkflowActiveCard({
   snapshots,
+  plans,
   onSelectSubagent,
   onStopWorkflow,
 }: {
   snapshots: ChatSubagentSnapshot[];
+  /** Declared script plans, keyed by workflow task id (`meta.name`, `meta.phases`). */
+  plans?: ReadonlyMap<string, ChatWorkflowScriptPlan>;
   onSelectSubagent?: (snapshot: ChatSubagentSnapshot) => void;
   onStopWorkflow?: (snapshot: ChatSubagentSnapshot) => void;
 }) {
   const runs = useMemo(() => deriveChatWorkflowRuns(snapshots), [snapshots]);
-  const [openRunId, setOpenRunId] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
-  const openRun = runs.find((run) => run.id === openRunId) ?? null;
-  const visibleRuns = showAll ? runs : runs.slice(0, 3);
-  const liveAnnouncement = runs.slice(0, 3).map((run) => {
-    const running = workflowAgentViews(run).filter((view) => view.status === "running").length;
-    return `${run.name}: ${statusLabel(run.parent.status)}${running > 0 ? `, ${running} agent${running === 1 ? "" : "s"} running` : ""}`;
-  }).join(". ");
-
-  useEffect(() => {
-    if (openRunId && !openRun) setOpenRunId(null);
-  }, [openRun, openRunId]);
-
   if (runs.length === 0) return null;
 
   return (
     <section
-      className="border-b border-fg/[0.055] px-3 pb-3 pt-2"
+      className="border-b border-fg/[0.04] pb-1"
       aria-label="Workflow activity"
       data-testid="chat-workflow-active-card-list"
     >
-      <span className="sr-only" role="status" aria-live="polite">{liveAnnouncement}</span>
-      <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.1em] text-fg/42">
-          <TreeStructure aria-hidden size={13} className="text-amber-200/75" />
+      <header className="flex items-center justify-between px-3.5 pb-1 pt-3">
+        <span className="flex items-center gap-1.5 font-sans text-[10.5px] font-medium uppercase tracking-[0.06em] text-fg/45">
+          <TreeStructure aria-hidden size={12} weight="bold" className="shrink-0 text-amber-300/75" />
           Workflow activity
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="text-[10px] tabular-nums text-fg/28">{runs.length} tracked</span>
-          {runs.length > 3 ? (
-            <button
-              type="button"
-              onClick={() => setShowAll((current) => !current)}
-              aria-expanded={showAll}
-              className="rounded px-1 py-0.5 text-[10px] font-medium normal-case tracking-normal text-amber-200/65 transition-colors hover:bg-amber-200/[0.08] hover:text-amber-100"
-              data-testid="chat-workflow-show-all"
-            >
-              {showAll ? "Show less" : "Show all"}
-            </button>
-          ) : null}
-        </div>
+        </span>
+        <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
+          {runs.length} tracked
+        </span>
+      </header>
+      <div className="space-y-px px-2">
+        {runs.map((run) => (
+          <WorkflowRunBlock
+            key={run.id}
+            run={run}
+            plan={plans?.get(run.parent.taskId) ?? null}
+            onSelectSubagent={onSelectSubagent}
+            onStopWorkflow={onStopWorkflow}
+          />
+        ))}
       </div>
-      <div className="space-y-1.5">
-        {visibleRuns.map((run) => {
-          const progress = run.progress;
-          const total = progress.agents.length + progress.queuedCount;
-          const views = workflowAgentViews(run);
-          const counts = workflowAgentCounts(views);
-          const currentPhase = run.parent.status === "running"
-            ? views.find((view) => view.status === "running")?.agent.phaseTitle
-            : undefined;
-          const totals = workflowTotals(run);
-          return (
-            <button
-              key={run.id}
-              type="button"
-              className={cn(
-                "ade-workflow-active-card group relative w-full overflow-hidden rounded-xl border p-2.5 text-left",
-                "border-amber-200/[0.14] bg-[linear-gradient(135deg,rgba(245,158,11,0.10),rgba(139,92,246,0.08)_52%,rgba(15,23,42,0.16))]",
-                "transition duration-200 hover:border-amber-200/30 hover:bg-[linear-gradient(135deg,rgba(245,158,11,0.14),rgba(139,92,246,0.11)_52%,rgba(15,23,42,0.24))]",
-              )}
-              onClick={() => setOpenRunId(run.id)}
-              aria-label={`View ${run.name} workflow details`}
-              data-testid="chat-workflow-active-card"
-            >
-              {run.parent.status === "running" ? <span aria-hidden className="ade-workflow-active-card__sheen" /> : null}
-              <span className="relative flex items-start gap-2.5">
-                <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-amber-200/20 bg-black/20 text-amber-100/85">
-                  <WorkflowStatusIcon status={run.parent.status} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5">
-                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg/88">{run.name}</span>
-                    <span className={cn("shrink-0 text-[10px] font-medium", statusTone(run.parent.status))}>
-                      {statusLabel(run.parent.status)}
-                    </span>
-                    <CaretRight aria-hidden size={12} className="shrink-0 text-fg/30 transition-transform group-hover:translate-x-0.5 group-hover:text-fg/65" />
-                  </span>
-                  <span className="mt-0.5 block truncate text-[10.5px] text-fg/48">
-                    {currentPhase || (total > 0
-                      ? `${counts.completed}/${total} agents complete${counts.failed ? ` · ${counts.failed} failed` : ""}${counts.stopped ? ` · ${counts.stopped} stopped` : ""}`
-                      : "Workflow telemetry ready")}
-                  </span>
-                </span>
-              </span>
-              <span className="relative mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-fg/[0.07] pt-2 text-[10px] tabular-nums text-fg/42">
-                <span className="inline-flex items-center gap-1"><UsersThree aria-hidden size={11} />{counts.completed}/{total || "–"} agents</span>
-                {totals.tokens !== null ? <span>{totals.tokens.toLocaleString()} tok</span> : null}
-                {totals.tools !== null ? <span>{totals.tools} {totals.tools === 1 ? "tool" : "tools"}</span> : null}
-                {counts.running > 0 ? <span className="inline-flex items-center gap-1 text-violet-200/70"><CircleHalf aria-hidden size={10} weight="fill" />{counts.running} running</span> : null}
-                {progress.queuedCount > 0 ? <span>{progress.queuedCount} queued</span> : null}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-      {openRun ? (
-        <ChatWorkflowDetailsModal
-          run={openRun}
-          onClose={() => setOpenRunId(null)}
-          onSelectSubagent={onSelectSubagent}
-          onStopWorkflow={onStopWorkflow}
-        />
-      ) : null}
     </section>
   );
 }
 
-function ChatWorkflowDetailsModal({
+/**
+ * One run, drawn inside the section — no box, no dialog: the run's name and
+ * state, then one quiet block per phase with its agent rows (same vocabulary as
+ * the transcript's workflow run). A run whose provider published no
+ * `workflow_progress` shows the phases its *script* declares instead, marked as
+ * the plan it is; a running run carries its own Stop.
+ */
+function WorkflowRunBlock({
   run,
-  onClose,
+  plan,
   onSelectSubagent,
   onStopWorkflow,
 }: {
   run: ChatWorkflowRun;
-  onClose: () => void;
+  plan: ChatWorkflowScriptPlan | null;
   onSelectSubagent?: (snapshot: ChatSubagentSnapshot) => void;
   onStopWorkflow?: (snapshot: ChatSubagentSnapshot) => void;
 }) {
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const { progress } = run;
-  const totalAgents = progress.agents.length + progress.queuedCount;
-  const agentViews = workflowAgentViews(run);
-  const agentCounts = workflowAgentCounts(agentViews);
+  const progress = run.progress;
+  const views = workflowAgentViews(run);
+  const counts = workflowAgentCounts(views);
   const totals = workflowTotals(run);
-  const durationMs = workflowDuration(run, nowMs);
-
-  useEffect(() => {
-    if (run.parent.status !== "running") return;
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [run.parent.status]);
+  const total = views.length + progress.queuedCount;
+  const durationMs = workflowDuration(run, Date.now());
+  const running = run.parent.status === "running";
+  const phaseOfIndex = new Map<number, string>();
+  for (const agent of progress.agents) {
+    if (agent.phaseTitle) phaseOfIndex.set(agent.index, agent.phaseTitle);
+  }
+  const claimed = new Set<number>();
+  const blocks = progress.phases.map((phase) => {
+    const rows = views.filter((view) => {
+      const title = phaseOfIndex.get(view.agent.index);
+      return title === phase.title;
+    });
+    rows.forEach((view) => claimed.add(view.agent.index));
+    return { title: phase.title, rows };
+  }).filter((block) => block.rows.length > 0);
+  const unphased = views.filter((view) => !claimed.has(view.agent.index));
+  // No live telemetry: the script's own plan is what this run published.
+  const plannedOnly = progress.agents.length === 0 && progress.queuedCount === 0;
 
   return (
-    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[210] bg-black/72 backdrop-blur-md" />
-        <Dialog.Content
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            closeButtonRef.current?.focus();
-          }}
-          data-testid="chat-workflow-details-dialog"
-          className="fixed left-1/2 top-1/2 z-[211] grid max-h-[min(860px,calc(100vh-24px))] w-[min(980px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-amber-100/[0.13] bg-(color:--color-modal-bg) shadow-[0_32px_140px_rgba(0,0,0,0.70)] focus:outline-none"
-        >
-        <header className="flex items-start justify-between gap-4 border-b border-fg/[0.07] px-4 py-4 sm:px-5">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-amber-200/20 bg-[linear-gradient(145deg,rgba(245,158,11,0.16),rgba(139,92,246,0.12))] text-amber-100/90">
-              <TreeStructure aria-hidden size={21} weight="duotone" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <Dialog.Title className="truncate text-[15px] font-semibold text-fg/92">{run.name}</Dialog.Title>
-                <span className={cn("rounded-full border border-fg/[0.08] bg-fg/[0.035] px-2 py-0.5 text-[10px] font-medium", statusTone(run.parent.status))}>
-                  {statusLabel(run.parent.status)}
-                </span>
-              </div>
-              <Dialog.Description className="mt-1 max-w-[680px] text-[11px] leading-4 text-fg/48">
-                {run.parent.description || "Dynamic workflow run"}. Live orchestration details from the provider are grouped here so the chat stays readable.
-              </Dialog.Description>
-            </div>
+    <div data-testid="chat-workflow-run" data-workflow-name={run.name} className="min-w-0 rounded-md px-1.5 pb-1.5 pt-1">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5 text-fg/85" title={run.name}>
+          {run.name}
+        </span>
+        <span className={cn("shrink-0 font-sans text-[10.5px]", statusTone(run.parent.status))}>
+          {statusLabel(run.parent.status)}
+        </span>
+        {durationMs !== null ? (
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg/35">
+            {formatDurationMs(durationMs)}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-0.5 font-sans text-[10.5px] tabular-nums text-fg/40">
+        {total > 0 ? <span>{counts.completed}/{total} agents</span> : null}
+        {counts.running > 0 ? <span className="text-violet-200/70">{counts.running} running</span> : null}
+        {counts.failed > 0 ? <span className="text-rose-300/80">{counts.failed} failed</span> : null}
+        {counts.stopped > 0 ? <span>{counts.stopped} stopped</span> : null}
+        {progress.queuedCount > 0 ? <span>{progress.queuedCount} queued</span> : null}
+        {totals.tokens !== null ? <span>{formatContextTokensLabel(totals.tokens)} tok</span> : null}
+        {totals.tools !== null ? <span>{totals.tools} tools</span> : null}
+      </div>
+
+      {plannedOnly ? (
+        <div className="mt-1 min-w-0" data-testid="chat-workflow-planned-phases">
+          {/* No live status exists for these phases, so none is drawn: a neutral
+              dot would read as "queued". The caption says what they are. */}
+          <div className="pl-0.5 font-sans text-[10.5px] text-fg/35">
+            {plan
+              ? `Plan from its script · ${pluralCount(plan.lines, "line")} · no agent rows published`
+              : "No phase detail published for this run"}
           </div>
-          <Dialog.Close asChild>
-            <button
-              ref={closeButtonRef}
-              type="button"
-              aria-label="Close workflow details"
-              title="Close"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-fg/[0.06] hover:text-fg/80"
-            >
-              <X aria-hidden size={15} />
-            </button>
-          </Dialog.Close>
-        </header>
-
-        <div className="grid grid-cols-2 gap-1.5 border-b border-fg/[0.07] p-3 sm:grid-cols-5 sm:gap-2 sm:px-5">
-          <WorkflowMetric icon={ListNumbers} label="Phases" value={`${progress.phases.length || "–"}`} />
-          <WorkflowMetric icon={UsersThree} label="Agents" value={`${agentCounts.completed}/${totalAgents || "–"}`} />
-          <WorkflowMetric icon={Lightning} label="Running" value={`${agentCounts.running}`} />
-          <WorkflowMetric icon={Wrench} label="Tools" value={totals.tools?.toLocaleString() ?? "–"} />
-          <WorkflowMetric icon={Clock} label="Duration" value={formatDurationMs(durationMs)} />
-        </div>
-
-        <div className="min-h-0 overflow-y-auto p-3 sm:p-5">
-          <div className="grid gap-4 md:grid-cols-[minmax(190px,0.34fr)_minmax(0,1fr)]">
-            <aside className="rounded-xl border border-fg/[0.07] bg-fg/[0.018] p-3">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="text-[10px] font-medium uppercase tracking-[0.11em] text-fg/38">Phases</div>
-                <span className="text-[10px] tabular-nums text-fg/28">{progress.phases.length}</span>
-              </div>
-              {progress.phases.length > 0 ? (
-                <div className="space-y-1">
-                  {progress.phases.map((phase, index) => {
-                    const state = phaseState(progress, phase, run.parent.status);
-                    const count = phaseAgentList(progress, phase).length;
-                    return (
-                      <div key={`${phase.index}-${phase.title}`} className={cn(
-                        "flex items-start gap-2 rounded-lg px-2 py-2",
-                        state === "active" && "bg-violet-300/[0.08]",
-                        state === "failed" && "bg-rose-300/[0.06]",
-                      )}>
-                        <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-fg/[0.09] bg-black/20 text-[10px] tabular-nums text-fg/48">
-                          {state === "completed" ? <Check aria-hidden size={12} weight="bold" className="text-emerald-300/90" /> : state === "active" ? <CircleHalf aria-hidden size={12} weight="fill" className="text-violet-200/90" /> : state === "failed" ? <X aria-hidden size={11} weight="bold" className="text-rose-300/90" /> : index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className={cn(
-                            "block break-words text-[11.5px] leading-4",
-                            state === "active" && "text-violet-100/90",
-                            state === "completed" && "text-fg/55",
-                            state === "failed" && "text-rose-100/85",
-                            state === "queued" && "text-fg/42",
-                          )}>{phase.title}</span>
-                          <span className="mt-0.5 block text-[9.5px] text-fg/28">
-                            {state === "active" ? "In progress" : state === "completed" ? `${count} agent${count === 1 ? "" : "s"} complete` : state === "failed" ? "Needs attention" : "Queued"}
-                          </span>
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-fg/[0.08] px-2.5 py-3 text-[10.5px] leading-4 text-fg/36">
-                  This run predates phase labels, but its agent activity is still available below.
-                </div>
-              )}
-              {run.parent.status === "running" && onStopWorkflow ? (
-                <button
-                  type="button"
-                  onClick={() => onStopWorkflow(run.parent)}
-                  className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-300/15 bg-rose-400/[0.06] px-2.5 py-2 text-[10.5px] font-medium text-rose-100/72 transition-colors hover:border-rose-300/30 hover:bg-rose-400/[0.12] hover:text-rose-100"
-                >
-                  <Stop aria-hidden size={12} weight="fill" />
-                  Stop workflow
-                </button>
-              ) : null}
-            </aside>
-
-            <section className="min-w-0 rounded-xl border border-fg/[0.07] bg-fg/[0.018] p-3">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-[10px] font-medium uppercase tracking-[0.11em] text-fg/38">Agent roster</div>
-                  <div className="mt-0.5 text-[10.5px] text-fg/35">
-                    {agentCounts.running > 0
-                      ? `${agentCounts.running} active now`
-                      : run.parent.status === "running"
-                        ? "Waiting for provider updates"
-                        : agentCounts.stopped > 0
-                          ? `${agentCounts.stopped} stopped when the workflow ended`
-                          : "Run settled"}
-                  </div>
-                </div>
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/[0.07] bg-black/15 px-2 py-1 text-[10px] tabular-nums text-fg/42">
-                  <UsersThree aria-hidden size={11} />
-                  {progress.agents.length}/{totalAgents || "–"}
+          {plan && plan.phases.length > 0 ? (
+            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-0.5">
+              {plan.phases.map((title, index) => (
+                <span key={`${index}-${title}`} className="flex min-w-0 items-center gap-1.5">
+                  {index > 0 ? <span aria-hidden className="text-fg/25">›</span> : null}
+                  <span className="min-w-0 truncate font-sans text-[11.5px] text-fg/70" title={title}>{title}</span>
                 </span>
-              </div>
-              <div className="space-y-1">
-                {agentViews.map(({ agent, member, status, summary }) => {
-                  const row = (
-                    <span className="flex min-w-0 items-start gap-2.5">
-                      <span className="mt-0.5 shrink-0"><WorkflowStatusIcon status={status} /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                          <span className="truncate text-[11.5px] text-fg/78">{agent.name}</span>
-                          {agent.phaseTitle ? <span className="truncate text-[9.5px] text-amber-200/48">{agent.phaseTitle}</span> : null}
-                          {agent.model || member?.model ? <span className="truncate text-[9.5px] text-fg/35">{agent.model || member?.model}</span> : null}
-                        </span>
-                        <span className="mt-0.5 block break-words text-[10px] leading-4 text-fg/42">{summary}</span>
-                        <span className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9.5px] tabular-nums text-fg/28">
-                          {typeof agent.tokens === "number" ? <span>{agent.tokens.toLocaleString()} tok</span> : null}
-                          {typeof agent.toolCalls === "number" ? <span>{agent.toolCalls} {agent.toolCalls === 1 ? "tool" : "tools"}</span> : null}
-                          {agent.durationMs ? <span>{formatSubagentDurationMs(agent.durationMs)}</span> : null}
-                          {agent.lastToolName ? <span className="inline-flex items-center gap-1"><Wrench aria-hidden size={9} />{agent.lastToolName}</span> : null}
-                        </span>
-                      </span>
-                      {member ? <CaretRight aria-hidden size={12} className="mt-1 shrink-0 text-fg/25" /> : null}
-                    </span>
-                  );
-                  return member && onSelectSubagent ? (
-                    <button
-                      key={`${agent.key}-${agent.index}`}
-                      type="button"
-                      className="group w-full rounded-lg px-2 py-2 text-left transition-colors hover:bg-fg/[0.045]"
-                      onClick={() => {
-                        onClose();
-                        onSelectSubagent(member);
-                      }}
-                      aria-label={`Open ${agent.name} details`}
-                      data-testid="chat-workflow-agent-row"
-                    >
-                      {row}
-                    </button>
-                  ) : (
-                    <div key={`${agent.key}-${agent.index}`} className="rounded-lg px-2 py-2" data-testid="chat-workflow-agent-row">{row}</div>
-                  );
-                })}
-                {progress.queuedCount > 0 ? (
-                  <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-fg/[0.08] px-2 py-2 text-[10.5px] text-fg/36">
-                    <Circle aria-hidden size={14} className="text-fg/25" />
-                    {progress.queuedCount} agent{progress.queuedCount === 1 ? "" : "s"} queued behind the current phase
-                  </div>
-                ) : null}
-                {progress.agents.length === 0 && progress.queuedCount === 0 ? (
-                  <div className="rounded-lg border border-dashed border-fg/[0.08] px-2.5 py-4 text-center text-[10.5px] leading-4 text-fg/35">
-                    The provider has not published individual agent rows yet.
-                  </div>
-                ) : null}
-              </div>
-            </section>
-          </div>
-          {totals.tokens !== null ? (
-            <div className="mt-3 flex items-center gap-1.5 px-1 text-[10px] text-fg/30">
-              <Lightning aria-hidden size={11} />
-              {totals.tokens.toLocaleString()} total tokens reported by the workflow
+              ))}
             </div>
           ) : null}
         </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+      ) : (
+        <div className="mt-1 space-y-0.5">
+          {blocks.map((block) => (
+            <div key={block.title}>
+              <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5 pt-1">
+                <PhaseStateIcon state={phaseStateOfViews(block.rows)} />
+                <span className="min-w-0 truncate font-sans text-[11px] text-fg/60" title={block.title}>
+                  {block.title}
+                </span>
+                <span className="shrink-0 font-sans text-[10px] text-fg/35">
+                  {pluralCount(block.rows.length, "agent")}
+                </span>
+              </div>
+              {block.rows.map((view) => (
+                <WorkflowAgentRow key={`${view.agent.key}-${view.agent.index}`} view={view} onSelect={onSelectSubagent} />
+              ))}
+            </div>
+          ))}
+          {unphased.length > 0 ? (
+            <div>
+              {blocks.length > 0 ? (
+                <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5 pt-1">
+                  <PhaseStateIcon state={phaseStateOfViews(unphased)} />
+                  <span className="font-sans text-[11px] text-fg/60">Other</span>
+                  <span className="shrink-0 font-sans text-[10px] text-fg/35">
+                    {pluralCount(unphased.length, "agent")}
+                  </span>
+                </div>
+              ) : null}
+              {unphased.map((view) => (
+                <WorkflowAgentRow key={`${view.agent.key}-${view.agent.index}`} view={view} onSelect={onSelectSubagent} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {running && onStopWorkflow ? (
+        <button
+          type="button"
+          onClick={() => onStopWorkflow(run.parent)}
+          className="mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+        >
+          <Stop aria-hidden size={10} weight="fill" />
+          Stop workflow
+        </button>
+      ) : null}
+    </div>
   );
+}
+
+/** One agent of a run: status mark, name, what it found, tokens · time. */
+function WorkflowAgentRow({
+  view,
+  onSelect,
+}: {
+  view: WorkflowAgentView;
+  onSelect?: (snapshot: ChatSubagentSnapshot) => void;
+}) {
+  const { agent, member, status, summary } = view;
+  const metrics = [
+    typeof agent.tokens === "number" ? formatContextTokensLabel(agent.tokens) : null,
+    agent.durationMs ? formatSubagentDurationMs(agent.durationMs) : null,
+  ].filter((part): part is string => Boolean(part)).join(" · ");
+  const content = (
+    <>
+      <span className="mt-[1px] shrink-0"><WorkflowStatusIcon status={status} /></span>
+      <span className="min-w-0 max-w-[62%] shrink-0 truncate font-sans text-[11.5px] text-fg/75" title={agent.name}>
+        {agent.name}
+      </span>
+      {summary && (status === "failed" || status === "stopped") ? (
+        <span className="min-w-0 flex-1 truncate font-sans text-[10.5px] text-rose-200/80" title={summary}>
+          {summary}
+        </span>
+      ) : null}
+      {metrics ? <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg/35">{metrics}</span> : null}
+      {member ? <CaretRight aria-hidden size={11} className="shrink-0 text-fg/25 group-hover:text-fg/60" /> : null}
+    </>
+  );
+  return member && onSelect ? (
+    <button
+      type="button"
+      onClick={() => onSelect(member)}
+      aria-label={`Open ${agent.name} details`}
+      data-testid="chat-workflow-agent-row"
+      className="group flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.045]"
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="flex min-w-0 items-center gap-2 px-1.5 py-1" data-testid="chat-workflow-agent-row">{content}</div>
+  );
+}
+
+function phaseStateOfViews(views: readonly WorkflowAgentView[]): "queued" | "running" | "done" | "failed" {
+  if (views.some((view) => view.status === "failed" || view.status === "stopped")) return "failed";
+  if (views.some((view) => view.status === "running")) return "running";
+  return views.length > 0 ? "done" : "queued";
+}
+
+function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "failed" }) {
+  if (state === "done") return <Check aria-hidden size={11} weight="bold" className="shrink-0 text-emerald-300/85" />;
+  if (state === "failed") return <X aria-hidden size={11} weight="bold" className="shrink-0 text-rose-300/85" />;
+  if (state === "running") {
+    return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-accent-bright,#C4B5FD)]" />;
+  }
+  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg/25" />;
+}
+
+function formatContextTokensLabel(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
 }

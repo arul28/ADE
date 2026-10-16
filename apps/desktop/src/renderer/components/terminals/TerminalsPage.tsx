@@ -462,6 +462,39 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
   );
 
+  /**
+   * Open the tab's one session context menu at a point. `handleContextMenu`
+   * calls it for a real right-click; the chat actions pane's shell rows call it
+   * through `ade:work:open-session-menu`, so both get the identical menu,
+   * handlers and dialogs.
+   */
+  const openSessionContextMenuAt = useLatestCallback(
+    (
+      session: TerminalSessionSummary,
+      point: { x: number; y: number },
+      extras: {
+        binding?: OpenProjectBinding | null;
+        machineName?: string | null;
+        laneActions?: SessionContextMenuLaneActions | null;
+        openIn?: SessionContextMenuOpenIn | null;
+        laneType?: LaneSummary["laneType"] | null;
+      } = {},
+    ) => {
+      const { binding, machineName, laneActions, openIn, laneType } = extras;
+      setBulkMenu(null);
+      setContextMenu({
+        session,
+        x: point.x,
+        y: point.y,
+        ...(binding ? { binding } : {}),
+        ...(machineName ? { machineName } : {}),
+        ...(laneActions ? { laneActions } : {}),
+        ...(openIn ? { openIn } : {}),
+        ...(laneType ? { laneType } : {}),
+      });
+    },
+  );
+
   const handleContextMenu = useLatestCallback(
     (
       session: TerminalSessionSummary,
@@ -481,11 +514,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setBulkMenu({ x: e.clientX, y: e.clientY });
         return;
       }
-      setBulkMenu(null);
-      setContextMenu({
-        session,
-        x: e.clientX,
-        y: e.clientY,
+      openSessionContextMenuAt(session, { x: e.clientX, y: e.clientY }, {
         ...(binding ? { binding } : {}),
         ...(machineName ? { machineName } : {}),
         ...(laneActions ? { laneActions } : {}),
@@ -604,6 +633,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
   }, [applySessionFocus, machineRouter, refreshLanes, work]);
+
+  // A pane that cannot mount the menu itself (the chat actions pane's shell
+  // rows) asks for it here, so there is still exactly one menu host.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        session?: TerminalSessionSummary;
+        x?: number;
+        y?: number;
+        binding?: OpenProjectBinding | null;
+      }>).detail;
+      if (!detail?.session) return;
+      const x = typeof detail.x === "number" && Number.isFinite(detail.x) ? detail.x : 0;
+      const y = typeof detail.y === "number" && Number.isFinite(detail.y) ? detail.y : 0;
+      openSessionContextMenuAt(detail.session, { x, y }, { binding: detail.binding ?? null });
+    };
+    window.addEventListener("ade:work:open-session-menu", handler as EventListener);
+    return () => window.removeEventListener("ade:work:open-session-menu", handler as EventListener);
+  }, [openSessionContextMenuAt]);
 
   const handleGoToLane = useCallback(
     (

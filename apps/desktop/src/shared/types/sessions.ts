@@ -924,6 +924,12 @@ export type ListSessionsArgs = {
   status?: TerminalSessionStatus;
   limit?: number | null;
   toolTypes?: TerminalToolType[];
+  /**
+   * Only the sessions attached to this chat (`chat_session_id`) — the chat
+   * actions pane lists a chat's shells through it. Archived rows are the
+   * caller's to filter, exactly as they are for every other list.
+   */
+  chatSessionId?: string;
 };
 
 export type DeleteSessionArgs = {

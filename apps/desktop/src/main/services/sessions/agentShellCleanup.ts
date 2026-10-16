@@ -31,6 +31,8 @@ export type AgentShellRetireReason = "relaunch" | "stop";
 
 type CandidateRow = {
   sessionId: string;
+  /** Owner chat, when it still exists. Null once that chat was deleted. */
+  chatSessionId: string | null;
   userInputAt: string | null;
   retiredReason: AgentShellRetireReason | null;
   status: string;
@@ -54,7 +56,10 @@ function agentShellArchiveDue(row: CandidateRow, nowMs: number): boolean {
   if (row.userInputAt) return false;
   if (row.status === "running" || row.status === "detached") return false;
   if (row.retiredReason === "relaunch") return true;
-  const parentQuiet = Boolean(row.parentSettledAt || row.parentArchivedAt);
+  // No owner at all counts as quiet: the chat that used this shell is gone, so
+  // nothing will ever settle or archive it again, and a dead App Control shell
+  // with a deleted owner is exactly the row this sweeper exists to hide.
+  const parentQuiet = !row.chatSessionId || Boolean(row.parentSettledAt || row.parentArchivedAt);
   const cleanEnd = row.retiredReason === "stop" || (row.status === "completed" && row.exitCode === 0);
   if (!cleanEnd) return parentQuiet;
   const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
@@ -140,6 +145,7 @@ export function createAgentShellCleanup({
         `
           select
             c.session_id as sessionId,
+            s.chat_session_id as chatSessionId,
             c.user_input_at as userInputAt,
             c.retired_reason as retiredReason,
             s.status as status,
@@ -151,7 +157,6 @@ export function createAgentShellCleanup({
           join terminal_sessions s on s.id = c.session_id
           left join terminal_sessions p on p.id = s.chat_session_id
           where s.archived_at is null
-            and s.chat_session_id is not null
             and c.user_input_at is null
             and s.status not in ('running', 'detached')
         `,

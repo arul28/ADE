@@ -2460,3 +2460,43 @@ describe("sessionService settle override", () => {
     expect(await service.settleSessions(["session-override"])).toEqual([]);
   });
 });
+
+
+describe("sessionService attached shell archiving", () => {
+  it("archives exactly the live shells a chat owns, and never a chat-kind row", async () => {
+    const projectRoot = makeProjectRoot("ade-attached-shells-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+    try {
+      insertProjectGraph(db);
+      const now = "2026-03-17T00:00:00.000Z";
+      const insert = (id: string, toolType: string, chatSessionId: string | null, archivedAt: string | null) => {
+        db.run(
+          `insert into terminal_sessions(
+             id, lane_id, title, started_at, transcript_path, status, tool_type, chat_session_id, archived_at
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, "lane-1", id, now, `/tmp/${id}.log`, "completed", toolType, chatSessionId, archivedAt],
+        );
+      };
+      insert("chat-1", "codex-chat", null, null);
+      insert("shell-live", "shell", "chat-1", null);
+      insert("shell-archived", "shell", "chat-1", now);
+      // A tracked CLI child attached to its parent: chat-kind tool type, so the
+      // shell rule must leave it alone.
+      insert("cli-child", "codex-chat", "chat-1", null);
+      insert("other-chat-shell", "shell", "chat-2", null);
+
+      const service = createSessionService({ db });
+      expect(service.listAttachedShellIds("chat-1")).toEqual(["shell-live"]);
+      expect(service.archiveAttachedShellsForChat("chat-1")).toEqual(["shell-live"]);
+      const archived = (id: string) =>
+        db.get<{ archivedAt: string | null }>("select archived_at as archivedAt from terminal_sessions where id = ?", [id])?.archivedAt ?? null;
+      expect(archived("shell-live")).not.toBeNull();
+      expect(archived("cli-child")).toBeNull();
+      expect(archived("other-chat-shell")).toBeNull();
+      // Idempotent: a second pass has nothing left to archive.
+      expect(service.archiveAttachedShellsForChat("chat-1")).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+});
