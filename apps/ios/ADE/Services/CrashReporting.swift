@@ -66,7 +66,8 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
+        if isSuspendedAppHang(event) { return nil }
+        return ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
           ? ADECrashScrubber.scrub(event)
           : nil
       }
@@ -117,6 +118,17 @@ enum CrashReporting {
     let user = Sentry.User()
     user.userId = userId
     SentrySDK.setUser(user)
+  }
+
+  /// A non-fatal hang whose main thread was waiting for work in its run loop,
+  /// not blocked: the app was suspended while the detector kept counting. A
+  /// hang with real work on the stack is kept, however long it claims to be.
+  private static func isSuspendedAppHang(_ event: Sentry.Event) -> Bool {
+    guard let exception = event.exceptions?.last,
+          exception.type?.hasPrefix("App Hang") == true,
+          let frames = exception.stacktrace?.frames, let top = frames.last?.function,
+          top == "mach_msg2_trap" || top == "mach_msg_trap" else { return false }
+    return frames.suffix(6).contains { $0.function == "__CFRunLoopServiceMachPort" }
   }
 
   // MARK: - Configuration helpers

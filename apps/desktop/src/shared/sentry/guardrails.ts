@@ -11,7 +11,7 @@
  * guarantee, and it is sized so that takes a dozen different failures.
  */
 
-import { isExpectedOutcomeText } from "./expectedFailure";
+import { isExpectedOutcomeText, isOfflineFetchFailure } from "./expectedFailure";
 
 export type SentryBudget = {
   perFingerprintPerHour: number;
@@ -114,5 +114,8 @@ export function isIgnoredEvent(event: FingerprintSource): boolean {
   // An expected outcome names the event only as its own error: one quoted in a
   // `cause` must not drop the crash around it.
   const primary = values[values.length - 1];
-  return isExpectedOutcomeText(primary ? primary.value ?? "" : event.message ?? "");
+  const primaryText = primary ? primary.value ?? "" : event.message ?? "";
+  if (isExpectedOutcomeText(primaryText)) return true;
+  // Sentry lists the causes before the error that carries them.
+  return isOfflineFetchFailure(primaryText, texts.slice(1, -1));
 }
