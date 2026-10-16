@@ -1,28 +1,11 @@
 import React, { useState } from "react";
 import { CaretDown, CaretRight, Check, Square, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import { useTicker } from "../../lib/ticker";
+import { useLiveDurationMs } from "../../lib/liveDuration";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { pluralCount } from "../../../shared/formatting";
 import type { BackgroundJobGroupMember, BackgroundJobLineRenderEvent } from "./chatTranscriptRows";
 import { backgroundJobStatusWord, countBackgroundJobs } from "./chatBackgroundJobRuns";
-
-/**
- * Live elapsed since a start timestamp, ticking once a second while `running`.
- * Anchored to the real start timestamp, so a row scrolled out of the
- * virtualizer and back keeps the true elapsed. The tick comes from the
- * renderer's shared one-second timer rather than an interval per row, so a
- * transcript holding many job rows runs one timer instead of one per row; the
- * commit still lands once a second and reaches only the rows reading it. Null
- * for an absent or unparseable timestamp.
- */
-function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
-  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const anchored = Number.isFinite(startMs) ? startMs : null;
-  const nowMs = useTicker(1_000, running && anchored != null);
-  if (anchored == null) return null;
-  return Math.max(0, nowMs - anchored);
-}
 
 /**
  * A job's duration: live while it runs, the recorded one once it ends. A job

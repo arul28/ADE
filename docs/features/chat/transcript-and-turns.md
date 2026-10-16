@@ -1416,8 +1416,9 @@ as `reasoning` events, so one presentation covers all of them
   A click that ends a text selection or lands on a link does not toggle. Thought
   rows inside an open turn fold behave the same way. They never show the live
   preview.
-- **Performance.** The only timer is one 1s interval in the header's elapsed
-  leaf, so a tick never re-renders the text. The paced reveal re-renders only
+- **Performance.** The header's elapsed leaf subscribes to the renderer's shared
+  1s timer (one timer for every subscriber), so a tick never re-renders the
+  text. The paced reveal re-renders only
   the `LiveThoughtText` leaf. Tail-following is at most one `scrollTop` write
   per frame, coalesced through a ref and `requestAnimationFrame`. A layout
   effect triggers it when the text changes, and a `ResizeObserver` on the

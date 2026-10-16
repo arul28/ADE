@@ -96,8 +96,8 @@ function useFutureLabel(atIso: string | null | undefined, enabled: boolean): str
     return Number.isFinite(parsed) ? parsed : null;
   }, [atIso]);
   const active = enabled && atMs != null;
-  // The copy is minute-granular, so the shared thirty-second tick is as close
-  // as the per-row timer was.
+  // The copy is minute-granular; the shared thirty-second tick is the same
+  // period the per-row timer used.
   const nowMs = useTicker(30_000, active);
 
   if (!active || atMs == null) return "";

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useTicker } from "../../lib/ticker";
+import { useLiveDurationMs } from "../../lib/liveDuration";
 import { CaretDown, CaretRight, Check, ListChecks, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
@@ -40,31 +40,6 @@ export { navigateToSpawnedChat };
 // states reads as one set of cards; only the glyph badge and the status line
 // change. Background shell commands get no cards at all — just a compact row
 // (`BackgroundJobRunRow`).
-
-/**
- * Live elapsed since a start timestamp, ticking once a second while `running`.
- * The spawn card's live-duration ticker.
- *
- * Anchored to the real start timestamp rather than to mount time, so scrolling
- * the row out of the virtualizer and back keeps the true elapsed instead of
- * restarting from zero. Same shape as `useElapsedLabel` in `SessionStatusLabel`
- * — a state tick on a leaf that renders one line, so the per-second re-render
- * never reaches the memoized transcript rows around it. (`WorkingIndicator`'s
- * ticker is deliberately NOT this: it mutates `textContent` through a ref to
- * avoid a per-second commit on the message list itself.)
- *
- * Returns null for an absent or unparseable timestamp so callers render no
- * duration rather than `NaN`.
- */
-function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
-  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const anchored = Number.isFinite(startMs) ? startMs : null;
-  // The shared one-second timer, so a transcript holding many cards runs one
-  // timer rather than one per card; the tick still lands every second.
-  const nowMs = useTicker(1_000, running && anchored != null);
-  if (anchored == null) return null;
-  return Math.max(0, nowMs - anchored);
-}
 
 type SubagentCardStatus =
   | SubagentSpawnAnchorRenderEvent["status"]

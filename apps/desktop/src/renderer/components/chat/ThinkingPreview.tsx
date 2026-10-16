@@ -18,8 +18,9 @@ import { parseTimestampMs } from "../../../shared/timestamps";
  * full text in the grey block.
  *
  * Perf contract (see docs/features/chat/transcript-and-turns.md):
- * - the only timer is one 1s interval per visible live header, owned by the
- *   tiny `ThinkingElapsed` leaf so a tick never re-renders the text;
+ * - the header's `ThinkingElapsed` leaf subscribes to the renderer's shared 1s
+ *   timer (one timer for every subscriber), so a tick never re-renders the
+ *   text;
  * - the paced reveal re-renders only the `LiveThoughtText` leaf;
  * - tail-following is one rAF-coalesced `scrollTop` write per frame, driven by
  *   refs when the text or the content's size changes;

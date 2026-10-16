@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * One timer per period for the whole renderer.
@@ -6,17 +6,20 @@ import { useCallback, useSyncExternalStore } from "react";
  * A row that shows a live duration used to install its own `setInterval`, so a
  * list of working sessions ran one timer and one unbatched `setState` per row —
  * twenty working rows meant twenty timers firing twenty separate commits every
- * second. They now share a single timer per period and React commits every
- * subscriber in one pass.
+ * second. They now share a single timer per period, and because every
+ * subscriber is notified from inside the one interval callback React commits
+ * them all in a single pass.
  *
- * The tick still lands once per `periodMs`, so every value a component derives
- * from it is the same value its own timer produced. This changes how many
- * timers run, not when the numbers move.
+ * Each subscriber keeps its OWN reading, seeded when it mounts and refreshed on
+ * every tick. That is the point: a reading shared through the channel would be
+ * stale for any component that joins a channel which is already running, and
+ * anything derived from it (a countdown, a "waiting 5m" label) would be wrong
+ * until the next tick — a full minute wrong on the thirty-second channel. Only
+ * the timer is shared, so every component's first paint is as fresh as the
+ * per-row timer it replaced, and the tick still lands once per `periodMs`.
  */
 type TickerChannel = {
   timer: number | null;
-  /** The reading the current period published; stable between ticks. */
-  nowMs: number;
   listeners: Set<() => void>;
 };
 
@@ -25,7 +28,7 @@ const channels = new Map<number, TickerChannel>();
 function channelFor(periodMs: number): TickerChannel {
   let channel = channels.get(periodMs);
   if (!channel) {
-    channel = { timer: null, nowMs: Date.now(), listeners: new Set() };
+    channel = { timer: null, listeners: new Set() };
     channels.set(periodMs, channel);
   }
   return channel;
@@ -34,24 +37,12 @@ function channelFor(periodMs: number): TickerChannel {
 function subscribeToChannel(periodMs: number, listener: () => void): () => void {
   const channel = channelFor(periodMs);
   channel.listeners.add(listener);
-  // A timer exists exactly while the channel has listeners, so an idle channel
-  // holds a reading that may be arbitrarily old. Take a fresh one on the way in
-  // rather than showing a stale duration until the first tick.
+  // A timer exists exactly while the channel has listeners, so a period nobody
+  // is reading costs nothing.
   if (channel.timer == null) {
-    channel.nowMs = Date.now();
     channel.timer = window.setInterval(() => {
-      channel.nowMs = Date.now();
-      // Copy: a listener may unsubscribe itself while we are notifying. Each
-      // listener is isolated — with a timer per component a throwing listener
-      // could only break its own tick, and sharing one timer must not turn one
-      // bad subscriber into a frozen clock for every other component.
-      for (const notify of [...channel.listeners]) {
-        try {
-          notify();
-        } catch (error) {
-          console.error("[ticker] listener threw", error);
-        }
-      }
+      // Copy: a listener may unsubscribe itself while we are notifying.
+      for (const notify of [...channel.listeners]) notify();
     }, periodMs);
   }
   return () => {
@@ -64,16 +55,19 @@ function subscribeToChannel(periodMs: number, listener: () => void): () => void 
 }
 
 /**
- * The shared reading for `periodMs`, refreshed once per period while at least
- * one component is subscribed. Returns a timestamp in the same units as
+ * A reading that advances once per `periodMs` while `enabled`, driven by the
+ * renderer's single shared timer for that period. In the same units as
  * `Date.now()`, so callers keep subtracting their own start time.
+ *
+ * While `enabled` is false the reading stops advancing. Gate the render on the
+ * same flag rather than showing a value derived from a stopped reading.
  */
 export function useTicker(periodMs: number, enabled = true): number {
-  const read = useCallback(() => channelFor(periodMs).nowMs, [periodMs]);
-  const watch = useCallback(
-    (listener: () => void) =>
-      enabled ? subscribeToChannel(periodMs, listener) : () => {},
-    [enabled, periodMs],
-  );
-  return useSyncExternalStore(watch, read, read);
+  const [reading, setReading] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return undefined;
+    setReading(Date.now());
+    return subscribeToChannel(periodMs, () => setReading(Date.now()));
+  }, [enabled, periodMs]);
+  return reading;
 }
