@@ -127,7 +127,10 @@ the harness's own account, with the reason recorded. (Grok used to be here; it
 now runs routed models from an ADE-owned `GROK_HOME`.)
 
 OpenCode's **free** Zen models only answer inside OpenCode itself, so they are
-never offered in another harness.
+never offered in another harness. The same goes for an OpenCode sign-in that is
+the vendor's own subscription login — an OpenAI sign-in there is a ChatGPT
+subscription whose token no outside client can use; route it with an OpenAI API
+key or a Codex subscription through ADE's proxy instead.
 
 Two more have no key path at all, in either mode:
 

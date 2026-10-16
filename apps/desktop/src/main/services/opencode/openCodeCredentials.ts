@@ -146,6 +146,12 @@ export type OpenCodeLaunchSecret = {
   token: string;
   expiresAt: number | null;
   orgId: string | null;
+  /**
+   * The credential's kind. An `oauth` login is the vendor's own subscription
+   * flow and may answer only inside OpenCode; a `key` is a pasted API key,
+   * which every client can use.
+   */
+  methodType: "key" | "oauth" | "external" | null;
 };
 
 /**
@@ -182,6 +188,7 @@ export function readOpenCodeLaunchSecret(
       token,
       expiresAt: row.type === "oauth" && Number.isFinite(expires) && expires > 0 ? expires : null,
       orgId: textOrNull(row.orgId),
+      methodType: row.type === "key" || row.type === "oauth" || row.type === "external" ? row.type : null,
     };
   });
 }

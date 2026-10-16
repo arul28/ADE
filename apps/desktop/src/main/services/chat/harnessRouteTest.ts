@@ -53,6 +53,15 @@ export function requireHarnessRouteSource(value: unknown): HarnessRouteSource["s
 
 const PROTOCOL_UNSUPPORTED = /does not support this protocol|unsupported (protocol|endpoint)|not supported on this endpoint/i;
 
+/**
+ * A refusal that says the model answers only inside its own client — OpenCode's
+ * free tier. It is a property of the model, not of one protocol, so it is
+ * recorded exactly as a protocol refusal: the next catalog read drops the
+ * pairing and a launch routes around it. (An auth or balance failure says
+ * nothing about routing and is deliberately not matched here.)
+ */
+const MODEL_ONLY_IN_OPENCODE = /can only be used from within OpenCode/i;
+
 type Fetch = typeof fetch;
 
 async function pingProtocol(args: {
@@ -212,8 +221,12 @@ export async function testHarnessRoute(
     // launch routed onto it hangs with no error at all. Record it as a definite
     // no and keep trying the rest, so a Test routes around a wedged protocol —
     // for example OpenCode Go's Anthropic route hanging on a model its OpenAI
-    // route still serves. A later Test re-confirms a recovered protocol.
-    if (result.timedOut || (result.error && PROTOCOL_UNSUPPORTED.test(result.error))) {
+    // route still serves. A later Test re-confirms a recovered protocol. The
+    // same applies to a model its own gateway refuses to every outside client
+    // ("free tier can only be used from within OpenCode"): no protocol will
+    // ever carry it, so every attempt records a no and the pairing disappears
+    // from the list that offered it.
+    if (result.timedOut || (result.error && (PROTOCOL_UNSUPPORTED.test(result.error) || MODEL_ONLY_IN_OPENCODE.test(result.error)))) {
       recordRouteProbe(adeHome, sourceKey, model, protocol, false);
       continue;
     }

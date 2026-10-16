@@ -25,7 +25,7 @@ provider list — and appear as the first tab of every model picker.
 | Field | Meaning |
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
-| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
+| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is the vendor's own subscription login routes only inside OpenCode), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
@@ -74,41 +74,44 @@ in the id, so there is nothing to look up.
 
 ## Building one
 
-The wizard is three steps.
+The editor is one page, top to bottom the order of the decision: which harness
+runs it, which source supplies the model, which model it is, how hard it
+thinks, and what it is called.
 
 1. **Pick a harness.** Every harness is shown with its real provider mark. A
    harness that is not installed or not signed in shows the reason and stays
    selectable — a preset is a saved intention, not a description of this
    computer.
-2. **Pick a model provider.** The list is split into two groups. **Your
-   accounts and keys** holds the provider sign-ins and the stored API keys;
-   accounts list their email and plan, keys list their label and masked tail.
-   **Through ADE's proxy** holds the subscription rows, each with a Sign in
-   button. When the host exposes no proxy sign-in, that button is disabled and
-   reads "Sign-in through ADE's proxy is not available yet on this host." ADE
-   never fakes the sign-in. A group with no rows shows no heading. Below the
-   list: the model, the effort, the subagent model and level, and a folded
-   **Subagent naming** disclosure. Pinning a role to a specific model shows the
-   note that the role now runs on ADE's copy of Anthropic's prompt and stops
-   tracking Claude Code. A harness that cannot take a subagent model or level
-   says so in one sentence next to where the control would be, instead of
-   showing a control it would drop.
+2. **Pick a source, then a model.** A source rail lists every provider this
+   computer could draw on — the harness's own accounts, the OpenCode sign-ins
+   and stored keys, and the Claude/Codex subscriptions the proxy holds — and
+   selecting one scopes the model pane beside it, the same way the composer's
+   picker rails by provider. The search field spans every source. Accounts
+   list their email and plan, keys their label and masked tail. A subscription
+   row signs in from the pane's own button; when the host exposes no proxy
+   sign-in the button is disabled and says why, and ADE never fakes it. A
+   source that can serve nothing in this harness stays in the rail with a
+   warning mark, and its pane says so: the models, under **N models can't run
+   in {harness}**, each with the route decision's reason (a ChatGPT sign-in
+   inside OpenCode, Zen's free tier). Below the pane: the effort, the subagent
+   model and level, and a folded **Subagent naming** disclosure. Pinning a
+   role to a specific model shows the note that the role now runs on ADE's
+   copy of Anthropic's prompt and stops tracking Claude Code. A harness that
+   cannot take a subagent model or level says so in one sentence next to where
+   the control would be, instead of showing a control it would drop.
 3. **Name it.** Name, accent colour, and a logo tile — Default (the purple
    gear-and-wrench mark), provider logo,
    Upload (which opens a round crop with drag and zoom and writes a 256×256
    PNG), and Generate when the host exposes a generator. A live preview chip
    shows the result.
 
-The chosen harness slides in and the model card snaps onto it in the preset's
-accent. Both respect `prefers-reduced-motion`.
-
 ## Subscription sources
 
 Choose a subscription source when a preset should use a Claude or Codex
-subscription on this machine. Select the provider's subscription in step 2
-and choose **Sign in**. ADE opens the provider sign-in page and waits until
-the sign-in is complete; the preset wizard does not store or display the
-provider credential.
+subscription on this machine. Select the provider's subscription in the source
+rail and choose **Sign in**. ADE opens the provider sign-in page and waits until
+the sign-in is complete; the editor does not store or display the provider
+credential.
 
 If the host cannot sign in through ADE, the button is disabled and the wizard
 explains why. A signed-in subscription can be checked, disabled, or removed
@@ -214,7 +217,11 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
   sources serving the same model id never mix. Removing a key drops its
   upstream, so its secret does not outlive it there.
 - **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
-  their own sign-in; OpenCode Zen's free models only answer inside OpenCode).
+  their own sign-in; OpenCode Zen's free models only answer inside OpenCode;
+  an OpenAI sign-in inside OpenCode is a ChatGPT subscription whose token
+  api.openai.com refuses on every protocol, measured 2026-10-15, so it also
+  only answers inside OpenCode — use an OpenAI API key or a Codex
+  subscription instead).
 
 Protocol support is **per model**. OpenCode Go serves DeepSeek, Kimi K3, Qwen
 and MiniMax on its Anthropic endpoint, GLM, Hy, MiMo and LongCat on OpenAI chat
@@ -222,6 +229,13 @@ only, and GPT/Grok on Responses only (measured 2026-09-29, seeded in
 `OPENCODE_GO_MODEL_PROTOCOLS`). A Test (below) overrides the seed: its verdict
 is saved in `<adeHome>/cache/harness-route-probes.json` and every launch reads
 it.
+
+A free-tier model is refused by its own gateway to every outside client no
+matter the protocol — usually spelled `-free`, but not always (`big-pickle`,
+measured 2026-10-15, is free-tier and carries no suffix, so it is listed in
+`OPENCODE_ZEN_FREE_TIER_IDS`). A Test that meets the refusal records it like a
+protocol refusal, so a free-tier model with a novel name disappears from the
+list that offered it instead of failing a launch.
 
 OpenCode Go rejects any request without a stable `x-opencode-session`
 header. Claude Code gets it through `ANTHROPIC_CUSTOM_HEADERS`, Codex and Grok
@@ -408,18 +422,23 @@ provider token and is never written anywhere by ADE.
   decoding only safe ids and returning the model catalog used by the picker.
 - `apps/desktop/src/renderer/components/settings/harnesses/` — the settings
   surface:
-  - `HarnessesPage.tsx` — the list page and its row actions.
-  - `HarnessWizard.tsx` — the coordinator: draft state, validation, save, and
-    step 1 (pick a harness). The two later steps and the shared primitives were
-    lifted out of it, so no one file owns the whole wizard.
-  - `HarnessWizardStepModel.tsx` — step 2: the two-group source list (your
-    accounts and keys, then subscriptions through ADE's proxy) plus the model,
-    effort, subagent, and Advanced controls.
-  - `HarnessWizardStepIdentity.tsx` — step 3: name, accent, and logo.
+  - `CustomProvidersSection.tsx` — the section: the saved list, its row actions,
+    the "?" explainer, and the starter suggestions shown while the list is
+    empty.
+  - `CustomProviderDialog.tsx` — the one-page editor: harness chips, the source
+    rail and model pane, thinking, and name and look. Its unreachable-models
+    panel states why a source's models cannot run in the chosen harness.
+  - `CustomProviderSourceRail.tsx` — the provider rail that scopes the model
+    pane to one source, with a warning mark on a source that can serve nothing.
+  - `harnessReach.ts` — pure: every model one harness can reach, grouped by
+    source, with the routes that work and the models that cannot run (each with
+    its reason). The composer picker's rail is not built from this.
+  - `useHarnessReach.ts` — gathers those inputs (the route catalog, the
+    accounts, the proxy logins, the runtime catalog) and runs a row's live Test.
   - `wizardPrimitives.tsx` — the `Row`, `SectionLabel` and `FieldError`
-    primitives the steps share.
+    primitives the dialog shares.
   - `harnessSources.ts` — reads the provider accounts, the stored keys, and the
-    proxy subscriptions into the rows step 2 groups. The renderer-local type is
+    proxy subscriptions into the rows the rail lists. The renderer-local type is
     `HarnessModelSource`.
   - `harnessAvailability.ts` — whether a harness is installed and signed in on
     this computer, as a reason string rather than a disabled row.
@@ -427,8 +446,9 @@ provider token and is never written anywhere by ADE.
     source (a key's declared models, then the live catalog, then the static
     registry), and whether the id must be typed instead of picked. It takes the
     catalog as an argument; fetching it is the ModelPicker's job.
-  - `presetFacts.tsx`, `HarnessLogoCropper.tsx`, `useHarnessPresets.ts` — the
-    row facts, the round 256x256 crop, and the store binding.
+  - `presetFacts.tsx`, `HarnessLogoCropper.tsx`, `useHarnessPresets.ts`,
+    `harnessLauncher.ts`, `harnessLaunchTarget.ts` — the row facts, the round
+    256x256 crop, the store binding, and the Copy terminal launcher.
 - `apps/desktop/src/renderer/components/shared/HarnessLogo.tsx` — the one place
   a preset's mark is drawn.
 - `apps/desktop/src/renderer/components/shared/ModelPicker/HarnessPresetList.tsx`

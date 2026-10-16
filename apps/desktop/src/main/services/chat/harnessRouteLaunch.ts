@@ -40,9 +40,11 @@ import {
   endpointsForSource,
   isOpenCodeHouseSource,
   KNOWN_SOURCE_ENDPOINTS,
+  openCodeSubscriptionSignInReason,
   resolveHarnessRoute,
   stripTrailingV1,
   type HarnessRoute,
+  type HarnessSourceSignInKind,
   type RouteEndpoints,
   type RouteProtocol,
 } from "../../../shared/harnessRoutes";
@@ -160,6 +162,8 @@ export type ResolvedRouteSource = {
   expiresAt: number | null;
   /** OpenCode's house gateway, which needs the session header. */
   needsSessionHeader: boolean;
+  /** How the source is signed in, for the route decision. */
+  signInKind: HarnessSourceSignInKind | null;
 };
 
 /** Per-source identity for a key or OpenCode source, without reading a secret. */
@@ -192,6 +196,7 @@ export function resolveRouteSource(
       token,
       expiresAt: null,
       needsSessionHeader: isOpenCodeHouseSource(provider),
+      signInKind: "key",
     };
   }
   const providerId = source.providerId.trim();
@@ -202,6 +207,12 @@ export function resolveRouteSource(
   const secret = (deps.readOpenCodeSecret ?? readOpenCodeLaunchSecret)(providerId);
   if (!secret) {
     return { unsupported: `${name} is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode.` };
+  }
+  // A subscription sign-in answers only inside OpenCode, on every protocol; a
+  // launch that tried it would fail the same way a Test does.
+  const subscriptionOnly = openCodeSubscriptionSignInReason(providerId);
+  if (subscriptionOnly && secret.methodType === "oauth") {
+    return { unsupported: subscriptionOnly };
   }
   const now = deps.now?.() ?? Date.now();
   if (secret.expiresAt !== null && secret.expiresAt <= now) {
@@ -218,6 +229,7 @@ export function resolveRouteSource(
     token: secret.token,
     expiresAt: secret.expiresAt,
     needsSessionHeader: isOpenCodeHouseSource(providerId),
+    signInKind: secret.methodType,
   };
 }
 
@@ -623,6 +635,7 @@ export function buildRouteLaunch(args: {
     modelId: model,
     endpoints: resolved.endpoints,
     probe: readRouteProbe(deps.adeHome, resolved.sourceKey, model),
+    ...(resolved.signInKind ? { sourceSignInKind: resolved.signInKind } : {}),
   });
   if (route.kind === "impossible") return { status: "unsupported", unsupported: route.reason };
   if (route.kind === "native") return { status: "unsupported", unsupported: "This source signs its own harness in." };

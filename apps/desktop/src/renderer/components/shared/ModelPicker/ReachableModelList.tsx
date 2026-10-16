@@ -47,6 +47,12 @@ export type ReachableModelListProps = {
   proxySigningIn?: "claude" | "codex" | null;
   /** When true a subscription the proxy does not hold yet cannot be picked. */
   requireProxySignIn?: boolean;
+  /**
+   * Hide each group's header (mark, label, detail, sign-in button) and its
+   * unreachable count. The Custom provider wizard shows one source at a time
+   * behind its own source rail, which already names it.
+   */
+  hideGroupHeader?: boolean;
   /** Shown when there is nothing to list (after loading, before a search). */
   emptyState?: ReactNode;
   groupLimit?: number;
@@ -83,6 +89,7 @@ export const ReachableModelList = memo(function ReachableModelList({
   proxySignInAvailable = false,
   proxySigningIn = null,
   requireProxySignIn = false,
+  hideGroupHeader = false,
   emptyState,
   groupLimit = DEFAULT_GROUP_LIMIT,
   standalone = false,
@@ -138,27 +145,29 @@ export const ReachableModelList = memo(function ReachableModelList({
         const subscriptionProvider = group.source.kind === "subscription" ? group.source.provider : null;
         return (
           <section key={group.key} data-reachable-group={group.key} aria-label={group.label} className="flex flex-col">
-            <header className="flex items-center gap-2 px-2 pb-0.5 pt-1">
-              <ProviderLogo family={group.logoProvider} size={12} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[10.5px] font-semibold uppercase tracking-[0.04em] text-fg/70">
-                  {group.label}
+            {hideGroupHeader ? null : (
+              <header className="flex items-center gap-2 px-2 pb-0.5 pt-1">
+                <ProviderLogo family={group.logoProvider} size={12} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[10.5px] font-semibold uppercase tracking-[0.04em] text-fg/70">
+                    {group.label}
+                  </span>
+                  <span className="block truncate text-[10px] leading-snug text-muted-fg/55">{group.detail}</span>
                 </span>
-                <span className="block truncate text-[10px] leading-snug text-muted-fg/55">{group.detail}</span>
-              </span>
-              {group.needsProxySignIn && subscriptionProvider && onProxySignIn ? (
-                <button
-                  type="button"
-                  data-reachable-proxy-sign-in={subscriptionProvider}
-                  disabled={!proxySignInAvailable || proxySigningIn != null}
-                  title={proxySignInAvailable ? undefined : "ADE's proxy cannot run on this machine."}
-                  onClick={() => onProxySignIn(subscriptionProvider)}
-                  className="shrink-0 rounded border border-fg/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {proxySigningIn === subscriptionProvider ? "Signing in…" : "Sign in"}
-                </button>
-              ) : null}
-            </header>
+                {group.needsProxySignIn && subscriptionProvider && onProxySignIn ? (
+                  <button
+                    type="button"
+                    data-reachable-proxy-sign-in={subscriptionProvider}
+                    disabled={!proxySignInAvailable || proxySigningIn != null}
+                    title={proxySignInAvailable ? undefined : "ADE's proxy cannot run on this machine."}
+                    onClick={() => onProxySignIn(subscriptionProvider)}
+                    className="shrink-0 rounded border border-fg/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {proxySigningIn === subscriptionProvider ? "Signing in…" : "Sign in"}
+                  </button>
+                ) : null}
+              </header>
+            )}
             <div role="group" aria-label={`${group.label} models`}>
               {shown.map((model) => (
                 <ReachableModelRow
@@ -189,9 +198,9 @@ export const ReachableModelList = memo(function ReachableModelList({
                 {hidden > 0 ? `Show ${hidden} more` : "Show fewer"}
               </button>
             ) : null}
-            {group.unreachableCount > 0 && isExpanded ? (
+            {!hideGroupHeader && group.unreachable.length > 0 && isExpanded ? (
               <span className="mx-2 mt-0.5 text-[10px] text-muted-fg/45">
-                {group.unreachableCount} more from {group.label} cannot run here.
+                {group.unreachable.length} more from {group.label} cannot run here.
               </span>
             ) : null}
           </section>
