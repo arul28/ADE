@@ -43,7 +43,20 @@ export type LaneStatus = {
    * refresh. Absent when status was not computed; `null` on a detached HEAD.
    */
   headBranchRef?: string | null;
+  /**
+   * Why HEAD left the recorded branch, measured during the same refresh and
+   * only while drift exists. Absent means no drift (or `switched`).
+   */
+  branchDriftKind?: LaneBranchDriftKind | null;
 };
+
+/**
+ * Why the worktree's HEAD is not on the lane's recorded branch. `switched` is
+ * the default any reader must assume when the kind is not carried; `renamed`
+ * and `missing` mean the recorded branch cannot be checked out any more, so
+ * the only way forward is moving the lane to the branch HEAD is on.
+ */
+export type LaneBranchDriftKind = "switched" | "renamed" | "missing";
 
 /**
  * Set when the lane worktree's live HEAD no longer matches `lanes.branch_ref`
@@ -55,12 +68,21 @@ export type LaneBranchDrift = {
   expectedBranchRef: string;
   /** What the worktree is actually on right now. */
   headBranchRef: string;
+  /**
+   * Absent when the recorded branch still exists and HEAD simply moved to
+   * another branch (the historical `switched` case). Present only for
+   * `renamed` / `missing`, where `switch-back` is no longer possible.
+   */
+  kind?: Exclude<LaneBranchDriftKind, "switched">;
 };
 
 export type LaneBranchDriftResolution =
-  /** Restore the worktree to `expectedBranchRef`; refuses if the tree is dirty. */
+  /**
+   * Restore the worktree to `expectedBranchRef`; refuses if the tree is dirty,
+   * and is impossible once that branch was renamed or deleted (`kind`).
+   */
   | "switch-back"
-  /** Re-point the lane at `headBranchRef` and rename it to match. */
+  /** Re-point the lane at `headBranchRef`. The worktree is already on it. */
   | "keep-head";
 
 export type ResolveLaneBranchDriftArgs = {

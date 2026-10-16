@@ -1,14 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { GitBranch, Warning } from "@phosphor-icons/react";
 
-import type { LaneBranchDrift, LaneBranchDriftResolution, LaneLifecycleEvent } from "../../../shared/types";
+import type {
+  LaneBranchDrift,
+  LaneBranchDriftKind,
+  LaneBranchDriftResolution,
+  LaneLifecycleEvent,
+} from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { StatusChip, type StatusChipAction } from "../ui/notice";
 
-function toastSwitchFailure(laneId: string, message: string): void {
-  showToast({ id: `lane-branch-switch:${laneId}`, tone: "error", title: "Could not switch the branch", message });
+function toastSwitchFailure(laneId: string, message: string, action: "switch" | "keep" = "switch"): void {
+  showToast({
+    id: `lane-branch-switch:${laneId}`,
+    tone: "error",
+    title: action === "keep" ? "Could not update the lane's branch" : "Could not switch the branch",
+    message,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +212,8 @@ function LaneBranchAdoptedChip({ laneId, adoption }: { laneId: string; adoption:
 /**
  * Compact always-on marker in the work surface header. Matches the header's
  * other pills (10px sans, 6px radius, hairline border) but tinted amber so it
- * reads as a warning without shouting.
+ * reads as a warning without shouting. The wording says which kind of drift it
+ * is — "renamed" and "branch missing" are not fixable by switching back.
  */
 export function LaneBranchDriftChip({
   laneId,
@@ -213,17 +224,25 @@ export function LaneBranchDriftChip({
 }) {
   const drift = useLaneBranchDrift(laneId);
   if (!drift) return null;
+  const kind: LaneBranchDriftKind = drift.kind ?? "switched";
+  const label = kind === "renamed" ? "renamed" : kind === "missing" ? "branch missing" : "drifted";
+  const title =
+    kind === "renamed"
+      ? `${drift.expectedBranchRef} was renamed to ${drift.headBranchRef}`
+      : kind === "missing"
+        ? `${drift.expectedBranchRef} no longer exists; the worktree is on ${drift.headBranchRef}`
+        : `HEAD is ${drift.headBranchRef}, not ${drift.expectedBranchRef}`;
   return (
     <span
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-200/20 bg-amber-300/[0.07] px-1.5 font-sans text-[10px] font-medium text-amber-100/80",
         className,
       )}
-      title={`HEAD is ${drift.headBranchRef}, not ${drift.expectedBranchRef}`}
+      title={title}
       data-testid="lane-branch-drift-chip"
     >
       <Warning size={10} weight="fill" className="text-amber-300/80" aria-hidden />
-      drifted
+      {label}
     </span>
   );
 }
@@ -235,8 +254,11 @@ export function LaneBranchDriftChip({
 /**
  * This lane's branch status in the composer status strip: `⎇ On X · Switch
  * back · Keep` once something is about to act on a branch the lane does not
- * record, or `⎇ Now on X · Switch back` for a while after ADE adopted a branch
- * its agent switched to.
+ * record, `⎇ Branch renamed to X · Update lane` when the recorded branch was
+ * renamed to the one the worktree is on — switching back is impossible there,
+ * and `⎇ X no longer exists · Update lane` when it was deleted. `⎇ Now on X ·
+ * Switch back` shows for a while after ADE adopted a branch its agent switched
+ * to.
  */
 export function LaneBranchComposerChip({
   laneId,
@@ -258,6 +280,10 @@ export function LaneBranchComposerChip({
     return () => { cancelled = true; };
   }, [armed, laneId, storeDrift?.headBranchRef]);
   const drift = freshDrift && freshDrift.laneId === laneId ? freshDrift.drift : storeDrift;
+  // `switched` is the shape every reader saw before kinds existed, so it stays
+  // the fallback: the recorded branch exists and switching back is a real way
+  // out.
+  const driftKind: LaneBranchDriftKind = drift?.kind ?? "switched";
   const laneBranchRef = useAppStore((state) =>
     laneId ? state.lanes.find((lane) => lane.id === laneId)?.branchRef ?? null : null);
   const adoption = useRecentBranchAdoption(laneId, laneBranchRef);
@@ -298,7 +324,7 @@ export function LaneBranchComposerChip({
       // explicit confirm that retries with the acknowledgement, the same shape the
       // lane list uses for its own branch switch.
       if (isActiveWorkRefusal(message)) setForceable(resolution);
-      else toastSwitchFailure(laneId, message);
+      else toastSwitchFailure(laneId, message, resolution === "keep-head" ? "keep" : "switch");
     } finally {
       setPending(null);
     }
@@ -306,8 +332,14 @@ export function LaneBranchComposerChip({
 
   const message = useMemo(() => {
     if (!drift) return "";
+    if (driftKind === "renamed") {
+      return `${drift.expectedBranchRef} was renamed to ${drift.headBranchRef}. This lane still records the old name, so lane diffs and PR actions use it. Update lane points the lane at ${drift.headBranchRef} — the worktree is already on it.`;
+    }
+    if (driftKind === "missing") {
+      return `${drift.expectedBranchRef} no longer exists, so this lane cannot be switched back to it. The worktree is on ${drift.headBranchRef}; Update lane makes that this lane's branch.`;
+    }
     return `This lane's worktree is on ${drift.headBranchRef}, not ${drift.expectedBranchRef}. Lane diffs and PR actions still use ${drift.expectedBranchRef}.`;
-  }, [drift]);
+  }, [drift, driftKind]);
 
   if (!visible || !drift) {
     return adoption && laneId ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} /> : null;
@@ -315,34 +347,52 @@ export function LaneBranchComposerChip({
 
   const busy = pending != null;
   const actions: StatusChipAction[] = [];
-  if (forceable) {
+  if (driftKind === "switched") {
+    if (forceable) {
+      actions.push({
+        label: "Switch anyway",
+        title: "A chat is still running in this lane; switch anyway",
+        disabled: busy,
+        onClick: () => { void resolve(forceable, true); },
+      });
+    }
+    actions.push(
+      {
+        label: pending === "switch-back" ? "Switching…" : "Switch back",
+        title: `Check out ${drift.expectedBranchRef} again`,
+        disabled: busy,
+        onClick: () => { void resolve("switch-back"); },
+      },
+      {
+        label: pending === "keep-head" ? "Keeping…" : "Keep",
+        title: `Make ${drift.headBranchRef} this lane's branch`,
+        disabled: busy,
+        onClick: () => { void resolve("keep-head"); },
+      },
+    );
+  } else {
+    // One way forward: the recorded branch is gone, so the lane has to move to
+    // the branch the worktree is on. No checkout happens — it is already there.
     actions.push({
-      label: "Switch anyway",
-      title: "A chat is still running in this lane; switch anyway",
-      disabled: busy,
-      onClick: () => { void resolve(forceable, true); },
-    });
-  }
-  actions.push(
-    {
-      label: pending === "switch-back" ? "Switching…" : "Switch back",
-      title: `Check out ${drift.expectedBranchRef} again`,
-      disabled: busy,
-      onClick: () => { void resolve("switch-back"); },
-    },
-    {
-      label: pending === "keep-head" ? "Keeping…" : "Keep",
+      label: pending === "keep-head" ? "Updating…" : "Update lane",
       title: `Make ${drift.headBranchRef} this lane's branch`,
       disabled: busy,
       onClick: () => { void resolve("keep-head"); },
-    },
-  );
+    });
+  }
   return (
     <StatusChip
       testId="lane-branch-drift-strip"
-      tone="warning"
+      dataAttributes={{ "data-lane-branch-drift-kind": driftKind }}
+      tone={driftKind === "renamed" ? "info" : "warning"}
       icon={<GitBranch size={11} weight="bold" />}
-      label="On"
+      label={
+        driftKind === "renamed"
+          ? "Branch renamed to"
+          : driftKind === "missing"
+            ? `${drift.expectedBranchRef} no longer exists`
+            : "On"
+      }
       detail={drift.headBranchRef}
       detailMono
       tooltip={message}

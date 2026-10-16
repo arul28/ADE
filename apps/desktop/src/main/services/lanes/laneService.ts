@@ -59,6 +59,7 @@ import type {
   LaneIcon,
   LaneBranchActiveWorkItem,
   LaneBranchDrift,
+  LaneBranchDriftKind,
   LaneBranchProfile,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
@@ -102,6 +103,7 @@ import type {
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
+  classifyMissingLaneBranchDriftKind,
   detectLaneBranchDrift,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
@@ -502,7 +504,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     lastCommitAt: status.lastCommitAt ?? null,
     trackedFileCount: status.trackedFileCount ?? null,
     rebaseInProgress: status.rebaseInProgress,
-    headBranchRef: status.headBranchRef ?? null
+    headBranchRef: status.headBranchRef ?? null,
+    branchDriftKind: status.branchDriftKind ?? null
   };
 }
 
@@ -930,6 +933,7 @@ function toLaneSummary(args: {
     branchDrift: detectLaneBranchDrift({
       expectedBranchRef: row.branch_ref,
       headBranchRef: status.headBranchRef,
+      kind: status.branchDriftKind,
     }),
     color: row.color,
     icon: parseLaneIcon(row.icon),
@@ -1062,6 +1066,84 @@ function remoteTrackingBaseRef(baseRef: string): string | null {
   return `refs/remotes/origin/${base}`;
 }
 
+/**
+ * Rename evidence only ever accumulates, and a lane can sit drifted for a long
+ * time while the lane list keeps refreshing, so the reflog verdict is memoized
+ * per (worktree, recorded branch, head branch). The recorded ref's existence is
+ * deliberately NOT memoized: a deleted branch can be created again, and that
+ * turns the drift back into a plain switch the lane can undo.
+ */
+const laneBranchDriftKindCache = new Map<string, Exclude<LaneBranchDriftKind, "switched">>();
+const LANE_BRANCH_DRIFT_KIND_CACHE_LIMIT = 256;
+
+async function readReflogSubjects(worktreePath: string, ref: string): Promise<string[]> {
+  const res = await runGit(["reflog", "show", "--format=%gs", "-n", "50", ref], {
+    cwd: worktreePath,
+    timeoutMs: 5_000,
+  }).catch(() => null);
+  if (!res || res.exitCode !== 0) return [];
+  // Reflogs are written LF-terminated even on Windows, but a stray CR must not
+  // be able to hide the one subject this reads them for.
+  return res.stdout.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.length > 0);
+}
+
+/**
+ * Classify an existing branch drift. One probe while the recorded branch still
+ * exists (the common `switched` case); the two reflog reads happen only once it
+ * is gone, which is the rare case. A healthy lane pays nothing: callers only
+ * ask while `headBranchRef` differs from the recorded branch.
+ */
+async function classifyLaneBranchDriftKind(args: {
+  worktreePath: string;
+  expectedBranchRef: string;
+  headBranchRef: string;
+}): Promise<LaneBranchDriftKind> {
+  const exists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${args.expectedBranchRef}`], {
+    cwd: args.worktreePath,
+    timeoutMs: 5_000,
+  }).catch(() => null);
+  if (exists?.exitCode === 0) return "switched";
+  // `show-ref --verify` answers 1 for "no such ref" and anything else (a
+  // timeout, a lock, a broken repo) is not evidence the branch is gone. Keep
+  // the historical `switched` reading then — it offers switch-back, which
+  // fails loudly rather than silently, and nothing is memoized from it.
+  if (!exists || exists.exitCode !== 1) return "switched";
+  const cacheKey = `${args.worktreePath}\u0000${args.expectedBranchRef}\u0000${args.headBranchRef}`;
+  const cached = laneBranchDriftKindCache.get(cacheKey);
+  if (cached) return cached;
+  const reflogSubjects = [
+    ...(await readReflogSubjects(args.worktreePath, "HEAD")),
+    ...(await readReflogSubjects(args.worktreePath, `refs/heads/${args.headBranchRef}`)),
+  ];
+  const kind = classifyMissingLaneBranchDriftKind({
+    expectedBranchRef: args.expectedBranchRef,
+    headBranchRef: args.headBranchRef,
+    reflogSubjects,
+  });
+  if (laneBranchDriftKindCache.size >= LANE_BRANCH_DRIFT_KIND_CACHE_LIMIT) {
+    const oldestKey = laneBranchDriftKindCache.keys().next().value;
+    if (oldestKey != null) laneBranchDriftKindCache.delete(oldestKey);
+  }
+  laneBranchDriftKindCache.set(cacheKey, kind);
+  return kind;
+}
+
+/**
+ * Detected drift plus its classification, shaped the same way
+ * `detectLaneBranchDrift` shapes it: `switched` stays implicit.
+ */
+async function classifyDetectedLaneBranchDrift(
+  worktreePath: string,
+  drift: LaneBranchDrift,
+): Promise<LaneBranchDrift> {
+  const kind = await classifyLaneBranchDriftKind({
+    worktreePath,
+    expectedBranchRef: drift.expectedBranchRef,
+    headBranchRef: drift.headBranchRef,
+  });
+  return kind === "switched" ? drift : { ...drift, kind };
+}
+
 async function computeLaneStatus(
   worktreePath: string,
   baseRef: string,
@@ -1111,6 +1193,16 @@ async function computeLaneStatus(
       };
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
+  // Renamed vs. missing only matters while the worktree is off its recorded
+  // branch, and the classification is what decides whether `switch-back` is a
+  // live option, so it rides along with the drift the status already detects.
+  const branchDriftKind = detectLaneBranchDrift({ expectedBranchRef: branchRef, headBranchRef })
+    ? await classifyLaneBranchDriftKind({
+        worktreePath,
+        expectedBranchRef: normalizeBranchName(branchRef).trim(),
+        headBranchRef: normalizeBranchName(headBranchRef ?? "").trim(),
+      })
+    : null;
   const lastCommitAt = lastCommitIso || null;
   const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHash, options.trackedFileCountCache);
 
@@ -1182,6 +1274,7 @@ async function computeLaneStatus(
     trackedFileCount,
     rebaseInProgress,
     headBranchRef,
+    branchDriftKind,
   };
 }
 
@@ -6900,7 +6993,13 @@ export function createLaneService({
         timeoutMs: 5_000,
       }).catch(() => null);
       const headBranchRef = headRes?.exitCode === 0 ? headRes.stdout.trim() : null;
-      return detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
+      const drift = detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
+      if (!drift) return null;
+      // Callers act on this answer (the composer chip re-reads it just before a
+      // turn), so it must carry the same renamed/missing distinction the lane
+      // list does — otherwise the chip falls back to offering switch-back for a
+      // branch that no longer exists.
+      return classifyDetectedLaneBranchDrift(row.worktree_path, drift);
     },
 
     /**
@@ -6910,7 +7009,8 @@ export function createLaneService({
      * - `switch-back` restores the worktree to the recorded `branch_ref`. It
      *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
      *   when the worktree is dirty, and rolls the checkout back if the DB write
-     *   fails.
+     *   fails. It refuses up front when that branch was renamed or deleted,
+     *   naming the new branch instead of reporting a missing pathspec.
      * - `keep-head` re-points `branch_ref` (and the branch profile) at the
      *   live HEAD in one transaction. It never renames the lane.
      *
@@ -6936,13 +7036,14 @@ export function createLaneService({
         timeoutMs: 5_000,
       });
       const liveHeadBranchRef = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
-      const drift = detectLaneBranchDrift({
+      const detectedDrift = detectLaneBranchDrift({
         expectedBranchRef: row.branch_ref,
         headBranchRef: liveHeadBranchRef,
       });
-      if (!drift) {
+      if (!detectedDrift) {
         throw new Error("This lane is already on its recorded branch.");
       }
+      const drift = await classifyDetectedLaneBranchDrift(row.worktree_path, detectedDrift);
       const expectedHeadBranchRef = args.expectedHeadBranchRef?.trim();
       if (expectedHeadBranchRef && normalizeBranchKey(expectedHeadBranchRef) !== drift.headBranchRef) {
         throw new Error(
@@ -6951,6 +7052,19 @@ export function createLaneService({
       }
 
       if (args.resolution === "switch-back") {
+        // Switching back needs the recorded branch to still exist. A rename is
+        // not a failure the user can retry away, so say what actually happened
+        // instead of letting git report a missing pathspec.
+        if (drift.kind === "renamed") {
+          throw new Error(
+            `Branch '${drift.expectedBranchRef}' was renamed to '${drift.headBranchRef}'. Update this lane to the new name instead of switching back.`,
+          );
+        }
+        if (drift.kind === "missing") {
+          throw new Error(
+            `Branch '${drift.expectedBranchRef}' no longer exists, so there is nothing to switch back to. Update this lane to '${drift.headBranchRef}' instead.`,
+          );
+        }
         const result = await laneServiceApi.switchBranch({
           laneId: row.id,
           branchName: drift.expectedBranchRef,
