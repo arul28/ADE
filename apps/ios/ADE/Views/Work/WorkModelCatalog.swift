@@ -356,6 +356,10 @@ private func workOrderedAgentChatModelCatalogGroups(
 }
 
 private func workClaudeFableReasoningEfforts() -> [AgentChatModelReasoningEffort] {
+  workClaudeCodeReasoningEfforts()
+}
+
+private func workClaudeCodeReasoningEfforts() -> [AgentChatModelReasoningEffort] {
   workClaudeOpus5ReasoningEfforts() + [
     AgentChatModelReasoningEffort(
       effort: "ultracode",
@@ -517,7 +521,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tier: .flagship,
             tagline: "Agentic coding · 1M context",
             provider: "claude",
-            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            reasoningEfforts: workClaudeCodeReasoningEfforts(),
             defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
           ),
@@ -537,7 +541,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tier: .balanced,
             tagline: "Balanced · 1M context",
             provider: "claude",
-            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            reasoningEfforts: workClaudeCodeReasoningEfforts(),
             defaultReasoningEffort: "high"
           ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
@@ -547,7 +551,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tier: .fast,
             tagline: "Fastest · 1M context",
             provider: "claude",
-            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            reasoningEfforts: workClaudeCodeReasoningEfforts(),
             defaultReasoningEffort: "medium"
           ),
           WorkModelOption(
@@ -556,7 +560,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tier: .flagship,
             tagline: "Previous Opus · 1M context",
             provider: "claude",
-            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            reasoningEfforts: workClaudeCodeReasoningEfforts(),
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),

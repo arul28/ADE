@@ -27,6 +27,12 @@ export type ReasoningEffortPickerProps = {
    * the bound machine's. Omitted means the bound machine.
    */
   catalogScopeKey?: string;
+  /**
+   * Claude's per-message "ultrathink" switch, shown under the levels. It is
+   * separate from the level because Claude Code reads it as a one-turn nudge
+   * that stacks on any level. Omitted for providers that do not read it.
+   */
+  ultrathink?: { active: boolean; onChange: (active: boolean) => void } | null;
 };
 
 export function reasoningChipLabel(
@@ -200,6 +206,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   className,
   triggerClassName,
   catalogScopeKey,
+  ultrathink,
 }: ReasoningEffortPickerProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -562,6 +569,28 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               >
                 Automatically delegates work across multiple agents and can consume task limits faster.
               </p>
+            ) : null}
+            {ultrathink ? (
+              <>
+                <div className="mx-0.5 mt-2.5 h-px bg-fg/[0.06]" />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={ultrathink.active}
+                  disabled={disabled}
+                  data-reasoning-ultrathink-switch="true"
+                  onClick={() => ultrathink.onChange(!ultrathink.active)}
+                  className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/25"
+                >
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className="ade-ultrathink-text self-start font-sans text-[12px] font-semibold leading-none">Ultrathink</span>
+                    <span className="font-sans text-[10px] leading-4 text-muted-fg/60">
+                      Asks Claude to reason extra hard on this message only.
+                    </span>
+                  </span>
+                  <span aria-hidden className="ade-ultrathink-switch" data-on={ultrathink.active ? "true" : "false"} />
+                </button>
+              </>
             ) : null}
           </div>
         </Popover.Content>

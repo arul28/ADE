@@ -142,6 +142,17 @@ import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFe
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import {
+  addUltrathinkKeyword,
+  hasUltrathinkKeyword,
+  hasUltrathinkKeywordInEditableText,
+  paintUltrathinkHighlights,
+  providerReadsUltrathink,
+  removeUltrathinkKeyword,
+  resolveComposerEffortFrame,
+  ultrathinkKeywordRanges,
+  ULTRATHINK_LETTER_COLORS,
+} from "./composerEffortFrame";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
@@ -250,6 +261,11 @@ export type ComposerDraftEditIntent = {
   selectionStart: number;
   selectionEnd: number;
 };
+
+// The textarea token overlay mirrors the full draft into a second layout tree.
+// At measured lengths above this limit, one ultrathink token makes every key
+// pay that full-draft layout cost. Large drafts keep the native textarea text.
+const MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS = 2_048;
 
 // Attachment ceilings are not a renderer constant any more: they depend on the
 // leg the bytes take, which depends on the machine that owns the chat. See
@@ -3277,31 +3293,73 @@ export function AgentChatComposer({
       isMention: isChatMentionTokenBody,
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
-  const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
   const userShellChipRange = sessionProvider === "codex" || sessionProvider === "muse"
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
+  const plainUltrathinkExcludedRanges = useMemo(() => [
+    ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
+    ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),
+  ], [plainComposerTokens, plainUserShellChipRange]);
+  const plainUltrathinkExcludedRangesRef = useRef(plainUltrathinkExcludedRanges);
   useLayoutEffect(() => {
-    if (!plainComposerTokens.length && !plainUserShellChipRange) return;
+    plainUltrathinkExcludedRangesRef.current = plainUltrathinkExcludedRanges;
+  }, [plainUltrathinkExcludedRanges]);
+  // "ultrathink" painted in colour over the plain textarea, where Claude reads
+  // it. A word inside a chip token stays part of that chip. Keep ordinary
+  // drafts letter-colored, but avoid mirroring a large draft into the overlay:
+  // layout cost grows with the whole draft on every keystroke.
+  const plainUltrathinkTokens = useMemo(() => {
+    if (
+      useRichComposer
+      || !draft
+      || draft.length > MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS
+      || !providerReadsUltrathink(sessionProvider)
+      || parallelChatMode
+    ) return [];
+    return ultrathinkKeywordRanges(draft)
+      .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
+      .map((range) => ({ ...range, kind: "ultrathink" as const }));
+  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, useRichComposer]);
+  const plainOverlayTokenCount = plainComposerTokens.length + plainUltrathinkTokens.length;
+  const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
+  useLayoutEffect(() => {
+    if (!plainOverlayTokenCount && !plainUserShellChipRange) return;
     setPlainOverlayScrollTop(textareaRef.current?.scrollTop ?? 0);
-  }, [draft, plainComposerTokens.length, plainUserShellChipRange]);
+  }, [draft, plainOverlayTokenCount, plainUserShellChipRange]);
   const plainOverlayContent = useMemo(() => {
-    if (!plainComposerTokens.length && !plainUserShellChipRange) return null;
+    if (!plainOverlayTokenCount && !plainUserShellChipRange) return null;
     const segments: React.ReactNode[] = [];
     let pos = 0;
-    const tokens: Array<{ start: number; end: number; kind: "file" | "command" | "mention" | "shell" }> = [...plainComposerTokens];
+    const tokens: Array<{ start: number; end: number; kind: "file" | "command" | "mention" | "shell" | "ultrathink" }> = [
+      ...plainComposerTokens,
+      ...plainUltrathinkTokens,
+    ];
     if (plainUserShellChipRange) {
       tokens.push({
         start: plainUserShellChipRange.start,
         end: plainUserShellChipRange.end,
         kind: "shell" as const,
       });
-      tokens.sort((left, right) => left.start - right.start);
     }
+    tokens.sort((left, right) => left.start - right.start);
     tokens.forEach((token, index) => {
+      if (token.start < pos) return;
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
       const tokenText = draft.slice(token.start, token.end);
+      if (token.kind === "ultrathink") {
+        segments.push(
+          <span key={`chip-${index}-${token.start}`} data-composer-ultrathink-word>
+            {Array.from(tokenText, (letter, letterIndex) => (
+              <span key={letterIndex} className={`ade-ultrathink-letter-${letterIndex % ULTRATHINK_LETTER_COLORS.length}`}>
+                {letter}
+              </span>
+            ))}
+          </span>,
+        );
+        pos = token.end;
+        return;
+      }
       if (token.kind === "shell") {
         segments.push(
           <span
@@ -3361,7 +3419,7 @@ export function AgentChatComposer({
     // measurable so the overlay height matches the textarea's scrollHeight.
     segments.push("​");
     return segments;
-  }, [draft, mentionLabels, plainComposerTokens, plainUserShellChipRange]);
+  }, [draft, mentionLabels, plainComposerTokens, plainOverlayTokenCount, plainUltrathinkTokens, plainUserShellChipRange]);
 
   // Pre-warm the lane's quick-open file index as soon as the composer is
   // bound to a session so the first "@" query is served from a warm index.
@@ -3872,6 +3930,89 @@ export function AgentChatComposer({
     onDraftChange(serializeRichEditor());
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
+
+  // "ultrathink" is a word in the message, so the draft is its only state: the
+  // switch adds or removes the word, typing it turns the switch on, and sending
+  // clears it with the draft. It works the same on any machine.
+  const ultrathinkReadable = providerReadsUltrathink(sessionProvider) && !parallelChatMode;
+  const [richUltrathinkActive, setRichUltrathinkActive] = useState(false);
+  useLayoutEffect(() => {
+    if (useRichComposer && ultrathinkReadable) {
+      setRichUltrathinkActive(hasUltrathinkKeywordInEditableText(richEditorRef.current));
+    }
+  }, [draft, ultrathinkReadable, useRichComposer]);
+  const ultrathinkActive = ultrathinkReadable && (useRichComposer
+    ? richUltrathinkActive
+    : hasUltrathinkKeyword(draft, plainUltrathinkExcludedRanges));
+  const ultrathinkDraftRef = useRef(draft);
+  useLayoutEffect(() => {
+    ultrathinkDraftRef.current = draft;
+  }, [draft]);
+  const setUltrathinkKeyword = useCallback((enabled: boolean) => {
+    if (!useRichComposer) {
+      const currentDraft = ultrathinkDraftRef.current;
+      onDraftChange(enabled
+        ? addUltrathinkKeyword(currentDraft, plainUltrathinkExcludedRangesRef.current)
+        : removeUltrathinkKeyword(currentDraft, plainUltrathinkExcludedRangesRef.current));
+      return;
+    }
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    // Edit the editor's text nodes in place so chips and links survive.
+    if (enabled) {
+      const text = serializeRichEditor();
+      if (hasUltrathinkKeywordInEditableText(editor)) return;
+      if (text.trimStart().startsWith("/")) {
+        editor.append(document.createTextNode(/\s$/.test(text) || !text ? "ultrathink" : " ultrathink"));
+      } else {
+        editor.insertBefore(document.createTextNode("ultrathink "), editor.firstChild);
+      }
+    } else {
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const textNode = node as Text;
+        if (textNode.parentElement?.closest("[contenteditable='false']")) continue;
+        const next = removeUltrathinkKeyword(textNode.data);
+        if (next !== textNode.data) textNode.data = next;
+      }
+    }
+    syncRichDraft();
+  }, [onDraftChange, serializeRichEditor, syncRichDraft, useRichComposer]);
+  const ultrathinkControl = useMemo(
+    () => (ultrathinkReadable ? { active: ultrathinkActive, onChange: setUltrathinkKeyword } : null),
+    [setUltrathinkKeyword, ultrathinkActive, ultrathinkReadable],
+  );
+  // The rich editor's text changes outside React (typing, chips, a quote
+  // promoting the textarea), so repaint the colours on its own mutations.
+  const ultrathinkHighlightOwner = useId();
+  useEffect(() => {
+    const editor = useRichComposer && ultrathinkReadable ? richEditorRef.current : null;
+    paintUltrathinkHighlights(ultrathinkHighlightOwner, editor);
+    if (!editor) return;
+    const observer = new MutationObserver((records) => {
+      const nodeContainsKeyword = (node: Node): boolean => {
+        if (node instanceof Element && node.closest("[contenteditable='false']")) return false;
+        return hasUltrathinkKeyword(node.textContent ?? "");
+      };
+      const needsRepaint = records.some((record) => {
+        if (record.type === "characterData") {
+          const text = record.target as Text;
+          if (text.parentElement?.closest("[contenteditable='false']")) return false;
+          // Repaint only when the edited node used to contain, or now contains,
+          // a keyword. This catches edits inside, beside, and across the word;
+          // unrelated text mutations leave CSS Ranges alone.
+          return hasUltrathinkKeyword(record.oldValue ?? "") || hasUltrathinkKeyword(text.data);
+        }
+        return [...record.addedNodes, ...record.removedNodes].some(nodeContainsKeyword);
+      });
+      if (needsRepaint) paintUltrathinkHighlights(ultrathinkHighlightOwner, editor);
+    });
+    observer.observe(editor, { childList: true, characterData: true, characterDataOldValue: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      paintUltrathinkHighlights(ultrathinkHighlightOwner, null);
+    };
+  }, [ultrathinkHighlightOwner, ultrathinkReadable, useRichComposer]);
 
   // Applied on the first commit where the editor that will hold the text
   // exists: a quote promotes the plain textarea to the rich editor one render
@@ -5465,6 +5606,12 @@ export function AgentChatComposer({
   // Clean composer: no provider-tinted glow border (that produced the bright
   // "highlighted" outline).
   const composerGlowColor = null;
+  // Parallel mode runs several models at once, so no one level owns the frame.
+  const composerEffortFrame = useMemo(() => resolveComposerEffortFrame({
+    ultrathink: ultrathinkActive,
+    effort: parallelChatMode ? null : fastModeEffort,
+    tiers: parallelChatMode ? null : fastModeDescriptor?.reasoningTiers,
+  }), [fastModeDescriptor?.reasoningTiers, fastModeEffort, parallelChatMode, ultrathinkActive]);
 
   const applyPromptHistoryEntry = useCallback((
     entry: AgentChatPromptHistoryEntry,
@@ -6823,6 +6970,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      effortFrame={composerEffortFrame}
       voiceBar={<CodexVoiceBar voice={codexVoice} />}
       className={cn(
         layoutVariant === "grid-tile"
@@ -7532,6 +7680,7 @@ export function AgentChatComposer({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}
+                  ultrathink={ultrathinkControl}
                 />
               </>
             ) : null}
@@ -8147,7 +8296,7 @@ export function AgentChatComposer({
                   rows={1}
                   onInput={resizeTextarea}
                   onScroll={(event) => {
-                    if (plainComposerTokens.length || plainUserShellChipRange) {
+                    if (plainOverlayTokenCount || plainUserShellChipRange) {
                       setPlainOverlayScrollTop(event.currentTarget.scrollTop);
                     }
                   }}
