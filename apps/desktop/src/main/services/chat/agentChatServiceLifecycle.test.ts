@@ -596,6 +596,94 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
+
+    it("leaves the move store alone when a settled turn's callback runs after the database closes", async () => {
+      // The turn-settled path defers the cross-machine check to a microtask,
+      // and shutdown emits the interrupted `done` from inside the same
+      // synchronous block that later closes the project database. So the
+      // callback resumes against a closed handle unless it refuses to run for
+      // a disposed service. A move waiting for this turn's end is the fixture:
+      // unguarded, the callback reads it and writes it back after the close.
+      const events: AgentChatEventEnvelope[] = [];
+      let databaseOpen = true;
+      let moveKey = "";
+      const moveStoreAccessAfterClose: string[] = [];
+      const db = {
+        getJson: vi.fn((key: string) => {
+          if (key !== moveKey) return null;
+          if (!databaseOpen) moveStoreAccessAfterClose.push(`get ${key}`);
+          return {
+            record: {
+              handoffId: "handoff-1",
+              state: "pending",
+              checkpoint: null,
+              targetMachineKey: "machine-b",
+              targetMachineName: "Machine B",
+              mode: "brief",
+              targetModelId: "gpt-5.4",
+              includeChanges: false,
+              requestedBy: "user",
+              requestedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              reason: null,
+              targetLaneId: null,
+              targetSessionId: null,
+              continuedOn: null,
+              resumedHere: false,
+            },
+            request: {
+              machine: "machine-b",
+              mode: "brief",
+              continuationPrompt: null,
+              includeChanges: false,
+              clone: false,
+              targetModelId: "gpt-5.4",
+              queued: true,
+            },
+          };
+        }),
+        setJson: vi.fn((key: string) => {
+          if (key === moveKey && !databaseOpen) moveStoreAccessAfterClose.push(`set ${key}`);
+        }),
+        all: vi.fn(() => []),
+      };
+      const { service } = createService({
+        db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      moveKey = `agent-chat-cross-machine-move:v1:${session.id}`;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a turn that is still active during shutdown.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      service.forceDisposeAll();
+      // The drain's last step, in the same synchronous block: the store closes.
+      databaseOpen = false;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // The shutdown did settle this turn, so the microtask really was queued;
+      // it just found nothing it was allowed to do.
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "interrupted",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      expect(moveStoreAccessAfterClose).toEqual([]);
+    });
   });
 
   describe("deleteSession", () => {
