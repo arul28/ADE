@@ -25899,6 +25899,10 @@ async function runServe(
       const { configureSyncHostRecovery } = await import("./services/sync/syncHostRecovery");
       configureSyncHostRecovery({
         startSyncHost: async () => {
+          // A repair is a deliberate retry: forget the sync-host failures the
+          // backoff is still holding, so the repair runs the real activation
+          // now instead of being served a recorded timeout.
+          scopeRegistry.clearSyncHostPhaseBackoff();
           await startSyncHost();
         },
         prove: async () => {

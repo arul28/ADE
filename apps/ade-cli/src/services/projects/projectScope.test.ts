@@ -1144,3 +1144,196 @@ describe("ProjectScopeRegistry failed-boot backoff", () => {
     await scopeRegistry.disposeAll();
   });
 });
+
+describe("ProjectScopeRegistry sync-host phase backoff", () => {
+  beforeEach(() => {
+    createAdeRuntimeMock.mockReset();
+  });
+
+  /** A clock the test advances by hand, so no test waits on real time. */
+  function fakeClock(startMs = 1_000) {
+    let nowMs = startMs;
+    return {
+      now: () => nowMs,
+      advance: (ms: number) => {
+        nowMs += ms;
+      },
+    };
+  }
+
+  /**
+   * A scope whose activation always fails, counting the attempts. Activation is
+   * the phase that does the real work — and pays the ten-second budget — for
+   * every caller that asks this project to host sync.
+   */
+  function createActivationProbe() {
+    const counts = { activated: 0, deactivated: 0 };
+    let failActivation = true;
+    const syncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async (enabled: boolean) => {
+        if (!enabled) {
+          counts.deactivated += 1;
+          return;
+        }
+        counts.activated += 1;
+        if (failActivation) throw new Error("target activation failed");
+      }),
+    };
+    return {
+      counts,
+      syncService,
+      failActivation: (value: boolean) => {
+        failActivation = value;
+      },
+    };
+  }
+
+  it("serves a failed activation instead of re-running it for every caller", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    const probe = createActivationProbe();
+    createAdeRuntimeMock.mockResolvedValue({ dispose: vi.fn(), syncService: probe.syncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      now: clock.now,
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(1);
+
+    // The shape of the 2026-10-16 storm: forty callers inside the backoff
+    // window — the roster, lane list and phone-status pollers all reach
+    // activation — must cost one activation, not forty, and every one of them
+    // still gets the real failure.
+    for (let call = 0; call < 40; call += 1) {
+      clock.advance(20);
+      await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    }
+    expect(probe.counts.activated).toBe(1);
+    // A replayed activation did no work, so it also did not need the rollback
+    // that would have paid the same timeout a second time.
+    expect(probe.counts.deactivated).toBe(1);
+
+    // Past the window the real activation runs again, so sync still recovers.
+    clock.advance(FAILED_SCOPE_BACKOFF_MAX_MS);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(2);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("lets a repair re-run an activation the backoff is still holding", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    const probe = createActivationProbe();
+    createAdeRuntimeMock.mockResolvedValue({ dispose: vi.fn(), syncService: probe.syncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      now: clock.now,
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(1);
+
+    // "Fix connection" and "Reconnect this computer" are deliberate retries, so
+    // they must not be answered with the recorded failure: the repair clears
+    // the backoff and the very next call runs the real activation.
+    scopeRegistry.clearSyncHostPhaseBackoff();
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(2);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("still restores the previous host behind a replayed activation", async () => {
+    const { registry, first, second } = createRegistry();
+    const clock = fakeClock();
+    const probe = createActivationProbe();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValue({ dispose: vi.fn(), syncService: probe.syncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      now: clock.now,
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.ensureSyncHost(first.projectId);
+    await expect(scopeRegistry.ensureSyncHost(second.projectId)).rejects.toThrow("target activation failed");
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    // Inside the backoff window the target's activation is replayed, but this
+    // call really deactivated the previous host. The rollback must still run and
+    // put it back: the brain may never publish a stopped host as its host.
+    await expect(scopeRegistry.ensureSyncHost(second.projectId)).rejects.toThrow("target activation failed");
+
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenNthCalledWith(1, false);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenNthCalledWith(2, true);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("starts the backoff window over after an activation succeeds", async () => {    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    const probe = createActivationProbe();
+    createAdeRuntimeMock.mockResolvedValue({ dispose: vi.fn(), syncService: probe.syncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      now: clock.now,
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    // Two real failures, so the window has already doubled past its first step.
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    clock.advance(2_100);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(2);
+
+    clock.advance(4_100);
+    probe.failActivation(false);
+    await scopeRegistry.ensureSyncHost(first.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+
+    // A success clears what this project's failures earned, so the next failure
+    // waits the first two-second window again: at 2.1s it is a real attempt.
+    probe.failActivation(true);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(4);
+    clock.advance(2_100);
+    await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toThrow("target activation failed");
+    expect(probe.counts.activated).toBe(5);
+
+    await scopeRegistry.disposeAll();
+  });
+});
