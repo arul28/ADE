@@ -575,6 +575,8 @@ function installAdeMocks(options?: {
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
   recoverTurnError?: Error;
+  /** What `session.list` answers — the chat's attached shells. */
+  shellSessions?: TerminalSessionSummary[];
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -602,6 +604,7 @@ function installAdeMocks(options?: {
     status: "completed",
     replacementMessageId: "message-next",
   });
+  const listShells = vi.fn().mockResolvedValue(options?.shellSessions ?? []);
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
@@ -816,6 +819,7 @@ function installAdeMocks(options?: {
     },
     sessions: {
       get: vi.fn().mockResolvedValue({ toolType: "codex-chat" }),
+      list: listShells,
       readTranscriptTail: vi.fn().mockResolvedValue(options?.transcript ?? ""),
       getDelta: vi.fn().mockResolvedValue(null),
       onChanged: vi.fn().mockImplementation((listener: (event: TerminalSessionChangedEvent) => void) => {
@@ -910,6 +914,7 @@ function installAdeMocks(options?: {
     recoverCodexTurn,
     resolveUnprocessedMessage,
     list,
+    listShells,
     create,
     createLane,
     deleteChat,
@@ -2889,6 +2894,50 @@ describe("AgentChatPane companion drawers", () => {
     expect(screen.queryByRole("button", { name: "Clear view" })).toBeNull();
   });
 });
+
+
+  it("re-reads a chat's shells only when a session change concerns that chat", async () => {
+    // A session-change event fires for every activity write in the project. The
+    // pane holds ONE chat's shells, so anything that is not this chat or one of
+    // its own shells is somebody else's news and must not cost a read.
+    const shell = {
+      id: "shell-1",
+      laneId: "lane-1",
+      laneName: "drawer lane",
+      ptyId: "pty-shell-1",
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      toolType: "shell",
+      title: "npm run dev",
+      status: "running",
+      startedAt: "2026-05-12T00:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: ".null",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      lastActivityAt: null,
+      summary: null,
+      runtimeState: "running",
+      resumeCommand: null,
+      chatSessionId: "session-1",
+    } as unknown as TerminalSessionSummary;
+    const session = buildSession("session-1", { title: "Shell owner" });
+    const mocks = installAdeMocks({ sessions: [session], shellSessions: [shell] });
+    seedDrawerStore();
+
+    renderPane(session);
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(1));
+
+    act(() => mocks.emitSessionChanged({ sessionId: "session-elsewhere", reason: "meta-updated" }));
+    expect(mocks.listShells).toHaveBeenCalledTimes(1);
+
+    act(() => mocks.emitSessionChanged({ sessionId: "shell-1", reason: "meta-updated" }));
+    await waitFor(() => expect(mocks.listShells).toHaveBeenCalledTimes(2));
+  });
 
 describe("AgentChatPane durable recovery actions", () => {
   it("appends an unprocessed message for editing without replacing the current draft", async () => {

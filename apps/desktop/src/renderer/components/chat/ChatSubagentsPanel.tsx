@@ -1693,7 +1693,7 @@ export function ChatSubagentsPanel({
       ) : null}
 
       {/* ── Shells (terminals attached to this chat) ──────────────── */}
-      {shells.length > 0 ? (
+      {shells.length > 0 || shellsLoadError ? (
         <section className="pb-3" data-testid="chat-info-shells">
           <SectionHeader
             label="Shells"

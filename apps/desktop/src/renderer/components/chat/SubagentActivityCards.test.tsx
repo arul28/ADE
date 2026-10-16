@@ -223,7 +223,7 @@ describe("SubagentResultCard", () => {
     expect(onViewTranscript).toHaveBeenCalledTimes(2);
   });
 
-  it("lays a finished card out like the running one: badge on the glyph, name, ran-for line, summary", () => {
+  it("lays a finished card out like the running one: badge on the glyph, name, one line, counts", () => {
     const { container } = render(
       <SubagentResultCard
         event={resultEvent({ description: "/root/desktop_scan", agentType: "/root/desktop_scan", toolUseCount: 12 })}
@@ -239,15 +239,19 @@ describe("SubagentResultCard", () => {
     expect(glyph.querySelector("[role='img']")?.getAttribute("aria-label")).toBe("Finished");
     expect(card.querySelector("[data-subagent-name]")?.textContent).toBe("Desktop scan");
     expect(container.textContent).not.toContain("/root/");
-    expect(container.textContent).toContain("ran for 1m · 12 tools");
-    expect(card.querySelector("[data-subagent-summary]")?.textContent).toBe("Kickoff turn finished.");
+    // On the card's face: one result line and how long it took.
+    expect(card.querySelector("[data-subagent-overview]")?.textContent).toBe("Kickoff turn finished.");
+    expect(container.textContent).toContain("1m");
+    // The rest of the facts are the card's tooltip, not three lines of type.
+    expect(card.getAttribute("title")).toContain("ran for 1m");
+    expect(card.getAttribute("title")).toContain("12 tools");
     expect(card.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("codex");
     // No text link and no identity pill.
     expect(container.textContent).not.toMatch(/view transcript/i);
     expect(screen.getAllByText("Desktop scan")).toHaveLength(1);
   });
 
-  it("badges a failure red and keeps its full error behind a quiet Details", () => {
+  it("badges a failure red, says what broke on the card, and keeps the rest in the tooltip", () => {
     const onViewTranscript = vi.fn();
     const { container } = render(
       <SubagentResultCard
@@ -256,34 +260,38 @@ describe("SubagentResultCard", () => {
       />,
     );
     expect(container.querySelector("[data-subagent-glyph-status] [role='img']")?.getAttribute("aria-label")).toBe("Failed");
-    expect(container.textContent).toContain("failed · ran for 1m");
-    fireEvent.click(screen.getByRole("button", { name: /Details/ }));
-    expect(container.textContent).toContain("stack line");
-    // Details is a control inside the card, not a click on the card.
+    expect(container.textContent).toContain("failed");
+    const card = container.querySelector("[data-subagent-card]")!;
+    // A failure's own message IS its line, never hidden behind a disclosure.
+    expect(card.querySelector("[data-subagent-overview]")?.textContent).toBe("Build broke");
+    expect(card.getAttribute("title")).toContain("stack line");
+    expect(screen.queryByRole("button", { name: /Details/ })).toBeNull();
+    // Nothing on the card takes over the chat by accident.
     expect(onViewTranscript).not.toHaveBeenCalled();
   });
 
   it("hides an all-zero diff-stat summary and keeps one with any change", () => {
     const zero = render(<SubagentResultCard event={resultEvent({ summaryPreview: "+0 −0 · 0 files" })} />);
-    expect(zero.container.querySelector("[data-subagent-summary]")).toBeNull();
+    expect(zero.container.querySelector("[data-subagent-overview]")).toBeNull();
     expect(zero.container.textContent).not.toContain("0 files");
-    expect(zero.container.textContent).toContain("ran for 1m");
+    expect(zero.container.textContent).toContain("1m");
     zero.unmount();
 
     for (const summary of ["+3 −0 · 1 files", "+0 −2 · 1 files", "+0 −0 · 1 files"]) {
       const view = render(<SubagentResultCard event={resultEvent({ summaryPreview: summary })} />);
-      expect(view.container.querySelector("[data-subagent-summary]")?.textContent).toBe(summary);
+      expect(view.container.querySelector("[data-subagent-overview]")?.textContent).toBe(summary);
       view.unmount();
     }
   });
 
-  it("shows a markdown report as plain text, still clamped to three lines", () => {
+  it("shows a markdown report as one line of plain prose", () => {
     const { container } = render(
       <SubagentResultCard event={resultEvent({ summaryPreview: "## ADE Summary\n\n**ADE** is a unified workspace:\n- across `macOS`\n- and [iOS](https://ade.dev/ios)" })} />,
     );
-    const summary = container.querySelector("[data-subagent-summary]");
-    expect(summary?.textContent).toBe("ADE Summary: ADE is a unified workspace: across macOS; and iOS");
-    expect(summary?.className).toContain("line-clamp-3");
+    const overview = container.querySelector("[data-subagent-overview]");
+    expect(overview?.textContent).toBe("ADE Summary: ADE is a unified workspace: across macOS; and iOS");
+    // The full prose is the card's own summary, not a markdown document.
+    expect(container.textContent).not.toMatch(/[*#`]/);
   });
 
   it("hides an all-zero diff-stat summary on a stopped card and falls back to its outcome", () => {
@@ -292,8 +300,7 @@ describe("SubagentResultCard", () => {
         event={resultEvent({ status: "stopped", summaryPreview: "+0 −0 · 0 files", stopSource: "user", resultLanded: false })}
       />,
     );
-    expect(container.querySelector("[data-subagent-summary]")).toBeNull();
-    expect(container.querySelector("[data-subagent-stopped-outcome]")).toBeTruthy();
+    expect(container.querySelector("[data-subagent-overview]")?.textContent).toBe("you interrupted · work lost");
     expect(container.textContent).not.toContain("0 files");
   });
 
@@ -304,7 +311,10 @@ describe("SubagentResultCard", () => {
     const glyph = container.querySelector("[data-subagent-glyph-status]")!;
     expect(glyph.getAttribute("data-subagent-glyph-status")).toBe("stopped");
     expect(glyph.querySelector("[role='img']")?.getAttribute("aria-label")).toBe("Stopped");
-    expect(container.textContent).toContain("stopped · you interrupted · ran for 1m");
+    // The badge says "stopped"; the card says who did it and whether work survived.
+    expect(container.querySelector("[data-subagent-overview]")?.textContent).toBe("you interrupted · work lost");
+    expect(container.querySelector("[data-subagent-card]")?.getAttribute("title"))
+      .toContain("stopped · you interrupted · ran for 1m");
   });
 
   it("wears the owning runtime's provider mark beside the counters", () => {
@@ -325,8 +335,8 @@ describe("SubagentResultCard", () => {
     ["system", "the ADE brain restarted", "the ADE brain restarted"],
     ["foreign-brain", "another ADE brain took over this chat", "another ADE brain took over this chat"],
     ["provider", "the provider ended the turn", "the provider ended the turn"],
-    ["unknown", null, "stopped"],
-  ] as const)("uses the stop source in the lone card headline (%s)", (stopSource, stopReason, expected) => {
+    ["unknown", null, "work lost"],
+  ] as const)("names the stop source on a lone stopped card (%s)", (stopSource, stopReason, expected) => {
     const { container } = render(
       <SubagentResultCard
         event={resultEvent({
@@ -338,10 +348,10 @@ describe("SubagentResultCard", () => {
         })}
       />,
     );
-    expect(container.textContent).toContain(expected);
+    expect(container.querySelector("[data-subagent-overview]")?.textContent).toContain(expected);
   });
 
-  it("keeps a stopped agent's own report and adds no outcome line", () => {
+  it("keeps a stopped agent's own report as its line, stop source in the tooltip", () => {
     const { container } = render(
       <SubagentResultCard
         event={resultEvent({
@@ -353,12 +363,11 @@ describe("SubagentResultCard", () => {
         })}
       />,
     );
-    expect(container.textContent).toContain("the ADE brain restarted");
-    expect(container.textContent).toContain("Kickoff turn finished.");
-    expect(container.querySelector("[data-subagent-stopped-outcome]")).toBeNull();
+    expect(container.querySelector("[data-subagent-overview]")?.textContent).toBe("Kickoff turn finished.");
+    expect(container.querySelector("[data-subagent-card]")?.getAttribute("title")).toContain("the ADE brain restarted");
   });
 
-  it("fills a stopped card with no report with its last activity and outcome", () => {
+  it("fills a stopped card with no report with its activity, its stopper and the work's fate", () => {
     const { container } = render(
       <SubagentResultCard
         event={resultEvent({
@@ -372,18 +381,17 @@ describe("SubagentResultCard", () => {
       />,
     );
     // The stop sentence restates the status line; it is never the body.
-    expect(container.querySelector("[data-subagent-summary]")).toBeNull();
-    expect(container.querySelector("[data-subagent-stopped-outcome]")?.textContent)
-      .toBe("Reading authRouter.ts · work lost");
+    expect(container.querySelector("[data-subagent-overview]")?.textContent)
+      .toBe("Reading authRouter.ts · the ADE brain restarted · work lost");
   });
 
-  it("says only the outcome when a stopped card has no activity either", () => {
+  it("says who stopped it and whether the work survived when there is no activity either", () => {
     const { container } = render(
       <SubagentResultCard
         event={resultEvent({ status: "stopped", summaryPreview: "Interrupted", stopSource: "user", resultLanded: false })}
       />,
     );
-    expect(container.querySelector("[data-subagent-stopped-outcome]")?.textContent).toBe("work lost");
+    expect(container.querySelector("[data-subagent-overview]")?.textContent).toBe("you interrupted · work lost");
   });
 });
 
@@ -427,11 +435,11 @@ describe("subagent card chrome", () => {
     expect(settledFrame.className).toBe(runningClasses);
   });
 
-  it("keeps spawned-chat kind in the quiet status line, not a tinted frame", () => {
+  it("keeps spawned-chat kind in the card's quiet facts, not on its face", () => {
     const { container } = render(<SubagentSpawnCard event={spawnEvent({ spawnKind: "subagent" })} />);
     const frame = container.querySelector("[data-subagent-card]") as HTMLElement;
-    expect(frame.className).not.toMatch(/violet/);
-    expect(container.textContent).toContain("subagent");
+    expect(frame.getAttribute("title")).toContain("subagent");
+    expect(frame.textContent).not.toContain("subagent");
   });
 });
 

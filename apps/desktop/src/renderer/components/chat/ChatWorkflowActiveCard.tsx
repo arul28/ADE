@@ -460,15 +460,22 @@ function WorkflowAgentRow({
   );
 }
 
-function phaseStateOfViews(views: readonly WorkflowAgentView[]): "queued" | "running" | "done" | "failed" {
-  if (views.some((view) => view.status === "failed" || view.status === "stopped")) return "failed";
+function phaseStateOfViews(views: readonly WorkflowAgentView[]): "queued" | "running" | "done" | "failed" | "stopped" {
+  // A stopped agent is not a failure: the run's tally says "N stopped" in its
+  // own tone for the same agents, and the transcript's twin of this rule makes
+  // the same distinction. A red X here would call an interrupted run broken.
+  if (views.some((view) => view.status === "failed")) return "failed";
+  if (views.some((view) => view.status === "stopped")) return "stopped";
   if (views.some((view) => view.status === "running")) return "running";
   return views.length > 0 ? "done" : "queued";
 }
 
-function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "failed" }) {
+function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "failed" | "stopped" }) {
   if (state === "done") return <Check aria-hidden size={11} weight="bold" className="shrink-0 text-emerald-300/85" />;
   if (state === "failed") return <X aria-hidden size={11} weight="bold" className="shrink-0 text-rose-300/85" />;
+  if (state === "stopped") {
+    return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/70" />;
+  }
   if (state === "running") {
     return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-accent-bright,#C4B5FD)]" />;
   }
