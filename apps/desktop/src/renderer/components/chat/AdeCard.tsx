@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useTicker } from "../../lib/ticker";
 import {
   ArrowSquareOut,
   CaretRight,
@@ -359,14 +359,11 @@ export function AdeCard({
 }) {
   const isLive = card.state === "live";
 
-  // Elapsed ticks only while live; the interval is torn down the moment the card
-  // goes terminal (mirrors SubagentSpawnCard).
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!isLive) return;
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [isLive]);
+  // Elapsed ticks only while live, on the renderer's shared one-second timer;
+  // the card drops its subscription the moment it goes terminal (mirrors
+  // SubagentSpawnCard). Sharing the timer keeps a transcript of live cards to
+  // one timer rather than one per card.
+  const nowMs = useTicker(1_000, isLive);
 
   const known = isKnownAdeCardVariant(card.variant);
   const isSessionQuota = card.variant === "claude_session_quota";

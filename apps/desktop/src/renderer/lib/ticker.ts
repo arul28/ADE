@@ -41,8 +41,17 @@ function subscribeToChannel(periodMs: number, listener: () => void): () => void 
     channel.nowMs = Date.now();
     channel.timer = window.setInterval(() => {
       channel.nowMs = Date.now();
-      // Copy: a listener may unsubscribe itself while we are notifying.
-      for (const notify of [...channel.listeners]) notify();
+      // Copy: a listener may unsubscribe itself while we are notifying. Each
+      // listener is isolated — with a timer per component a throwing listener
+      // could only break its own tick, and sharing one timer must not turn one
+      // bad subscriber into a frozen clock for every other component.
+      for (const notify of [...channel.listeners]) {
+        try {
+          notify();
+        } catch (error) {
+          console.error("[ticker] listener threw", error);
+        }
+      }
     }, periodMs);
   }
   return () => {

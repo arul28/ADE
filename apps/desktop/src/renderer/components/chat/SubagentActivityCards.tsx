@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
+import { useTicker } from "../../lib/ticker";
 import { CaretDown, CaretRight, Check, ListChecks, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
@@ -58,13 +59,9 @@ export { navigateToSpawnedChat };
 function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
   const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
   const anchored = Number.isFinite(startMs) ? startMs : null;
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running || anchored == null) return undefined;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(id);
-  }, [running, anchored]);
+  // The shared one-second timer, so a transcript holding many cards runs one
+  // timer rather than one per card; the tick still lands every second.
+  const nowMs = useTicker(1_000, running && anchored != null);
   if (anchored == null) return null;
   return Math.max(0, nowMs - anchored);
 }
