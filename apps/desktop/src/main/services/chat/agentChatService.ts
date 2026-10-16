@@ -21758,7 +21758,7 @@ export function createAgentChatService(args: {
     if (event.type === "status" && event.turnStatus === "started") {
       warmIdleCompaction.clear(managed.session.id);
       try {
-        notifyParentOfChildTurnStart(managed, event.turnId);
+        notifyParentOfChildTurnStart(managed);
       } catch (error) {
         // Parent-side card chrome; never fail the child's turn over it.
         logger.warn("agent_chat.child_turn_start_notify_failed", {
@@ -21766,6 +21766,11 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    } else if (event.type === "done") {
+      freshSpawnCards.delete(managed.session.id);
+      startedSpawnedChildTurns.delete(managed.session.id);
+    } else if (event.type === "status") {
+      startedSpawnedChildTurns.delete(managed.session.id);
     }
     const normalizedEvent = (() => {
       switch (event.type) {
@@ -44179,7 +44184,7 @@ export function createAgentChatService(args: {
    * restart the card is settled (or a reopen of a running one is harmless).
    */
   const freshSpawnCards = new Set<string>();
-  const lastResumedTurnByChild = new Map<string, string>();
+  const startedSpawnedChildTurns = new Set<string>();
 
   /**
    * A spawned chat that starts another turn after its card settled (the parent
@@ -44187,20 +44192,20 @@ export function createAgentChatService(args: {
    * way a resumed CLI child does. Without this the parent's Subagents section
    * shows the child as done for every turn after its first.
    */
-  const notifyParentOfChildTurnStart = (child: ManagedChatSession, turnId: string | undefined): void => {
+  const notifyParentOfChildTurnStart = (child: ManagedChatSession): void => {
     const childSessionId = child.session.id;
-    if (freshSpawnCards.delete(childSessionId)) return;
+    if (freshSpawnCards.delete(childSessionId)) {
+      startedSpawnedChildTurns.add(childSessionId);
+      return;
+    }
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === childSessionId) return;
     const spawnKind = child.session.spawnKind;
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
-    // One reopen per turn: some runtimes announce a turn start more than once.
-    const resumedTurnId = turnId?.trim();
-    if (resumedTurnId) {
-      if (lastResumedTurnByChild.get(childSessionId) === resumedTurnId) return;
-      lastResumedTurnByChild.delete(childSessionId);
-      rememberBoundedEntry(lastResumedTurnByChild, childSessionId, resumedTurnId, 512);
-    }
+    // Provider start events can be repeated or omit the turn id, so use the
+    // child's start/end lifecycle to emit exactly once for each run.
+    if (startedSpawnedChildTurns.has(childSessionId)) return;
+    startedSpawnedChildTurns.add(childSessionId);
     // A parent on another machine or project has no card here to reopen.
     const parent = resolveLiveOrPersistedParent(parentSessionId);
     // The CTO thread gets no result cards (one report line per child turn),
@@ -44218,7 +44223,7 @@ export function createAgentChatService(args: {
     });
   };
 
-  const parentChatStillExists =(parentSessionId: string): boolean => {
+  const parentChatStillExists = (parentSessionId: string): boolean => {
     const live = managedSessions.get(parentSessionId);
     if (live) return !live.deleted;
     const row = sessionService.get(parentSessionId);
