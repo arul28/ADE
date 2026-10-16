@@ -12339,6 +12339,11 @@ export function registerIpc({
     openUrl: async (url) => await openExternalUrl(url),
     logger: { warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
+  const stopMcpRenewal = mcpRegistryService.startRenewal();
+  app.once("will-quit", () => {
+    stopMcpRenewal();
+    mcpRegistryService.dispose();
+  });
   ipcMain.handle(
     IPC.mcpRegistryContext,
     (_event, args?: { projectRoot?: string | null }): McpRegistryContext =>

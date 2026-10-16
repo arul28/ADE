@@ -137,9 +137,22 @@ At launch `mcpRegistryToCallerServers` adds `Authorization: Bearer <token>` to
 the server, which every provider adapter already passes on. A header the user
 set by hand named `Authorization` wins. A token for a different URL (the server
 was edited) is ignored. An expired one is left out and the chat gets a notice
-to sign in again. `check` renews a token that runs out within a day when the
-server gave a refresh token. OpenRouter gives none, so its sign-in lasts its
-seven days. An edit keeps the sign-in; removing the server deletes it.
+to sign in again.
+
+A sign-in with a refresh token is renewed when it has less than 15 minutes
+left, or after it ran out: by `check` when the page loads, and every five
+minutes while the desktop app runs (`startRenewal`), so agents stay signed in
+to servers that issue one-hour tokens. One renewal per server runs at a time,
+because a server that rotates refresh tokens can revoke the grant when the old
+one is used twice. Chats on other computers read the renewed token from the
+vault. OpenRouter gives no refresh token, so its sign-in lasts its seven days.
+An edit keeps the sign-in; removing the server deletes it.
+
+Discovery also refuses metadata whose `resource` is not this server's URL (or
+a path above it on the same origin), and every endpoint it names must be HTTPS
+(plain HTTP only from a server on this computer to this computer). Requests
+never follow redirects. The sign-in IPC call is allowed six minutes, longer
+than the five the sign-in waits on the browser.
 
 ## The main process
 

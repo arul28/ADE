@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
+import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
@@ -260,6 +261,13 @@ describe("ipcInvokeTimeoutMs", () => {
       projectId: "project-1",
       request: { domain: "pr", action: "land", args: { prId: "pr-1", method: "squash" } },
     }])).toBe(120_000);
+  });
+
+  it("lets an MCP server sign-in outlast the browser wait it blocks on", () => {
+    // At the 30s default the renderer reported a failure while the sign-in
+    // was still waiting for the user to approve it in the browser.
+    expect(ipcInvokeTimeoutMs(IPC.mcpRegistrySignIn)).toBeGreaterThan(MCP_SIGN_IN_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(IPC.mcpRegistryCancelSignIn)).toBeLessThan(MCP_SIGN_IN_TIMEOUT_MS);
   });
 
   it("lets transcription run longer than the default invoke ceiling", () => {

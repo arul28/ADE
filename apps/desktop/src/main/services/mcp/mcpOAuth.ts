@@ -32,7 +32,8 @@ import { createPkcePair } from "../shared/utils";
 
 const CALLBACK_PATH = "/callback";
 const LOOPBACK_HOST = "127.0.0.1";
-const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
+/** How long a sign-in waits for the browser. The IPC call that runs one outlasts it (`ipcTimeouts.ts`). */
+export const MCP_SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export type McpFetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -83,6 +84,20 @@ function isLoopbackHost(hostname: string): boolean {
  * computer, and then only to this computer: that is what a local dev server
  * looks like, and it cannot point ADE at the rest of the network.
  */
+/** True when `raw` names `mcpUrl` itself or a path above it on the same origin. */
+function isResourceForServer(raw: string, mcpUrl: URL): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password || url.origin !== mcpUrl.origin) return false;
+  const base = url.pathname.replace(/\/+$/, "");
+  const path = mcpUrl.pathname.replace(/\/+$/, "");
+  return base === "" || path === base || path.startsWith(`${base}/`);
+}
+
 export function isAllowedMcpAuthEndpoint(raw: string, mcpUrl: URL): boolean {
   let url: URL;
   try {
@@ -171,6 +186,9 @@ async function discoverAuthServer(
   const servers = Array.isArray(resourceMetadata?.authorization_servers) ? resourceMetadata.authorization_servers : [];
   const issuer = str(servers[0]) ?? mcpUrl.origin;
   const resource = str(resourceMetadata?.resource) ?? mcpUrl.toString();
+  // RFC 9728: the metadata must describe this server. A token minted for
+  // another resource would otherwise be handed to this one.
+  if (!isResourceForServer(resource, mcpUrl)) return "The server's sign-in settings name a different server.";
   if (!isAllowedMcpAuthEndpoint(issuer, mcpUrl)) return refused;
   const issuerUrl = new URL(issuer);
   let raw: Record<string, unknown> | null = null;
@@ -430,7 +448,7 @@ export function createMcpOAuthSignIns(options: {
           if (metadata.scopes.length) authorize.searchParams.set("scope", metadata.scopes.join(" "));
           timer = setTimeout(
             () => finish({ ok: false, message: "The browser sign-in was not finished in time. Press Sign in to try again." }),
-            options.timeoutMs ?? SIGN_IN_TIMEOUT_MS,
+            options.timeoutMs ?? MCP_SIGN_IN_TIMEOUT_MS,
           );
           try {
             await options.openUrl(authorize.toString());

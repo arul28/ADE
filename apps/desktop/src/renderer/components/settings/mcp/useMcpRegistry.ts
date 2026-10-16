@@ -73,8 +73,8 @@ export type McpRegistryApi = McpRegistryView & {
   setLevel: (name: string, level: McpRegistryLevel, on: boolean) => Promise<string | null>;
   setSecret: (server: string, field: McpSecretField, name: string, value: string) => Promise<string | null>;
   importFound: (name: string) => Promise<string | null>;
-  /** Opens the browser and waits for it. Null when signed in, else a sentence (also on cancel). */
-  signIn: (server: McpRegistryServer) => Promise<string | null>;
+  /** Opens the browser and waits for it. `cancelled` covers Cancel here, a newer sign-in, or another window. */
+  signIn: (server: McpRegistryServer) => Promise<{ ok: true } | { ok: false; cancelled: boolean; message: string }>;
   cancelSignIn: (name: string) => void;
   signOut: (name: string) => Promise<string | null>;
 };
@@ -339,12 +339,18 @@ export function useMcpRegistry(): McpRegistryApi {
     });
   }), [mutate, projectRoot, writeServers]);
 
-  const signIn = useCallback((server: McpRegistryServer) => mutate(async () => {
-    const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
-    const result = await registry.signIn({ server });
-    return result.ok ? null : result.message;
-  }), [mutate]);
+  const signIn = useCallback(async (server: McpRegistryServer) => {
+    let cancelled = false;
+    const message = await mutate(async () => {
+      const registry = window.ade?.mcpRegistry;
+      if (!registry) return NO_BRIDGE;
+      const result = await registry.signIn({ server });
+      if (result.ok) return null;
+      cancelled = "cancelled" in result && result.cancelled === true;
+      return result.message;
+    });
+    return message == null ? { ok: true as const } : { ok: false as const, cancelled, message };
+  }, [mutate]);
 
   const cancelSignIn = useCallback((name: string) => {
     void window.ade?.mcpRegistry?.cancelSignIn({ server: name });

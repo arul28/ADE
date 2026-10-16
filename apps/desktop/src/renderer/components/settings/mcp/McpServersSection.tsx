@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
 import {
@@ -76,7 +76,6 @@ export function McpServersSection() {
   // A sign-in waits on the browser for minutes, so it is not `busy`: the rest
   // of the page stays usable while it runs.
   const [signingIn, setSigningIn] = useState<string | null>(null);
-  const cancelledSignIn = useRef<string | null>(null);
   const ready = registry.phase === "ready";
 
   /** Runs one change on one row, and says so when it did not take. */
@@ -102,19 +101,17 @@ export function McpServersSection() {
   }, [registry, run]);
 
   const handleSignIn = useCallback(async (server: McpRegistryServer) => {
-    cancelledSignIn.current = null;
     setSigningIn(server.name);
-    const error = await registry.signIn(server);
+    const result = await registry.signIn(server);
     setSigningIn((current) => (current === server.name ? null : current));
-    if (cancelledSignIn.current === server.name) return;
-    if (error) showToast({ tone: "error", title: `Could not sign in to ${server.name}`, message: error });
-    else showToast({ tone: "success", title: `Signed in to ${server.name}`, message: "New chats can use its tools, with every provider, on every computer." });
+    if (!result.ok) {
+      if (!result.cancelled) showToast({ tone: "error", title: `Could not sign in to ${server.name}`, message: result.message });
+      return;
+    }
+    showToast({ tone: "success", title: `Signed in to ${server.name}`, message: "New chats can use its tools, with every provider, on every computer." });
   }, [registry]);
 
-  const handleCancelSignIn = useCallback((name: string) => {
-    cancelledSignIn.current = name;
-    registry.cancelSignIn(name);
-  }, [registry]);
+  const handleCancelSignIn = useCallback((name: string) => registry.cancelSignIn(name), [registry]);
 
   const handleSignOut = useCallback(async (server: McpRegistryServer) => {
     if (await run(server.name, `Could not sign out of ${server.name}`, () => registry.signOut(server.name))) {

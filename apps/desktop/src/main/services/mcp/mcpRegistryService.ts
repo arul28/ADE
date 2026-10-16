@@ -29,6 +29,7 @@ import {
   normalizeMcpRegistry,
   normalizeMcpRegistryServer,
   parseMcpOAuthToken,
+  type McpOAuthToken,
   type McpRegistryServer,
 } from "../../../shared/mcpRegistry";
 import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
@@ -69,8 +70,14 @@ export type McpRegistryServiceOptions = {
   logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
 };
 
-/** Renew a sign-in this close to running out, when the server gave a way to. */
-const REFRESH_WITHIN_MS = 24 * 60 * 60 * 1000;
+/**
+ * Renew a sign-in this close to running out, or after it has, when the server
+ * gave a refresh token. Many servers issue one-hour tokens, so this is what
+ * keeps agents signed in.
+ */
+const REFRESH_WITHIN_MS = 15 * 60 * 1000;
+/** How often this computer looks for sign-ins to renew while ADE runs. */
+const RENEW_EVERY_MS = 5 * 60 * 1000;
 /** How long one "does this server want a sign-in" answer is reused. */
 const PROBE_TTL_MS = 10 * 60 * 1000;
 
@@ -127,26 +134,46 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
     return answer;
   };
 
-  /** One server's sign-in as the page shows it, renewing it first when it is about to run out. */
-  const signInStatus = async (server: McpRegistryServer): Promise<McpRegistryResult<McpServerSignIn | null>> => {
-    if (server.transport === "stdio" || !server.url) return { ok: true, value: null };
+  // One renewal per vault key at a time. A server that rotates refresh tokens
+  // treats a second use of the old one as a replay and can revoke the grant.
+  const renewing = new Map<string, Promise<McpOAuthToken>>();
+
+  /** The server's stored sign-in, renewed first when it is due. */
+  const currentSignIn = async (server: McpRegistryServer): Promise<McpRegistryResult<McpOAuthToken | null>> => {
     const key = mcpOAuthVaultKey(server.name);
     const stored = await vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key);
     if (!stored.ok) return stored;
-    let token = parseMcpOAuthToken(stored.value);
-    if (token && mcpOAuthTokenState(token, server) !== "none" && token.refreshToken && token.expiresAt
-      && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
-      const renewed = await refreshMcpOAuthToken(token, fetchImpl);
-      // The sign-in keeps working until it runs out, and the row then asks
-      // for a new one, so a failed renewal is logged rather than shown.
-      if (typeof renewed === "string") {
-        options.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: renewed });
-      } else {
-        const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key, JSON.stringify(renewed));
-        if (saved.ok) token = renewed;
-        else options.logger?.warn("mcp_registry.oauth_refresh_not_saved", { reason: saved.message });
-      }
+    const token = parseMcpOAuthToken(stored.value);
+    if (!token || mcpOAuthTokenState(token, server) === "none" || !token.refreshToken || !token.expiresAt
+      || Date.parse(token.expiresAt) - Date.now() >= REFRESH_WITHIN_MS) {
+      return { ok: true, value: token };
     }
+    let pending = renewing.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const renewed = await refreshMcpOAuthToken(token, fetchImpl);
+        // The sign-in keeps working until it runs out, and the row then asks
+        // for a new one, so a failed renewal is logged rather than shown.
+        if (typeof renewed === "string") {
+          options.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: renewed });
+          return token;
+        }
+        const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key, JSON.stringify(renewed));
+        if (saved.ok) return renewed;
+        options.logger?.warn("mcp_registry.oauth_refresh_not_saved", { reason: saved.message });
+        return token;
+      })().finally(() => renewing.delete(key));
+      renewing.set(key, pending);
+    }
+    return { ok: true, value: await pending };
+  };
+
+  /** One server's sign-in as the page shows it, renewing it first when it is due. */
+  const signInStatus = async (server: McpRegistryServer): Promise<McpRegistryResult<McpServerSignIn | null>> => {
+    if (server.transport === "stdio" || !server.url) return { ok: true, value: null };
+    const current = await currentSignIn(server);
+    if (!current.ok) return current;
+    const token = current.value;
     const state = mcpOAuthTokenState(token, server);
     if (state !== "none") return { ok: true, value: { server: server.name, state, expiresAt: token?.expiresAt ?? null } };
     // A server with a header of its own already says how it signs in.
@@ -224,6 +251,27 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
     async signOut(server: string): Promise<McpRegistryResult<null>> {
       if (!isValidMcpRegistryName(server)) return INVALID_SECRET;
       return await vault.remove(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, mcpOAuthVaultKey(server));
+    },
+
+    /**
+     * Renews due sign-ins while ADE runs, so agents stay signed in without the
+     * settings page being open. Chats on other computers read the renewed
+     * token from the account vault. Returns the stop function.
+     */
+    startRenewal(): () => void {
+      const renewDue = async () => {
+        const servers = readCachedMcpRegistry(options.adeHome, null).cached?.servers ?? [];
+        for (const server of servers) {
+          if (server.transport === "stdio" || !server.url || !server.enabled) continue;
+          await currentSignIn(server).catch((error: unknown) => {
+            options.logger?.warn("mcp_registry.oauth_renewal_failed", { reason: error instanceof Error ? error.message : String(error) });
+          });
+        }
+      };
+      const timer = setInterval(() => void renewDue(), RENEW_EVERY_MS);
+      timer.unref?.();
+      void renewDue();
+      return () => clearInterval(timer);
     },
 
     dispose(): void {

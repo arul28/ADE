@@ -1,13 +1,12 @@
 // @vitest-environment node
 
 import { createHash } from "node:crypto";
-import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import http, { type IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createMcpOAuthSignIns,
   isAllowedMcpAuthEndpoint,
-  type McpOAuthOutcome,
 } from "./mcpOAuth";
 import { createMcpRegistryService, type McpRegistryVault } from "./mcpRegistryService";
 import {
@@ -37,6 +36,8 @@ type FakeOAuthOptions = {
   probeStatus?: number;
   authorizationServer?: string;
   registration?: boolean;
+  /** The `resource` the protected-resource metadata claims; defaults to the MCP URL. */
+  resource?: string;
   holdResourceMetadata?: Deferred;
   holdToken?: Deferred;
 };
@@ -75,7 +76,7 @@ async function startOAuthServer(options: FakeOAuthOptions = {}): Promise<FakeOAu
       hit(url.pathname);
       await options.holdResourceMetadata?.promise;
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-        resource: `${origin}/mcp`,
+        resource: options.resource ?? `${origin}/mcp`,
         authorization_servers: [options.authorizationServer ?? origin],
         scopes_supported: ["tools"],
       }));
@@ -314,6 +315,7 @@ describe("MCP OAuth sign-in", () => {
   it.each([
     ["open server", { probeStatus: 200 } as FakeOAuthOptions],
     ["server without dynamic registration", { registration: false } as FakeOAuthOptions],
+    ["metadata naming another server's resource", { resource: "https://other.example/mcp" } as FakeOAuthOptions],
   ])("does not open a browser for an unsupported flow: %s", async (_label, options) => {
     const fake = await fakeServer(options);
     let opened = false;
@@ -379,6 +381,32 @@ describe("MCP registry OAuth service", () => {
     await service.signIn(docs);
     expect((await service.signOut("Docs")).ok).toBe(true);
     expect(vault.values.has(key)).toBe(false);
+    service.dispose();
+  });
+
+  it("renews a due sign-in once when two checks race, and stores the new token", async () => {
+    const holdToken = deferred();
+    const fake = await fakeServer({ holdToken });
+    const vault = memoryVault();
+    const docs = serverConfig("Docs", fake.mcpUrl);
+    const key = mcpOAuthVaultKey("Docs");
+    vault.values.set(key, JSON.stringify(tokenFor(fake.mcpUrl, {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      tokenEndpoint: `${fake.origin}/token`,
+    })));
+    const service = createMcpRegistryService({ vault, adeHome: "/tmp/ade-mcp-oauth-test", commandExists: () => true });
+    const first = service.check([docs]);
+    const second = service.check([docs]);
+    await fake.waitFor("/token");
+    holdToken.resolve();
+    const results = await Promise.all([first, second]);
+    expect(fake.tokens).toHaveLength(1);
+    expect(fake.tokens[0]?.get("grant_type")).toBe("refresh_token");
+    expect(fake.tokens[0]?.get("refresh_token")).toBe("old-refresh");
+    for (const result of results) expect(result.ok && result.value.signIns).toMatchObject([{ server: "Docs", state: "valid" }]);
+    expect(JSON.parse(vault.values.get(key)!).accessToken).toBe("access-secret");
     service.dispose();
   });
 });
