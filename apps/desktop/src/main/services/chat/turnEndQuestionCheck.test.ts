@@ -137,6 +137,13 @@ describe("classifyTurnEndAsk", () => {
       "If you want me to proceed, say the word.",
     ],
     [
+      "a progress note that names a possible future block",
+      "not_ask",
+      "Its brief tells it:\n- to raise its hand with `ade chat ask` if it hits a decision that is yours.\n\nI'm waiting in the background for it to finish, and will check its result and report the merge, or whatever blocked it.",
+      null,
+    ],
+    ["an agent that is blocked now", "ask", "I'm blocked on the signing key.", "I'm blocked on the signing key."],
+    [
       "an optional offer with no blocking gate stays non-ask",
       "not_ask",
       "Say the word if you would rather I run the independent delta re-review first, since that is the one step I shortened.",

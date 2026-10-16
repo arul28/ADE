@@ -64,7 +64,11 @@ const OFFER_QUESTION = /\b(?:would you (?:like|prefer)|do you want) me to\b/i;
  */
 const BLOCKING_CUE = new RegExp(
   [
-    String.raw`\bblocked\b`,
+    // "Blocked" alone is not a gate on the user: "report whatever blocked it"
+    // describes a possible future failure. Only a blocked state the agent is
+    // in now, or one waiting on something, counts.
+    String.raw`\b(i'?m|i am|we'?re|we are|is|are|still) blocked\b`,
+    String.raw`\bblocked (until|on|by|pending|waiting)\b`,
     String.raw`\buntil you (approve|confirm|decide|respond|answer|pick|choose)\b`,
     String.raw`\b(needs?|requires?|waiting on) your (approval|go-ahead|ok|okay|decision|response|answer|input|call)\b`,
     String.raw`\bcan'?t (proceed|continue|move forward|start|finish)\b`,
@@ -80,6 +84,9 @@ const PROGRESS_NOTE = new RegExp(
     String.raw`\b(is|are|still) (running|working|going)\b`,
     String.raw`\bstill (waiting|in progress)\b`,
     String.raw`\bwaiting (on|for) (the|its|their|both|each|it|them)\b`,
+    String.raw`\bwaiting in the background\b`,
+    String.raw`\bfor (it|them|both|each|all|the [\w-]+) to (finish|land|complete|report|come back)\b`,
+    String.raw`\b(i'll|i will|will) check (its|their|the) results?\b`,
     String.raw`\bi'll (report|review|get back|come back|let you know|ping you|follow up|update you|pull)[^.?]*\b(when|once|as|after)\b`,
     String.raw`\b(when|once|as soon as|after) (it|they|(both|each|all|the)( [\w-]+){0,3}) (reports?|finish(es)?|lands?|arrives?|comes? back|(is|are) (done|back))\b`,
     String.raw`\bbefore reporting\b`,
