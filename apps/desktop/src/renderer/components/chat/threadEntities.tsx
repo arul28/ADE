@@ -30,6 +30,7 @@ import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { TranscriptChip } from "./ChipText";
 import { useLinearWorkspaceTeamKeys } from "../issues/linearIssueStore";
+import { useJiraThreadEntityBindings } from "../issues/jiraIssueStore";
 
 const ThreadEntityLookupContext = createContext<ThreadEntityLookup>(EMPTY_THREAD_ENTITY_LOOKUP);
 
@@ -48,6 +49,7 @@ export function ThreadEntityProvider({
   const lanes = useLanesForPin(scope.binding);
   const sessions = useSessionsForPin(scope.binding);
   const workspaceTeamKeys = useLinearWorkspaceTeamKeys();
+  const jiraBindings = useJiraThreadEntityBindings(scope.rootPath, scope.pin);
 
   // Matching only needs ids, names and keys, so reduce to that index first.
   const index = useMemo<ThreadEntityIndex>(() => {
@@ -65,9 +67,11 @@ export function ThreadEntityProvider({
       lanes: (lanes ?? []).map((lane) => ({ id: lane.id, name: lane.name })),
       sessions: (sessions ?? []).map((session) => ({ id: session.id })),
       linearTeamKeys: [...linearTeamKeys].sort(),
+      jiraProjectKeys: jiraBindings.projectKeys,
+      jiraSiteUrl: jiraBindings.siteUrl,
       skillNames: [...(skillNames ?? [])].sort(),
     };
-  }, [lanes, sessions, skillNames, workspaceTeamKeys]);
+  }, [jiraBindings.projectKeys, jiraBindings.siteUrl, lanes, sessions, skillNames, workspaceTeamKeys]);
 
   // Lane status refreshes replace the lane and session arrays every few
   // seconds without changing the index's VALUE. Rebuilding the lookup changes

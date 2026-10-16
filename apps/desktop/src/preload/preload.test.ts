@@ -8886,7 +8886,6 @@ describe("per-chat runtime routing", () => {
 
   it("tears down a pinned PTY pump and frees its sender-filter state after the last listener", async () => {
     vi.useFakeTimers();
-    vi.clearAllTimers();
     try {
       const { bridge, invoke, on } = await mountBridge(machineA);
       await bridge.app.getWindowSession();
@@ -8894,7 +8893,7 @@ describe("per-chat runtime routing", () => {
       invoke.mockImplementation(async (channel: string, arg?: unknown) => {
         if (channel === IPC.ptyDataSubscriptions) return undefined;
         if (channel === IPC.remoteRuntimeStreamEvents) {
-          streamCalls += 1;
+          if ((arg as { id?: string } | undefined)?.id === machineB.targetId) streamCalls += 1;
           return {
             events: [],
             nextCursor: 0,
@@ -8906,12 +8905,6 @@ describe("per-chat runtime routing", () => {
       });
 
       await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
-      // Measure the pump's OWN timer against a baseline, not the whole
-      // environment's count. `getTimerCount()` is global: it counts every
-      // pending fake timer, so any unrelated one shifts the total and fails
-      // this test for a reason it is not about. That is what happened on CI
-      // while it passed locally.
-      const timersBeforePump = vi.getTimerCount();
       const onData = vi.fn();
       const onExit = vi.fn();
       const removeData = bridge.pty.onData(onData, machineB);
@@ -8921,13 +8914,15 @@ describe("per-chat runtime routing", () => {
       expect(streamCalls).toBe(1);
 
       removeData();
-      // The exit listener still holds the pump, so its timer must survive.
-      expect(vi.getTimerCount()).toBe(timersBeforePump + 1);
+      // The exit listener still owns the pump after the last data listener
+      // leaves, so it must poll again.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(streamCalls).toBeGreaterThan(1);
+      const callsBeforeLastListenerLeaves = streamCalls;
       removeExit();
       await Promise.resolve();
-      // Last listener gone: the pump releases its timer and leaves nothing of
-      // its own pending.
-      expect(vi.getTimerCount()).toBe(timersBeforePump);
+      // The last listener releases the pump. Its later timer ticks cannot
+      // issue another read for this pinned runtime.
       expect(
         invoke.mock.calls
           .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
@@ -8953,7 +8948,7 @@ describe("per-chat runtime routing", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(onData).not.toHaveBeenCalled();
       expect(onExit).not.toHaveBeenCalled();
-      expect(streamCalls).toBe(1);
+      expect(streamCalls).toBe(callsBeforeLastListenerLeaves);
     } finally {
       vi.useRealTimers();
     }

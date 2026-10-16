@@ -3741,6 +3741,50 @@ const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
     : BUILTIN_MOCK_GITHUB_SNAPSHOT,
 );
 
+const MOCK_JIRA_ACCOUNT = {
+  accountId: "mock-jira-user-1",
+  displayName: "Morgan Lee",
+  avatarUrl: null,
+  emailAddress: "morgan@example.com",
+};
+const MOCK_JIRA_PROJECTS = [
+  { id: "10000", key: "ADE", name: "ADE Platform", avatarUrl: null },
+  { id: "10001", key: "PAY", name: "Payments", avatarUrl: null },
+];
+const MOCK_JIRA_ISSUES: any[] = [
+  {
+    id: "20001", key: "ADE-101", projectKey: "ADE", title: "Keep issue filters when switching lanes",
+    status: { id: "3", name: "In Progress", category: "indeterminate" },
+    issueType: { id: "10001", name: "Task", iconUrl: null, subtask: false },
+    priority: { id: "3", name: "Medium", iconUrl: null }, assignee: MOCK_JIRA_ACCOUNT, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["ui", "issues"], parentKey: null, url: "https://ade.atlassian.net/browse/ADE-101",
+    createdAt: "2026-09-10T14:00:00.000Z", updatedAt: "2026-10-14T17:15:00.000Z",
+    description: "Keep the selected Jira filters while moving between lanes.", dueDate: null, subtasks: [],
+    comments: [{ id: "30001", author: MOCK_JIRA_ACCOUNT, body: "The filter state should survive a lane switch.", createdAt: "2026-10-14T16:00:00.000Z", updatedAt: "2026-10-14T16:00:00.000Z" }],
+    commentsCursor: null, totalComments: 1, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+  {
+    id: "20002", key: "ADE-102", projectKey: "ADE", title: "Add retry details to Jira rate limits",
+    status: { id: "1", name: "To Do", category: "new" },
+    issueType: { id: "10000", name: "Bug", iconUrl: null, subtask: false },
+    priority: { id: "2", name: "High", iconUrl: null }, assignee: null, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["bug", "api"], parentKey: null, url: "https://ade.atlassian.net/browse/ADE-102",
+    createdAt: "2026-10-08T11:30:00.000Z", updatedAt: "2026-10-13T12:20:00.000Z",
+    description: "Show the retry time when Jira answers with HTTP 429.", dueDate: null, subtasks: [],
+    comments: [], commentsCursor: null, totalComments: 0, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+  {
+    id: "20003", key: "PAY-21", projectKey: "PAY", title: "Document payment retry workflow",
+    status: { id: "6", name: "Done", category: "done" },
+    issueType: { id: "10002", name: "Story", iconUrl: null, subtask: false },
+    priority: { id: "4", name: "Low", iconUrl: null }, assignee: MOCK_JIRA_ACCOUNT, reporter: MOCK_JIRA_ACCOUNT,
+    labels: ["docs"], parentKey: null, url: "https://ade.atlassian.net/browse/PAY-21",
+    createdAt: "2026-08-20T08:15:00.000Z", updatedAt: "2026-10-10T09:10:00.000Z",
+    description: "Document the retry states and recovery path.", dueDate: null, subtasks: [],
+    comments: [], commentsCursor: null, totalComments: 0, permissions: { edit: true, comment: true, transition: true, assign: true },
+  },
+];
+
 function browserMockPrSummaryWithStack(pr: any): any {
   const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
     (item: any) =>
@@ -8419,6 +8463,53 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listRepoLabels: resolved([]),
       listRepoCollaborators: resolved([]),
       onStatusChanged: noop,
+    },
+    jira: {
+      getConnectionStatus: resolved({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
+      connect: resolvedArg({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
+      disconnect: resolved({ connected: false, siteUrl: null, email: null, account: null, error: null, checkedAt: new Date().toISOString() }),
+      listProjects: async (args: any = {}) => MOCK_JIRA_PROJECTS.filter((project) => !args.query || `${project.key} ${project.name}`.toLowerCase().includes(String(args.query).toLowerCase())),
+      listIssues: async (args: any = {}) => {
+        const projectKeys = Array.isArray(args.projectKeys) ? args.projectKeys : [];
+        const query = String(args.query ?? "").toLowerCase();
+        const matches = MOCK_JIRA_ISSUES.filter((issue) =>
+          (!projectKeys.length || projectKeys.includes(issue.projectKey))
+          && (args.state !== "done" || issue.status.category === "done")
+          && (args.state !== "open" || issue.status.category !== "done")
+          && (!query || `${issue.key} ${issue.title} ${issue.labels.join(" ")}`.toLowerCase().includes(query))
+          && (args.assignee !== "me" || issue.assignee?.accountId === MOCK_JIRA_ACCOUNT.accountId),
+        );
+        const limit = Math.max(1, Math.min(100, Number(args.limit) || 50));
+        const start = Number.parseInt(String(args.cursor ?? "0"), 10) || 0;
+        const issues = matches.slice(start, start + limit);
+        return { issues, nextCursor: start + issues.length < matches.length ? String(start + issues.length) : null };
+      },
+      getIssue: async (args: any) => MOCK_JIRA_ISSUES.find((issue) => issue.key === args.key) ?? MOCK_JIRA_ISSUES[0],
+      listComments: async (args: any) => {
+        const issue = MOCK_JIRA_ISSUES.find((candidate) => candidate.key === args.key) ?? MOCK_JIRA_ISSUES[0];
+        return { comments: issue.comments, nextCursor: null };
+      },
+      addComment: async (args: any) => ({ id: `mock-jira-comment-${Date.now()}`, author: MOCK_JIRA_ACCOUNT, body: String(args.body ?? ""), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+      updateIssue: resolved(undefined),
+      listTransitions: async () => [
+        { id: "11", name: "Start Progress", to: { id: "3", name: "In Progress", category: "indeterminate" } },
+        { id: "21", name: "Resolve Issue", to: { id: "6", name: "Done", category: "done" } },
+        { id: "31", name: "Reopen Issue", to: { id: "1", name: "To Do", category: "new" } },
+      ],
+      transitionIssue: resolved(undefined),
+      listAssignableUsers: resolved([MOCK_JIRA_ACCOUNT, { accountId: "mock-jira-user-2", displayName: "Taylor Kim", avatarUrl: null, emailAddress: "taylor@example.com" }, { accountId: "mock-jira-user-3", displayName: "Casey Rivera", avatarUrl: null, emailAddress: "casey@example.com" }]),
+      listLabels: async (args: any = {}) => ["api", "bug", "docs", "issues", "ui"].filter((label) => !args.query || label.includes(String(args.query).toLowerCase())),
+      getCreateMeta: async (args: any) => ({
+        projectKey: String(args.projectKey ?? "ADE").toUpperCase(),
+        issueTypes: [
+          { id: "10000", name: "Bug", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "description", name: "Description", required: false, supported: true }] },
+          { id: "10001", name: "Task", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "labels", name: "Labels", required: false, supported: true }] },
+          { id: "10002", name: "Story", iconUrl: null, subtask: false, fields: [{ id: "summary", name: "Summary", required: true, supported: true }] },
+          { id: "10003", name: "Sub-task", iconUrl: null, subtask: true, fields: [{ id: "summary", name: "Summary", required: true, supported: true }, { id: "customfield_10011", name: "Release train", required: true, supported: false }] },
+        ],
+        priorities: [{ id: "2", name: "High", iconUrl: null }, { id: "3", name: "Medium", iconUrl: null }, { id: "4", name: "Low", iconUrl: null }],
+      }),
+      createIssue: async (args: any) => ({ id: `mock-jira-${Date.now()}`, key: `${String(args.projectKey ?? "ADE").toUpperCase()}-104`, url: `https://ade.atlassian.net/browse/${String(args.projectKey ?? "ADE").toUpperCase()}-104` }),
     },
     prs: {
       createFromLane: resolvedArg(

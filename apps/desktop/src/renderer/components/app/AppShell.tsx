@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
 import { IssueSheetHost } from "../issues/IssueSheetHost";
 import { IssueCreateHost } from "../issues/IssueCreateHost";
-import { GitHubIssueLaunchHost } from "../issues/githubIssueLaunch";
+import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
@@ -1115,7 +1115,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
       <IssueSheetHost />
       <IssueCreateHost />
-      <GitHubIssueLaunchHost />
+      <IssueLaunchHost />
       {/* Shell level: the capture arrives from the main process while ADE is
           in the BACKGROUND, so nothing mounted by a tab could be listening
           when it lands. */}

@@ -1,4 +1,5 @@
 import type { IssueRef } from "../../shared/issueRefs";
+import type { OpenProjectBinding } from "../../shared/types";
 import { createPendingRequestChannel } from "./pendingRequestChannel";
 
 /**
@@ -32,11 +33,14 @@ export type IssueOpenRequest = {
   laneId?: string | null;
   /** A branch hint carried by `ade://linear-issue/<id>?branch=…` deeplinks. */
   branch?: string | null;
+  /** The machine that owns the chat when an issue opens from its transcript. */
+  pin?: OpenProjectBinding | null;
   source?: IssueOpenSource;
 };
 
 const toolChannel = createPendingRequestChannel<IssueOpenRequest>("issue-tool");
 const sheetChannel = createPendingRequestChannel<IssueOpenRequest>("issue-sheet");
+const jiraPaneChannel = createPendingRequestChannel<void>("jira-issues-pane");
 
 const inPlaceHosts = new Set<symbol>();
 
@@ -81,3 +85,12 @@ export const clearPendingIssueToolRequest = toolChannel.clearPending;
 export const subscribeIssueSheetRequests = sheetChannel.subscribe;
 export const takePendingIssueSheetRequest = sheetChannel.takePending;
 export const clearPendingIssueSheetRequest = sheetChannel.clearPending;
+
+/** Ask the top-bar Jira button to open its pane, even from the issue sheet. */
+export function requestJiraIssuesPaneOpen(): void {
+  jiraPaneChannel.request(undefined);
+}
+
+export const subscribeJiraIssuesPaneRequests = jiraPaneChannel.subscribe;
+export const takePendingJiraIssuesPaneRequest = jiraPaneChannel.takePending;
+export const clearPendingJiraIssuesPaneRequest = jiraPaneChannel.clearPending;

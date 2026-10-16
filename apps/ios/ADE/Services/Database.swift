@@ -3527,6 +3527,9 @@ final class DatabaseService {
     if hasTable(named: "session_github_issues") {
       _ = try execute("delete from session_github_issues where session_id in (\(placeholders))", bind: bindSessionIds)
     }
+    if hasTable(named: "session_jira_issues") {
+      _ = try execute("delete from session_jira_issues where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
     if hasTable(named: "session_deltas") {
       _ = try execute("delete from session_deltas where session_id in (\(placeholders))", bind: bindSessionIds)
     }

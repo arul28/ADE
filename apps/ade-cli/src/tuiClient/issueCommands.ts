@@ -8,7 +8,9 @@ import {
   normalizedLinearIssueToLaneIssue,
   parseLaneLinearIssueValue,
 } from "../../../desktop/src/shared/laneLinearIssue";
+import { jiraIssueToLaneIssue } from "../../../desktop/src/shared/laneJiraIssue";
 import type { NormalizedLinearIssue } from "../../../desktop/src/shared/types";
+import type { JiraIssueDetail } from "../../../desktop/src/shared/types/jira";
 import { ACTIVE_SESSION_PLACEHOLDER } from "./linearCommands";
 
 const LINEAR_ISSUE_ID_RE = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
@@ -48,8 +50,18 @@ export type IssueCommandConn = {
   actionList: (domain: string, action: string, args: unknown[]) => Promise<unknown>;
 };
 
-function usage(title = "Issue", body = "Usage: /issue <attach|list|detach> [ADE-123|owner/repo#42|#42]"): IssueToolRequest {
+function usage(title = "Issue", body = "Usage: /issue <attach|list|detach> [PROJ-123|owner/repo#42|#42]"): IssueToolRequest {
   return { kind: "usage", title, body };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function buildIssueToolRequest(input: string): IssueToolRequest {
@@ -60,7 +72,7 @@ export function buildIssueToolRequest(input: string): IssueToolRequest {
 
   if (group === "attach") {
     if (!token) {
-      return usage("Issue attach", "Usage: /issue attach <ADE-123|owner/repo#42|#42>");
+      return usage("Issue attach", "Usage: /issue attach <PROJ-123|owner/repo#42|#42>");
     }
     if (LINEAR_ISSUE_ID_RE.test(token)) {
       return {
@@ -72,7 +84,7 @@ export function buildIssueToolRequest(input: string): IssueToolRequest {
     }
     const ref = parseGitHubIssueRef(token);
     if (!ref) {
-      return usage("Issue attach", "Usage: /issue attach <ADE-123|owner/repo#42|#42>");
+      return usage("Issue attach", "Usage: /issue attach <PROJ-123|owner/repo#42|#42>");
     }
     return {
       kind: "githubAttach",
@@ -92,7 +104,7 @@ export function buildIssueToolRequest(input: string): IssueToolRequest {
 
   if (group === "detach") {
     if (!token) {
-      return usage("Issue detach", "Usage: /issue detach <ADE-123|owner/repo#42|#42>");
+      return usage("Issue detach", "Usage: /issue detach <PROJ-123|owner/repo#42|#42>");
     }
     return {
       kind: "detach",
@@ -147,6 +159,38 @@ export async function executeIssueToolRequest(
       ctx.setDetails(request.title, missingSession);
       return;
     }
+
+    // A key-shaped reference can belong to Linear or Jira. Ask the shared
+    // resolver first so a Jira project bound to this project wins over the
+    // TUI's historical Linear-only interpretation.
+    const resolution = await ctx.conn.action("issues", "resolve", {
+      reference: request.identifier,
+    }).catch(() => null);
+    const resolutionRecord = record(resolution);
+    const issueReference = record(resolutionRecord.reference);
+    if (resolutionRecord.kind === "jira" || issueReference.provider === "jira") {
+      const key = stringValue(issueReference.key) ?? request.identifier;
+      const siteUrl = stringValue(issueReference.siteUrl);
+      if (!siteUrl) {
+        ctx.setDetails(request.title, `Could not resolve the Jira site for ${key}.`);
+        return;
+      }
+      ctx.setDetails(request.title, "Loading Jira issue...");
+      const raw = await ctx.conn.action("jira", "getIssue", { key });
+      const issue = jiraIssueToLaneIssue(raw as JiraIssueDetail, siteUrl);
+      if (!issue) {
+        ctx.setDetails(request.title, `${key} is not an attachable Jira issue.`);
+        return;
+      }
+      const result = await ctx.conn.action("lane", "attachJiraIssueToSession", {
+        chatSessionId,
+        issues: [issue],
+      });
+      ctx.setDetails(request.title, ctx.render(result, 24));
+      ctx.notifySuccess(`Attached ${issue.key}.`);
+      return;
+    }
+
     ctx.setDetails(request.title, "Loading Linear issue...");
     const raw = await ctx.conn.actionList("linear_issue_tracker", "fetchIssueById", [request.identifier]);
     if (!raw) {
@@ -205,11 +249,16 @@ export async function executeIssueToolRequest(
       return;
     }
     ctx.setDetails(request.title, "Loading attached issues...");
-    const [linear, github] = await Promise.all([
+    const [linear, github, jira] = await Promise.all([
       ctx.conn.action("lane", "listLinearIssuesForSession", { chatSessionId }),
       ctx.conn.action("lane", "listGitHubIssuesForSession", { chatSessionId }),
+      ctx.conn.action("lane", "listJiraIssuesForSession", { chatSessionId }),
     ]);
-    ctx.setDetails(request.title, ["Linear", ctx.render(linear, 24), "", "GitHub", ctx.render(github, 24)].join("\n"));
+    ctx.setDetails(request.title, [
+      "Linear", ctx.render(linear, 24),
+      "", "GitHub", ctx.render(github, 24),
+      "", "Jira", ctx.render(jira, 24),
+    ].join("\n"));
     return;
   }
 
@@ -231,6 +280,23 @@ export async function executeIssueToolRequest(
     ctx.notifySuccess(`Detached ${issueId}.`);
     return;
   }
+
+  const resolution = await ctx.conn.action("issues", "resolve", {
+    reference: request.token,
+  }).catch(() => null);
+  const resolutionRecord = record(resolution);
+  const issueReference = record(resolutionRecord.reference);
+  if (resolutionRecord.kind === "jira" || issueReference.provider === "jira") {
+    const issueId = stringValue(issueReference.key) ?? request.token;
+    const result = await ctx.conn.action("lane", "detachJiraIssueFromSession", {
+      chatSessionId,
+      issueId,
+    });
+    ctx.setDetails(request.title, ctx.render(result, 24));
+    ctx.notifySuccess(`Detached ${issueId}.`);
+    return;
+  }
+
   const result = await ctx.conn.action("lane", "detachLinearIssueFromSession", {
     chatSessionId,
     issueId: request.token,

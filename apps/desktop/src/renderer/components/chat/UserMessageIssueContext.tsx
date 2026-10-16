@@ -1,8 +1,9 @@
 import React, { useCallback, useMemo, useState } from "react";
 
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
-import { linearIssueRef } from "../../../shared/issueRefs";
+import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
@@ -10,12 +11,14 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 export function UserMessageIssueContext({
   attachments,
   contextAttachments,
+  jiraIssueSnapshotsById,
   mode,
   sessionId,
   accepted = false,
 }: {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   mode: ChatSurfaceMode;
   sessionId?: string | null;
   /** The message reached the agent; image previews show a small check. */
@@ -30,8 +33,14 @@ export function UserMessageIssueContext({
   const [hiddenContextKeys, setHiddenContextKeys] = useState<string[]>([]);
 
   const visibleContextAttachments = useMemo(
-    () => contextAttachments.filter((attachment) => !hiddenContextKeys.includes(chatContextAttachmentKey(attachment))),
-    [contextAttachments, hiddenContextKeys],
+    () => contextAttachments
+      .map((attachment) => {
+        if (attachment.type !== "jira_issue") return attachment;
+        const latestIssue = jiraIssueSnapshotsById?.get(attachment.issue.id);
+        return latestIssue ? { ...attachment, issue: latestIssue } : attachment;
+      })
+      .filter((attachment) => !hiddenContextKeys.includes(chatContextAttachmentKey(attachment))),
+    [contextAttachments, hiddenContextKeys, jiraIssueSnapshotsById],
   );
 
   // Detaching an issue from the chat used to live in the Linear details modal
@@ -46,8 +55,13 @@ export function UserMessageIssueContext({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
       }, machinePin);
-    } else {
+    } else if (attachment.type === "github_issue") {
       void window.ade?.lanes?.detachGitHubIssueFromSession?.({
+        chatSessionId: sessionId,
+        issueId: attachment.issue.id,
+      }, machinePin);
+    } else {
+      void window.ade?.lanes?.detachJiraIssueFromSession?.({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
       }, machinePin);
@@ -77,6 +91,10 @@ export function UserMessageIssueContext({
               source: "chip",
             });
             return;
+          }
+          if (attachment.type === "jira_issue") {
+            const ref = jiraIssueRef(attachment.issue.siteUrl, attachment.issue.key, attachment.issue.url);
+            if (ref) openIssueRef({ ref, source: "chip", pin: machinePin });
           }
         }}
         onRemoveContext={sessionId ? detachContext : undefined}

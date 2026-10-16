@@ -10,7 +10,17 @@ import type { IssueCreateRequest } from "../../lib/issueCreateRequests";
  * plain "New" a sub-issue of an unrelated issue, behind a collapsed row.
  */
 
-export type IssueProvider = "linear" | "github";
+export type IssueProvider = "linear" | "github" | "jira";
+
+export type JiraFields = {
+  projectKey: string;
+  issueTypeId: string;
+  assigneeAccountId: string | null;
+  priorityId: string | null;
+  labels: string[];
+  parentKey: string;
+  dueDate: string;
+};
 
 export type LinearFields = {
   teamKey: string | null;
@@ -41,6 +51,7 @@ export type IssueDraft = {
   body: string;
   linear: LinearFields;
   github: GitHubFields;
+  jira?: JiraFields;
   /** Answers to the GitHub issue form `github.templateKey` names. */
   formAnswers?: GitHubIssueFormAnswers;
 };
@@ -50,6 +61,7 @@ export const EMPTY_LINEAR: LinearFields = {
   milestoneId: null, cycleId: null, estimate: null, dueDate: "", parent: "", templateId: null,
 };
 export const EMPTY_GITHUB: GitHubFields = { labels: [], assignees: [], milestone: null, type: null, parent: "", templateKey: null };
+export const EMPTY_JIRA: JiraFields = { projectKey: "", issueTypeId: "", assigneeAccountId: null, priorityId: null, labels: [], parentKey: "", dueDate: "" };
 
 const LAST_PROVIDER_KEY = "ade.issueCreate.lastProvider";
 const draftKey = (provider: IssueProvider, scope: string | null) => `ade.issueCreate.draft.v2:${provider}:${scope ?? ""}`;
@@ -64,6 +76,7 @@ export function readIssueDraft(provider: IssueProvider, scope: string | null): I
       body: typeof parsed.body === "string" ? parsed.body : "",
       linear: { ...EMPTY_LINEAR, ...(parsed.linear ?? {}), parent: "" },
       github: { ...EMPTY_GITHUB, ...(parsed.github ?? {}), parent: "" },
+      jira: { ...EMPTY_JIRA, ...(parsed.jira ?? {}), parentKey: "" },
       formAnswers: parsed.formAnswers && typeof parsed.formAnswers === "object" ? parsed.formAnswers : {},
     };
   } catch {
@@ -75,7 +88,16 @@ export function writeIssueDraft(provider: IssueProvider, scope: string | null, d
   try {
     const answered = Object.values(draft?.formAnswers ?? {}).some((answer) =>
       Array.isArray(answer) ? answer.some(Boolean) : String(answer ?? "").trim().length > 0);
-    if (!draft || (!draft.title.trim() && !draft.body.trim() && !answered)) {
+    const hasFields = Boolean(draft && (
+      draft.linear.teamKey || draft.linear.stateId || draft.linear.priority || draft.linear.assigneeId
+      || draft.linear.labelIds.length || draft.linear.projectId || draft.linear.milestoneId
+      || draft.linear.cycleId || draft.linear.estimate != null || draft.linear.dueDate || draft.linear.templateId
+      || draft.github.labels.length || draft.github.assignees.length || draft.github.milestone != null
+      || draft.github.type || draft.github.templateKey
+      || draft.jira?.projectKey || draft.jira?.issueTypeId || draft.jira?.assigneeAccountId
+      || draft.jira?.priorityId || draft.jira?.labels.length || draft.jira?.dueDate
+    ));
+    if (!draft || (!draft.title.trim() && !draft.body.trim() && !answered && !hasFields)) {
       window.localStorage.removeItem(draftKey(provider, scope));
       return;
     }
@@ -83,6 +105,7 @@ export function writeIssueDraft(provider: IssueProvider, scope: string | null, d
       ...draft,
       linear: { ...draft.linear, parent: "" },
       github: { ...draft.github, parent: "" },
+      jira: { ...(draft.jira ?? EMPTY_JIRA), parentKey: "" },
     };
     window.localStorage.setItem(draftKey(provider, scope), JSON.stringify(kept));
   } catch {
@@ -91,11 +114,13 @@ export function writeIssueDraft(provider: IssueProvider, scope: string | null, d
 }
 
 export function initialIssueProvider(request: IssueCreateRequest): IssueProvider {
-  if (request.prefill?.parent) return request.prefill.parent.provider;
-  if (request.provider) return request.provider;
+  if (request.prefill?.parent) {
+    return request.prefill.parent.provider;
+  }
+  if (request.provider === "linear" || request.provider === "github" || request.provider === "jira") return request.provider;
   try {
     const last = window.localStorage.getItem(LAST_PROVIDER_KEY);
-    if (last === "linear" || last === "github") return last;
+    if (last === "linear" || last === "github" || last === "jira") return last;
   } catch {
     // fall through
   }
@@ -121,6 +146,7 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   body: string;
   linear: LinearFields;
   github: GitHubFields;
+  jira: JiraFields;
   formAnswers: GitHubIssueFormAnswers;
 } {
   const provider = initialIssueProvider(request);
@@ -129,13 +155,16 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   const linear = { ...EMPTY_LINEAR, ...(hasPrefill ? {} : readIssueDraft("linear", scope)?.linear ?? {}) };
   const githubDraft = hasPrefill ? null : readIssueDraft("github", scope);
   const github = { ...EMPTY_GITHUB, ...(githubDraft?.github ?? {}) };
+  const jira = { ...EMPTY_JIRA, ...(hasPrefill ? {} : readIssueDraft("jira", scope)?.jira ?? {}) };
   const parent = request.prefill?.parent ?? null;
+  const jiraParent = parent?.provider === "jira" ? parent : null;
   return {
     provider,
     title: request.prefill?.title ?? draft?.title ?? "",
     body: request.prefill?.body ?? draft?.body ?? "",
     linear: parent?.provider === "linear" ? { ...linear, parent: parent.identifier, teamKey: parent.teamKey ?? linear.teamKey } : linear,
     github: parent?.provider === "github" ? { ...github, parent: String(parent.number) } : github,
+    jira: jiraParent ? { ...jira, parentKey: jiraParent.key } : jira,
     formAnswers: githubDraft?.formAnswers ?? {},
   };
 }

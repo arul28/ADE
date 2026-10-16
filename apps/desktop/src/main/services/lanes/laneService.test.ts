@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
 import type { LaneLifecycleEvent } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
 vi.mock("../git/git", () => ({
@@ -8072,6 +8073,57 @@ describe("laneService branch drift", () => {
   });
 });
 
+
+describe("laneService linked issue snapshot pages", () => {
+  it("caps snapshot reads at twelve and wraps a page from the end to the beginning", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T12:00:00.000Z"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-linked-issue-page-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-linked-issue-page", repoRoot });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-linked-issue-page",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const issues: LaneJiraIssue[] = Array.from({ length: 15 }, (_, index) => {
+        const suffix = String(index).padStart(2, "0");
+        return {
+          id: `jira-${suffix}`,
+          key: `KEY-${index + 1}`,
+          projectKey: "KEY",
+          siteUrl: "https://acme.atlassian.net",
+          title: `Issue ${index + 1}`,
+          url: `https://acme.atlassian.net/browse/KEY-${index + 1}`,
+          statusName: "To Do",
+          statusCategory: "new",
+          issueTypeName: "Task",
+          priorityName: null,
+          labels: [],
+          assigneeName: null,
+          createdAt: "2026-10-01T12:00:00.000Z",
+          updatedAt: "2026-10-01T12:00:00.000Z",
+        };
+      });
+      service.attachJiraIssueToSession({ chatSessionId: "chat-page", issues });
+
+      const page = service.listLinkedIssueSnapshotReferences({ chatSessionId: "chat-page", offset: 14, limit: 99 });
+
+      expect(page.totalCount).toBe(15);
+      expect(page.scanned).toBe(12);
+      expect(page.references).toHaveLength(12);
+      expect(page.references.map((reference) => reference.provider === "jira" ? reference.key : null))
+        .toEqual(["KEY-15", ...Array.from({ length: 11 }, (_, index) => `KEY-${index + 1}`)]);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseGitWorktreePorcelain", () => {
   // The parser resolves each recorded path, so expectations are built the same

@@ -1830,6 +1830,96 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     description: "Advanced action — pass arguments as JSON.",
     params: [],
   },
+  // ---------------------------------------------------------------------------
+  // jira
+  // ---------------------------------------------------------------------------
+  { domain: "jira", action: "getConnectionStatus", label: "Get Jira connection", description: "Check whether Jira is connected on the brain machine.", params: [] },
+  {
+    domain: "jira",
+    action: "listProjects",
+    label: "List Jira projects",
+    description: "Search Jira projects on the connected machine.",
+    params: [{ name: "query", type: "string", description: "Optional project name or key filter." }],
+  },
+  {
+    domain: "jira",
+    action: "listIssues",
+    label: "List Jira issues",
+    description: "List Jira issues with an optional project, state, assignee, or text filter.",
+    params: [
+      { name: "projectKeys", type: "string-array", description: "Project keys, such as ADE or PAY." },
+      { name: "state", type: "enum", enumValues: ["open", "done", "all"] },
+      { name: "assignee", type: "enum", enumValues: ["me", "any"] },
+      { name: "query", type: "string", description: "Words to search in Jira issues." },
+      { name: "limit", type: "number" },
+    ],
+  },
+  {
+    domain: "jira",
+    action: "getIssue",
+    label: "Get Jira issue",
+    description: "Read a Jira issue by key, including comments and permissions.",
+    params: [{ name: "key", type: "string", required: true, placeholder: "ADE-123" }],
+  },
+  {
+    domain: "jira",
+    action: "addComment",
+    label: "Comment on Jira issue",
+    description: "Post a markdown comment to a Jira issue.",
+    params: [
+      { name: "key", type: "string", required: true, placeholder: "ADE-123" },
+      { name: "body", type: "string", required: true },
+    ],
+  },
+  {
+    domain: "jira",
+    action: "updateIssue",
+    label: "Edit Jira issue",
+    description: "Update a Jira issue's title, description, labels, assignee, priority, or due date.",
+    params: [
+      { name: "key", type: "string", required: true, placeholder: "ADE-123" },
+      { name: "title", type: "string" },
+      { name: "description", type: "string" },
+      { name: "labels", type: "string-array" },
+      { name: "assigneeAccountId", type: "string" },
+      { name: "priorityId", type: "string" },
+      { name: "dueDate", type: "string" },
+    ],
+  },
+  {
+    domain: "jira",
+    action: "listTransitions",
+    label: "List Jira transitions",
+    description: "Read workflow transitions available for a Jira issue.",
+    params: [{ name: "key", type: "string", required: true, placeholder: "ADE-123" }],
+  },
+  {
+    domain: "jira",
+    action: "transitionIssue",
+    label: "Change Jira status",
+    description: "Move an issue through a transition available in its Jira workflow.",
+    params: [
+      { name: "key", type: "string", required: true, placeholder: "ADE-123" },
+      { name: "transitionId", type: "string", required: true },
+    ],
+  },
+  {
+    domain: "jira",
+    action: "createIssue",
+    label: "Create Jira issue",
+    description: "Create an issue in a Jira project using its available issue type.",
+    params: [
+      { name: "projectKey", type: "string", required: true },
+      { name: "issueTypeId", type: "string", required: true },
+      { name: "title", type: "string", required: true },
+      { name: "description", type: "string" },
+      { name: "labels", type: "string-array" },
+      { name: "assigneeAccountId", type: "string" },
+      { name: "priorityId", type: "string" },
+      { name: "parentKey", type: "string" },
+      { name: "dueDate", type: "string" },
+    ],
+  },
 ];
 
 export function findAdeActionSchema(domain: string, action: string): AdeActionSchema | undefined {

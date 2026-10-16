@@ -95,6 +95,7 @@ import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
+import { JiraIssuesButton } from "../issues/JiraIssuesButton";
 import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
@@ -1939,6 +1940,7 @@ export function TopBar({
         showTrigger={projectSurfaceVisible}
       />
       <GitHubIssuesButton showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton showTrigger={projectSurfaceVisible} />
     </>
   );
 
@@ -1987,6 +1989,7 @@ export function TopBar({
         showTrigger={projectSurfaceVisible}
       />
       <GitHubIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
+      <JiraIssuesButton variant="menu-row" onMenuActivate={onActivate} showTrigger={projectSurfaceVisible} />
       {usageHeaderPreferences.showInHeader ? (
         <HeaderUsageControl
           variant="menu-row"

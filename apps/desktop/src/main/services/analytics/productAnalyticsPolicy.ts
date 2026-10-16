@@ -433,7 +433,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
     "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop", "tool_issues",
     // Which tracker an issue made in ADE went to. Prefixed like the tool ids.
-    "tracker_linear", "tracker_github",
+    "tracker_linear", "tracker_github", "tracker_jira",
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",

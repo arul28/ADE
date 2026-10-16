@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ArrowClockwise, ArrowSquareOut, ChatCircleText, CircleNotch, DotsThree, Plus, Sparkle, X } from "@phosphor-icons/react";
-import type { AgentChatContextAttachment, LaneSummary } from "../../../shared/types";
+import type { AgentChatContextAttachment, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import type { IssueRef } from "../../../shared/issueRefs";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
@@ -22,6 +22,8 @@ export type IssueViewerProps = {
    * `pane` is the detail side of a top-bar issues pane.
    */
   variant: "tool" | "sheet" | "pane";
+  /** The remote runtime that owns the chat from which this issue was opened. */
+  pin?: OpenProjectBinding | null;
   /**
    * Attach the issue to the chat the tools pane serves. Absent when there is
    * no chat to attach to (the sheet, or a pane with no chat in focus).

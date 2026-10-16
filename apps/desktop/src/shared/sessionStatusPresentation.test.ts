@@ -170,16 +170,16 @@ describe("sessionStatusPresentation usage-limit resume", () => {
       usageLimitResume: resume("paused", "2026-08-17T21:30:00.000Z"),
       nowMs,
     })).toMatchObject({ label: "Paused · limit", tone: "amber", glyph: "waiting" });
-    // Neither of these is waiting for anything, so the row keeps its ordinary
-    // presentation instead of being quieted into a limit label.
+    // With no automatic restart planned, the limit still needs the user's
+    // attention and takes precedence over the ordinary phase.
     expect(sessionStatusPresentation("idle", {}, {
       usageLimitResume: resume("opted_out", null),
       nowMs,
-    })?.label).toBe("Done");
+    })).toMatchObject({ label: "Usage limit", tone: "amber", glyph: "waiting", prominent: true });
     expect(sessionStatusPresentation("failed", {}, {
       usageLimitResume: resume("no_reset", null),
       nowMs,
-    })).toMatchObject({ label: "Failed", tone: "red" });
+    })).toMatchObject({ label: "Usage limit", tone: "amber", glyph: "waiting", prominent: true });
   });
 
   it("outranks the red Failed label for the turn that died at the limit", () => {

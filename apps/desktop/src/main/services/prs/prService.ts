@@ -70,6 +70,7 @@ import type {
   PrSummary,
   PrSnapshotHydration,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   PrWithConflicts,
   PrActionCapabilities,
@@ -880,6 +881,15 @@ function applyGitHubPrLinkage(body: string, refs: GitHubPrIssueReference[]): str
   if (!refs.length) return body;
   const withMagicWords = ensureGitHubPrReferences(body, refs, { preserveExisting: false });
   return ensureGitHubPrIssueLinkSection(withMagicWords, refs);
+}
+
+function applyJiraPrLinkage(body: string, keys: string[]): string {
+  const uniqueKeys = [...new Set(keys.map((key) => key.trim().toUpperCase()).filter(Boolean))];
+  if (!uniqueKeys.length) return body;
+  const generatedJiraLine = /^Jira:\s*[A-Z][A-Z0-9_]*-\d+(?:,\s*[A-Z][A-Z0-9_]*-\d+)*\s*$/gim;
+  const cleanBody = body.replace(generatedJiraLine, "").trimEnd();
+  const line = "Jira: " + uniqueKeys.join(", ");
+  return cleanBody ? cleanBody + "\n\n" + line : line;
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -1721,13 +1731,33 @@ export function createPrService({
     );
   };
 
+  const collectJiraIssueKeysForLaneSessions = (laneId: string): string[] => {
+    let links: SessionJiraIssueLink[] = [];
+    try {
+      links = laneService.listJiraIssuesForLaneSessions?.({ laneId }) ?? [];
+    } catch (error) {
+      logger.warn("prs.jira_session_links_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    return [...new Set(
+      links
+        .filter((link) => link.includeInPr)
+        .map((link) => link.issue.key.trim().toUpperCase())
+        .filter(Boolean),
+    )];
+  };
+
   const applyIssuePrLinkage = (
     body: string,
     lane: LaneSummary,
     closePrimaryOnMerge: boolean,
   ): string => {
     const withLinear = applyLinearPrLinkage(body, lane, closePrimaryOnMerge);
-    return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
+    const withGitHub = applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
+    return applyJiraPrLinkage(withGitHub, collectJiraIssueKeysForLaneSessions(lane.id));
   };
 
   // Set by the runtime: runs after a PR's Linear cards are posted (proof upload).
@@ -7448,7 +7478,8 @@ export function createPrService({
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
       const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
-      if (!linearRefs.length && !githubRefs.length) return draft;
+      const jiraKeys = collectJiraIssueKeysForLaneSessions(lane.id);
+      if (!linearRefs.length && !githubRefs.length && !jiraKeys.length) return draft;
       const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
       if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

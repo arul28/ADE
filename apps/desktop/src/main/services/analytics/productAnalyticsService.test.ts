@@ -2018,7 +2018,7 @@ describe("product analytics producers", () => {
   });
 
   it("keeps the issue-created tracker through the sanitizer and nothing about the issue", () => {
-    for (const outcome of ["tracker_linear", "tracker_github"]) {
+    for (const outcome of ["tracker_linear", "tracker_github", "tracker_jira"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "issues",
         action: "issue_created",
@@ -2030,7 +2030,7 @@ describe("product analytics producers", () => {
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "issues",
       action: "issue_created",
-      outcome: "tracker_jira",
+      outcome: "tracker_asana",
       repo: "arul28/ADE",
       title: "Crash on launch",
       issue_number: 1520,

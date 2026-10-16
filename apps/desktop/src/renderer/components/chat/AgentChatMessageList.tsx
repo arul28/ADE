@@ -110,6 +110,7 @@ import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { getToolMeta } from "./chatToolAppearance";
 import { deriveChatSources, type ChatSource, type ChatSources } from "../../../shared/chatSources";
 import { ChatSourceIcon } from "./ChatSourcesPanel";
@@ -201,12 +202,12 @@ import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { VoiceSessionCard } from "./VoiceSessionCard";
-import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { TurnFailureLine } from "./TurnFailureLine";
+import { classifyProviderFailure, foldTurnFailureRows } from "./turnFailureRows";
 import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
-import { InstructionErrorCard } from "../shared/InstructionErrorCard";
 import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
@@ -1066,7 +1067,8 @@ function UserMessageSendConfirmations({
   if (event.deliveryState === "queued") return null;
 
   const contextAttachments = event.contextAttachments ?? [];
-  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
+  const hasIssueContext = contextAttachments.some((a) =>
+    a.type === "linear_issue" || a.type === "github_issue" || a.type === "jira_issue");
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
   if (!showSimRow && !hasIssueContext) return null;
@@ -1222,6 +1224,8 @@ type RenderEnvelope = {
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
   /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
+  endedAtUsageLimit?: boolean;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -2547,6 +2551,7 @@ function renderEvent(
     laneId?: string | null;
     sessionId?: string | null;
     runtimeName?: string | null;
+    jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
     turnDiffSummaries?: TurnDiffSummary[];
@@ -2881,6 +2886,7 @@ function renderEvent(
               <UserMessageIssueContext
                 attachments={event.attachments ?? []}
                 contextAttachments={event.contextAttachments ?? []}
+                jiraIssueSnapshotsById={options?.jiraIssueSnapshotsById}
                 mode={options?.surfaceMode ?? "standard"}
                 sessionId={options?.sessionId}
                 accepted={userMessageAttachmentsAccepted(event)}
@@ -3991,41 +3997,17 @@ function renderEvent(
       );
     }
     return (
-      <div className={cn(GLASS_CARD_CLASS, "group border-border/50 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
-        <div className="p-3">
-          <InstructionErrorCard
-            presentation={presentation}
-            disabled={Boolean(options?.sessionTurnActive)}
-            onRetry={options?.onRetryProviderFailure && !recovery
-              ? () => { void options.onRetryProviderFailure!(event.turnId ?? null); }
-              : undefined}
-          />
-          {recovery ? (
-            <ProviderFailureRecoveryCard
-              recovery={recovery}
-              disabled={Boolean(options?.sessionTurnActive)}
-              onRetry={options?.onRetryProviderFailure
-                ? () => options.onRetryProviderFailure!(event.turnId ?? null)
-                : undefined}
-              onChooseModel={options?.onChooseProviderFailureModel}
-            />
-          ) : null}
-          {renderAgentCliAuthCard()}
-          {/* Names the failure class ("Provider capacity", "Usage limit") or the
-              raw provider/model identity. The instruction card above says what
-              to do; this says which thing went wrong, and dropping it would
-              lose the only place a Codex usage limit is distinguishable from a
-              generic stop. */}
-          {event.errorInfo && !agentCliInfo ? (
-            <div
-              className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40"
-              title={typeof event.errorInfo === "string" ? event.errorInfo : undefined}
-            >
-              {recovery?.label
-                ?? (typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`)}
-            </div>
-          ) : null}
-        </div>
+      <div className="flex flex-col gap-2">
+        <TurnFailureLine
+          presentation={presentation}
+          title={recovery?.kind === "capacity" ? "Model at capacity" : undefined}
+          repeatCount={envelope.repeatCount ?? 1}
+          disabled={Boolean(options?.sessionTurnActive)}
+          onRetry={options?.onRetryProviderFailure
+            ? () => options.onRetryProviderFailure!(event.turnId ?? null)
+            : undefined}
+        />
+        {renderAgentCliAuthCard()}
       </div>
     );
   }
@@ -4375,6 +4357,8 @@ function DoneTurnDivider({
   turnDiffSummary = null,
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
+  endedAtUsageLimit = false,
+  repeatCount = 1,
   workSummaryInFold = false,
   turnSources,
   onOpenTurnSources,
@@ -4401,6 +4385,10 @@ function DoneTurnDivider({
    * attach a 429 to the result frame.
    */
   usageLimitResumeTurnId?: string | null;
+  /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
+  endedAtUsageLimit?: boolean;
+  /** Identical failed retries folded into this turn, itself included. */
+  repeatCount?: number;
   toolEntries: ChatWorkLogEntry[];
   /** Opens the Files tab for this lane. Not a revert — see handleReviewChanges. */
   onReviewInFiles?: () => void;
@@ -4444,9 +4432,15 @@ function DoneTurnDivider({
   // So the loud `FAILED · api error · USAGE …` line collapses to one quiet
   // sentence and the token accounting moves behind the details toggle, where
   // it stays available without competing with the one fact that matters.
-  const usageLimitPaused = !completed && isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitLive = isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitPaused = !completed && (usageLimitLive || endedAtUsageLimit);
+  const usageLimitElapsed = durationMs !== null ? formatTurnDuration(durationMs) : null;
+  // Only the turn the live limit is anchored to is "paused"; an older limited
+  // turn is history and says just what happened.
   const usageLimitLabel = usageLimitPaused
-    ? usageLimitTurnFooterLabel(durationMs !== null ? formatTurnDuration(durationMs) : null)
+    ? `${usageLimitLive
+      ? usageLimitTurnFooterLabel(usageLimitElapsed)
+      : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
     : null;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
@@ -4832,6 +4826,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopyText?: string | null;
@@ -4914,6 +4909,7 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
+  jiraIssueSnapshotsById,
   runtimePin,
   anchored,
   onScrollToRowKey,
@@ -5032,6 +5028,7 @@ const EventRow = React.memo(function EventRow({
             laneId,
             sessionId,
             runtimeName,
+            jiraIssueSnapshotsById,
             runtimePin,
             onRevealChatTerminal,
             chatInfoHostAvailable,
@@ -5072,6 +5069,8 @@ const EventRow = React.memo(function EventRow({
             : null}
           turnDiffSummaries={turnDiffSummaries}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
+          endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+          repeatCount={envelope.repeatCount ?? 1}
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
@@ -5544,6 +5543,7 @@ function AgentChatMessageListMain({
   laneId,
   runtimePin = null,
   sessionId,
+  jiraIssueSnapshotsById,
   scrollMemoryKey,
   transcriptCollapseCacheKey,
   onInsertDraft,
@@ -5640,6 +5640,8 @@ function AgentChatMessageListMain({
    * read `useChatRuntimeScope()`, which the pane provides with this same value.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** Fresh Jira snapshots from the owning chat session, overlaid on old message attachments. */
+  jiraIssueSnapshotsById?: ReadonlyMap<string, LaneJiraIssue>;
   sessionId?: string | null;
   /** Separate scroll state for the parent and a drilled-in native transcript. */
   scrollMemoryKey?: string | null;
@@ -6097,10 +6099,10 @@ function AgentChatMessageListMain({
     // broke activity phases — two Thinking rows separated only by a hidden
     // `context_usage` row stayed two rows instead of merging into one.
     () => {
-      const next = groupChatTranscriptRows(
+      const next = foldTurnFailureRows(groupChatTranscriptRows(
         filterVisibleTranscriptRows(rows),
         previousAllGroupedRowsRef.current,
-      );
+      ));
       previousAllGroupedRowsRef.current = next;
       return next;
     },
@@ -8221,6 +8223,7 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
+          jiraIssueSnapshotsById={jiraIssueSnapshotsById}
           runtimePin={runtimePin}
           anchored={anchored}
           onScrollToRowKey={rowScrollToRowKey}
@@ -8296,7 +8299,8 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
-          runtimePin={runtimePin}
+        jiraIssueSnapshotsById={jiraIssueSnapshotsById}
+        runtimePin={runtimePin}
         anchored={anchored}
         onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopyText={assistantTurnCopyText}
@@ -8314,7 +8318,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

@@ -81,6 +81,7 @@ import {
   type ChatLaunchLaneConfig,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import { formatWorkingDuration, turnStallSilenceMs } from "../../../shared/sessionStatusPresentation";
 import { latestTurnProgressAt, turnHasOpenWork } from "../../../shared/turnInFlight";
@@ -207,7 +208,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { SceneReplyContext } from "./SceneFrame";
-import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
+import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
@@ -2479,6 +2480,8 @@ function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): stri
       return `${attachment.type}:${attachment.issue.id}`;
     case "github_issue":
       return `${attachment.type}:${attachment.issue.id}`;
+    case "jira_issue":
+      return `${attachment.type}:${attachment.issue.id}`;
   }
 }
 
@@ -4060,6 +4063,10 @@ export function AgentChatPane({
     && selectedSessionId == null
     && Boolean(onLaunchCliSession);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
+  const [jiraIssueSnapshots, setJiraIssueSnapshots] = useState<{
+    sessionId: string;
+    byId: ReadonlyMap<string, LaneJiraIssue>;
+  } | null>(null);
   // Older-transcript pagination: byte-offset cursor (line start) where the
   // oldest loaded transcript window begins. 0 = head reached; missing key =
   // pagination unavailable (no truncated transcript / old runtime).
@@ -5263,6 +5270,54 @@ export function AgentChatPane({
     }
     return displayEvents;
   }, [chatLaunch, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
+  const selectedHasJiraIssueContext = useMemo(
+    () => selectedEventsForDisplay.some(({ event }) => (
+      event.type === "user_message"
+      && event.contextAttachments?.some((attachment) => attachment.type === "jira_issue")
+    )),
+    [selectedEventsForDisplay],
+  );
+  useEffect(() => {
+    if (!renderedSessionId || !selectedHasJiraIssueContext || personalScope) {
+      setJiraIssueSnapshots(null);
+      return;
+    }
+
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+    const refresh = () => {
+      const listIssues = window.ade?.lanes?.listJiraIssuesForSession;
+      if (!listIssues) return;
+      void listIssues({ chatSessionId: renderedSessionId }, chatRuntimePinRef.current)
+        .then((links) => {
+          if (cancelled) return;
+          setJiraIssueSnapshots({
+            sessionId: renderedSessionId,
+            byId: new Map(links.map((link) => [link.issue.id, link.issue])),
+          });
+        })
+        .catch(() => {
+          // Keep the last readable snapshot and the historical attachment on a transient read failure.
+        });
+    };
+    refresh();
+    const unsubscribe = chatScopeLaneId
+      ? window.ade?.lanes?.onLifecycleEvent?.((event) => {
+        if (event.type !== "lanes-invalidated" || event.laneId !== chatScopeLaneId) return;
+        if (refreshTimer != null) window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => {
+          refreshTimer = null;
+          refresh();
+        }, 150);
+      })
+      : undefined;
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      unsubscribe?.();
+    };
+  }, [chatRuntimePinKey, chatScopeLaneId, personalScope, renderedSessionId, selectedHasJiraIssueContext]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -16270,23 +16325,14 @@ export function AgentChatPane({
   const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
     <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
-  // The whole usage-limit surface: one line, above the composer, in the same
-  // capped column the prompt box uses so the two share an edge. It is an
-  // ordinary flow child (its popover is the absolutely-positioned part), so it
-  // moves the composer by its own height and by nothing else.
-  const usageLimitPill = usageLimitResume && composerSessionId ? (
-    <div
-      className={cn(
-        "px-0.5",
-        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-      )}
-    >
-      <ChatUsageLimitResumePill
-        sessionId={composerSessionId}
-        resume={usageLimitResume}
-        runtimePin={renderedChatRuntimePin}
-      />
-    </div>
+  // The usage-limit chip sits in the composer's status row with the other
+  // chips, so a limit, a branch drift and a compact offer can show at once.
+  const usageLimitChip = usageLimitResume && composerSessionId ? (
+    <UsageLimitChip
+      sessionId={composerSessionId}
+      resume={usageLimitResume}
+      runtimePin={renderedChatRuntimePin}
+    />
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
@@ -16897,6 +16943,7 @@ export function AgentChatPane({
     >
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
+        {usageLimitChip}
         <LaneBranchComposerChip laneId={laneId} />
         {compactFirstChip}
         {sessionDelta ? (
@@ -17113,7 +17160,6 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
-      {usageLimitPill}
       {claudeModUi}
       {composerElement}
     </div>
@@ -17466,7 +17512,12 @@ export function AgentChatPane({
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
                         usageLimitResumeActive={usageLimitResume != null}
-                        usageLimitResumeTurnId={usageLimitResume?.turnId ?? null}
+                        // Only a limit ADE is waiting out reads "Paused"; one with no
+                        // reset or with auto-resume off reads "Usage limit".
+                        usageLimitResumeTurnId={usageLimitResume
+                          && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
+                          ? usageLimitResume.turnId ?? null
+                          : null}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.
@@ -17503,6 +17554,7 @@ export function AgentChatPane({
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
+                        jiraIssueSnapshotsById={jiraIssueSnapshots?.sessionId === renderedSessionId ? jiraIssueSnapshots.byId : undefined}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={listInsertDraft}
                         onRevealChatTerminal={listRevealChatTerminal}
@@ -17541,8 +17593,7 @@ export function AgentChatPane({
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
-                        {usageLimitPill}
-                        {claudeModUi}
+                                          {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}

@@ -203,6 +203,22 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     },
     listGitHubIssuesForSession: (args: unknown) => call("lanes.listGitHubIssuesForSession", args, []),
     listGitHubIssuesForLaneSessions: (args: unknown) => call("lanes.listGitHubIssuesForLaneSessions", args, []),
+    attachJiraIssueToSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("attachJiraIssueToSession", pin);
+      return call("lanes.attachJiraIssueToSession", args, [], false);
+    },
+    detachJiraIssueFromSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("detachJiraIssueFromSession", pin);
+      return call("lanes.detachJiraIssueFromSession", args, false, false);
+    },
+    listJiraIssuesForSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listJiraIssuesForSession", pin);
+      return call("lanes.listJiraIssuesForSession", args, []);
+    },
+    listJiraIssuesForLaneSessions: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listJiraIssuesForLaneSessions", pin);
+      return call("lanes.listJiraIssuesForLaneSessions", args, []);
+    },
     rebaseStart: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rebaseStart", pin);
       return call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false);

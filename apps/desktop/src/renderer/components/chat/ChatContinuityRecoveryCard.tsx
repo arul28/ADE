@@ -25,8 +25,8 @@ const SELECT_SESSION_EVENT = "ade:work:select-session";
 type RecoverMode = AgentChatContinuityRecoveryResult["mode"];
 
 // Warm amber, never red — a chat whose provider thread couldn't be resumed is
-// recoverable, not a crash. Card + button chrome mirror ProviderFailureRecoveryCard
-// and AgentCliAuthCard so the three recovery surfaces read as one family.
+// recoverable, not a crash. Card + button chrome mirror AgentCliAuthCard so the
+// recovery surfaces read as one family.
 const CARD_CLASS =
   "mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-amber-400/[0.045] px-3 py-2.5";
 const PRIMARY_BUTTON_CLASS =

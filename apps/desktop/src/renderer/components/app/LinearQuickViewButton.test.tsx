@@ -6,10 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { BatchLaunchItemState } from "../../lib/linearBatchLaunch";
 import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { buildLinearLaunchIssue } from "../../lib/linearBatchLaunch";
 import { SessionLaunchModelControls } from "../shared/SessionLaunchModelControls";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import { ToastStack } from "./toast/ToastStack";
-import { dismissToast, getToasts } from "./toast/toastStore";
+import { dismissToast, getToasts, READABLE_TOAST_DURATION_MS } from "./toast/toastStore";
 
 afterEach(() => {
   cleanup();
@@ -83,7 +84,7 @@ function state(
   patch: Partial<BatchLaunchItemState>,
 ): BatchLaunchItemState {
   return {
-    issue: issue(id, identifier),
+    issue: buildLinearLaunchIssue(issue(id, identifier)),
     status: "done",
     laneId: `lane-${id}`,
     sessionId: `session-${id}`,
@@ -199,7 +200,7 @@ describe("LinearQuickViewButton batch-launch UI", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it("auto-dismisses a fully successful batch after the short beat", () => {
+  it("keeps a fully successful batch readable for the toast duration", () => {
     vi.useFakeTimers();
     try {
       const onDismiss = vi.fn();
@@ -211,7 +212,7 @@ describe("LinearQuickViewButton batch-launch UI", () => {
           onOpenLane={vi.fn()}
         />,
       );
-      vi.advanceTimersByTime(3199);
+      vi.advanceTimersByTime(READABLE_TOAST_DURATION_MS - 1);
       expect(onDismiss).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
       expect(onDismiss).toHaveBeenCalledTimes(1);

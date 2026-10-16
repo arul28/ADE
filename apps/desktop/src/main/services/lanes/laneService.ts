@@ -28,6 +28,13 @@ import {
   parseLaneGitHubIssueJson,
   parseLaneGitHubIssueValue,
 } from "../../../shared/laneGitHubIssue";
+import {
+  cloneLaneJiraIssue,
+  parseLaneJiraIssueJson,
+  parseLaneJiraIssueValue,
+} from "../../../shared/laneJiraIssue";
+import type { IssueRef } from "../../../shared/issueRefs";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
@@ -58,6 +65,7 @@ import type {
   LaneBranchSwitchResult,
   LaneGitHubIssue,
   LaneGitHubIssueLink,
+  LaneJiraIssueLink,
   LaneLinearIssue,
   LinearIssueSnapshotPatch,
   LaneLinearIssueLink,
@@ -86,6 +94,7 @@ import type {
   RebasePushArgs,
   PushMode,
   SessionGitHubIssueLink,
+  SessionJiraIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   UpdateLaneAppearanceArgs
@@ -191,6 +200,14 @@ type SessionLinearIssueLinkRow = {
 };
 
 type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
+type SessionJiraIssueLinkRow = SessionLinearIssueLinkRow;
+
+export type LinkedIssueSnapshotPatch = {
+  reference: IssueRef;
+  title: string;
+  state: { name: string; type?: string | null } | null;
+  updatedAt?: string | null;
+};
 
 const DEFAULT_LANE_STATUS: LaneStatus = {
   dirty: false,
@@ -515,6 +532,11 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
       issue: cloneLaneGitHubIssue(link.issue),
       evidence: link.evidence ? { ...link.evidence } : link.evidence,
     })),
+    jiraIssueLinks: (summary.jiraIssueLinks ?? []).map((link) => ({
+      ...link,
+      issue: cloneLaneJiraIssue(link.issue),
+      evidence: link.evidence ? { ...link.evidence } : link.evidence,
+    })),
   };
 }
 
@@ -805,8 +827,34 @@ function parseSessionGitHubIssueLink(row: SessionGitHubIssueLinkRow | null | und
   };
 }
 
+function parseSessionJiraIssueLink(row: SessionJiraIssueLinkRow | null | undefined): SessionJiraIssueLink | null {
+  if (!row) return null;
+  const issue = parseLaneJiraIssueJson(row.issue_json);
+  if (!issue) return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    laneId: row.lane_id ?? null,
+    issue,
+    role: normalizeLaneLinearIssueLinkRole(row.role),
+    source: normalizeLaneLinearIssueLinkSource(row.source),
+    includeInPr: row.include_in_pr === 1,
+    closeOnMerge: row.close_on_merge === 1,
+    evidence: parseIssueLinkEvidence(row.evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 /** The lane-shaped view of a GitHub issue link; a lane's own link has no chat in its evidence. */
 function laneGitHubIssueLinkFromSession(link: SessionGitHubIssueLink | null): LaneGitHubIssueLink | null {
+  if (!link?.laneId) return null;
+  const { sessionId: _sessionId, ...rest } = link;
+  return { ...rest, laneId: link.laneId };
+}
+
+/** The lane-shaped view of a Jira issue link. */
+function laneJiraIssueLinkFromSession(link: SessionJiraIssueLink | null): LaneJiraIssueLink | null {
   if (!link?.laneId) return null;
   const { sessionId: _sessionId, ...rest } = link;
   return { ...rest, laneId: link.laneId };
@@ -859,6 +907,7 @@ function toLaneSummary(args: {
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
   githubIssueLinks?: LaneGitHubIssueLink[];
+  jiraIssueLinks?: LaneJiraIssueLink[];
 }): LaneSummary {
   const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
   const linearIssueLinks = mergePrimaryLinearIssueLink(row.id, linearIssue ?? null, args.linearIssueLinks ?? [], row.created_at);
@@ -894,6 +943,7 @@ function toLaneSummary(args: {
     linearIssue: linearIssue ?? null,
     linearIssueLinks,
     githubIssueLinks: args.githubIssueLinks ?? [],
+    jiraIssueLinks: args.jiraIssueLinks ?? [],
   };
 }
 
@@ -1816,6 +1866,90 @@ export function createLaneService({
     return [...touched];
   };
 
+  const refreshLinkedIssueSnapshot = (patch: LinkedIssueSnapshotPatch): string[] => {
+    const touched = new Set<string>();
+    const reference = patch.reference;
+    const now = new Date().toISOString();
+    const updatedAt = patch.updatedAt || now;
+    const isFreshEnough = (current: { updatedAt: string }) => !(current.updatedAt && current.updatedAt > updatedAt);
+    const applyLaneId = (laneId: string | null) => { if (laneId) touched.add(laneId); };
+
+    if (reference.provider === "linear") {
+      const update = (table: "lane_linear_issues" | "lane_linear_issue_links" | "session_linear_issues") => {
+        const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+          `select id, lane_id, issue_json from ${table} where project_id = ?`,
+          [projectId],
+        );
+        for (const row of rows) {
+          const current = parseLaneLinearIssueJson(row.issue_json);
+          if (!current || (current.identifier.toUpperCase() !== reference.identifier.toUpperCase() && current.id !== reference.identifier) || !isFreshEnough(current)) continue;
+          const next = { ...current, title: patch.title || current.title, updatedAt };
+          if (patch.state) {
+            next.stateName = patch.state.name;
+            if (patch.state.type) next.stateType = patch.state.type;
+          }
+          if (next.title === current.title && next.stateName === current.stateName && next.stateType === current.stateType) continue;
+          db.run(`update ${table} set issue_json = ?, updated_at = ? where id = ?`, [JSON.stringify(next), now, row.id]);
+          applyLaneId(row.lane_id);
+        }
+      };
+      update("lane_linear_issues");
+      update("lane_linear_issue_links");
+      update("session_linear_issues");
+    } else if (reference.provider === "github") {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_github_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneGitHubIssueJson(row.issue_json);
+        if (!current || current.owner.toLocaleLowerCase() !== reference.owner.toLocaleLowerCase()
+          || current.repo.toLocaleLowerCase() !== reference.repo.toLocaleLowerCase()
+          || current.number !== reference.number || !isFreshEnough(current)) continue;
+        const stateName = patch.state?.name.toLocaleLowerCase();
+        const state = stateName === "closed" || stateName === "done" || stateName === "completed"
+          || patch.state?.type === "completed" ? "closed"
+          : stateName === "open" || patch.state?.type === "open" ? "open"
+            : current.state;
+        const next = { ...current, title: patch.title || current.title, state, updatedAt };
+        if (next.title === current.title && next.state === current.state) continue;
+        db.run("update session_github_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    } else {
+      const rows = db.all<{ id: string; lane_id: string | null; issue_json: string }>(
+        "select id, lane_id, issue_json from session_jira_issues where project_id = ?",
+        [projectId],
+      );
+      for (const row of rows) {
+        const current = parseLaneJiraIssueJson(row.issue_json);
+        if (!current || current.key.toLocaleUpperCase() !== reference.key.toLocaleUpperCase()
+          || current.siteUrl.replace(/\/+$/, "").toLocaleLowerCase() !== reference.siteUrl.replace(/\/+$/, "").toLocaleLowerCase()
+          || !isFreshEnough(current)) continue;
+        const category = patch.state?.type === "new" || patch.state?.type === "indeterminate" || patch.state?.type === "done"
+          ? patch.state.type
+          : patch.state?.name.toLocaleLowerCase().includes("done") ? "done"
+            : patch.state?.name.toLocaleLowerCase().includes("progress") ? "indeterminate"
+              : patch.state ? "new" : current.statusCategory;
+        const next = {
+          ...current,
+          title: patch.title || current.title,
+          ...(patch.state ? { statusName: patch.state.name, statusCategory: category } : {}),
+          updatedAt,
+        };
+        if (next.title === current.title && next.statusName === current.statusName && next.statusCategory === current.statusCategory) continue;
+        db.run("update session_jira_issues set issue_json = ?, updated_at = ? where id = ?", [JSON.stringify(next), now, row.id]);
+        applyLaneId(row.lane_id);
+      }
+    }
+
+    if (touched.size) {
+      invalidateLaneListCache();
+      for (const laneId of touched) broadcastLifecycleEvent({ type: "lanes-invalidated", laneId, laneName: "" });
+    }
+    return [...touched];
+  };
+
   /**
    * GitHub issues the lane is linked to: its own link (a lane made for an
    * issue, stored under the session id `lane:<laneId>`) and every chat in it
@@ -1834,6 +1968,24 @@ export function createLaneService({
         [projectId, laneId],
       ).map((row) => laneGitHubIssueLinkFromSession(parseSessionGitHubIssueLink(row)))
         .filter((link): link is LaneGitHubIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
+  const getLaneJiraIssueLinks = (laneId: string): LaneJiraIssueLink[] => {
+    try {
+      return db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and lane_id = ?
+          order by updated_at desc
+        `,
+        [projectId, laneId],
+      ).map((row) => laneJiraIssueLinkFromSession(parseSessionJiraIssueLink(row)))
+        .filter((link): link is LaneJiraIssueLink => Boolean(link));
     } catch {
       return [];
     }
@@ -2080,6 +2232,27 @@ export function createLaneService({
     }
   };
 
+  const getSessionJiraIssueLinks = (sessionId: string): SessionJiraIssueLink[] => {
+    const id = sessionId.trim();
+    if (!id) return [];
+    try {
+      return db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and session_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId, id],
+      ).map(parseSessionJiraIssueLink).filter((link): link is SessionJiraIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
   const upsertSessionGitHubIssueLink = (args: {
     sessionId: string;
     laneId?: string | null;
@@ -2152,6 +2325,78 @@ export function createLaneService({
     }
   };
 
+  const upsertSessionJiraIssueLink = (args: {
+    sessionId: string;
+    laneId?: string | null;
+    issue: LaneJiraIssue;
+    role: LaneLinearIssueLinkRole;
+    source: LaneLinearIssueLinkSource;
+    includeInPr?: boolean;
+    closeOnMerge?: boolean;
+    evidence?: SessionJiraIssueLink["evidence"];
+  }): SessionJiraIssueLink => {
+    const sessionId = args.sessionId.trim();
+    const laneId = args.laneId?.trim() || null;
+    const now = new Date().toISOString();
+    const includeInPr = args.includeInPr !== false;
+    const closeOnMerge = args.closeOnMerge === true;
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from session_jira_issues
+          where project_id = ?
+            and session_id = ?
+            and issue_id = ?
+            and role = ?
+        `,
+        [projectId, sessionId, args.issue.id, args.role],
+      );
+      const id = randomUUID();
+      db.run(
+        `
+          insert into session_jira_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+            include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          sessionId,
+          laneId,
+          args.issue.id,
+          JSON.stringify(args.issue),
+          args.role,
+          args.source,
+          includeInPr ? 1 : 0,
+          closeOnMerge ? 1 : 0,
+          args.evidence ? JSON.stringify(args.evidence) : null,
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+      return {
+        id,
+        sessionId,
+        laneId,
+        issue: cloneLaneJiraIssue(args.issue),
+        role: args.role,
+        source: args.source,
+        includeInPr,
+        closeOnMerge,
+        evidence: args.evidence ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep original issue-link error */ }
+      throw err;
+    }
+  };
+
   /** A lane made for a GitHub issue: one link row under `lane:<laneId>`, so its PR closes the issue. */
   const linkGitHubIssueToLane = (laneId: string, value: LaneGitHubIssue | null): void => {
     const issue = value ? parseLaneGitHubIssueValue(value) : null;
@@ -2170,6 +2415,30 @@ export function createLaneService({
       logger.warn("laneService.github_issue_link_failed", {
         laneId,
         issueId: issue.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /** A lane made for a Jira issue keeps its own issue link for PR references. */
+  const linkJiraIssueToLane = (laneId: string, value: LaneJiraIssue | null): void => {
+    const issue = value ? parseLaneJiraIssueValue(value) : null;
+    if (!issue) return;
+    try {
+      upsertSessionJiraIssueLink({
+        sessionId: `lane:${laneId}`,
+        laneId,
+        issue,
+        role: "primary",
+        source: "lane_link",
+        includeInPr: true,
+        closeOnMerge: false,
+      });
+    } catch (error) {
+      logger.warn("laneService.jira_issue_link_failed", {
+        laneId,
+        issueId: issue.id,
+        issueKey: issue.key,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -3116,6 +3385,11 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    db.run("update session_jira_issues set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
     // Child lanes / branch profiles re-parent onto the keeper.
     db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
       keeperId,
@@ -3741,6 +4015,29 @@ export function createLaneService({
       // Non-fatal — linked issue metadata is additive.
     }
 
+    const jiraIssueLinksByLaneId = new Map<string, LaneJiraIssueLink[]>();
+    try {
+      const jiraRows = db.all<SessionJiraIssueLinkRow>(
+        `
+          select *
+          from session_jira_issues
+          where project_id = ?
+            and lane_id is not null
+          order by updated_at desc
+        `,
+        [projectId],
+      );
+      for (const jiraRow of jiraRows) {
+        const link = laneJiraIssueLinkFromSession(parseSessionJiraIssueLink(jiraRow));
+        if (!link) continue;
+        const list = jiraIssueLinksByLaneId.get(link.laneId) ?? [];
+        list.push(link);
+        jiraIssueLinksByLaneId.set(link.laneId, list);
+      }
+    } catch {
+      // Non-fatal — linked issue metadata is additive.
+    }
+
     for (const row of activeRows) {
       if (!row.parent_lane_id) continue;
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
@@ -3830,6 +4127,7 @@ export function createLaneService({
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
             linearIssueLinks: linearIssueLinksByLaneId.get(row.id) ?? [],
             githubIssueLinks: githubIssueLinksByLaneId.get(row.id) ?? [],
+            jiraIssueLinks: jiraIssueLinksByLaneId.get(row.id) ?? [],
           })
         );
         if (includeStatus) {
@@ -3896,6 +4194,7 @@ export function createLaneService({
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
     githubIssue?: LaneGitHubIssue | null;
+    jiraIssue?: LaneJiraIssue | null;
   }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
     const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
@@ -4033,6 +4332,7 @@ export function createLaneService({
           ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
           : null;
         linkGitHubIssueToLane(laneId, args.githubIssue ?? null);
+        linkJiraIssueToLane(laneId, args.jiraIssue ?? null);
         invalidateLanePathCaches();
 
       } catch (error) {
@@ -4084,6 +4384,7 @@ export function createLaneService({
       linearIssue,
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
       githubIssueLinks: getLaneGitHubIssueLinks(laneId),
+      jiraIssueLinks: getLaneJiraIssueLinks(laneId),
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
 
@@ -4541,6 +4842,18 @@ export function createLaneService({
     db.run(
       `
         delete from session_github_issues
+        where project_id = ?
+          and (
+            lane_id = ?
+            or session_id in (select id from terminal_sessions where lane_id = ?)
+            or session_id in (select session_id from claude_sessions where lane_id = ?)
+          )
+      `,
+      [projectId, laneId, laneId, laneId],
+    );
+    db.run(
+      `
+        delete from session_jira_issues
         where project_id = ?
           and (
             lane_id = ?
@@ -5107,6 +5420,7 @@ export function createLaneService({
     },
 
     refreshLinearIssueSnapshots,
+    refreshLinkedIssueSnapshot,
     hasLinearLinkedLanes,
 
     async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {
@@ -5164,6 +5478,7 @@ export function createLaneService({
         linearIssue: getLaneLinearIssue(row.id),
         linearIssueLinks: getLaneLinearIssueLinks(row.id),
         githubIssueLinks: getLaneGitHubIssueLinks(row.id),
+        jiraIssueLinks: getLaneJiraIssueLinks(row.id),
       });
     },
 
@@ -5542,6 +5857,161 @@ export function createLaneService({
       }
     },
 
+    /** Attach Jira issues to a chat or CLI session, and mirror them onto its lane. */
+    attachJiraIssueToSession(args: {
+      chatSessionId: string;
+      issues: LaneJiraIssue[];
+      role?: LaneLinearIssueLinkRole;
+      source?: LaneLinearIssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: SessionJiraIssueLink["evidence"];
+    }): SessionJiraIssueLink[] {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const laneId = resolveSessionLaneId(chatSessionId);
+      const role = args.role ?? "worked";
+      const source = args.source ?? "chat_attach";
+      const includeInPr = args.includeInPr ?? true;
+      const closeOnMerge = args.closeOnMerge ?? false;
+      const evidence = args.evidence ?? { chatSessionId };
+      const links: SessionJiraIssueLink[] = [];
+      const seen = new Set<string>();
+      for (const issue of args.issues) {
+        const normalized = parseLaneJiraIssueValue(issue);
+        if (!normalized || seen.has(normalized.id)) continue;
+        seen.add(normalized.id);
+        links.push(upsertSessionJiraIssueLink({
+          sessionId: chatSessionId,
+          laneId,
+          issue: normalized,
+          role,
+          source,
+          includeInPr,
+          closeOnMerge,
+          evidence,
+        }));
+      }
+      if (laneId && links.length > 0) invalidateLaneListCache();
+      return links;
+    },
+
+    detachJiraIssueFromSession(args: { chatSessionId: string; issueId?: string }): boolean {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const issueId = args.issueId?.trim() || null;
+      const before = getSessionJiraIssueLinks(chatSessionId);
+      const target = issueId
+        ? before.filter((link) => link.issue.id === issueId || link.issue.key === issueId)
+        : before;
+      if (!target.length) return false;
+      db.run("begin");
+      try {
+        for (const link of target) {
+          db.run(
+            "delete from session_jira_issues where project_id = ? and id = ?",
+            [projectId, link.id],
+          );
+          if (link.laneId && !chatSessionId.startsWith("lane:")) {
+            db.run(
+              "delete from session_jira_issues where project_id = ? and session_id = ? and issue_id = ?",
+              [projectId, `lane:${link.laneId}`, link.issue.id],
+            );
+          }
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep original detach error */ }
+        throw err;
+      }
+      if (target.some((link) => link.laneId)) invalidateLaneListCache();
+      return true;
+    },
+
+    listJiraIssuesForSession(args: { chatSessionId: string }): SessionJiraIssueLink[] {
+      return getSessionJiraIssueLinks(args.chatSessionId);
+    },
+
+    /** Read a bounded, rotating page of every tracker linked to one session. */
+    listLinkedIssueSnapshotReferences(args: {
+      chatSessionId: string;
+      offset: number;
+      limit: number;
+    }): { references: IssueRef[]; totalCount: number; scanned: number } {
+      const sessionId = args.chatSessionId.trim();
+      if (!sessionId) return { references: [], totalCount: 0, scanned: 0 };
+      const limit = Math.min(12, Math.max(1, Math.floor(args.limit)));
+      const countRow = db.get<{ count: number }>(
+        `
+          select
+            (select count(*) from session_linear_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_github_issues where project_id = ? and session_id = ?) +
+            (select count(*) from session_jira_issues where project_id = ? and session_id = ?) as count
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId],
+      );
+      const totalCount = Math.max(0, Number(countRow?.count) || 0);
+      if (!totalCount) return { references: [], totalCount: 0, scanned: 0 };
+
+      const offset = Math.max(0, Math.floor(args.offset)) % totalCount;
+      const readPage = (pageLimit: number, pageOffset: number) => db.all<{ provider: string; issue_json: string }>(
+        `
+          select provider, issue_json
+          from (
+            select 'linear' as provider, issue_json, role, updated_at, issue_id
+            from session_linear_issues where project_id = ? and session_id = ?
+            union all
+            select 'github' as provider, issue_json, role, updated_at, issue_id
+            from session_github_issues where project_id = ? and session_id = ?
+            union all
+            select 'jira' as provider, issue_json, role, updated_at, issue_id
+            from session_jira_issues where project_id = ? and session_id = ?
+          ) as linked_issues
+          order by case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc, provider, issue_id
+          limit ? offset ?
+        `,
+        [projectId, sessionId, projectId, sessionId, projectId, sessionId, pageLimit, pageOffset],
+      );
+      const rows = readPage(limit, offset);
+      if (rows.length < limit && offset > 0) rows.push(...readPage(limit - rows.length, 0));
+      const references: IssueRef[] = [];
+      for (const row of rows) {
+        if (row.provider === "linear") {
+          const issue = parseLaneLinearIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "linear", identifier: issue.identifier, url: issue.url });
+        } else if (row.provider === "github") {
+          const issue = parseLaneGitHubIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "github", owner: issue.owner, repo: issue.repo, number: issue.number, url: issue.url });
+        } else if (row.provider === "jira") {
+          const issue = parseLaneJiraIssueJson(row.issue_json);
+          if (issue) references.push({ provider: "jira", siteUrl: issue.siteUrl, key: issue.key, url: issue.url });
+        }
+      }
+      return { references, totalCount, scanned: rows.length };
+    },
+
+    listJiraIssuesForLaneSessions(args: { laneId: string }): SessionJiraIssueLink[] {
+      const id = args.laneId.trim();
+      if (!id) return [];
+      try {
+        return db.all<SessionJiraIssueLinkRow>(
+          `
+            select *
+            from session_jira_issues
+            where project_id = ?
+              and lane_id = ?
+            order by
+              case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+              updated_at desc
+          `,
+          [projectId, id],
+        ).map(parseSessionJiraIssueLink).filter((link): link is SessionJiraIssueLink => Boolean(link));
+      } catch {
+        return [];
+      }
+    },
+
     /**
      * Remove lane-scoped Linear issue links from a lane. Omit `issueId` to
      * remove every non-primary link. NEVER touches the lane's primary issue
@@ -5583,7 +6053,17 @@ export function createLaneService({
     cleanupReservedWorktree,
 
     async create(
-      { name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, githubIssue }: CreateLaneArgs,
+      {
+        name,
+        description,
+        parentLaneId,
+        baseBranch,
+        branchName,
+        startPoint,
+        linearIssue,
+        githubIssue,
+        jiraIssue,
+      }: CreateLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
@@ -5646,6 +6126,7 @@ export function createLaneService({
           branchName,
           linearIssue,
           githubIssue,
+          jiraIssue,
         }, runtimeOptions);
       }
 
@@ -5672,6 +6153,7 @@ export function createLaneService({
         branchName,
         linearIssue,
         githubIssue,
+        jiraIssue,
       }, runtimeOptions);
     },
 

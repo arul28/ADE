@@ -1,5 +1,6 @@
 import React from "react";
 import { GitHubIssueViewer } from "./GitHubIssueViewer";
+import { JiraIssueViewer } from "./JiraIssueViewer";
 import type { IssueViewerProps } from "./issueViewerParts";
 import { LinearIssueViewer } from "./LinearIssueViewer";
 import "./issueViewer.css";
@@ -16,5 +17,10 @@ export function IssueViewer(props: IssueViewerProps) {
   if (props.issueRef.provider === "linear") {
     return <LinearIssueViewer {...props} identifier={props.issueRef.identifier} />;
   }
-  return <GitHubIssueViewer {...props} githubRef={props.issueRef} />;
+  if (props.issueRef.provider === "github") {
+    return <GitHubIssueViewer {...props} githubRef={props.issueRef} />;
+  }
+  // Keyed by machine: a viewer opened for the same issue from another machine
+  // starts clean, and a read still in flight for the old one cannot land here.
+  return <JiraIssueViewer key={props.pin?.key ?? "bound"} {...props} jiraRef={props.issueRef} />;
 }

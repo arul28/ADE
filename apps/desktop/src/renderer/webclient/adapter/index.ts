@@ -11,6 +11,7 @@ import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
 import { createFilesNamespace } from "./files";
 import { createGitNamespaces } from "./git";
+import { createJiraNamespace } from "./jira";
 import { CommandCaller } from "./infra/commandCaller";
 import { EventBus } from "./infra/eventBus";
 import { createInvalidationScheduler } from "./infra/invalidation";
@@ -141,6 +142,7 @@ export function createAdeWebAdapter(
     devTools: misc.devTools,
     onboarding: misc.onboarding,
     github: misc.github,
+    jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,
     zoom: misc.zoom,

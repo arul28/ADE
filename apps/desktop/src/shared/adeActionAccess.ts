@@ -51,14 +51,17 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listRebaseSuggestions", "listTemplates", "listLinearIssuesForLaneSessions",
       "listLinearIssuesForSession", "listGitHubIssuesForLaneSessions",
       "listGitHubIssuesForSession", "oauthDecodeState", "oauthGenerateRedirectUris",
+      "listJiraIssuesForLaneSessions", "listJiraIssuesForSession",
       "oauthGetStatus", "oauthListSessions", "portListConflicts", "portListLeases",
       "previewBranchSwitch", "proxyGetPreviewInfo", "proxyGetStatus",
     ],
     write: [
       "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
+      "attachJiraIssueToSession",
       "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
       "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
+      "detachJiraIssueFromSession",
       "diagnosticsDeactivateFallback", "diagnosticsRunFullCheck", "diagnosticsRunHealthCheck",
       "dismissAutoRebaseStatus", "dismissRebaseSuggestion", "importBranch", "initEnv",
       "linkLinearIssues", "oauthEncodeState", "oauthUpdateConfig", "portAcquire", "portGetLease",
@@ -373,6 +376,19 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "linkSubIssue", "updateIssue", "commentOnIssue", "pollAppUserDeviceAuth",
       "publishCurrentProject", "setToken", "startAppUserDeviceAuth",
     ],
+  },
+  jira: {
+    read: [
+      "getConnectionStatus", "listProjects", "listIssues", "getIssue", "listComments",
+      "listTransitions", "listAssignableUsers", "listLabels", "getCreateMeta",
+    ],
+    write: [
+      "connect", "disconnect", "addComment", "updateIssue", "transitionIssue", "createIssue",
+    ],
+  },
+  issues: {
+    read: ["list", "get", "resolve"],
+    write: ["comment", "setState", "create"],
   },
   feedback: {
     read: [

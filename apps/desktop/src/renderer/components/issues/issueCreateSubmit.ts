@@ -1,4 +1,5 @@
 import type { GitHubIssueAttachmentInput, NormalizedLinearIssue } from "../../../shared/types";
+import type { JiraCreateMeta, JiraCreateIssueResult } from "../../../shared/types/jira";
 import {
   missingRequiredGitHubFormField,
   serializeGitHubIssueForm,
@@ -6,7 +7,7 @@ import {
   type GitHubIssueTemplate,
 } from "../../../shared/githubIssueTemplates";
 import { normalizeGitHubIssue, type GitHubIssueDetail, type GitHubRepo } from "./githubIssueStore";
-import type { GitHubFields, LinearFields } from "./issueCreateDraft";
+import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft";
 
 /**
  * Sending a new issue to its tracker. Each function checks what the form
@@ -90,4 +91,34 @@ export async function submitGitHubIssue(input: {
   const issue = normalizeGitHubIssue(repo.owner, repo.name, result.issue);
   if (!issue) throw new Error("GitHub created the issue but did not return it.");
   return { issue, warnings: result.warnings };
+}
+
+export async function submitJiraIssue(input: {
+  title: string;
+  description: string;
+  fields: JiraFields;
+  meta: JiraCreateMeta | null;
+}): Promise<JiraCreateIssueResult> {
+  const { fields } = input;
+  if (!fields.projectKey) throw new Error("Pick a Jira project.");
+  if (!fields.issueTypeId) throw new Error("Pick a Jira issue type.");
+  const issueType = input.meta?.issueTypes.find((entry) => entry.id === fields.issueTypeId);
+  if (!issueType) throw new Error("Reload the Jira issue types and choose one that is available.");
+  const unsupportedRequired = issueType.fields.filter((field) => field.required && !field.supported);
+  if (unsupportedRequired.length) {
+    throw new Error(`Jira requires fields ADE cannot fill: ${unsupportedRequired.map((field) => field.name).join(", ")}. Choose another issue type.`);
+  }
+  const create = window.ade?.jira?.createIssue;
+  if (!create) throw new Error("Creating Jira issues is not available here.");
+  return create({
+    projectKey: fields.projectKey,
+    issueTypeId: fields.issueTypeId,
+    title: input.title,
+    description: input.description,
+    labels: fields.labels,
+    assigneeAccountId: fields.assigneeAccountId,
+    priorityId: fields.priorityId,
+    parentKey: fields.parentKey.trim().toUpperCase() || null,
+    dueDate: fields.dueDate || null,
+  });
 }

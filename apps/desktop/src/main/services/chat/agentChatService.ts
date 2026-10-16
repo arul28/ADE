@@ -279,7 +279,12 @@ import {
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
+import type { createJiraService } from "../jira/jiraService";
 import type { createLaneService } from "../lanes/laneService";
+import { issueRefKey, type IssueRef } from "../../../shared/issueRefs";
+import { createIssueTrackerService } from "../issueTrackers/issueTrackerService";
+import { IssueTrackerError } from "../issueTrackers/issueTrackerError";
+import type { IssueTrackerService } from "../../../shared/types/issueTrackers";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
 import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
@@ -1402,6 +1407,7 @@ import {
 import {
   CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
   classifyCursorSdkErrorText,
+  isCursorSdkUsageExhaustedText,
   isCursorSdkStaleAccessTokenText,
   readCursorSdkStaleTokenFailure,
   type CursorSdkStaleTokenFailure,
@@ -6748,8 +6754,11 @@ function classifyProviderHostError(
     || combinedLower.includes("back off")
   ) {
     const rateLimitDetail = rawDetail || rawMessage;
+    const usageExhausted = isCursorSdkUsageExhaustedText(combinedLower);
     return {
-      message: `Rate limited by ${providerLabel}. Wait a moment and retry, or switch to a different model if this keeps happening.`,
+      message: usageExhausted
+        ? `Your ${providerLabel} plan has no usage left for ${modelDisplayName}. Choose another model to continue.`
+        : `Rate limited by ${providerLabel}. Wait a moment and retry, or switch to a different model if this keeps happening.`,
       ...(rateLimitDetail ? { detail: rateLimitDetail } : {}),
       errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
     };
@@ -10501,7 +10510,10 @@ export function createAgentChatService(args: {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
-  githubService?: Pick<GithubService, "getIssue"> | null;
+  githubService?: Pick<GithubService, "getIssue" | "getStatus"> | null;
+  jiraService?: Pick<ReturnType<typeof createJiraService>, "getConnectionStatus" | "getIssue"> | null;
+  /** The brain's one tracker layer; built from the three services above when absent. */
+  issueTrackerService?: Pick<IssueTrackerService, "isConnected" | "get"> | null;
   /**
    * Lazy accessor for the universal search service; may be null in runtimes
    * where search is not wired.
@@ -12211,6 +12223,35 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       logger.warn("agent_chat.github_issue_session_link_failed", {
+        sessionId: managed.session.id,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const recordJiraIssueContextForLane = (
+    managed: ManagedChatSession,
+    contextAttachments: AgentChatContextAttachment[],
+  ): void => {
+    if (contextAttachments.length === 0) return;
+    const issues = contextAttachments
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "jira_issue" }> =>
+        attachment.type === "jira_issue")
+      .map((attachment) => attachment.issue);
+    if (!issues.length) return;
+    try {
+      laneService.attachJiraIssueToSession?.({
+        chatSessionId: managed.session.id,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: false,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.jira_issue_session_link_failed", {
         sessionId: managed.session.id,
         issueCount: issues.length,
         error: error instanceof Error ? error.message : String(error),
@@ -21447,6 +21488,107 @@ export function createAgentChatService(args: {
     logger,
   });
 
+  const linkedIssueTrackerService = args.issueTrackerService ?? createIssueTrackerService({
+    linearIssueTracker: args.linearIssueTracker,
+    githubService: args.githubService as unknown as GithubService | null,
+    jiraService: args.jiraService as unknown as ReturnType<typeof createJiraService> | null,
+  });
+  const linkedIssueSnapshotReads = new Map<string, number>();
+  const linkedIssueSnapshotCursors = new Map<string, number>();
+  const linkedIssueSnapshotWarnings = new Map<string, number>();
+  const warnLinkedIssueSnapshotFailure = (sessionId: string, tracker: string, error: unknown): void => {
+    if (error instanceof IssueTrackerError && (error.reason === "not-connected" || error.reason === "not-found")) return;
+    const now = Date.now();
+    const warningKey = `${sessionId}:${tracker}`;
+    const lastWarning = linkedIssueSnapshotWarnings.get(warningKey);
+    if (lastWarning != null && now - lastWarning < 60_000) return;
+    linkedIssueSnapshotWarnings.delete(warningKey);
+    linkedIssueSnapshotWarnings.set(warningKey, now);
+    for (const [key, warnedAt] of linkedIssueSnapshotWarnings) {
+      if (now - warnedAt >= 60_000) linkedIssueSnapshotWarnings.delete(key);
+    }
+    while (linkedIssueSnapshotWarnings.size > 512) {
+      const oldest = linkedIssueSnapshotWarnings.keys().next().value;
+      if (oldest == null) break;
+      linkedIssueSnapshotWarnings.delete(oldest);
+    }
+    logger.warn("agent_chat.linked_issue_snapshot_refresh_failed", {
+      sessionId,
+      tracker,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+  const refreshLinkedIssueSnapshots = async (sessionId: string): Promise<void> => {
+    if (!args.linearIssueTracker && !args.githubService && !args.jiraService) return;
+    const cursor = linkedIssueSnapshotCursors.get(sessionId) ?? 0;
+    let page: ReturnType<typeof laneService.listLinkedIssueSnapshotReferences>;
+    try {
+      page = laneService.listLinkedIssueSnapshotReferences({ chatSessionId: sessionId, offset: cursor, limit: 12 });
+    } catch (error) {
+      warnLinkedIssueSnapshotFailure(sessionId, "all", error);
+      return;
+    }
+    if (!page.totalCount) return;
+    const pageStart = cursor % page.totalCount;
+    const unique = [...new Map(page.references.map((reference) => [issueRefKey(reference), { reference, key: reference.provider }])).values()];
+    const bounded = unique.slice(0, 12);
+    linkedIssueSnapshotCursors.set(sessionId, (pageStart + page.scanned) % page.totalCount);
+    while (linkedIssueSnapshotCursors.size > 512) {
+      const oldestSession = linkedIssueSnapshotCursors.keys().next().value;
+      if (oldestSession == null) break;
+      linkedIssueSnapshotCursors.delete(oldestSession);
+    }
+
+    const connectionResults = await Promise.all([...new Set(bounded.map((candidate) => candidate.key))].map(async (kind) => {
+      try {
+        return [kind, await linkedIssueTrackerService.isConnected(kind)] as const;
+      } catch (error) {
+        warnLinkedIssueSnapshotFailure(sessionId, kind, error);
+        return [kind, false] as const;
+      }
+    }));
+    const connected = new Map(connectionResults);
+    const now = Date.now();
+    const eligible = bounded.filter((candidate) => {
+      if (!connected.get(candidate.key)) return false;
+      const key = issueRefKey(candidate.reference);
+      const lastRead = linkedIssueSnapshotReads.get(key);
+      if (lastRead != null && now - lastRead < 60_000) return false;
+      linkedIssueSnapshotReads.delete(key);
+      linkedIssueSnapshotReads.set(key, now);
+      return true;
+    });
+    for (const [key, readAt] of linkedIssueSnapshotReads) {
+      if (now - readAt >= 60_000) linkedIssueSnapshotReads.delete(key);
+    }
+    while (linkedIssueSnapshotReads.size > 2048) {
+      const oldest = linkedIssueSnapshotReads.keys().next().value;
+      if (oldest == null) break;
+      linkedIssueSnapshotReads.delete(oldest);
+    }
+
+    let next = 0;
+    const worker = async () => {
+      while (next < eligible.length) {
+        const candidate = eligible[next++];
+        if (!candidate) continue;
+        try {
+          const { reference } = candidate;
+          const issue = await linkedIssueTrackerService.get({ reference });
+          laneService.refreshLinkedIssueSnapshot({
+            reference,
+            title: issue.title,
+            state: issue.state ? { name: issue.state.name, type: issue.state.type } : null,
+            updatedAt: issue.updatedAt,
+          });
+        } catch (error) {
+          warnLinkedIssueSnapshotFailure(sessionId, candidate.key, error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, eligible.length) }, () => worker()));
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -21515,7 +21657,12 @@ export function createAgentChatService(args: {
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
-    if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
+    if (event.type === "done") {
+      settleClaudeGoalOnTurnEnd(managed, event.status);
+      void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
+        warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
+      });
+    }
     if (event.type === "done" && managed.session.provider === "claude") {
       // A turn that wrote no cache but read it restarted the same lifetime:
       // keep the lifetime and move its start to this turn's last request. A
@@ -54673,6 +54820,7 @@ export function createAgentChatService(args: {
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
+    recordJiraIssueContextForLane(managed, contextAttachments);
 
     // The computer-use directive is epoch-scoped: re-sent when the lane or the
     // available backends change, not every turn. Its key is marked delivered at

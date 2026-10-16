@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CircleNotch, MagnifyingGlass } from "@phosphor-icons/react";
+import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import { relativeWhen } from "../../lib/format";
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
@@ -13,6 +13,8 @@ import {
   type GitHubIssueStateFilter,
   type GitHubRepo,
 } from "./githubIssueStore";
+import { buildGitHubLaunchIssue } from "../../lib/linearBatchLaunch";
+import { useIssueLaunchSelection } from "./useIssueLaunchSelection";
 
 /**
  * The GitHub Issues pane body: the project's issues on the left, the issue
@@ -120,11 +122,24 @@ export function GitHubIssuesPane({
       && (milestone === ANY || issue.milestone === milestone));
   }, [assignee, label, list.issues, milestone, query]);
 
+  const {
+    selectedCount: launchSelectedCount,
+    isSelected: isLaunchSelected,
+    toggleAt: toggleLaunchSelection,
+    launchSelectedIssues,
+  } = useIssueLaunchSelection({
+    visibleItems: visible,
+    launchItems: list.issues,
+    getKey: (issue: GitHubIssueDetail) => issue.number,
+    toLaunchIssue: buildGitHubLaunchIssue,
+    canSelect: (issue: GitHubIssueDetail) => !issue.isPullRequest,
+  });
+
   const selectedIssue = visible.find((issue) => issue.number === selected) ?? visible[0] ?? null;
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-      <div className="flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
+      <div className="relative flex min-h-0 flex-col border-r border-[color:var(--kit-rule)]">
         <div className="flex shrink-0 flex-col gap-2 border-b border-[color:var(--kit-rule)] p-3">
           <label className="flex h-8 items-center gap-2 rounded-md border border-[color:var(--kit-rule)] px-2 text-[12px] focus-within:border-[color:var(--color-accent)]">
             <MagnifyingGlass size={13} className="shrink-0 text-[color:var(--kit-text-3)]" />
@@ -154,7 +169,7 @@ export function GitHubIssuesPane({
             <FilterSelect label="Milestone" value={milestone} options={options.milestones} onChange={setMilestone} />
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="listbox" aria-label="Issues">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelectedCount > 0 && "pb-12")} role="list" aria-label="Issues">
           {list.status === "error" && list.issues.length === 0 ? (
             <div className="p-2">
               <Banner
@@ -175,42 +190,69 @@ export function GitHubIssuesPane({
           ) : visible.length === 0 ? (
             <p className="p-3 text-[12px] text-[color:var(--kit-text-3)]">No issues match.</p>
           ) : (
-            visible.map((issue) => (
-              <button
-                key={issue.number}
-                type="button"
-                role="option"
-                aria-selected={issue.number === selectedIssue?.number}
-                className={cn(
-                  "kit-row !items-start !gap-2 !py-2",
+            visible.map((issue, index) => (
+              <div key={issue.number} role="listitem">
+                <div className={cn(
+                  "group/row kit-row !items-start !gap-2 !py-2",
                   issue.number === selectedIssue?.number && "!bg-[color:var(--kit-active)]",
-                )}
-                onClick={() => setSelected(issue.number)}
-              >
-                <span className="mt-[2px]"><GitHubIssueStateIcon state={issue.state} stateReason={issue.stateReason} /></span>
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 text-[12.5px] leading-snug text-fg/90">{issue.title}</span>
-                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[color:var(--kit-text-3)]">
-                    <span className="kit-num">#{issue.number}</span>
-                    <span>·</span>
-                    <span className="shrink-0">{relativeWhen(issue.updatedAt)}</span>
-                    {issue.labels.slice(0, 3).map((entry) => (
-                      <span
-                        key={entry.name}
-                        title={entry.name}
-                        className="block h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: entry.color ?? "var(--kit-fill)" }}
-                      />
-                    ))}
-                  </span>
-                </span>
-                {issue.assignees[0] ? (
-                  <LinearAssigneeAvatar name={issue.assignees[0].login} avatarUrl={issue.assignees[0].avatarUrl} size={18} />
-                ) : null}
-              </button>
+                  isLaunchSelected(issue.number) && "!bg-[color:var(--kit-hover)]",
+                )}>
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-label={isLaunchSelected(issue.number) ? `Deselect #${issue.number}` : `Select #${issue.number} for launch`}
+                    aria-checked={isLaunchSelected(issue.number)}
+                    disabled={issue.isPullRequest}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleLaunchSelection(issue.number, index, event.shiftKey);
+                    }}
+                    className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className={cn(
+                      "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+                      isLaunchSelected(issue.number)
+                        ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                        : launchSelectedCount > 0
+                          ? "border-fg/[0.18] bg-transparent group-hover/row:border-white/35"
+                          : "border-fg/[0.12] bg-transparent group-hover/row:border-white/35",
+                    )}>
+                      {isLaunchSelected(issue.number) ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
+                    </span>
+                  </button>
+                  <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" onClick={() => setSelected(issue.number)}>
+                    <span className="mt-[2px]"><GitHubIssueStateIcon state={issue.state} stateReason={issue.stateReason} /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 text-[12.5px] leading-snug text-fg/90">{issue.title}</span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[color:var(--kit-text-3)]">
+                        <span className="kit-num">#{issue.number}</span>
+                        <span>·</span>
+                        <span className="shrink-0">{relativeWhen(issue.updatedAt)}</span>
+                        {issue.labels.slice(0, 3).map((entry) => (
+                          <span key={entry.name} title={entry.name} className="block h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: entry.color ?? "var(--kit-fill)" }} />
+                        ))}
+                      </span>
+                    </span>
+                    {issue.assignees[0] ? <LinearAssigneeAvatar name={issue.assignees[0].login} avatarUrl={issue.assignees[0].avatarUrl} size={18} /> : null}
+                  </button>
+                </div>
+              </div>
             ))
           )}
         </div>
+        {launchSelectedCount > 0 ? (
+          <div className="kit-card absolute bottom-[30px] left-2 right-2 z-10">
+            <div className="kit-card-body flex items-center gap-2 px-2 py-1.5" data-flush="true">
+              <span className="min-w-0 flex-1 text-[11px] text-[color:var(--kit-text-2)]">{launchSelectedCount} selected</span>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(false)}>
+                <Rocket size={12} /> Launch agents ({launchSelectedCount})
+              </button>
+              <button type="button" className="kit-btn kit-btn-ghost h-7 px-2 text-[10.5px]" onClick={() => launchSelectedIssues(true)}>
+                Lanes only ({launchSelectedCount})
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="shrink-0 border-t border-[color:var(--kit-rule)] px-3 py-1.5 text-[11px] text-[color:var(--kit-text-3)]">
           <span className="kit-num">{visible.length}</span> of <span className="kit-num">{list.issues.length}</span> loaded
         </div>
