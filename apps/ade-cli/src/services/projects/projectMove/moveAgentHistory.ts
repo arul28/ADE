@@ -136,18 +136,28 @@ export function planAgentHistoryRenames(args: {
       // subfolder: it is the path when the session began, so after an earlier
       // move it names a folder the project has since left.
       const exact = known.find((entry) => claudeSlug(entry.oldPath) === name);
-      let newCwd = exact?.newPath ?? null;
-      if (!newCwd) {
+      let newName = exact ? claudeSlug(exact.newPath) : null;
+      if (!newName) {
         const cwd = claudeFolderCwd(folder);
-        newCwd = cwd ? mapToNew(cwd) : null;
+        if (cwd) {
+          const newCwd = mapToNew(cwd);
+          newName = newCwd ? claudeSlug(newCwd) : null;
+        } else {
+          // No session left to say where it ran (a lane ADE has since closed,
+          // with only a backup file inside). ADE's lanes live at
+          // `<root>/.ade/worktrees/<name>`, so a folder named after that is
+          // this project's lane; the slug is lossy, so nothing looser counts.
+          const lanePrefix = rootSlugs.map((slug) => `${slug}--ade-worktrees-`).find((prefix) => name.startsWith(prefix));
+          newName = lanePrefix ? `${claudeSlug(path.join(args.newRoot, ".ade", "worktrees"))}-${name.slice(lanePrefix.length)}` : null;
+        }
       }
-      if (!newCwd) continue;
+      if (!newName) continue;
       add({
         provider: "claude",
         label: adeOwned ? "ADE chats (Claude)" : "Claude Code",
         adeOwned,
         from: folder,
-        to: path.join(projectsDir, claudeSlug(newCwd)),
+        to: path.join(projectsDir, newName),
       });
     }
   }

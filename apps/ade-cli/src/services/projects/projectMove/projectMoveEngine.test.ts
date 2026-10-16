@@ -104,6 +104,16 @@ async function makeProject(root: string): Promise<{ insideLane: string; outsideL
   db.run("insert into kv(key, value) values (?, ?)", [`tiling_tree:${root}:files`, "\"tree\""]);
   // The lane beside the project shares its name as a prefix; its layout is not the project's.
   db.run("insert into kv(key, value) values (?, ?)", [`dock_layout:${outsideLane}`, "\"outside\""]);
+  // A proof item recorded inside a lane: where it came from and the root it was resolved against.
+  db.run("insert into computer_use_artifacts(id, project_id, uri, metadata_json) values (?, 'project-1', ?, ?)", [
+    "artifact-1",
+    ".ade/artifacts/shot.png",
+    JSON.stringify({
+      sourcePath: path.join(insideLane, "shot.png"),
+      callerRoot: root,
+      demo: { steps: [{ text: `Open ${root}/a.txt` }] },
+    }),
+  ]);
   db.flushNow();
   db.close();
 
@@ -123,6 +133,17 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
     const { outsideLane } = await makeProject(source);
     const destination = path.join(tmp, "drive", "Proj");
     const codexConfig = writeCodexConfig(`model = "gpt-5"\n\n[projects."${source}"]\ntrust_level = "trusted"\n`);
+    // ADE's Claude history: a lane ADE has since closed, whose folder holds no
+    // session that records where it ran, beside another project whose name
+    // starts with this one's.
+    const claudeProjects = path.join(tmp, "ade-home", "provider-homes", "claude", "work", "projects");
+    const slug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/gu, "-");
+    const closedLaneHistory = path.join(claudeProjects, `${slug(source)}--ade-worktrees-gone-1234`);
+    const otherProjectHistory = path.join(claudeProjects, `${slug(`${source}-site`)}--ade-worktrees-gone-1234`);
+    for (const folder of [closedLaneHistory, otherProjectHistory]) {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "session.jsonl.corrupt.bak"), "{}\n");
+    }
     // A stale layout already saved under the new path must give way to the moved one.
     const record = await (async () => {
       const db = await openKvDb(path.join(source, ".ade", "ade.db"), logger);
@@ -159,6 +180,17 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
       { key: `dock_layout:${destination}`, value: "\"layout\"" },
       { key: `tiling_tree:${destination}:files`, value: "\"tree\"" },
     ]);
+    const [artifact] = queryDb<{ metadata_json: string }>(dbPath, "select metadata_json from computer_use_artifacts");
+    expect(JSON.parse(artifact!.metadata_json)).toEqual({
+      sourcePath: path.join(movedLane, "shot.png"),
+      callerRoot: destination,
+      // Captions are history, not paths.
+      demo: { steps: [{ text: `Open ${source}/a.txt` }] },
+    });
+
+    expect(fs.existsSync(closedLaneHistory)).toBe(false);
+    expect(fs.existsSync(path.join(claudeProjects, `${slug(destination)}--ade-worktrees-gone-1234`, "session.jsonl.corrupt.bak"))).toBe(true);
+    expect(fs.existsSync(otherProjectHistory)).toBe(true);
 
     expect(record.originalParkedAt).toBeTruthy();
     expect(fs.existsSync(source)).toBe(false);

@@ -16,6 +16,7 @@ const ROTATION_CHECK_WRITE_INTERVAL = 1000;
 const ROTATION_CHECK_INTERVAL_MS = 60_000;
 const FLUSH_INTERVAL_MS = 500;
 const FLUSH_BATCH_SIZE = 500;
+const IDLE_CLOSE_MS = 30_000;
 
 export type FileLoggerOptions = {
   maxFileBytes?: number;
@@ -23,6 +24,12 @@ export type FileLoggerOptions = {
   rotationCheckIntervalMs?: number;
   flushIntervalMs?: number;
   flushBatchSize?: number;
+  /**
+   * How long the file stays open after the last write. A logger whose project
+   * closed (or moved to another drive) would otherwise hold its file open
+   * until the process exits; the next write reopens it.
+   */
+  idleCloseMs?: number;
 };
 
 export type Logger = {
@@ -80,6 +87,7 @@ export function createFileLogger(
     ?? ROTATION_CHECK_INTERVAL_MS;
   const flushIntervalMs = options.flushIntervalMs ?? FLUSH_INTERVAL_MS;
   const flushBatchSize = options.flushBatchSize ?? FLUSH_BATCH_SIZE;
+  const idleCloseMs = options.idleCloseMs ?? IDLE_CLOSE_MS;
 
   let writesSinceRotateCheck = 0;
   let lastRotateCheckAt = Date.now();
@@ -93,6 +101,7 @@ export function createFileLogger(
   let flushRequested = false;
   let logDirReady = false;
   let logStream: fs.WriteStream | null = null;
+  let idleCloseTimer: NodeJS.Timeout | null = null;
 
   const shouldCheckRotation = (): boolean => {
     if (writesSinceRotateCheck >= rotationCheckWriteInterval) return true;
@@ -220,8 +229,20 @@ export function createFileLogger(
       if (flushRequested || queuedLines.length > 0) {
         flushRequested = false;
         void flush();
+      } else {
+        armIdleClose();
       }
     }
+  };
+
+  const armIdleClose = () => {
+    if (idleCloseTimer) clearTimeout(idleCloseTimer);
+    idleCloseTimer = setTimeout(() => {
+      idleCloseTimer = null;
+      if (flushInProgress || queuedLines.length > 0) return;
+      void closeLogStream();
+    }, idleCloseMs);
+    idleCloseTimer.unref?.();
   };
 
   const scheduleFlush = () => {
@@ -276,6 +297,10 @@ export function createFileLogger(
     });
 
     const payload = `${line}\n`;
+    if (idleCloseTimer) {
+      clearTimeout(idleCloseTimer);
+      idleCloseTimer = null;
+    }
     queuedLines.push(payload);
     writesSinceRotateCheck += 1;
     scheduleFlush();
