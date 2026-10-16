@@ -340,6 +340,11 @@ export function CreateLaneDialog({
           : "Create a lane from Primary, an existing branch, or another lane."}
       icon={Plus}
       width="min(560px, calc(100vw - 24px))"
+      // The picker's list is virtualized and must be its own scrollport: give
+      // the panel a definite height so the list scrolls and "Use this branch"
+      // stays on screen instead of sitting below every row.
+      height={pickerOpen ? "min(640px, 92dvh, calc(100vh - 1rem))" : undefined}
+      scrollBody={!pickerOpen}
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
