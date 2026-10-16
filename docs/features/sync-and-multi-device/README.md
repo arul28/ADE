@@ -1124,7 +1124,15 @@ Runtime support files outside `services/sync/`:
   device id is known); `accountSettingsSync.ts` is the local-first
   write-through engine that hydrates newer remote rows and pushes local edits
   with a per-key stamp and a dirty retry queue. Its registry is the only list of
-  what travels; machine-scoped values are absent by construction.
+  what travels; machine-scoped values are absent by construction. Its
+  30-second tick is not a second puller: it forces a relay pass only while the
+  account has not been merged yet (the pass that offers this machine's existing
+  preferences) or while a local edit is still queued, and otherwise it only
+  reads the brain's cache and applies the rows newer than this machine's
+  stamps. The brain's own change-mark-gated tick is what keeps that cache
+  current, so a change made on another machine still lands here on the same
+  30-second beat while an idle machine stops asking the Worker for an answer it
+  already holds.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
   `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
   queue, cursor, and encrypted-cache primitives. Reads never touch the

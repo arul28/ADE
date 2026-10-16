@@ -390,6 +390,16 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   let stopped = false;
   let applying = false;
   /**
+   * Whether a relay pass has completed for the account signed in now.
+   *
+   * The timer needs this to tell "the account has been merged, and this
+   * machine's pre-existing preferences have been offered to it" from "the first
+   * merge is still owed". Only the second has to keep asking, offline or
+   * mid-restart, exactly as the poll always did; a machine that has never
+   * merged has nothing else that would ever upload its existing preferences.
+   */
+  let mergedAccount = false;
+  /**
    * The REAL account id, or null.
    *
    * Never synthesised. The brain fences a settings write against the owner it
@@ -566,6 +576,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     ) {
       return;
     }
+    // The guard above proved this pass belongs to the account signed in now, so
+    // the merge it is about to perform counts for that account. Set before the
+    // hydrate: an account switch during the hydrate resets this, and a reset
+    // that landed after a late write here would leave the new owner looking
+    // merged when it never was.
+    if (synced) mergedAccount = true;
     await hydrate({ seedMissing: synced });
   };
 
@@ -660,6 +676,25 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     }
   };
 
+  /**
+   * Whether this machine is holding an edit the brain has not accepted yet.
+   *
+   * Same pair of markers `flushDirty` acts on — the account's namespace and the
+   * signed-out one — so "there is something to push" can never disagree between
+   * the tick that decides and the flush that runs.
+   */
+  const hasDirtyKeys = (): boolean => {
+    for (const entry of settings) {
+      if (
+        dirtyKeys.has(dirtyKey(accountUserId, entry.key))
+        || dirtyKeys.has(dirtyKey(null, entry.key))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const onStoreChange = (): void => {
     if (applying || stopped) return;
     const state = options.store.getState();
@@ -685,6 +720,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     // Invalidate every pending list response before switching the namespace.
     identityGeneration += 1;
     accountUserId = nextUserId;
+    // The new owner has not been merged yet, so the tick goes back to asking
+    // until it has been.
+    mergedAccount = false;
     stamps = readStamps(storage, accountUserId);
     lastSeen.clear();
     for (const [key, value] of snapshot()) lastSeen.set(key, value);
@@ -701,8 +739,29 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   const timer = schedule(() => {
     if (!options.getApi() || !options.isSignedIn()) return;
     // Same sync-then-hydrate path as first sign-in, including the identity
-    // abort. Seed still happens only when that merge succeeded.
-    resync();
+    // abort. Seed still happens only when that merge succeeded — and the merge
+    // still owes itself while `mergedAccount` is false, so an offline first
+    // sign-in keeps retrying here exactly as it always has.
+    //
+    // With the account already merged and nothing of this machine's queued,
+    // though, there is nothing for this tick to SEND, and the pull would be
+    // asking for an answer the brain already holds. The brain's own store runs
+    // a change-mark-gated periodic sync on the same beat
+    // (`accountSettingsStore.startPeriodicSync` → `shouldPullOnTick`): it pulls
+    // the moment the relay's settings mark moves, and otherwise not at all for
+    // up to five minutes, falling back to a plain pull whenever a mark is
+    // missing or stale. `sync()` from here bypasses that gate, so an
+    // unconditional tick is a second pull of the same cursor from every
+    // signed-in machine every 30 seconds — whether or not anything changed, and
+    // whether or not the window is even visible. Reading the brain's local
+    // cache (`hydrate`) is what this side actually needs, and it is what keeps
+    // a change made on another machine arriving here on the same 30-second
+    // beat.
+    if (!mergedAccount || hasDirtyKeys()) {
+      resync();
+      return;
+    }
+    void hydrate();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
   const stop = (): void => {

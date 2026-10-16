@@ -521,8 +521,73 @@ describe("accountSettingsSync (renderer)", () => {
     rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
     timers[0]?.();
     await settle();
-    expect(api.sync).toHaveBeenCalledTimes(2);
     expect(state.chatFontSizePx).toBe(18);
+    // The row came out of the brain's own cache, which the brain's
+    // change-mark-gated sync keeps current. The one `sync` is the startup
+    // merge; the tick did not ask the relay again.
+    expect(api.sync).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("costs no relay pass on the 30-second beat when nothing is queued", async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
+      const rows: AccountSettingRow[] = [];
+      const api = createApi(rows);
+      // No `setInterval` override: this drives the shipped timer, so the
+      // cadence the numbers below pin is the one that runs in the app.
+      const stop = startAccountSettingsSync({
+        settings: SETTINGS,
+        storage: createStorage(),
+        store,
+        getApi: () => api,
+        isSignedIn: () => true,
+      });
+      await settle();
+      expect(api.sync).toHaveBeenCalledTimes(1);
+
+      // A change made on another machine, landing mid-beat.
+      rows.push(row("chatFontSizePx", 18, "2030-02-01T00:00:00.000Z"));
+      // Ten minutes: twenty ticks of `ACCOUNT_SETTINGS_POLL_MS`.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await settle();
+
+      // It still arrives here, on this machine's own beat.
+      expect(state.chatFontSizePx).toBe(18);
+      // Twenty ticks, one cache read each — and still the one startup `sync`.
+      expect(api.list).toHaveBeenCalledTimes(21);
+      expect(api.sync).toHaveBeenCalledTimes(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still hands a queued local edit to the brain on the next tick", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi();
+    // The account refuses the write once: the edit stays queued on this
+    // machine, which is the state the tick has to keep servicing.
+    api.set.mockImplementation(async (args: { value?: unknown }) => (args.value === "light"
+      ? { ok: false as const, unavailable: true as const, message: "no token yet" }
+      : { ok: true as const, value: null }));
+    const stop = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+    );
+    await settle();
+    // Past the first-merge seed, which uploads this machine's existing
+    // preferences and is not what this test is about.
+    api.set.mockClear();
+    state.setTheme("light");
+    await settle();
+    expect(api.set).toHaveBeenCalledTimes(1);
+
+    timers[0]?.();
+    await settle();
+    expect(api.set).toHaveBeenCalledTimes(2);
+    expect(api.set).toHaveBeenLastCalledWith({ scope: "all", key: "theme", value: "light" });
+    expect(api.sync).toHaveBeenCalledTimes(2);
     stop();
   });
 
