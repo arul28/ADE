@@ -42,3 +42,12 @@
   color: var(--color-fg);
 }
 .ade-custom-row + .ade-custom-row { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
+
+/* The Custom provider editor's model-search field. The input itself carries no
+   outline — the field's frame is the affordance — so the frame shows the kit's
+   focus ring while the field has focus, which keeps the field findable from the
+   keyboard. */
+.ade-cp-search:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent);
+  outline-offset: 1px;
+}

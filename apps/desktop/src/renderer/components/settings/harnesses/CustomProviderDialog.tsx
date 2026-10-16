@@ -232,6 +232,10 @@ export function CustomProviderDialog({
   }, [reach]);
 
   const chooseModel = useCallback((group: ReachableGroup, model: ReachableModel) => {
+    // The pane follows the pick: when a cross-source search clears, the list
+    // must show the source the chosen model came from, or the selection looks
+    // like it vanished.
+    setBrowsedSourceKey(group.key);
     setDraft((prev) => {
       const sameGroup = selected?.group.key === group.key;
       return {

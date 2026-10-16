@@ -246,17 +246,25 @@ export async function testHarnessRoute(
       };
     }
     lastError = result.error ?? lastError;
+    // A model-wide refusal ("free tier can only be used from within OpenCode")
+    // is not about one protocol: every endpoint this source answers on is out,
+    // whether or not this loop reached it before another failure, so record
+    // them all and stop rather than leave untried protocols looking eligible.
+    if (result.error && MODEL_ONLY_IN_OPENCODE.test(result.error)) {
+      for (const endpointProtocol of ROUTE_PROTOCOLS) {
+        if (endpoints[endpointProtocol]) {
+          recordRouteProbe(adeHome, sourceKey, model, endpointProtocol, false);
+        }
+      }
+      return { ok: false, protocol, latencyMs: result.latencyMs, route: null, error: lastError };
+    }
     // A protocol that accepts the request and then never answers is as unusable
     // as one that refuses it, and it is the worse failure to leave standing: a
     // launch routed onto it hangs with no error at all. Record it as a definite
     // no and keep trying the rest, so a Test routes around a wedged protocol —
     // for example OpenCode Go's Anthropic route hanging on a model its OpenAI
-    // route still serves. A later Test re-confirms a recovered protocol. The
-    // same applies to a model its own gateway refuses to every outside client
-    // ("free tier can only be used from within OpenCode"): no protocol will
-    // ever carry it, so every attempt records a no and the pairing disappears
-    // from the list that offered it.
-    if (result.timedOut || (result.error && (PROTOCOL_UNSUPPORTED.test(result.error) || MODEL_ONLY_IN_OPENCODE.test(result.error)))) {
+    // route still serves. A later Test re-confirms a recovered protocol.
+    if (result.timedOut || (result.error && PROTOCOL_UNSUPPORTED.test(result.error))) {
       recordRouteProbe(adeHome, sourceKey, model, protocol, false);
       continue;
     }
