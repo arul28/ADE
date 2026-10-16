@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +27,8 @@ beforeEach(() => {
   vi.stubEnv("HOME", path.join(tmp, "home"));
   // Never the developer's own Codex config, even when CODEX_HOME is set.
   vi.stubEnv("CODEX_HOME", path.join(tmp, "home", ".codex"));
+  vi.stubEnv("ADE_OPENCODE_XDG_ROOT", "");
+  vi.stubEnv("XDG_DATA_HOME", "");
 });
 
 function writeCodexConfig(content: string): string {
@@ -104,6 +107,16 @@ async function makeProject(root: string): Promise<{ insideLane: string; outsideL
   db.run("insert into kv(key, value) values (?, ?)", [`tiling_tree:${root}:files`, "\"tree\""]);
   // The lane beside the project shares its name as a prefix; its layout is not the project's.
   db.run("insert into kv(key, value) values (?, ?)", [`dock_layout:${outsideLane}`, "\"outside\""]);
+  // A proof item recorded inside a lane: where it came from and the root it was resolved against.
+  db.run("insert into computer_use_artifacts(id, project_id, uri, metadata_json) values (?, 'project-1', ?, ?)", [
+    "artifact-1",
+    ".ade/artifacts/shot.png",
+    JSON.stringify({
+      sourcePath: path.join(insideLane, "shot.png"),
+      callerRoot: root,
+      demo: { steps: [{ text: `Open ${root}/a.txt` }] },
+    }),
+  ]);
   db.flushNow();
   db.close();
 
@@ -119,10 +132,31 @@ function commonDir(checkout: string): string {
 // only), and no macOS runner executes the ade-cli vitest suites.
 describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
   it("moves the project with its lanes, tracked dependencies and data, and keeps the original parked", async () => {
-    const source = path.join(tmp, "Proj");
+    const source = path.join(tmp, "Proj#;");
     const { outsideLane } = await makeProject(source);
     const destination = path.join(tmp, "drive", "Proj");
     const codexConfig = writeCodexConfig(`model = "gpt-5"\n\n[projects."${source}"]\ntrust_level = "trusted"\n`);
+    // ADE's Claude history: a lane ADE has since closed, whose folder holds no
+    // session that records where it ran, beside another project whose name
+    // starts with this one's.
+    const claudeProjects = path.join(tmp, "ade-home", "provider-homes", "claude", "work", "projects");
+    const slug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/gu, "-");
+    const closedLaneHistory = path.join(claudeProjects, `${slug(source)}--ade-worktrees-gone-1234`);
+    const otherProjectHistory = path.join(claudeProjects, `${slug(`${source}-site`)}--ade-worktrees-gone-1234`);
+    for (const folder of [closedLaneHistory, otherProjectHistory]) {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "session.jsonl.corrupt.bak"), "{}\n");
+    }
+    // ADE's OpenCode undo snapshots for the lane: a git dir named by the
+    // lane path's hash that borrows the project's objects.
+    const sha1 = (value: string) => createHash("sha1").update(value).digest("hex");
+    const snapshots = path.join(tmp, "ade-home", "opencode-runtime", "xdg-v1", "data", "opencode", "snapshot", "repo-id");
+    const oldInsideLane = path.join(source, ".ade", "worktrees", "alpha");
+    const snapshotRepo = path.join(snapshots, sha1(oldInsideLane));
+    fs.mkdirSync(snapshots, { recursive: true });
+    git(snapshots, ["init", "-q", "--separate-git-dir", snapshotRepo, path.join(tmp, "snapshot-scratch")]);
+    git(snapshots, ["--git-dir", snapshotRepo, "config", "core.worktree", oldInsideLane]);
+    fs.writeFileSync(path.join(snapshotRepo, "objects", "info", "alternates"), `${path.join(source, ".git", "objects")}\n`);
     // A stale layout already saved under the new path must give way to the moved one.
     const record = await (async () => {
       const db = await openKvDb(path.join(source, ".ade", "ade.db"), logger);
@@ -159,6 +193,24 @@ describe.skipIf(process.platform !== "darwin")("runProjectMove", () => {
       { key: `dock_layout:${destination}`, value: "\"layout\"" },
       { key: `tiling_tree:${destination}:files`, value: "\"tree\"" },
     ]);
+    const [artifact] = queryDb<{ metadata_json: string }>(dbPath, "select metadata_json from computer_use_artifacts");
+    expect(JSON.parse(artifact!.metadata_json)).toEqual({
+      sourcePath: path.join(movedLane, "shot.png"),
+      callerRoot: destination,
+      // Captions are history, not paths.
+      demo: { steps: [{ text: `Open ${source}/a.txt` }] },
+    });
+
+    expect(fs.existsSync(closedLaneHistory)).toBe(false);
+    expect(fs.existsSync(path.join(claudeProjects, `${slug(destination)}--ade-worktrees-gone-1234`, "session.jsonl.corrupt.bak"))).toBe(true);
+    expect(fs.existsSync(otherProjectHistory)).toBe(true);
+
+    const movedSnapshot = path.join(snapshots, sha1(movedLane));
+    expect(fs.existsSync(snapshotRepo)).toBe(false);
+    expect(git(snapshots, ["--git-dir", movedSnapshot, "config", "core.worktree"])).toBe(movedLane);
+    expect(fs.readFileSync(path.join(movedSnapshot, "objects", "info", "alternates"), "utf8")).toBe(`${path.join(destination, ".git", "objects")}\n`);
+    // The snapshot repo reads the moved project's objects.
+    expect(git(snapshots, ["--git-dir", movedSnapshot, "cat-file", "-t", git(destination, ["rev-parse", "HEAD"])])).toBe("commit");
 
     expect(record.originalParkedAt).toBeTruthy();
     expect(fs.existsSync(source)).toBe(false);

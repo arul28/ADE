@@ -7655,8 +7655,17 @@ app.whenReady().then(async () => {
         selectedPath,
         repoRoot,
         durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
+        // The error itself, under the key `logBridge` lifts: an `Error`
+        // instance becomes the Sentry event's exception, so the issue is
+        // titled and grouped by the real failure. A stringified copy left
+        // every project-open failure in the fleet under one issue named
+        // "project.open.failed", with the reason buried in `extra` — which is
+        // what made this failure class unreadable.
+        error,
+        // The message as text beside it, because `JSON.stringify` writes an
+        // `Error` as `{}`: without this the line on disk would lose the
+        // sentence every log grep and `ade report-issue` reads.
+        errorText: error instanceof Error ? error.message : String(error),
       });
       throw error;
     } finally {

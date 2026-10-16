@@ -103,6 +103,27 @@ describe("createFileLogger", () => {
     expect(written).toContain("first.event");
   });
 
+  // A project moved to another drive leaves its old folder behind; a logger
+  // still holding the file there keeps the old copy's space and handles
+  // until ADE exits, and keeps writing into it.
+  it("lets go of its file once idle and writes the next line where the path now points", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-"));
+    const logPath = path.join(dir, "logs", "test.log");
+    const createWriteStream = vi.spyOn(fs, "createWriteStream");
+    const logger = createFileLogger(logPath, { flushIntervalMs: 1, idleCloseMs: 1 });
+
+    logger.info("before.move");
+    await vi.waitFor(() => expect(createWriteStream).toHaveBeenCalledTimes(1));
+    const first = createWriteStream.mock.results[0]!.value as fs.WriteStream;
+    await vi.waitFor(() => expect(first.closed).toBe(true));
+
+    fs.renameSync(path.join(dir, "logs"), path.join(dir, "logs-old"));
+    fs.mkdirSync(path.join(dir, "logs"));
+    logger.info("after.move");
+    await vi.waitFor(() => expect(fs.existsSync(logPath) && fs.readFileSync(logPath, "utf8")).toContain("after.move"));
+    expect(fs.readFileSync(path.join(dir, "logs-old", "test.log"), "utf8")).not.toContain("after.move");
+  });
+
   it("is a no-op on flushSync with nothing queued", () => {
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-")), "test.log");
     const logger = createFileLogger(logPath);

@@ -26,6 +26,13 @@ const PATH_COLUMNS: ReadonlyArray<readonly [table: string, column: string]> = [
   ["lane_worktree_locks", "worktree_path"],
 ];
 
+/**
+ * Proof metadata keys that hold a path. `sourcePath` and `callerRoot` are
+ * where the broker looks to recover a proof file, so leaving them would send
+ * it to the old copy. Free text (step captions, titles) is never touched.
+ */
+const ARTIFACT_METADATA_PATH_KEYS = ["absolutePath", "path", "filePath", "sourcePath", "sourceUri", "callerRoot"];
+
 /** `kv` keys that carry the project root (layout state keyed by project). */
 const KV_KEY_PREFIXES = ["dock_layout:", "tiling_tree:", "graph_state:"];
 
@@ -125,7 +132,7 @@ export function rewriteProjectDatabasePaths(args: {
         const rows = db.prepare("select rowid as rid, metadata_json as json from computer_use_artifacts").all() as Array<{ rid: number; json: string | null }>;
         for (const row of rows) {
           if (!row.json || !args.oldSpellings.some((spelling) => row.json!.includes(spelling))) continue;
-          const next = rewriteJsonPaths(row.json, args.oldSpellings, args.finalRoot, ["absolutePath", "path", "filePath"]);
+          const next = rewriteJsonPaths(row.json, args.oldSpellings, args.finalRoot, ARTIFACT_METADATA_PATH_KEYS);
           if (next === row.json) continue;
           db.prepare("update computer_use_artifacts set metadata_json = ? where rowid = ?").run(next, row.rid);
         }
