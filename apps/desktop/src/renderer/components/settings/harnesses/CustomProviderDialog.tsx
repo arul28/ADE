@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretRight, MagnifyingGlass, Terminal, UploadSimple } from "@phosphor-icons/react";
+import { Terminal, UploadSimple } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
-  HARNESS_PRESET_AGENT_KEYS,
-  HARNESS_PRESET_AGENT_LABELS,
   HARNESS_PRESET_NAME_MAX_LENGTH,
   HARNESS_PRESET_SUBAGENT_INHERIT,
   harnessBodyLabel,
@@ -26,16 +24,16 @@ import {
   type HarnessPresetAgentKey,
 } from "../../../../shared/harnessPresets";
 import { HarnessLogo } from "../../shared/HarnessLogo";
-import { ModelRowLogo, ProviderLogo } from "../../shared/ProviderLogos";
+import { ProviderLogo } from "../../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { HarnessChipRow, ReachableModelList } from "../../shared/ModelPicker/ReachableModelList";
+import { HarnessChipRow } from "../../shared/ModelPicker/ReachableModelList";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
 import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
-import { CustomProviderSourceRail } from "./CustomProviderSourceRail";
+import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
 import { buildTerminalLauncher } from "./harnessLauncher";
@@ -43,7 +41,6 @@ import {
   buildReachableGroups,
   defaultPresetName,
   findReachable,
-  formatModelLimits,
   harnessChipOptions,
   reachableKeyFor,
   type ReachableGroup,
@@ -198,14 +195,6 @@ export function CustomProviderDialog({
     const browsed = browsedSourceKey ? groups.find((group) => group.key === browsedSourceKey) : undefined;
     return browsed ?? selected?.group ?? groups.find((group) => group.models.length > 0) ?? groups[0] ?? null;
   }, [browsedSourceKey, groups, selected]);
-  const activeSubscription = activeGroup && activeGroup.source.kind === "subscription"
-    ? activeGroup.source.provider
-    : null;
-  const searching = query.trim().length > 0;
-  const paneGroups = useMemo(
-    () => (searching ? groups : activeGroup ? [activeGroup] : []),
-    [searching, groups, activeGroup],
-  );
   const availability = harnessAvailability(draft.harness, status);
   const chipOptions = useMemo(() => harnessChipOptions("chat"), []);
 
@@ -342,7 +331,7 @@ export function CustomProviderDialog({
     })
     : null;
 
-  const subagentChoices = selected?.group.models ?? [];
+  const subagentChoices = useMemo(() => selected?.group.models ?? [], [selected]);
   const subagentSupport = harnessSubagentSupport(draft.harness);
   // The subagent's own model decides which levels exist, exactly as the main
   // model's does — a level the model does not advertise is refused at launch.
@@ -351,9 +340,12 @@ export function CustomProviderDialog({
     return listed?.reasoningTiers ?? getModelById(model)?.reasoningTiers ?? [];
   }, [subagentChoices]);
   // "Same as main" means the level menu belongs to the main model.
-  const subagentEffortTiers = draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
-    ? (selected?.model.reasoningTiers ?? [])
-    : subagentTiersFor(draft.subagentModel);
+  const subagentEffortTiers = useMemo(
+    () => (draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
+      ? (selected?.model.reasoningTiers ?? [])
+      : subagentTiersFor(draft.subagentModel)),
+    [draft.subagentModel, selected?.model.reasoningTiers, subagentTiersFor],
+  );
   const agentEffortTiers = useCallback(
     (value: string): readonly string[] => (
       value === ADVANCED_FOLLOWS ? subagentEffortTiers : subagentTiersFor(value)
@@ -514,86 +506,22 @@ export function CustomProviderDialog({
                 </span>
               ) : null}
             </div>
-            <div
-              data-custom-source-pane=""
-              style={{
-                display: "flex",
-                minHeight: 300,
-                maxHeight: 360,
-                borderRadius: 10,
-                border: `1px solid ${COLORS.borderMuted}`,
-                background: COLORS.recessedBg,
-                overflow: "hidden",
-              }}
-            >
-              <CustomProviderSourceRail
-                groups={groups}
-                activeKey={activeGroup?.key ?? null}
-                onSelect={selectSource}
-              />
-              <div id="custom-provider-model-pane" role="tabpanel" style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-                <header style={paneHeaderStyle}>
-                  {activeGroup ? <ProviderLogo family={activeGroup.logoProvider} size={14} /> : null}
-                  <span style={{ minWidth: 0, flex: 1 }}>
-                    <span style={paneTitleStyle}>{searching ? "Search results" : activeGroup ? activeGroup.label : "Nothing to run yet"}</span>
-                    <span style={paneDetailStyle}>
-                      {searching ? "Matches across every connected source" : activeGroup?.detail ?? ""}
-                    </span>
-                  </span>
-                  {!searching && activeGroup?.needsProxySignIn && activeSubscription ? (
-                    <button
-                      type="button"
-                      data-custom-proxy-sign-in={activeSubscription}
-                      disabled={!reach.proxyAvailable || reach.proxySigningIn != null}
-                      title={reach.proxyAvailable ? undefined : "ADE's proxy cannot run on this machine."}
-                      onClick={() => void reach.proxySignIn(activeSubscription)}
-                      style={signInButtonStyle}
-                    >
-                      {reach.proxySigningIn === activeSubscription ? "Signing in…" : "Sign in"}
-                    </button>
-                  ) : null}
-                  <label style={paneSearchStyle}>
-                    <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
-                    <input
-                      value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Search models"
-                      aria-label="Search models"
-                      style={paneSearchInputStyle}
-                    />
-                  </label>
-                </header>
-                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "2px 2px 6px" }}>
-                  <ReachableModelList
-                    groups={paneGroups}
-                    query={searching ? query : ""}
-                    loading={reach.loading}
-                    selectedKey={selectedKey}
-                    onSelect={chooseModel}
-                    onTest={handleTest}
-                    testStateFor={testStateFor}
-                    standalone
-                    hideGroupHeader={!searching}
-                    onProxySignIn={(provider) => void reach.proxySignIn(provider)}
-                    proxySignInAvailable={reach.proxyAvailable}
-                    proxySigningIn={reach.proxySigningIn}
-                    emptyState={
-                      <>
-                        {harnessBodyLabel(draft.harness)} has nothing to run from your connections yet. Sign in to
-                        OpenCode Go or Zen, or store an API key, under Providers.
-                      </>
-                    }
-                  />
-                  {!searching && activeGroup ? (
-                    <UnreachableModelsPanel
-                      key={activeGroup.key}
-                      group={activeGroup}
-                      harnessLabel={harnessBodyLabel(draft.harness)}
-                    />
-                  ) : null}
-                </div>
-              </div>
-            </div>
+            <CustomProviderModelPane
+              groups={groups}
+              activeGroup={activeGroup}
+              selectedKey={selectedKey}
+              query={query}
+              onQueryChange={setQuery}
+              onSelectSource={selectSource}
+              onSelectModel={chooseModel}
+              onTest={handleTest}
+              testStateFor={testStateFor}
+              loading={reach.loading}
+              proxyAvailable={reach.proxyAvailable}
+              proxySigningIn={reach.proxySigningIn}
+              proxySignIn={(provider) => void reach.proxySignIn(provider)}
+              harnessLabel={harnessBodyLabel(draft.harness)}
+            />
             {orphaned ? (
               <Banner
                 layout="inline"
@@ -880,159 +808,6 @@ const selectedSummaryStyle: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
 };
-const paneHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "7px 10px 6px",
-  borderBottom: `1px solid ${COLORS.borderMuted}`,
-};
-const paneTitleStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 11.5,
-  fontWeight: 600,
-  color: COLORS.textPrimary,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-const paneDetailStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 10,
-  lineHeight: 1.4,
-  color: COLORS.textMuted,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-const paneSearchStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  width: 200,
-  height: 26,
-  padding: "0 8px",
-  borderRadius: 6,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: COLORS.cardBg,
-  flexShrink: 0,
-};
-const paneSearchInputStyle: React.CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  border: "none",
-  outline: "none",
-  background: "transparent",
-  color: COLORS.textPrimary,
-  fontFamily: SANS_FONT,
-  fontSize: 11.5,
-};
-const signInButtonStyle: React.CSSProperties = {
-  height: 24,
-  padding: "0 8px",
-  borderRadius: 6,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: "transparent",
-  color: COLORS.textPrimary,
-  fontFamily: SANS_FONT,
-  fontSize: 10.5,
-  fontWeight: 600,
-  cursor: "pointer",
-  flexShrink: 0,
-};
-
-
-/**
- * The models a source serves that this harness can never run, with the route
- * decision's own reason.
- *
- * They stay visible on purpose: a list that silently hides a whole provider's
- * catalog leaves "why can't I use this here" with no answer anywhere in the
- * product. Collapsed to one line while other models of the source can run;
- * already open when the source can serve nothing at all.
- */
-function UnreachableModelsPanel({
-  group,
-  harnessLabel,
-}: {
-  group: ReachableGroup;
-  harnessLabel: string;
-}) {
-  const [open, setOpen] = useState(group.models.length === 0);
-  if (group.unreachable.length === 0) return null;
-  const reasons = [...new Set(group.unreachable.map((entry) => entry.reason))];
-  const count = group.unreachable.length;
-  return (
-    <div
-      data-custom-unreachable=""
-      style={{ margin: "6px 8px 8px", borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 6 }}
-    >
-      <button
-        type="button"
-        data-custom-unreachable-toggle=""
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          padding: 0,
-          border: "none",
-          background: "transparent",
-          color: COLORS.textMuted,
-          fontFamily: SANS_FONT,
-          fontSize: 10.5,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        <CaretRight size={10} weight="bold" style={{ transform: open ? "rotate(90deg)" : "none" }} />
-        {count === 1 ? `1 model can't run in ${harnessLabel}` : `${count} models can't run in ${harnessLabel}`}
-      </button>
-      {open ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
-          {reasons.map((reason) => (
-            <p key={reason} style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-              {reason}
-            </p>
-          ))}
-          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {group.unreachable.map(({ model }) => {
-              const limits = formatModelLimits(model.contextWindow, model.maxOutputTokens);
-              return (
-                <div
-                  key={model.key}
-                  data-custom-unreachable-model={model.id}
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderRadius: 6, opacity: 0.6 }}
-                >
-                  {model.family ? (
-                    <ModelRowLogo modelFamily={model.family} modelId={model.id} size={13} />
-                  ) : (
-                    <span aria-hidden style={{ display: "inline-block", width: 13, flexShrink: 0 }} />
-                  )}
-                  <span
-                    style={{
-                      minWidth: 0,
-                      flex: 1,
-                      fontSize: 12,
-                      color: COLORS.textPrimary,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {model.label}
-                  </span>
-                  {limits ? <span style={{ flexShrink: 0, fontSize: 10, color: COLORS.textMuted }}>{limits}</span> : null}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 
 /**

@@ -45,8 +45,6 @@ export type ReachableModelListProps = {
   onProxySignIn?: (provider: "claude" | "codex") => void;
   proxySignInAvailable?: boolean;
   proxySigningIn?: "claude" | "codex" | null;
-  /** When true a subscription the proxy does not hold yet cannot be picked. */
-  requireProxySignIn?: boolean;
   /**
    * Hide each group's header (mark, label, detail, sign-in button) and its
    * unreachable count. The Custom provider wizard shows one source at a time
@@ -88,7 +86,6 @@ export const ReachableModelList = memo(function ReachableModelList({
   onProxySignIn,
   proxySignInAvailable = false,
   proxySigningIn = null,
-  requireProxySignIn = false,
   hideGroupHeader = false,
   emptyState,
   groupLimit = DEFAULT_GROUP_LIMIT,
@@ -141,7 +138,6 @@ export const ReachableModelList = memo(function ReachableModelList({
         const limit = isExpanded ? models.length : Math.max(groupLimit, selectedIndex + 1);
         const shown = models.slice(0, limit);
         const hidden = models.length - shown.length;
-        const locked = requireProxySignIn && group.needsProxySignIn === true;
         const subscriptionProvider = group.source.kind === "subscription" ? group.source.provider : null;
         return (
           <section key={group.key} data-reachable-group={group.key} aria-label={group.label} className="flex flex-col">
@@ -155,16 +151,12 @@ export const ReachableModelList = memo(function ReachableModelList({
                   <span className="block truncate text-[10px] leading-snug text-muted-fg/55">{group.detail}</span>
                 </span>
                 {group.needsProxySignIn && subscriptionProvider && onProxySignIn ? (
-                  <button
-                    type="button"
-                    data-reachable-proxy-sign-in={subscriptionProvider}
-                    disabled={!proxySignInAvailable || proxySigningIn != null}
-                    title={proxySignInAvailable ? undefined : "ADE's proxy cannot run on this machine."}
-                    onClick={() => onProxySignIn(subscriptionProvider)}
-                    className="shrink-0 rounded border border-fg/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    {proxySigningIn === subscriptionProvider ? "Signing in…" : "Sign in"}
-                  </button>
+                  <ProxySignInButton
+                    provider={subscriptionProvider}
+                    available={proxySignInAvailable}
+                    signingIn={proxySigningIn === subscriptionProvider}
+                    onSignIn={onProxySignIn}
+                  />
                 ) : null}
               </header>
             )}
@@ -175,9 +167,8 @@ export const ReachableModelList = memo(function ReachableModelList({
                   group={group}
                   model={model}
                   selected={model.key === selectedKey}
-                  disabled={locked}
                   onSelect={onSelect}
-                  {...(onTest && group.routeSource ? { onTest } : {})}
+                  {...(onTest && group.routeSource && model.route.kind !== "native" ? { onTest } : {})}
                   testState={testStateFor?.(group, model)}
                 />
               ))}
@@ -210,7 +201,9 @@ export const ReachableModelList = memo(function ReachableModelList({
   );
 });
 
-/** One test result, shared by the picker rows and the Custom providers list. */
+/**
+ * One result, shared by the picker rows and the Custom providers list.
+ */
 export function RouteTestBadge({ state }: { state: HarnessRouteTestState | undefined }) {
   if (!state) return null;
   if (state.status === "testing") {
@@ -236,11 +229,40 @@ export function RouteTestBadge({ state }: { state: HarnessRouteTestState | undef
   );
 }
 
+/**
+ * The one Sign in button for a subscription source, used by a model list's
+ * group header and by the Custom provider editor's model pane, so the two
+ * surfaces cannot drift into two different buttons.
+ */
+export function ProxySignInButton({
+  provider,
+  available,
+  signingIn,
+  onSignIn,
+}: {
+  provider: "claude" | "codex";
+  available: boolean;
+  signingIn: boolean;
+  onSignIn: (provider: "claude" | "codex") => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-reachable-proxy-sign-in={provider}
+      disabled={!available || signingIn}
+      title={available ? undefined : "ADE's proxy cannot run on this machine."}
+      onClick={() => onSignIn(provider)}
+      className="shrink-0 rounded border border-fg/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      {signingIn ? "Signing in…" : "Sign in"}
+    </button>
+  );
+}
+
 const ReachableModelRow = memo(function ReachableModelRow({
   group,
   model,
   selected,
-  disabled,
   onSelect,
   onTest,
   testState,
@@ -248,7 +270,6 @@ const ReachableModelRow = memo(function ReachableModelRow({
   group: ReachableGroup;
   model: ReachableModel;
   selected: boolean;
-  disabled: boolean;
   onSelect: (group: ReachableGroup, model: ReachableModel) => void;
   onTest?: (group: ReachableGroup, model: ReachableModel) => void;
   testState: HarnessRouteTestState | undefined;
@@ -263,18 +284,16 @@ const ReachableModelRow = memo(function ReachableModelRow({
         selected
           ? "border-violet-400/30 bg-violet-500/[0.08]"
           : "border-transparent hover:border-fg/[0.08] hover:bg-fg/[0.03]",
-        disabled && "opacity-50",
       )}
     >
       <button
         type="button"
         role="option"
         aria-selected={selected}
-        disabled={disabled}
-        title={disabled ? "Sign this subscription in to ADE's proxy first." : model.id}
+        title={model.id}
         onClick={() => onSelect(group, model)}
         data-reachable-select={model.key}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-not-allowed"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
       >
         {model.family ? (
           <ModelRowLogo modelFamily={model.family} modelId={model.id} size={13} />

@@ -25,7 +25,7 @@ provider list — and appear as the first tab of every model picker.
 | Field | Meaning |
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
-| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is the vendor's own subscription login routes only inside OpenCode), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
+| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
@@ -234,8 +234,9 @@ A free-tier model is refused by its own gateway to every outside client no
 matter the protocol — usually spelled `-free`, but not always (`big-pickle`,
 measured 2026-10-15, is free-tier and carries no suffix, so it is listed in
 `OPENCODE_ZEN_FREE_TIER_IDS`). A Test that meets the refusal records it like a
-protocol refusal, so a free-tier model with a novel name disappears from the
-list that offered it instead of failing a launch.
+protocol refusal, so a free-tier model with a novel name stops being offered as
+a reachable choice (it stays listed, greyed, under "N models can't run in …")
+instead of failing a launch.
 
 OpenCode Go rejects any request without a stable `x-opencode-session`
 header. Claude Code gets it through `ANTHROPIC_CUSTOM_HEADERS`, Codex and Grok
@@ -428,6 +429,9 @@ provider token and is never written anywhere by ADE.
   - `CustomProviderDialog.tsx` — the one-page editor: harness chips, the source
     rail and model pane, thinking, and name and look. Its unreachable-models
     panel states why a source's models cannot run in the chosen harness.
+  - `CustomProviderModelPane.tsx` — the editor's model pane: the source rail,
+    the scoped list, the per-source search, the subscription Sign in, and the
+    "N models can't run in {harness}" disclosure with the reasons.
   - `CustomProviderSourceRail.tsx` — the provider rail that scopes the model
     pane to one source, with a warning mark on a source that can serve nothing.
   - `harnessReach.ts` — pure: every model one harness can reach, grouped by

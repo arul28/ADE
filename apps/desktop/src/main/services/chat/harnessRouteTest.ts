@@ -4,12 +4,17 @@
  *
  * It resolves the source exactly as a launch does (`resolveRouteSource`), so a
  * Test and a launch can never disagree about which key, endpoint or sign-in is
- * in play. Two answers are recorded as a definite no so the next launch routes
- * around them: "does not support this protocol", and a request that never
- * answers at all (a hang is as unusable as a refusal, and the lamer failure to
- * leave standing). Every other failure (auth, balance, rate limit, plain
- * network error) leaves the protocol question unanswered, because a wrong key
- * or an empty balance says nothing about whether the protocol works.
+ * in play, and it asks the one route decision (`resolveHarnessRoute`) whether
+ * the pairing can run at all before spending a request: a subscription-only
+ * sign-in or a free-tier model answers with its reason, and a pairing that
+ * exists only inside OpenCode says so instead of reporting "Failed".
+ *
+ * Two answers are recorded as a definite no so the next launch routes around
+ * them: "does not support this protocol", and a request that never answers at
+ * all (a hang is as unusable as a refusal, and the lamer failure to leave
+ * standing). Every other failure (auth, balance, rate limit, plain network
+ * error) leaves the protocol question unanswered, because a wrong key or an
+ * empty balance says nothing about whether the protocol works.
  */
 
 import { randomUUID } from "node:crypto";
@@ -177,6 +182,30 @@ export async function testHarnessRoute(
     return { ok: false, protocol: null, latencyMs: null, route: null, error: resolved.unsupported };
   }
   const { endpoints, token, sourceKey } = resolved;
+  // The one route decision already knows whether this pairing can run at all, so
+  // ask it before spending a request: a subscription sign-in or a free-tier
+  // model answers with its reason instead of a doomed ping, and a pairing that
+  // only exists inside OpenCode itself says so instead of reporting "Failed".
+  const decided = resolveHarnessRoute({
+    harness,
+    source,
+    modelId: model,
+    endpoints,
+    probe: null,
+    ...(resolved.signInKind ? { sourceSignInKind: resolved.signInKind } : {}),
+  });
+  if (decided.kind === "native") {
+    return {
+      ok: false,
+      protocol: null,
+      latencyMs: null,
+      route: "native",
+      error: "This pairing runs inside OpenCode itself; there is nothing to check from here.",
+    };
+  }
+  if (decided.kind === "impossible") {
+    return { ok: false, protocol: null, latencyMs: null, route: null, error: decided.reason };
+  }
   const served = modelProtocols({ sourceProvider: resolved.sourceProvider, modelId: model, endpoints, probe: null });
   const harnessProtocols = HARNESS_ROUTE_PROTOCOLS[harness];
   const order = [
@@ -206,6 +235,7 @@ export async function testHarnessRoute(
         modelId: model,
         endpoints,
         probe: readRouteProbe(adeHome, sourceKey, model),
+        ...(resolved.signInKind ? { sourceSignInKind: resolved.signInKind } : {}),
       });
       return {
         ok: route.kind !== "impossible",

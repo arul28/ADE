@@ -40,7 +40,6 @@ import {
   endpointsForSource,
   isOpenCodeHouseSource,
   KNOWN_SOURCE_ENDPOINTS,
-  openCodeSubscriptionSignInReason,
   resolveHarnessRoute,
   stripTrailingV1,
   type HarnessRoute,
@@ -207,12 +206,6 @@ export function resolveRouteSource(
   const secret = (deps.readOpenCodeSecret ?? readOpenCodeLaunchSecret)(providerId);
   if (!secret) {
     return { unsupported: `${name} is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode.` };
-  }
-  // A subscription sign-in answers only inside OpenCode, on every protocol; a
-  // launch that tried it would fail the same way a Test does.
-  const subscriptionOnly = openCodeSubscriptionSignInReason(providerId);
-  if (subscriptionOnly && secret.methodType === "oauth") {
-    return { unsupported: subscriptionOnly };
   }
   const now = deps.now?.() ?? Date.now();
   if (secret.expiresAt !== null && secret.expiresAt <= now) {

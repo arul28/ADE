@@ -4,6 +4,7 @@ import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { ProviderLogo } from "../ProviderLogos";
 import { CustomToolMark } from "../CustomToolMark";
 import { cn } from "../../ui/cn";
+import { railNavIndex } from "./railNav";
 
 export type RailEntry =
   // Custom sits above Favorites: a saved setup is a whole launch configuration, so
@@ -43,15 +44,7 @@ export const ModelPickerRail = memo(function ModelPickerRail({
     if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
     event.preventDefault();
     event.stopPropagation();
-    const nextIndex = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? Math.max(0, entries.length - 1)
-        : Math.min(
-            Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
-            Math.max(0, entries.length - 1),
-          );
-    const next = entries[nextIndex];
+    const next = entries[railNavIndex(event.key, index, entries.length)];
     if (!next) return;
     const nextKey = entryKey(next);
     onSelect(nextKey);

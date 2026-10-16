@@ -2,6 +2,7 @@ import { memo, useCallback, useRef } from "react";
 import { WarningCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
+import { railNavIndex } from "../../shared/ModelPicker/railNav";
 import type { ReachableGroup } from "./harnessReach";
 
 /**
@@ -23,10 +24,13 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
   groups,
   activeKey,
   onSelect,
+  controlsId,
 }: {
   groups: readonly ReachableGroup[];
   activeKey: string | null;
   onSelect: (key: string) => void;
+  /** The pane these tabs control, for `aria-controls`. */
+  controlsId: string;
 }) {
   const buttonRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -35,13 +39,7 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
       if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
       event.preventDefault();
       event.stopPropagation();
-      const nextIndex =
-        event.key === "Home"
-          ? 0
-          : event.key === "End"
-            ? groups.length - 1
-            : Math.min(Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)), groups.length - 1);
-      const next = groups[nextIndex];
+      const next = groups[railNavIndex(event.key, index, groups.length)];
       if (!next) return;
       onSelect(next.key);
       buttonRefs.current.get(next.key)?.focus();
@@ -71,7 +69,7 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
       {groups.map((group, index) => {
         const selected = group.key === activeKey;
         const servesNothing = group.models.length === 0 && group.unreachable.length > 0;
-        const reason = servesNothing ? group.unreachable[0]?.reason ?? null : null;
+        const reason = servesNothing ? group.unreachable[0]?.reason : undefined;
         return (
           <button
             key={group.key}
@@ -82,9 +80,9 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
             type="button"
             role="tab"
             aria-selected={selected}
-            aria-controls="custom-provider-model-pane"
+            aria-controls={controlsId}
             tabIndex={selected ? 0 : -1}
-            title={reason ?? undefined}
+            title={reason}
             data-custom-source={group.key}
             onClick={() => onSelect(group.key)}
             onKeyDown={(event) => handleKeyDown(event, index)}

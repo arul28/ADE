@@ -28,9 +28,8 @@ import { providerLabel } from "../../../shared/modelCatalog";
 import { decodeOpenCodeRegistryId, MODEL_REGISTRY, type ProviderFamily } from "../../../shared/modelRegistry";
 import { listApiCredentials } from "../ai/apiKeyStore";
 import {
-  openCodeIntegrationForProvider,
-  readOpenCodeCredentials,
   readOpenCodeSignedInProviderIds,
+  readOpenCodeSignedInSources,
 } from "../opencode/openCodeCredentials";
 import { listPersistedOpenCodeProviderModels } from "../opencode/openCodeInventory";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -98,22 +97,14 @@ export function listHarnessRouteCatalog(deps: { adeHome?: string } = {}): Harnes
   const adeHome = deps.adeHome ?? resolveMachineAdeDir();
   const sources: HarnessRouteSource[] = [];
 
-  // One credential per integration decides the sign-in kind; rows arrive
-  // active-first and newest-first, so the first row is the one a launch reads.
-  const signInKindByIntegration = new Map<string, "key" | "oauth" | "external">();
-  for (const row of readOpenCodeCredentials()) {
-    if (!signInKindByIntegration.has(row.integrationId) && row.type) {
-      signInKindByIntegration.set(row.integrationId, row.type);
-    }
-  }
-
-  for (const providerId of readOpenCodeSignedInProviderIds()) {
+  // One store read gives every signed-in provider and its credential kind; the
+  // kind follows the same first-row rule the launch resolver reads.
+  for (const { providerId, signInKind } of readOpenCodeSignedInSources()) {
     const endpoints = KNOWN_SOURCE_ENDPOINTS[canonicalSourceProvider(providerId)] ?? {};
     if (Object.keys(endpoints).length === 0) continue;
     const source = { kind: "opencode" as const, providerId };
     const models = modelsForSource(source, adeHome);
     if (models.length === 0) continue;
-    const signInKind = signInKindByIntegration.get(openCodeIntegrationForProvider(providerId));
     sources.push({
       key: harnessRouteSourceKey(source),
       source,

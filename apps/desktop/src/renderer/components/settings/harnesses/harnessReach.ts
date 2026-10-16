@@ -10,8 +10,10 @@
  * 1. The harness's own accounts (a Claude account in Claude Code). Native, no
  *    endpoint involved; models from the runtime catalog or registry.
  * 2. OpenCode sign-ins and stored API keys, from `ai.listHarnessRoutes`. Each
- *    model's route is computed here; `impossible` rows are dropped and only
- *    counted.
+ *    model's route is computed here. A model no route can carry is kept as an
+ *    `unreachable` entry with the route decision's reason (the wizard lists
+ *    those greyed under the source, instead of silently dropping them); only a
+ *    source that supplies nothing at all is absent.
  * 3. Claude and Codex subscriptions borrowed through ADE's proxy, for every
  *    other harness that takes an endpoint.
  *
@@ -212,26 +214,8 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
     const unreachable: UnreachableModel[] = [];
     for (const model of routeSource.models) {
       const route = routeForListedModel(harness, routeSource, model);
-      if (route.kind === "impossible") {
-        const unreachableRegistry = getModelById(model.id);
-        unreachable.push({
-          model: {
-            key: `${routeSource.key}::${model.id}`,
-            id: model.id,
-            label: model.label || model.id,
-            launchModelId: launchModelIdFor(harness, routeSource.source, model.id),
-            ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-            ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
-            ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
-            family: unreachableRegistry?.family ?? null,
-            route,
-          },
-          reason: route.reason,
-        });
-        continue;
-      }
       const registry = getModelById(model.id);
-      models.push({
+      const row: ReachableModel = {
         key: `${routeSource.key}::${model.id}`,
         id: model.id,
         label: model.label || model.id,
@@ -241,7 +225,9 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
         family: registry?.family ?? null,
         route,
-      });
+      };
+      if (route.kind === "impossible") unreachable.push({ model: row, reason: route.reason });
+      else models.push(row);
     }
     // A source that can serve nothing for this harness stays listed: the
     // wizard shows it with the reason instead of hiding the source, which is

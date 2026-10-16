@@ -264,7 +264,7 @@ const OPENCODE_SUBSCRIPTION_ONLY_REASONS: Readonly<Record<string, string>> = {
 
 /** Why an OpenCode sign-in cannot leave OpenCode, or null when it can. */
 export function openCodeSubscriptionSignInReason(providerId: string): string | null {
-  return OPENCODE_SUBSCRIPTION_ONLY_REASONS[canonicalSourceProvider(providerId).trim()] ?? null;
+  return OPENCODE_SUBSCRIPTION_ONLY_REASONS[canonicalSourceProvider(providerId)] ?? null;
 }
 
 /** A probe verdict for one (source, model), as persisted by main. */
