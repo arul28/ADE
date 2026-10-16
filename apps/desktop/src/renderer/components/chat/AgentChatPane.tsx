@@ -4746,6 +4746,13 @@ export function AgentChatPane({
   const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
   const draftExecutionBindingRequiredRef = useRef(false);
   const draftMachineUnavailableRef = useRef(false);
+  /**
+   * The lane whose branch drift the composer speaks for, mirrored for `submit`:
+   * the turn it launches acts on this lane's worktree (or on none at all when it
+   * will create one). Null while a draft targets "Auto-create lane" or another
+   * machine, whose lanes this machine's list cannot describe.
+   */
+  const composerDriftLaneIdRef = useRef<string | null | undefined>(null);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const turnActiveBySessionRef = useRef<Record<string, boolean>>({});
   const detachedHistorySessionsRef = useRef<Set<string>>(new Set());
@@ -13243,7 +13250,10 @@ export function AgentChatPane({
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
-    armLaneBranchDriftWarning(laneId);
+    // The lane is the composer's effective launch target, not the pane's: a
+    // draft that will create its lane, or one aimed at another machine, has no
+    // worktree here to warn about.
+    armLaneBranchDriftWarning(composerDriftLaneIdRef.current);
     if (
       submitInFlightRef.current
       || busy
@@ -14806,6 +14816,16 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  /**
+   * The lane whose branch drift the composer speaks for. A draft can be aimed at
+   * "Auto-create lane" (there is no worktree yet) or at another machine (whose
+   * lanes this machine's store cannot describe), and neither is the lane the
+   * pane happens to be bound to — so the drift chip must not borrow that one.
+   */
+  const composerDriftLaneId = showDraftLaunchControls
+    && (draftLaunchTargetIsAutoCreate || selectedDraftMachineId !== boundLaneMachineId)
+    ? null
+    : laneId;
   const importSources = useMemo<ExternalSessionSource[]>(() => {
     const activeLanes = (availableLanes?.length ? availableLanes : lanes).map((lane) => ({
       id: lane.id,
@@ -15069,6 +15089,7 @@ export function AgentChatPane({
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
   draftMachineUnavailableRef.current = draftMachineUnavailable;
+  composerDriftLaneIdRef.current = composerDriftLaneId;
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
@@ -16944,7 +16965,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         {usageLimitChip}
-        <LaneBranchComposerChip laneId={laneId} />
+        <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
         {sessionDelta ? (
           <StatusChip

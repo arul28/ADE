@@ -110,7 +110,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | File | Responsibility |
 |------|---------------|
 | `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, startup repair routines, branch switching, lane + session Linear, GitHub, and Jira issue linkage, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, removes the worktree (on Windows, first trying a rename-aside + `git worktree prune` fast path) / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, records retryable residual-cleanup debt when manual deletion fails, and cleans the pack directory + DB rows. The lane-aware storage lifecycle adds `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive`: reclaim proves that the saved path and branch are the exact worktree registered by this project, rejects symlinks, rechecks directory identity immediately before removal, records machine-local retry state, and preserves the branch, chats, lane row, and metadata. Restore reuses the lane's own folder wherever it still exists, and only recreates a worktree — always inside `.ade/worktrees` — when that folder is gone. It also emits one-shot `LaneLifecycleEvent` notifications after successful create/adopt/rename/archive/reclaim/unarchive/restore/delete transitions so renderer surfaces can toast completed lifecycle changes and invalidate lane-list reads without polling. `list()` reconciles lane rows against `git worktree list` in both directions — adopting every unregistered worktree and reaping lanes whose worktree is gone from git and disk — from a single git call. Lane creation is wrapped so that any failure after the worktree is on disk routes through `cleanupCreatedWorktreeLaneAfterCreateFailure`, which removes the orphaned checkout rather than leaving a worktree no lane row references. `create(args, runtimeOptions?)` also takes caller-side `LaneCreateRuntimeOptions` that are not part of the public lane-create contract (RPC and IPC callers never pass them): a reserved lane id, a checkout-progress callback, and an abort signal — see [Reserved ids, checkout progress, and cancellation](#reserved-ids-checkout-progress-and-cancellation). `cleanupReservedWorktree({ laneId, name })` and `findLaneIdentity(laneId)` serve the brain's chat-launch retry path from the same section. Independent deletes can progress through teardown concurrently; only the `git_worktree_remove` step enters the shared worktree-mutation guard, so lane creation is not held behind unrelated stop/cleanup steps but still avoids concurrent edits to Git's worktree registry. Deletes run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `list()` also runs the residual-worktree cleanup retry sweep before duplicate/stale worktree repair so previous delete warnings can self-heal without blocking lane row cleanup. `getSummary(laneId, { includeStatus })` is the scoped summary path used by mobile detail commands so opening a lane does not rebuild the full lane list; `refreshSnapshots` honors `includeStatus` for light runtime-bucket refreshes. `upsertLaneStateSnapshot` guards its `lane_state_snapshots` write with a `where` clause that only touches the row when a field actually changed (`dirty`/`ahead`/`behind`/`remote_behind`/`rebase_in_progress`, and `agent_summary_json` only when the caller passed an `agentSummary`), so a status recompute that yields identical values no longer authors a redundant CRR row — which otherwise fans an empty update out to every synced device and triggers a full mobile lane-list reload for nothing. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. Branch switching rolls git checkout back to the previous branch when the database update fails. **Linear issue linkage:** `linkLinearIssues` / `unlinkLinearIssues` manage lane-scoped links in `lane_linear_issue_links` (never touching the primary `lane_linear_issues` row); `attachLinearIssueToSession` / `detachLinearIssueFromSession` / `listLinearIssuesForSession` / `listLinearIssuesForLaneSessions` manage session-scoped links in `session_linear_issues`. `attachLinearIssueToSession` resolves the session's lane from `claude_sessions` / `terminal_sessions` and mirrors each issue into the lane's `chat_attach` links when a lane exists, without ever promoting the lane's primary issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). **Jira issue snapshots:** `attachJiraIssueToSession` / `detachJiraIssueFromSession` store chat and CLI links in `session_jira_issues`; lane summaries hydrate them as `jiraIssueLinks`. `listLinkedIssueSnapshotReferences` returns a bounded rotating page across Linear, GitHub, and Jira links for chat context refresh. Jira links add a `Jira: KEY` PR reference and never close the issue. See [Issues](../issues/README.md#jira-issues-on-lanes-and-chats). **Branch drift:** `getBranchDrift({ laneId })` is the on-demand fresh read (`git symbolic-ref --quiet --short HEAD`) for callers that need an answer immediately before acting, and `resolveBranchDrift(args)` is the single entry point for both resolutions. The service object is built as a named `laneServiceApi` so drift resolution can delegate to sibling methods (`switchBranch`, rename) instead of duplicating their transaction and rollback handling. See [Branch drift](#branch-drift). |
-| `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, changedFileCount, staged, unstaged, untracked, headBranchRef }` from the NUL-delimited `git status --porcelain=v2 --branch --untracked-files=normal -z` output that `computeLaneStatus` already collects — headers start with `# `, entry records never do, rename/copy records carry a second path that is consumed, tracked entries count once even when they have both index and worktree changes, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift. |
+| `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, changedFileCount, staged, unstaged, untracked, headBranchRef }` from the NUL-delimited `git status --porcelain=v2 --branch --untracked-files=normal -z` output that `computeLaneStatus` already collects — headers start with `# `, entry records never do, rename/copy records carry a second path that is consumed, tracked entries count once even when they have both index and worktree changes, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef, kind? })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift, and a `kind` of `renamed`/`missing` is carried while `switched` stays implicit. `classifyMissingLaneBranchDriftKind({ expectedBranchRef, headBranchRef, reflogSubjects })` reads the `Branch: renamed refs/heads/<old> to refs/heads/<new>` subjects git writes on `git branch -m` and walks rename chains (a→b→c) to tell a `renamed` drift from a branch that was simply deleted (`missing`); it never returns `switched`. |
 | `laneUsageTombstone.ts` | The one row a deleted lane leaves behind so ADE's lifetime stats are not survivor stats. See [What a deleted lane leaves behind](#what-a-deleted-lane-leaves-behind). `writeLaneUsageTombstone` is called from inside `cleanupLaneDatabaseRows` *before* the cascade, while the rows it counts still exist, and rides the caller's `begin immediate` so the tombstone and the deletes commit together. `encodeActiveDayBits` / `decodeActiveDayKeys` pack the lane's active local days into a hex bitmap (capped at a 4,096-day span) so `activeDays` and streaks stay reconstructible without a per-day breakdown. |
 | `worktreeResidualCleanup.ts` | Machine-local retry worker for managed worktree directories that survive lane deletion. It stores cleanup debt in `local_worktree_residual_cleanups`, retries during `laneService.list()`, drops unsafe records, skips registered Git worktrees, active lane paths, and pending creations, removes old empty untracked directories under the managed worktrees directory, and leaves unknown non-empty directories alone unless they were explicitly recorded from the delete path. |
 | `laneWorktreeLockService.ts` | Database-backed lease for any operation that mutates a lane worktree. PR conflict/integration work and storage reclaim/restore share the same lock table, so two processes cannot remove, restore, or edit the same worktree concurrently. Expired leases are swept; active blockers carry an owner label for clear UI errors. |
@@ -150,7 +150,7 @@ Renderer components:
 | `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |
 | `renderer/components/lanes/LaneColorPicker.tsx` | Reusable grouped swatch picker used inside `CreateLaneDialog` and `ManageLaneDialog`. Shows Rainbow above Classic, disables swatches already in use by other lanes (passed in as `usedColors`), and offers a clear button. |
 | `renderer/components/lanes/LaneContextMenu.tsx`, `laneContextMenuItems.tsx` | Right-click menu on the lane list. `buildLaneMenuGroups` is the single action inventory shared with the Work sidebar's singleton-session **Lane** submenu; both render the same start-chat/pin, navigation, copy, **Open in**, split, appearance, and manage/batch groups. Copy, split, and appearance open as pointer-safe keyboard submenus; color swatches call `lanes.updateAppearance` directly. **Open in** is an `open-in` entry (`OpenInTarget`: worktree `rootPath` plus optional SSH `remote`) rendered by `OpenInSubmenu`; callers pass `openIn` from `resolveOpenInTarget({ worktreePath, binding })`. Paired remotes and empty worktree paths omit the group. Work callers may pass their own Work-sidebar pin toggle and pin ids, deliberately separate from the Lanes tab's pins. |
-| `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchComposerChip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`); `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`. See [Branch drift](#branch-drift). |
+| `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchComposerChip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`). A `renamed`/`missing` drift replaces those two buttons with a single `Update lane` (it is a calm `info` chip for `renamed`, a `warning` chip for `missing`), because switching back to a branch that no longer exists is impossible; `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`, keyed to the composer's effective launch target rather than the pane's leftover lane. See [Branch drift](#branch-drift). |
 | `renderer/components/lanes/sidebar/LaneSidebarList.tsx`, `LaneSidebarRow.tsx`, `LaneSidebarGroupHeader.tsx`, `laneSidebarModel.ts` | The project-sidebar lane manager. Lanes are grouped by **State** (Needs you / Active / Behind main / Done / Stale, older than 14 days / Quiet), with Primary pinned at the top, or by **Stack** via a State \| Stack toggle. Rows match the Work lane cards: branch glyph and lane name in the lane color, agent logos, status, time; line 2 is branch, PR chip (`LaneSidebarPrChip.tsx`), and parent. |
 | `renderer/components/lanes/sidebar/LaneSidebarContextMenu.tsx`, `LaneSidebarBulkRebaseDialog.tsx` | Group "…" menus with bulk actions, always confirmed and never including Primary: Done → Archive all, Behind main → Rebase all, Stale → Archive all / Delete all. |
 | `renderer/components/lanes/laneIconGlyph.tsx` | `iconGlyph(icon)`: the glyph for a lane's chosen icon (star, flag, bolt, shield, tag). The Work session list uses it for lane group headers, with the generic lane icon when a lane has no icon. |
@@ -1042,8 +1042,10 @@ until drift is resolved.
 | Type | Shape |
 |------|-------|
 | `LaneStatus.headBranchRef?` | `string \| null` — the branch HEAD actually points at, read live during the status refresh. Absent when status was not computed; `null` on a detached HEAD. |
+| `LaneStatus.branchDriftKind?` | `LaneBranchDriftKind \| null` — why HEAD left the recorded branch, measured during the same refresh and only while drift exists. Absent with no drift (or `switched`). |
+| `LaneBranchDriftKind` | `"switched" \| "renamed" \| "missing"`. `switched` is the default every reader must assume when the kind is not carried; `renamed` and `missing` mean the recorded branch cannot be checked out any more, so the only way forward is moving the lane to the branch HEAD is on. |
 | `LaneSummary.branchDrift?` | `LaneBranchDrift \| null` — non-null when HEAD drifted off `branchRef`. |
-| `LaneBranchDrift` | `{ expectedBranchRef, headBranchRef }`, both plain branch names with `refs/heads/` and `origin/` stripped. |
+| `LaneBranchDrift` | `{ expectedBranchRef, headBranchRef, kind? }`, both refs plain branch names with `refs/heads/` and `origin/` stripped. `kind` is absent for `switched` (the shape older clients already accept) and present only for `renamed`/`missing`. |
 | `LaneBranchDriftResolution` | `"switch-back" \| "keep-head"`. |
 | `ResolveLaneBranchDriftArgs` | `{ laneId, resolution, expectedHeadBranchRef?, acknowledgeActiveWork? }`. `expectedHeadBranchRef` is required for `keep-head` and guards against acting on a stale drift reading; `acknowledgeActiveWork` applies to `switch-back` only. |
 | `ResolveLaneBranchDriftResult` | `{ lane, resolution, previousBranchRef, branchRef, previousLaneName, laneName }`. |
@@ -1060,11 +1062,31 @@ worktree, or a detached HEAD, which git reports as the literal
 `(detached)`) the result is `null`, because neither drift affordance can
 act on it and nagging about it would be noise.
 
+**Renamed vs. missing.** A healthy lane pays nothing: the classification
+runs only while `headBranchRef` differs from the recorded branch. It first
+probes `git show-ref --verify --quiet refs/heads/<expected>`; a ref that
+still exists is `switched` and that is the common case. Only when the ref is
+gone does it read the reflogs (`git reflog show --format=%gs -n 50` on
+`HEAD` and on the head branch) and look for a
+`Branch: renamed refs/heads/<old> to refs/heads/<new>` subject — the only
+durable evidence `git branch -m` leaves. Renames chain (a→b→c), so
+`classifyMissingLaneBranchDriftKind` starts at the live name and walks the
+links back; a rename with evidence is `renamed`, a gone ref with none is
+`missing`. An unreadable reflog, a `show-ref` that fails for any reason other
+than "no such ref", or a rename that thrashes back onto its own old name all
+fall back to the historical `switched` reading, which offers a switch-back
+that fails loudly rather than a silent mis-adoption. The verdict is memoized
+per `(worktree, recorded branch, head branch)`, but the recorded ref's
+existence is deliberately not — a branch can be created again, which turns
+the drift back into a plain switch the lane can undo.
+
 `laneService.getBranchDrift({ laneId })` is the on-demand counterpart —
 a fresh `git symbolic-ref --quiet --short HEAD` for callers that need an
 answer right before acting (a PR operation, a new chat turn). It returns
-`null` for archived lanes and for an unavailable worktree. The lane list
-already carries `branchDrift`, so this exists only for the act-now path.
+`null` for archived lanes and for an unavailable worktree. It carries the
+same `renamed`/`missing` classification, so an act-now caller never treats a
+deleted branch as a switch. The lane list already carries `branchDrift`, so
+this exists only for the act-now path.
 
 **Resolving.** `laneService.resolveBranchDrift(args)` is the single entry
 point for both affordances. It re-reads live HEAD first and throws when
@@ -1074,14 +1096,18 @@ matches ("This lane is now on 'X', not 'Y'. Refresh and try again.").
 - **`switch-back`** restores the worktree to the recorded `branch_ref` by
   delegating to `switchBranch`, inheriting its guarantees: it refuses
   (throwing, changing nothing) when the worktree is dirty, and it rolls the
-  checkout back if the database write fails.
+  checkout back if the database write fails. When the drift is `renamed` or
+  `missing` it refuses up front with a clear message instead — switching back
+  is impossible once the recorded branch is gone, and reporting a missing
+  pathspec would only strand the user.
 - **`keep-head`** re-points `branch_ref` (and the branch profile's base and
   parent) at the live HEAD in one transaction. It never renames the lane: a
   lane name says what the work is about, and agents are told to rename the
   lane themselves (`ade lanes rename`) when that changes. It broadcasts
   `lane-branch-updated` with `previousBranchRef` and `branchRef`. The
   resolution refuses when another active lane already owns the target
-  branch.
+  branch. This is the only way forward for `renamed`/`missing` — the worktree
+  is already on the head branch, so nothing is checked out.
 
 **Agents move the lane with them.** When an agent in a lane checks out a new
 branch during its turn (a follow-up PR, `/ship`), ADE adopts that branch
@@ -1114,21 +1140,35 @@ asks. The result is logged as `lane.agent_branch_adopted` or
 `renderer/components/lanes/LaneBranchDrift.tsx`:
 
 - `LaneBranchDriftChip` — compact, rendered in `WorkSurfaceHeader` next to
-  the lane chip, always visible while a lane is drifted.
+  the lane chip, always visible while a lane is drifted. Its wording follows
+  `kind`: `drifted` for `switched`, `renamed` when the recorded branch was
+  renamed, `branch missing` when it was deleted.
 - `LaneBranchComposerChip` — a chip in the composer status strip
-  (`StatusStrip` (`ui/notice/StatusChip.tsx`)): `⎇ On <branch> · Switch back · Keep`, with the
-  explanation in its tooltip. When armed it reads HEAD fresh through
-  `getBranchDrift`, because the lane list's status can be minutes old. After
-  ADE adopts an agent's branch, the same slot shows
-  `⎇ Now on <branch> · Switch back ×` for ten minutes; Switch back calls
-  `switchBranch` to the previous branch. The asking chip appears only after
-  `armLaneBranchDriftWarning(laneId)` is called,
-  i.e. only once something is about to act on the branch. The arm sites are
-  `AgentChatPane.submit` (a chat turn is about to run against the worktree)
-  and `ChatGitToolbar`'s PR button / `handlePr` (a PR operation is about to
-  run). The strip renders above the composer in `AgentChatPane`: the
-  composer slot belongs to drift, while the header chip slot is shared with
-  session-lifecycle chips.
+  (`StatusStrip` (`ui/notice/StatusChip.tsx`)). For a plain `switched` drift it
+  reads `⎇ On <branch> · Switch back · Keep`, with the explanation in its
+  tooltip. For `renamed` it is a calm `info` chip — `⎇ Branch renamed to
+  <branch> · Update lane` — and for `missing` a `warning` chip —
+  `⎇ <branch> no longer exists · Update lane` — with a single action,
+  `Update lane`, because switching back is impossible once the recorded branch
+  is gone. When armed it reads HEAD fresh through `getBranchDrift`, because the
+  lane list's status can be minutes old. After ADE adopts an agent's branch, the
+  same slot shows `⎇ Now on <branch> · Switch back ×` for ten minutes; Switch
+  back calls `switchBranch` to the previous branch. The asking chip appears only
+  after `armLaneBranchDriftWarning(laneId)` is called, i.e. only once something
+  is about to act on the branch. The arm sites are `AgentChatPane.submit` (a
+  chat turn is about to run against the worktree) and `ChatGitToolbar`'s PR
+  button / `handlePr` (a PR operation is about to run). The strip renders above
+  the composer in `AgentChatPane`: the composer slot belongs to drift, while the
+  header chip slot is shared with session-lifecycle chips.
+
+  The composer chip follows the composer's **effective launch target**, not
+  the pane's leftover `laneId`: a draft aimed at "Auto-create lane" has no
+  worktree yet, and a draft aimed at another machine's lane is not a lane this
+  machine's store can describe, so both pass `null` and no chip shows. A real
+  lane picked in the draft (on this machine) keeps showing its drift, because
+  the new chat would run on that branch. `AgentChatPane.submit` mirrors the
+  same effective target in a ref so the arming call cannot wake a stale lane's
+  warning.
 
 **Reach.** Desktop IPC channels `ade.lanes.getBranchDrift` and
 `ade.lanes.resolveBranchDrift` are registered in

@@ -5222,6 +5222,7 @@ describe("laneService stale worktree status", () => {
       trackedFileCount: null,
       rebaseInProgress: false,
       headBranchRef: null,
+      branchDriftKind: null,
     });
     expect(vi.mocked(runGit).mock.calls.some(([args, opts]) =>
       args[0] === "status" && (opts as { cwd?: string } | undefined)?.cwd === childPath
@@ -7752,6 +7753,8 @@ describe("laneService branch drift", () => {
     commitsOnlyOnOldBranch?: number | null;
     /** The old branch no longer exists locally (`show-ref --verify` fails). */
     missingBranches?: string[];
+    /** `git reflog show` bodies per worktree, for rename-vs-missing classification. */
+    reflogSubjectsByPath?: Record<string, string>;
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
     vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
@@ -7782,6 +7785,9 @@ describe("laneService branch drift", () => {
       if (gitArgs[0] === "show-ref") {
         const missing = (args.missingBranches ?? []).some((branch) => gitArgs.includes(`refs/heads/${branch}`));
         return { exitCode: missing ? 1 : 0, stdout: "", stderr: "" };
+      }
+      if (gitArgs[0] === "reflog") {
+        return { exitCode: 0, stdout: args.reflogSubjectsByPath?.[cwd] ?? "", stderr: "" };
       }
       if (gitArgs[0] === "rev-list" && gitArgs[1] === "--count") {
         if (args.commitsOnlyOnOldBranch === null) return { exitCode: 128, stdout: "", stderr: "fatal: bad revision" };
@@ -7881,6 +7887,65 @@ describe("laneService branch drift", () => {
       branch_ref: "feature/child",
     });
   });
+
+  it.each([
+    {
+      label: "a renamed branch",
+      reflog: "Branch: renamed refs/heads/feature/child to refs/heads/hotfix-auth",
+      kind: "renamed",
+      message: /was renamed to 'hotfix-auth'/i,
+    },
+    {
+      label: "a branch deleted with no rename evidence",
+      reflog: undefined,
+      kind: "missing",
+      message: /no longer exists/i,
+    },
+  ] as Array<{ label: string; reflog?: string; kind: "renamed" | "missing"; message: RegExp }>)(
+    "classifies $label and refuses switch-back without touching the worktree",
+    async ({ reflog, kind, message }) => {
+      const repoRoot = makeTempRepoRoot("ade-lane-drift-kind-");
+      const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+      await seedProjectAndStack(db, { projectId: "proj-drift-kind", repoRoot });
+      const childPath = path.join(repoRoot, "child");
+      const { checkouts } = stubDriftGit({
+        repoRoot,
+        headBranchByPath: { [childPath]: "hotfix-auth" },
+        // The recorded branch is gone; only the reflog can tell a rename from a delete.
+        missingBranches: ["feature/child"],
+        reflogSubjectsByPath: reflog ? { [childPath]: `${reflog}\n` } : undefined,
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-drift-kind",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const lanes = await service.list({ includeStatus: true });
+      expect(lanes.find((lane) => lane.id === "lane-child")?.branchDrift).toEqual({
+        expectedBranchRef: "feature/child",
+        headBranchRef: "hotfix-auth",
+        kind,
+      });
+      // The act-now read carries the same classification the list does.
+      expect(await service.getBranchDrift({ laneId: "lane-child" })).toEqual({
+        expectedBranchRef: "feature/child",
+        headBranchRef: "hotfix-auth",
+        kind,
+      });
+
+      await expect(
+        service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
+      ).rejects.toThrow(message);
+      expect(checkouts).toHaveLength(0);
+      expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+        branch_ref: "feature/child",
+      });
+    },
+  );
 
   it.each([
     { label: "a name that restates the old branch", laneName: "feature/child" },

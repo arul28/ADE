@@ -1,4 +1,4 @@
-import type { LaneBranchDrift } from "../../../shared/types";
+import type { LaneBranchDrift, LaneBranchDriftKind } from "../../../shared/types";
 import { normalizeBranchName } from "../shared/utils";
 
 /**
@@ -89,14 +89,107 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
  * Returns `null` (no drift) when either side is unknown — an unavailable
  * worktree or a detached HEAD is not something the drift affordances can act
  * on, and nagging about it would be noise.
+ *
+ * `kind` is the lane service's classification of an existing drift. It is left
+ * out for `switched` on purpose: that keeps the object the shape every reader
+ * (and older client) already expects, and a reader must treat a missing kind
+ * as `switched` anyway.
  */
 export function detectLaneBranchDrift(args: {
   expectedBranchRef: string | null | undefined;
   headBranchRef: string | null | undefined;
+  /** Why HEAD left the recorded branch, when the lane service classified it. */
+  kind?: LaneBranchDriftKind | null;
 }): LaneBranchDrift | null {
   const expectedBranchRef = normalizeBranchName((args.expectedBranchRef ?? "").trim()).trim();
   const headBranchRef = normalizeBranchName((args.headBranchRef ?? "").trim()).trim();
   if (!expectedBranchRef || !headBranchRef) return null;
   if (expectedBranchRef === headBranchRef) return null;
+  if (args.kind && args.kind !== "switched") return { expectedBranchRef, headBranchRef, kind: args.kind };
   return { expectedBranchRef, headBranchRef };
+}
+
+// ---------------------------------------------------------------------------
+// Renamed vs. missing
+// ---------------------------------------------------------------------------
+
+/**
+ * `git branch -m` (and `git checkout -m`) record the rename in the reflog as
+ * `Branch: renamed refs/heads/<old> to refs/heads/<new>`. That subject is the
+ * only durable evidence that distinguishes "the recorded branch was renamed
+ * to the branch we are on" from "the recorded branch is gone", and it is what
+ * decides whether the lane can still be switched back at all.
+ */
+const RENAME_SUBJECT_PREFIX = "Branch: renamed ";
+const RENAME_SUBJECT_SEPARATOR = " to ";
+
+/** `refs/heads/x` → `x`; anything else (a tag, `HEAD`, a raw id) → null. */
+function branchNameFromRenameRef(ref: string): string | null {
+  const value = ref.trim();
+  if (!value.startsWith("refs/heads/")) return null;
+  const name = normalizeBranchName(value).trim();
+  return name || null;
+}
+
+/**
+ * One reflog subject as a rename link. Branch names cannot contain spaces, so
+ * the last ` to ` is the separator git itself wrote; a trailing `\r` from a
+ * Windows checkout is trimmed with the rest of the whitespace.
+ */
+function parseBranchRenameReflogSubject(subject: string): { from: string; to: string } | null {
+  const line = subject.trim();
+  if (!line.startsWith(RENAME_SUBJECT_PREFIX)) return null;
+  const rest = line.slice(RENAME_SUBJECT_PREFIX.length);
+  const splitAt = rest.lastIndexOf(RENAME_SUBJECT_SEPARATOR);
+  if (splitAt <= 0) return null;
+  const from = branchNameFromRenameRef(rest.slice(0, splitAt));
+  const to = branchNameFromRenameRef(rest.slice(splitAt + RENAME_SUBJECT_SEPARATOR.length));
+  if (!from || !to) return null;
+  return { from, to };
+}
+
+/**
+ * Whether rename links connect `from` to `to`. Renames chain (a→b→c), and the
+ * links from every rename on the way sit in the log of the surviving name, so
+ * start at the live name and walk back. A name may not be visited twice: a
+ * rename that thrashes back onto its own old name is ambiguous evidence, and
+ * "missing" is the honest answer there.
+ */
+function reflogRenamesReach(subjects: readonly string[], from: string, to: string): boolean {
+  const links: Array<{ from: string; to: string }> = [];
+  for (const subject of subjects) {
+    const link = parseBranchRenameReflogSubject(subject);
+    if (link) links.push(link);
+  }
+  if (!links.length) return false;
+  const visited = new Set<string>([to]);
+  let cursor = to;
+  for (let hop = 0; hop < links.length; hop += 1) {
+    const link = links.find((candidate) => candidate.to === cursor);
+    if (!link) return false;
+    if (link.from === from) return true;
+    if (visited.has(link.from)) return false;
+    visited.add(link.from);
+    cursor = link.from;
+  }
+  return false;
+}
+
+/**
+ * Tell a rename apart from a branch that was simply deleted, for a drift whose
+ * recorded ref is already known to be gone (the caller probes
+ * `refs/heads/<expected>` first: an existing ref is `switched`, and only the
+ * missing case reaches here). `switched` is never returned.
+ */
+export function classifyMissingLaneBranchDriftKind(args: {
+  expectedBranchRef: string | null | undefined;
+  headBranchRef: string | null | undefined;
+  /** `git reflog show --format=%gs` subjects, newest first. */
+  reflogSubjects?: readonly string[];
+}): Extract<LaneBranchDriftKind, "renamed" | "missing"> {
+  const expectedBranchRef = normalizeBranchName((args.expectedBranchRef ?? "").trim()).trim();
+  const headBranchRef = normalizeBranchName((args.headBranchRef ?? "").trim()).trim();
+  if (!expectedBranchRef || !headBranchRef || expectedBranchRef === headBranchRef) return "missing";
+  if (!reflogRenamesReach(args.reflogSubjects ?? [], expectedBranchRef, headBranchRef)) return "missing";
+  return "renamed";
 }
