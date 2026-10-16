@@ -5,6 +5,7 @@ import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript"
 import { pluralCount } from "../../../shared/formatting";
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
+import { formatContextTokens } from "./usage/contextUsageModel";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
 export type ChatWorkflowRun = {
@@ -143,30 +144,6 @@ function statusTone(status: WorkflowStatus): string {
     case "stopped": return "text-amber-200/80";
     default: return "text-violet-200/95";
   }
-}
-
-function phaseAgentList(progress: AgentChatWorkflowProgress, phase: AgentChatWorkflowPhase): AgentChatWorkflowAgent[] {
-  return progress.agents.filter((agent) => agent.phaseTitle === phase.title);
-}
-
-function phaseState(
-  progress: AgentChatWorkflowProgress,
-  phase: AgentChatWorkflowPhase,
-  workflowStatus: WorkflowStatus,
-): "queued" | "active" | "completed" | "failed" {
-  const agents = phaseAgentList(progress, phase);
-  if (agents.some((agent) => agent.status === "failed" || agent.status === "stopped")) return "failed";
-  if (agents.some((agent) => agent.status === "running")) return "active";
-  if (agents.length > 0 && agents.every((agent) => agent.status === "completed")) return "completed";
-  if (workflowStatus === "completed" || workflowStatus === "failed" || workflowStatus === "stopped") {
-    return progress.failedCount > 0 ? "failed" : "completed";
-  }
-  const activePhase = progress.agents.find((agent) => agent.status === "running")?.phaseTitle;
-  if (activePhase === phase.title) return "active";
-  if (activePhase && progress.phases.findIndex((candidate) => candidate.title === activePhase) > progress.phases.indexOf(phase)) {
-    return "completed";
-  }
-  return "queued";
 }
 
 function workflowDuration(run: ChatWorkflowRun, nowMs: number): number | null {
@@ -365,7 +342,7 @@ function WorkflowRunBlock({
         {counts.failed > 0 ? <span className="text-rose-300/80">{counts.failed} failed</span> : null}
         {counts.stopped > 0 ? <span>{counts.stopped} stopped</span> : null}
         {progress.queuedCount > 0 ? <span>{progress.queuedCount} queued</span> : null}
-        {totals.tokens !== null ? <span>{formatContextTokensLabel(totals.tokens)} tok</span> : null}
+        {totals.tokens !== null && totals.tokens > 0 ? <span>{formatContextTokens(totals.tokens)} tok</span> : null}
         {totals.tools !== null ? <span>{totals.tools} tools</span> : null}
       </div>
 
@@ -450,7 +427,7 @@ function WorkflowAgentRow({
 }) {
   const { agent, member, status, summary } = view;
   const metrics = [
-    typeof agent.tokens === "number" ? formatContextTokensLabel(agent.tokens) : null,
+    typeof agent.tokens === "number" ? formatContextTokens(agent.tokens) : null,
     agent.durationMs ? formatSubagentDurationMs(agent.durationMs) : null,
   ].filter((part): part is string => Boolean(part)).join(" · ");
   const content = (
@@ -498,8 +475,3 @@ function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "fai
   return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg/25" />;
 }
 
-function formatContextTokensLabel(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return String(tokens);
-}

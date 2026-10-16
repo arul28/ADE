@@ -31,8 +31,14 @@ export type AgentShellRetireReason = "relaunch" | "stop";
 
 type CandidateRow = {
   sessionId: string;
-  /** Owner chat, when it still exists. Null once that chat was deleted. */
+  /** The shell's owner chat id. Still set after that chat is deleted. */
   chatSessionId: string | null;
+  /**
+   * The owner row's id, null when the chat it names no longer exists.
+   * `chat_session_id` carries no foreign key, so deleting a chat leaves this
+   * id dangling rather than clearing it.
+   */
+  parentId: string | null;
   userInputAt: string | null;
   retiredReason: AgentShellRetireReason | null;
   status: string;
@@ -56,10 +62,14 @@ function agentShellArchiveDue(row: CandidateRow, nowMs: number): boolean {
   if (row.userInputAt) return false;
   if (row.status === "running" || row.status === "detached") return false;
   if (row.retiredReason === "relaunch") return true;
-  // No owner at all counts as quiet: the chat that used this shell is gone, so
-  // nothing will ever settle or archive it again, and a dead App Control shell
-  // with a deleted owner is exactly the row this sweeper exists to hide.
-  const parentQuiet = !row.chatSessionId || Boolean(row.parentSettledAt || row.parentArchivedAt);
+  // A missing owner counts as quiet, and it is the shape deletion actually
+  // leaves: `terminal_sessions.chat_session_id` has no foreign key, so the id
+  // stays and the parent row disappears. Nothing will ever settle that shell
+  // again, and a dead App Control shell whose chat was deleted is exactly the
+  // row this sweeper exists to hide.
+  const parentQuiet = !row.chatSessionId
+    || !row.parentId
+    || Boolean(row.parentSettledAt || row.parentArchivedAt);
   const cleanEnd = row.retiredReason === "stop" || (row.status === "completed" && row.exitCode === 0);
   if (!cleanEnd) return parentQuiet;
   const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
@@ -146,6 +156,7 @@ export function createAgentShellCleanup({
           select
             c.session_id as sessionId,
             s.chat_session_id as chatSessionId,
+            p.id as parentId,
             c.user_input_at as userInputAt,
             c.retired_reason as retiredReason,
             s.status as status,

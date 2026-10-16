@@ -2982,11 +2982,12 @@ archives its shells (`sessionService.listAttachedShellIds` /
 another machine's live runtime is left running — ownership decides who may stop
 it — but its row is still archived here. Nothing is deleted, so output survives
 and the archive can put the row back. Deleting the chat never touches a child
-chat: a child chat is work, not a tool. Two consequences worth knowing: the
-sweeper's "no owner at all" case counts as a quiet parent, so a dead agent shell
-whose chat was deleted still archives after the same grace period instead of
-waiting forever for a parent that no longer exists; and lane deletion removes
-every session row in that lane, archived or not.
+chat: a child chat is work, not a tool. Two consequences worth knowing: a
+shell's `chat_session_id` carries no foreign key, so deleting its chat leaves the
+id dangling rather than clearing it — the sweeper therefore treats a *missing
+owner row* as a quiet parent, which is what lets a dead agent shell whose chat
+was deleted archive after the same grace period instead of waiting forever; and
+lane deletion removes every session row in that lane, archived or not.
 
 Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every

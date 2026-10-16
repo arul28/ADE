@@ -141,33 +141,22 @@ describe("agent shell cleanup sweep", () => {
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
   });
 
-  it("archives an ownerless shell once its chat is gone", async () => {
-    // Deleting the owner chat leaves `chat_session_id` null (the FK nulls it).
-    // Nothing will ever settle that row again, so "no owner" has to count as
-    // quiet or a dead App Control shell stays in the lane list forever.
+  it("archives a crashed shell whose chat was deleted, instead of waiting for it forever", async () => {
+    // Deleting a chat does NOT clear the shell's `chat_session_id` (the column
+    // has no foreign key), so the shell keeps an id whose row is gone. The
+    // unclean end is the case `parentQuiet` decides: before this rule that
+    // shell could never archive, because the parent it was waiting to settle
+    // no longer existed.
     const { db, agentShells } = await createHarness();
-    const id = seedAgentShell(db, agentShells, { id: "orphan", chatSessionId: null, status: "completed", exitCode: 0 });
-
-    expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([]);
-    expect(archivedAt(db, id)).toBeNull();
-    expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
-    expect(archivedAt(db, id)).not.toBeNull();
-  });
-
-  it("archives an ownerless shell that crashed, instead of waiting for a parent forever", async () => {
-    // The unclean path is the one `parentQuiet` decides: before this rule an
-    // ownerless crashed shell could never archive, because the parent it was
-    // waiting to settle no longer existed.
-    const { db, agentShells } = await createHarness();
-    const id = seedAgentShell(db, agentShells, { id: "orphan-crashed", chatSessionId: null, status: "failed", exitCode: 1 });
+    const id = seedAgentShell(db, agentShells, { id: "orphan-crashed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
 
     expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([id]);
     expect(archivedAt(db, id)).not.toBeNull();
   });
 
-  it("never archives an ownerless shell somebody typed into", async () => {
+  it("never archives a shell somebody typed into, chat or no chat", async () => {
     const { db, agentShells } = await createHarness();
-    const id = seedAgentShell(db, agentShells, { id: "orphan-typed", chatSessionId: null, status: "completed", exitCode: 0 });
+    const id = seedAgentShell(db, agentShells, { id: "orphan-typed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
     agentShells.markUserInput(id);
 
     expect(agentShells.sweep(NOW_MS + GRACE * 4)).toEqual([]);

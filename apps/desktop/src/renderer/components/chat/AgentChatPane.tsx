@@ -79,6 +79,7 @@ import {
   type AgentChatSendArgs,
   type ChatLaunchChatArgs,
   type ChatLaunchLaneConfig,
+  TerminalSessionChangedEvent,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
@@ -15331,53 +15332,79 @@ export function AgentChatPane({
 
   /**
    * The shells attached to this chat, for the actions pane's Shells section.
-   * Fetched per chat (one bounded query, `session.list` filtered by owner) and
-   * refreshed on session changes — never polled: a shell is a tool of this
-   * chat, and the pane is where it lives now that the Work list no longer files
-   * them under their parent.
+   *
+   * One bounded owner query per chat, refreshed when a session change actually
+   * concerns it — a burst of unrelated activity-status writes must not re-read
+   * a list this pane cannot show. The read is uncapped on purpose: the Work
+   * list stops drawing attached shells, so a shell dropped by a limit would
+   * have no other list entry. The subscription carries the chat's pin, and the
+   * effect re-keys on the pin, so a pin that resolves late still reads and
+   * listens on the right machine.
    */
   const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
+  const [shellsLoading, setShellsLoading] = useState(false);
+  const [shellsLoadError, setShellsLoadError] = useState(false);
+  const [shellsReloadNonce, setShellsReloadNonce] = useState(0);
+  const shellIdsRef = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     const sessionId = selectedSessionId?.trim();
+    // Never show the previous chat's shells while the new read is in flight.
+    shellIdsRef.current = new Set();
+    setAttachedShells([]);
+    setShellsLoadError(false);
     if (!sessionId) {
-      setAttachedShells([]);
+      setShellsLoading(false);
       return undefined;
     }
     let cancelled = false;
     const load = async () => {
+      setShellsLoading(true);
       try {
         const pin = chatRuntimePinRef.current;
+        const args = { chatSessionId: sessionId, limit: null };
         const rows = pin
-          ? await window.ade.sessions.list({ chatSessionId: sessionId, limit: 200 }, pin)
-          : await window.ade.sessions.list({ chatSessionId: sessionId, limit: 200 });
+          ? await window.ade.sessions.list(args, pin)
+          : await window.ade.sessions.list(args);
+        if (cancelled) return;
         // The shared shell rule (`attachedShellNestParentId`) is what the Work
         // list files by: a shell is a session whose owner chat is NOT itself —
         // a chat's own row self-references in the database — and never a chat
         // row. Keep the two surfaces agreeing on what a shell is.
-        if (!cancelled) {
-          setAttachedShells(rows.filter((row) => (
-            !row.archivedAt
-            && !isChatToolType(row.toolType ?? null)
-            && attachedShellNestParentId(row, NO_NESTING) === sessionId
-          )));
-        }
+        const shells = rows.filter((row) => (
+          !row.archivedAt
+          && !isChatToolType(row.toolType ?? null)
+          && attachedShellNestParentId(row, NO_NESTING) === sessionId
+        ));
+        shellIdsRef.current = new Set(shells.map((row) => row.id));
+        setAttachedShells(shells);
+        setShellsLoadError(false);
       } catch (error) {
-        // A pane that cannot read the list shows no shells rather than a stale
-        // set from the last chat it was on — and says why, so a broken read is
-        // visible in the renderer log instead of looking like "no shells".
+        // A pane that cannot read the list says so with a retry rather than
+        // looking like a chat with no shells (notices.md: no false empty state).
         console.error("[AgentChatPane] attached shells read failed", { sessionId, error });
-        if (!cancelled) setAttachedShells([]);
+        if (!cancelled) {
+          setAttachedShells([]);
+          setShellsLoadError(true);
+        }
+      } finally {
+        if (!cancelled) setShellsLoading(false);
       }
     };
     void load();
-    const unsubscribe = window.ade.sessions.onChanged(() => {
+    const unsubscribe = window.ade.sessions.onChanged((event: TerminalSessionChangedEvent) => {
+      const changedId = event?.sessionId ?? null;
+      // Unknown ids (a bulk change) and anything touching this chat or one of
+      // its shells reload; everything else is somebody else's news.
+      if (changedId && changedId !== sessionId && !shellIdsRef.current.has(changedId)) return;
       void load();
-    });
+    }, chatRuntimePinRef.current ?? undefined);
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [selectedSessionId]);
+    // `shellsReloadNonce` is the Retry action; `chatRuntimePinKey` re-reads and
+    // re-subscribes when the chat's machine resolves or changes.
+  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce]);
 
   // A personal pane has no lane by design; everything below handles that.
   if (!laneId && !personalScope) {
@@ -15424,6 +15451,10 @@ export function AgentChatPane({
       snapshots={selectedSubagentSnapshots}
       workflowPlans={selectedWorkflowPlans}
       shells={attachedShells}
+      shellsPin={chatRuntimePin}
+      shellsLoading={shellsLoading}
+      shellsLoadError={shellsLoadError}
+      onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}

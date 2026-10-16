@@ -60,18 +60,13 @@ import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
-import { focusWorkSession, openWorkSessionMenu } from "../../lib/workSessionRequests";
-import { canonicalInputFromSummary, sessionCanonicalUiState, sessionStatusDisplay } from "../../lib/terminalAttention";
-import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
-import { SessionStatusLabel } from "../terminals/SessionStatusLabel";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import { ChatShellsSection } from "./ChatShellsSection";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
-/** Rows the Shells section shows before it folds the rest behind "N more". */
-const SHELLS_ACTIVE_CAP = 6;
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
 const PANE_STORAGE_ENTRY_CAP = 100;
 
@@ -1110,60 +1105,6 @@ function SubagentRow({
  * the shell in the Work tab, right-click (or the ⋯ button) raises the Work
  * list's own menu, host and handlers included.
  */
-function ShellRow({ shell }: { shell: TerminalSessionSummary }) {
-  const attentionInput = useMemo(() => canonicalInputFromSummary(shell), [shell]);
-  // The sidebar's own status pipeline: one canonical phase, one presentation,
-  // one glyph set. No invented dots — a shell says "Working 24m" or "Failed"
-  // with the icon every other session row uses.
-  const presentation = sessionStatusDisplay(attentionInput);
-  const elapsedSince = sessionElapsedAnchor(
-    shell,
-    sessionCanonicalUiState(attentionInput).phase,
-    sessionCanonicalUiState(attentionInput).liveness,
-  );
-  const label = (shell.goal ?? shell.title).trim() || "Shell";
-  const lastLine = typeof shell.lastOutputPreview === "string"
-    ? shell.lastOutputPreview.trim().split(/\r?\n/).filter(Boolean).at(-1)?.trim() ?? ""
-    : "";
-  const details = [lastLine, shell.toolType].filter((part): part is string => Boolean(part)).join(" · ");
-  const openMenu = (point: { x: number; y: number }) => openWorkSessionMenu(shell, point);
-  return (
-    <div className="group grid min-h-[34px] grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 py-1 transition-colors hover:bg-fg/[0.04]">
-      <button
-        type="button"
-        onClick={() => focusWorkSession(shell.id, shell.laneId)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          openMenu({ x: event.clientX, y: event.clientY });
-        }}
-        title={details || label}
-        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-left"
-      >
-        <span className="min-w-0 truncate font-sans text-[12.5px] leading-5 text-fg/75">{label}</span>
-        <SessionStatusLabel
-          presentation={presentation}
-          elapsedSince={elapsedSince}
-          futureAt={shell.nextWakeAt}
-          timestampLabel=""
-          compact
-        />
-      </button>
-      <button
-        type="button"
-        aria-label={`${label} actions`}
-        title="Actions"
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          openMenu({ x: rect.right, y: rect.bottom });
-        }}
-        className="flex h-6 w-6 items-center justify-center rounded-md text-fg/30 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-fg/75 group-hover:opacity-100 focus-visible:opacity-100"
-      >
-        <DotsThree aria-hidden size={14} weight="bold" />
-      </button>
-    </div>
-  );
-}
-
 /* ── Main component ── */
 
 export type SubagentSelection = {
@@ -1209,6 +1150,10 @@ export function ChatSubagentsPanel({
   childChatStatuses,
   workflowPlans,
   shells = [],
+  shellsPin = null,
+  shellsLoading = false,
+  shellsLoadError = false,
+  onRetryShells,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -1283,6 +1228,13 @@ export function ChatSubagentsPanel({
    * live; each row opens one or raises the Work list's own context menu.
    */
   shells?: TerminalSessionSummary[];
+  /** The chat's machine, for a shell row's open and menu requests. */
+  shellsPin?: OpenProjectBinding | null;
+  /** The shells read is in flight (a row-less section says so). */
+  shellsLoading?: boolean;
+  /** The shells read failed: state it with a retry, never an empty section. */
+  shellsLoadError?: boolean;
+  onRetryShells?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1640,7 +1592,8 @@ export function ChatSubagentsPanel({
   const hasSubagents = subagents.length > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || shells.length > 0
+    || shellsLoading || shellsLoadError || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1752,14 +1705,13 @@ export function ChatSubagentsPanel({
             emphasized
             sticky={stickyHeaders}
           />
-          <div className="space-y-px px-2 pb-1">
-            {(showAll.shells === true ? shells : shells.slice(0, SHELLS_ACTIVE_CAP)).map((shell) => (
-              <ShellRow key={shell.id} shell={shell} />
-            ))}
-          </div>
-          {showAll.shells !== true && shells.length > SHELLS_ACTIVE_CAP ? (
-            <ShowAllButton hiddenLabel={`${shells.length - SHELLS_ACTIVE_CAP} more`} onClick={() => setShowAll((current) => ({ ...current, shells: true }))} />
-          ) : null}
+          <ChatShellsSection
+            shells={shells}
+            pin={shellsPin}
+            loading={shellsLoading}
+            loadError={shellsLoadError}
+            onRetry={onRetryShells}
+          />
         </section>
       ) : null}
 

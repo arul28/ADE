@@ -2,7 +2,6 @@ import React from "react";
 import { CaretDown, CaretRight, Circle, CircleNotch, Terminal, UsersThree, X } from "@phosphor-icons/react";
 import {
   NESTED_DRAWER_STATUS_PRESENTATION,
-  attachedShellSectionId,
   nestedDrawerStatus,
   nestedSubagentSectionId,
   type NestedDrawerStatus,
@@ -28,7 +27,7 @@ import { QUIET_LABEL_CLASS } from "./sessionListStyles";
  * opened drawer lists its rows below that same strip.
  */
 
-export type NestedDrawerKind = "shells" | "subagents";
+export type NestedDrawerKind = "subagents";
 
 /**
  * The open state is recorded the same three-state way as the quiet shelves:
@@ -39,16 +38,18 @@ export function nestedDrawerOpenMarker(sectionId: string): string {
   return `drawer-open:${sectionId}`;
 }
 
-export function nestedDrawerSectionId(parentId: string, kind: NestedDrawerKind): string {
-  return kind === "shells" ? attachedShellSectionId(parentId) : nestedSubagentSectionId(parentId);
+export function nestedDrawerSectionId(parentId: string, _kind: NestedDrawerKind): string {
+  // One kind left: subagents. The shells key (`chat:<id>`) is retired — a
+  // chat's shells are drawn in its actions pane.
+  return nestedSubagentSectionId(parentId);
 }
 
-function kindLabel(kind: NestedDrawerKind, count: number): string {
-  return pluralCount(count, kind === "shells" ? "shell" : "subagent");
+function kindLabel(count: number): string {
+  return pluralCount(count, "subagent");
 }
 
 function KindIcon({ kind }: { kind: NestedDrawerKind }) {
-  const Icon = kind === "shells" ? Terminal : UsersThree;
+  const Icon = UsersThree;
   return <Icon size={9} weight="regular" className="shrink-0 text-muted-fg/40" />;
 }
 
@@ -94,7 +95,7 @@ export function NestedDrawers({
   return (
     <>
       {drawers.map(({ kind, children, sectionId, collapsed }) => {
-        const label = kindLabel(kind, children.length);
+        const label = kindLabel(children.length);
         const status = nestedDrawerStatus(children, nowMs);
         const statusLabel = status ? NESTED_DRAWER_STATUS_PRESENTATION[status].label : "";
         return (

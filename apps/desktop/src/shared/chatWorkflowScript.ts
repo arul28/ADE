@@ -16,15 +16,43 @@ export type ChatWorkflowScriptPlan = {
   lines: number;
 };
 
+/**
+ * The `meta` object literal a workflow script declares, when it parses.
+ *
+ * Everything below reads *inside* this block: a script's own helpers and agents
+ * can carry a `name:` too, and matching anywhere in the file would report an
+ * unrelated helper as the run's name (or a nested object's `phases` as its plan).
+ */
+function readWorkflowMetaBlock(script: string): string | null {
+  const start = /(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+meta\s*=\s*\{/.exec(script);
+  if (!start) return null;
+  const open = script.indexOf("{", start.index);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let index = open; index < script.length; index += 1) {
+    const char = script[index];
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return script.slice(open + 1, index);
+    }
+  }
+  return null;
+}
+
 /** `meta.name` from a workflow script, e.g. `name: 'skate-build'`. */
 export function readWorkflowMetaName(script: string): string | null {
-  const match = /(?:^|\n)\s*name\s*:\s*(['"`])([^'"`\n]+)\1/.exec(script);
+  const meta = readWorkflowMetaBlock(script);
+  if (!meta) return null;
+  const match = /(?:^|,|\n)\s*name\s*:\s*(['"`])([^'"`\n]+)\1/.exec(meta);
   return match?.[2]?.trim() || null;
 }
 
 /** The `meta.phases` titles a workflow script declares, in order. */
 export function readWorkflowMetaPhases(script: string): string[] {
-  const block = /(?:^|\n)\s*phases\s*:\s*\[([\s\S]*?)\]/.exec(script)?.[1];
+  const meta = readWorkflowMetaBlock(script);
+  if (!meta) return [];
+  const block = /(?:^|,|\n)\s*phases\s*:\s*\[([\s\S]*?)\]/.exec(meta)?.[1];
   if (!block) return [];
   const titles: string[] = [];
   const pattern = /title\s*:\s*(['"`])([^'"`\n]+)\1/g;

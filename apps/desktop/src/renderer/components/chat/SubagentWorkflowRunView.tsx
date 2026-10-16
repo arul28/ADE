@@ -88,16 +88,28 @@ export function workflowRunShape(members: readonly SubagentCardGridMember[]): Su
   return null;
 }
 
-function phaseStateOf(members: readonly SubagentCardGridMember[]): "queued" | "running" | "done" | "failed" {
-  if (members.some((member) => member.event.status === "failed" || member.event.status === "stopped")) return "failed";
+type WorkflowPhaseState = "queued" | "running" | "done" | "failed" | "stopped";
+
+/**
+ * A phase's state from its agents. A `stopped` agent is NOT a failure — the run
+ * was interrupted, and the header tally says "stopped" in amber for the same
+ * agents — so the phase gets its own state and its own mark, or every phase of
+ * an interrupted run would read as broken.
+ */
+function phaseStateOf(members: readonly SubagentCardGridMember[]): WorkflowPhaseState {
+  if (members.some((member) => member.event.status === "failed")) return "failed";
+  if (members.some((member) => member.event.status === "stopped")) return "stopped";
   if (members.some((member) => member.event.status === "running")) return "running";
   if (members.length === 0) return "queued";
   return "done";
 }
 
-function PhaseStateMark({ state }: { state: "queued" | "running" | "done" | "failed" }) {
+function PhaseStateMark({ state }: { state: WorkflowPhaseState }) {
   if (state === "done") return <Check aria-hidden size={11} weight="bold" className="shrink-0 text-emerald-300/85" />;
   if (state === "failed") return <X aria-hidden size={11} weight="bold" className="shrink-0 text-rose-300/85" />;
+  if (state === "stopped") {
+    return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/70" />;
+  }
   if (state === "running") {
     return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-accent-bright,#C4B5FD)]" />;
   }

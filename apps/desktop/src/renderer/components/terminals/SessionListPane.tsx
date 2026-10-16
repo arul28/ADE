@@ -116,7 +116,6 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import {
-  attachedShellSectionId,
   nestedSubagentSectionId,
   parentsWithBusySubagents,
   workNestingDrawers,
