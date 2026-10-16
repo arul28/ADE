@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type KatexModule from "katex";
 
+import { captureError } from "../../../shared/sentry/capture";
 import { LRUCache } from "./lruCache";
 
 /**
@@ -31,8 +32,11 @@ function loadKatex(): Promise<void> {
     .then(([module]) => {
       katex = module.default;
     })
-    .catch(() => {
+    .catch((error: unknown) => {
+      // Formulas stay readable as source, but a chunk that will not load is a
+      // packaging failure worth knowing about. Once per session by design.
       loadFailed = true;
+      captureError(error, { fingerprint: ["chat", "katex", "load"], handled: true });
     });
   return loading;
 }

@@ -41,6 +41,38 @@ describe("CodexImageViewLine", () => {
     expect(screen.getByRole("button", { name: "Open image" })).toBeTruthy();
   });
 
+  it.each([
+    ["path", { path: "/Users/me/proj/.ade/cache/scene-previews/scene-2026-10-16T03-38-49-499Z-b1f21aa3.png" }],
+    // OpenCode names the file in the title and omits the inlined image.
+    ["title", { title: "C:\\Users\\Jane Doe\\proj\\.ade\\cache\\scene-previews\\scene-1.png", url: null }],
+    ["file:// url", { url: "file:///Users/me/proj/.ade/cache/scene-previews/scene-2.png" }],
+  ])("collapses an agent viewing its own scene preview (%s) to one line with no picture", (_field, fields) => {
+    const { container } = render(
+      <CodexImageViewLine
+        event={{ type: "codex_image_view", itemId: "view-preview", status: "completed", ...fields }}
+        siblings={[{ type: "codex_image_view", itemId: "view-preview-2", status: "completed", ...fields }]}
+      />,
+    );
+
+    expect(container.textContent).toContain("Checked the scene preview 2 times");
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open image" })).toBeNull();
+  });
+
+  it("still shows a picture when a run mixes a scene preview with another image", () => {
+    const dataUri = "data:image/png;base64,AAAA";
+    const { container } = render(
+      <CodexImageViewLine
+        event={{ type: "codex_image_view", itemId: "mixed-1", path: "/p/.ade/cache/scene-previews/scene-1.png", status: "completed" }}
+        siblings={[{ type: "codex_image_view", itemId: "mixed-2", url: dataUri, status: "completed" }]}
+      />,
+    );
+
+    expect(container.textContent).toContain("Viewed 2 images");
+    expect(container.textContent).not.toContain("Checked the scene preview");
+    expect(container.querySelector(`img[src="${dataUri}"]`)).toBeTruthy();
+  });
+
   it("renders a local path with no inline preview and an open affordance", () => {
     const { container } = render(
       <CodexImageViewLine
