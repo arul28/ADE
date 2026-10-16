@@ -56,7 +56,11 @@ export function ClaudeCacheTtlBadge({
     if (armed && remainingMs <= 0) setArmed(false);
   }, [armed, remainingMs]);
 
-  if (remainingMs <= 0 || showInMs > 0) return null;
+  // Visible implies advancing: while `armed` is false the reading below is the
+  // one frozen before the window opened, so it must not be painted. Without
+  // this the countdown could appear for the few milliseconds between a render
+  // and the effect that arms it, showing a value that never moves.
+  if (!armed || remainingMs <= 0 || showInMs > 0) return null;
 
   return (
     <span
