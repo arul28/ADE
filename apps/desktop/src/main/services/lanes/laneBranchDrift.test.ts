@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifyMissingLaneBranchDriftKind,
   detectLaneBranchDrift,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
@@ -186,5 +187,96 @@ describe("detectLaneBranchDrift", () => {
     expect(detectLaneBranchDrift({ expectedBranchRef: "ade/feature", headBranchRef: "  " })).toBeNull();
     expect(detectLaneBranchDrift({ expectedBranchRef: null, headBranchRef: "hotfix-auth" })).toBeNull();
     expect(detectLaneBranchDrift({ expectedBranchRef: undefined, headBranchRef: undefined })).toBeNull();
+  });
+
+  it("carries a renamed/missing kind and leaves switched implicit for older readers", () => {
+    expect(
+      detectLaneBranchDrift({ expectedBranchRef: "ade/old", headBranchRef: "ade/new", kind: "renamed" }),
+    ).toEqual({ expectedBranchRef: "ade/old", headBranchRef: "ade/new", kind: "renamed" });
+    expect(
+      detectLaneBranchDrift({ expectedBranchRef: "ade/old", headBranchRef: "ade/new", kind: "missing" }),
+    ).toEqual({ expectedBranchRef: "ade/old", headBranchRef: "ade/new", kind: "missing" });
+    expect(
+      detectLaneBranchDrift({ expectedBranchRef: "ade/old", headBranchRef: "ade/new", kind: "switched" }),
+    ).toEqual({ expectedBranchRef: "ade/old", headBranchRef: "ade/new" });
+  });
+});
+
+describe("classifyMissingLaneBranchDriftKind", () => {
+  it.each([
+    {
+      label: "a rename git recorded against a now-gone ref",
+      subjects: ["Branch: renamed refs/heads/ade/old to refs/heads/ade/new"],
+      expected: "renamed",
+    },
+    {
+      label: "the same rename seen with a Windows CRLF terminator",
+      subjects: ["Branch: renamed refs/heads/ade/old to refs/heads/ade/new\r"],
+      expected: "renamed",
+    },
+    {
+      label: "a chained rename via an intermediate name with HEAD on the survivor",
+      subjects: [
+        "Branch: renamed refs/heads/ade/mid to refs/heads/ade/new",
+        "Branch: renamed refs/heads/ade/old to refs/heads/ade/mid",
+      ],
+      expected: "renamed",
+    },
+    {
+      label: "a gone ref whose reflog holds only unrelated history",
+      subjects: ["checkout: moving from ade/other to ade/new", "commit: fix the thing"],
+      expected: "missing",
+    },
+    {
+      label: "an unreadable reflog that yielded no subjects",
+      subjects: [],
+      expected: "missing",
+    },
+    {
+      label: "a rename cycle that never touches the recorded branch",
+      subjects: [
+        "Branch: renamed refs/heads/ade/p to refs/heads/ade/q",
+        "Branch: renamed refs/heads/ade/q to refs/heads/ade/p",
+      ],
+      expected: "missing",
+    },
+    {
+      label: "a rename to an unrelated third branch",
+      subjects: ["Branch: renamed refs/heads/ade/old to refs/heads/ade/something-else"],
+      expected: "missing",
+    },
+  ])("reads $label as $expected", ({ subjects, expected }) => {
+    expect(
+      classifyMissingLaneBranchDriftKind({
+        expectedBranchRef: "ade/old",
+        headBranchRef: "ade/new",
+        reflogSubjects: subjects,
+      }),
+    ).toBe(expected);
+  });
+
+  it("answers missing, never renamed, when either branch is unknown or unchanged", () => {
+    const rename = ["Branch: renamed refs/heads/ade/old to refs/heads/ade/new"];
+    expect(
+      classifyMissingLaneBranchDriftKind({
+        expectedBranchRef: "ade/new",
+        headBranchRef: "ade/new",
+        reflogSubjects: rename,
+      }),
+    ).toBe("missing");
+    expect(
+      classifyMissingLaneBranchDriftKind({
+        expectedBranchRef: null,
+        headBranchRef: "ade/new",
+        reflogSubjects: rename,
+      }),
+    ).toBe("missing");
+    expect(
+      classifyMissingLaneBranchDriftKind({
+        expectedBranchRef: "ade/old",
+        headBranchRef: null,
+        reflogSubjects: rename,
+      }),
+    ).toBe("missing");
   });
 });
