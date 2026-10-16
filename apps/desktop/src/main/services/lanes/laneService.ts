@@ -225,21 +225,15 @@ const DEFAULT_LANE_STATUS: LaneStatus = {
   rebaseInProgress: false,
 };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
-/** Tracked-file totals change with the committed tree, not every status poll. */
-const TRACKED_FILE_COUNT_CACHE_TTL_MS = 10 * 60_000;
 /**
- * How many committed trees the count cache remembers.
- *
- * Keyed by tree hash, so every commit in every lane adds a key that nothing
- * ever looks up again — the entry is only dropped when that exact tree is
- * asked for after its TTL, which for an abandoned tree is never. The map is
- * per-service and lives for the process, so it is swept and capped on insert:
- * expired entries go first, then the oldest survivors.
+ * How many worktree index states the count cache remembers. The map is per
+ * service and capped on insert so a long-lived desktop does not retain every
+ * historical edit.
  */
 const TRACKED_FILE_COUNT_CACHE_MAX_ENTRIES = 200;
 
 type TrackedFileCountCache = {
-  entries: Map<string, { count: number | null; expiresAt: number }>;
+  entries: Map<string, { count: number | null }>;
   inFlight: Map<string, Promise<number | null>>;
 };
 
@@ -992,10 +986,7 @@ function countGitFiles(stdout: string): number {
  * `Map` preserves insertion order, so the first keys are the least recently
  * written — good enough for a cache whose entries are immutable once written.
  */
-function pruneTrackedFileCountCache(cache: TrackedFileCountCache, now: number): void {
-  for (const [key, entry] of [...cache.entries]) {
-    if (entry.expiresAt <= now) cache.entries.delete(key);
-  }
+function pruneTrackedFileCountCache(cache: TrackedFileCountCache): void {
   const overflow = cache.entries.size - (TRACKED_FILE_COUNT_CACHE_MAX_ENTRIES - 1);
   if (overflow <= 0) return;
   let dropped = 0;
@@ -1008,47 +999,59 @@ function pruneTrackedFileCountCache(cache: TrackedFileCountCache, now: number): 
 
 async function resolveTrackedFileCount(
   worktreePath: string,
-  treeHash: string,
+  headOid: string,
   cache: TrackedFileCountCache,
 ): Promise<number | null> {
-  if (!treeHash) return null;
+  if (!headOid) return null;
 
-  const now = Date.now();
-  const cached = cache.entries.get(treeHash);
-  if (cached && cached.expiresAt > now) return cached.count;
-  if (cached) cache.entries.delete(treeHash);
-
-  const inFlight = cache.inFlight.get(treeHash);
-  if (inFlight) return await inFlight;
-
-  const request = (async (): Promise<number | null> => {
-    let count: number | null = null;
-    let cacheable = true;
-    try {
-      const trackedFilesRes = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
-      // A truncated listing is a wrong total, not a smaller one: `runGit` caps
-      // stdout, so a large index would silently report "N files" for whatever
-      // fit. Say nothing instead, and do not cache the nothing — the next
-      // refresh may run under a smaller index.
-      if (trackedFilesRes.stdoutTruncated) cacheable = false;
-      else if (trackedFilesRes.exitCode === 0) count = countGitFiles(trackedFilesRes.stdout);
-    } catch {
-      // A missing tracked-file total must not hide the status we already read.
-    }
-    if (cacheable) {
-      pruneTrackedFileCountCache(cache, now);
-      cache.entries.set(treeHash, {
-        count,
-        expiresAt: now + TRACKED_FILE_COUNT_CACHE_TTL_MS,
-      });
-    }
-    return count;
-  })();
-  cache.inFlight.set(treeHash, request);
+  let indexPath = path.join(worktreePath, ".git", "index");
   try {
-    return await request;
-  } finally {
-    if (cache.inFlight.get(treeHash) === request) cache.inFlight.delete(treeHash);
+    // A linked worktree's .git is a pointer to its private gitdir.
+    if (fs.statSync(path.join(worktreePath, ".git")).isFile()) {
+      const gitdirLine = fs.readFileSync(path.join(worktreePath, ".git"), "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(gitdirLine);
+      if (!match) throw new Error("Invalid worktree gitdir pointer");
+      indexPath = path.resolve(worktreePath, match[1], "index");
+    }
+    const indexStat = fs.statSync(indexPath, { bigint: true });
+    const fingerprint = `${worktreePath}\0${headOid}\0${indexStat.size}\0${indexStat.mtimeNs}\0${indexStat.ctimeNs}`;
+    const cached = cache.entries.get(fingerprint);
+    if (cached) return cached.count;
+    const inFlight = cache.inFlight.get(fingerprint);
+    if (inFlight) return await inFlight;
+
+    const request = (async (): Promise<number | null> => {
+      let count: number | null = null;
+      let cacheable = true;
+      try {
+        const trackedFilesRes = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
+        // A truncated listing is a wrong total, not a smaller one.
+        if (trackedFilesRes.stdoutTruncated) cacheable = false;
+        else if (trackedFilesRes.exitCode === 0) count = countGitFiles(trackedFilesRes.stdout);
+      } catch {
+        // A missing tracked-file total must not hide the status we already read.
+      }
+      if (cacheable) {
+        pruneTrackedFileCountCache(cache);
+        cache.entries.set(fingerprint, { count });
+      }
+      return count;
+    })();
+    cache.inFlight.set(fingerprint, request);
+    try {
+      return await request;
+    } finally {
+      if (cache.inFlight.get(fingerprint) === request) cache.inFlight.delete(fingerprint);
+    }
+  } catch {
+    // An unavailable index fingerprint is not safe to cache. Still return a
+    // fresh answer so the summary remains useful for unusual/bare worktrees.
+    try {
+      const result = await runGit(["ls-files", "-z"], { cwd: worktreePath, timeoutMs: 8_000 });
+      return result.stdoutTruncated || result.exitCode !== 0 ? null : countGitFiles(result.stdout);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -1168,19 +1171,18 @@ async function computeLaneStatus(
       return null;
     }
   };
-  // One spawn for both metadata reads: `%T` is the tip commit's tree — the same
-  // hash `rev-parse HEAD^{tree}` returns — and `%cI` its commit date, split by
-  // a NUL so neither can be confused for the other. A routine refresh therefore
+  // One spawn for both metadata reads: `%H` identifies HEAD, `%T` is its tree,
+  // and `%cI` its commit date, split by NULs. A routine refresh therefore
   // adds one process per lane, not two, on top of the ~6 it already costs.
   const [dirtyRes, headMetaRes] = await Promise.all([
     runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"], { cwd: worktreePath, timeoutMs: 8_000 }),
-    optionalGit(["log", "-1", "--format=%T%x00%cI"], 8_000),
+    optionalGit(["log", "-1", "--format=%H%x00%T%x00%cI"], 8_000),
   ]);
   const headMeta = headMetaRes?.exitCode === 0
     ? headMetaRes.stdout.split("\0")
     : null;
-  const treeHash = headMeta?.[0]?.trim() ?? "";
-  const lastCommitIso = headMeta?.[1]?.trim() ?? "";
+  const headOid = headMeta?.[0]?.trim() ?? "";
+  const lastCommitIso = headMeta?.[2]?.trim() ?? "";
   const parsedStatus = dirtyRes?.exitCode === 0
     ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
     : {
@@ -1204,7 +1206,7 @@ async function computeLaneStatus(
       })
     : null;
   const lastCommitAt = lastCommitIso || null;
-  const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHash, options.trackedFileCountCache);
+  const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, headOid, options.trackedFileCountCache);
 
   const countAgainst = (base: string) =>
     runGit(["rev-list", "--left-right", "--count", `${base}...${branchRef}`], {

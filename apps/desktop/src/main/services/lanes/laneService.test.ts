@@ -203,8 +203,8 @@ describe("laneService createFromUnstaged", () => {
         }
         // One spawn carries both the committed tree and the commit date.
         if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
-          return { exitCode: 0, stdout: `tree-child\0${commitAt}\n`, stderr: "" } as any;
+          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
+          return { exitCode: 0, stdout: `head-child\0tree-child\0${commitAt}\n`, stderr: "" } as any;
         }
         if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
@@ -293,7 +293,7 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
-  it("caches tracked-file totals by tree hash and refreshes them after the TTL", async () => {
+  it("caches tracked-file totals by HEAD and index, and invalidates when tracked files are added", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
 
@@ -302,7 +302,14 @@ describe("laneService createFromUnstaged", () => {
     try {
       await seedProjectAndStack(db, { projectId: "proj-tracked-file-cache", repoRoot });
       let treeHash = "tree-a";
+      let headOid = "head-a";
       let trackedFiles = "src/a.ts\0src/b.ts\0";
+      const parentPath = path.join(repoRoot, "parent");
+      const childPath = path.join(repoRoot, "child");
+      for (const worktreePath of [parentPath, childPath]) {
+        fs.mkdirSync(path.join(worktreePath, ".git"), { recursive: true });
+        fs.writeFileSync(path.join(worktreePath, ".git", "index"), "index-a");
+      }
 
       vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
         const cwd = opts?.cwd ?? repoRoot;
@@ -320,8 +327,8 @@ describe("laneService createFromUnstaged", () => {
           return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
         }
         if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%T%x00%cI"]);
-          return { exitCode: 0, stdout: `${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
+          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
+          return { exitCode: 0, stdout: `${headOid}\x00${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
         }
         if (args[0] === "ls-files") return { exitCode: 0, stdout: trackedFiles, stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
@@ -360,16 +367,20 @@ describe("laneService createFromUnstaged", () => {
       // Exactly one metadata spawn per lane in the refresh (parent + child).
       expect(secondRefreshCalls.filter(([args]) => args[0] === "log")).toHaveLength(2);
 
-      treeHash = "tree-b";
+      // Staging a new tracked file changes the index while HEAD stays put.
       trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0";
-      const changedTree = await service.getSummary("lane-child", { includeStatus: true });
-      expect(changedTree?.trackedFileCount).toBe(3);
-      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(2);
-
-      vi.advanceTimersByTime(10 * 60_000 + 1);
-      const expired = await service.getSummary("lane-child", { includeStatus: true });
-      expect(expired?.trackedFileCount).toBe(3);
+      fs.writeFileSync(path.join(childPath, ".git", "index"), "index-b-with-added-file");
+      const changedIndex = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedIndex?.trackedFileCount).toBe(3);
       expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(3);
+
+      // A commit/checkout changes HEAD even if the index metadata is unchanged.
+      headOid = "head-b";
+      treeHash = "tree-b";
+      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0src/d.ts\0";
+      const changedHead = await service.getSummary("lane-child", { includeStatus: true });
+      expect(changedHead?.trackedFileCount).toBe(4);
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(5);
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -391,7 +402,7 @@ describe("laneService createFromUnstaged", () => {
         }
         if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
         if (args[0] === "log") {
-          return { exitCode: 0, stdout: "tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
+          return { exitCode: 0, stdout: "head-truncated\x00tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
         }
         if (args[0] === "ls-files") {
           return truncated
