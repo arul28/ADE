@@ -10549,6 +10549,8 @@ export function createAgentChatService(args: {
    * without their secret values.
    */
   readAccountSecret?: ((vaultKey: string) => string | null) | null;
+  /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
+  resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken: string; expiresIn: number } | null>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -18656,7 +18658,7 @@ export function createAgentChatService(args: {
       if (provider === "unified") provider = "opencode";
       if (
         provider !== "codex" && provider !== "claude" && provider !== "opencode"
-        && provider !== "cursor" && provider !== "droid" && provider !== "pi"
+        && provider !== "cursor" && provider !== "droid" && provider !== "copilot" && provider !== "pi"
         && provider !== "muse"
         && !isAcpChatProvider(provider)
       ) {
@@ -54718,12 +54720,35 @@ export function createAgentChatService(args: {
         const target = managedSessions.get(chatId);
         if (!target) return { kind: "cancelled" };
         const row = request && typeof request === "object" ? request as Record<string, unknown> : {};
-        const key = `${chatId}:${String(row.serverUrl ?? row.serverName ?? "unknown")}`;
+        const serverUrl = typeof row.serverUrl === "string" ? row.serverUrl : typeof row.url === "string" ? row.url : "";
+        const serverName = typeof row.serverName === "string" ? row.serverName : "This MCP server";
+        // ADE already hands authenticated registry servers to Copilot through
+        // mcpServers.Authorization. They need no OAuth handoff or sign-in card.
+        const configuredServers = callerMcpServersForLaunch(target) ?? {};
+        const alreadyAuthorized = serverUrl && Object.values(configuredServers).some((server) =>
+          server.type !== "stdio" && server.url === serverUrl
+          && Object.entries(server.headers ?? {}).some(([name, value]) =>
+            name.toLowerCase() === "authorization" && Boolean(value.trim()),
+          ),
+        );
+        if (alreadyAuthorized) return { kind: "cancelled" };
+        if (serverUrl && args.resolveMcpAuthToken) {
+          const token = await args.resolveMcpAuthToken(serverUrl).catch((error: unknown) => {
+            logger.warn("agent_chat.copilot_mcp_auth_lookup_failed", {
+              sessionId: chatId,
+              server: serverName,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          });
+          if (token?.accessToken) return { kind: "token", ...token };
+        }
+        const key = `${chatId}:${serverUrl || serverName}`;
         if (!copilotMcpAuthNotices.has(key)) {
           copilotMcpAuthNotices.add(key);
           emitChatEvent(target, {
             type: "system_notice", noticeKind: "warning", severity: "warning",
-            message: `${String(row.serverName ?? "This MCP server")} needs a sign-in. Sign in from Settings → MCP servers, then reconnect the chat.`,
+            message: `${serverName} needs a sign-in. Sign in from Settings → MCP servers, then reconnect the chat.`,
           });
         }
         return { kind: "cancelled" };

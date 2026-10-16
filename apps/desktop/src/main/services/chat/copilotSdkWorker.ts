@@ -156,15 +156,31 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   if (req.type === "disconnect") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.disconnect().catch(() => undefined); sessions.delete(req.payload.chatId); return {}; }
   if (req.type === "utility") {
     const id = `ade-utility-${randomUUID()}`;
+    // Config discovery is not sufficient isolation: the CLI still materializes
+    // servers from COPILOT_HOME/mcp-config.json when discovery is disabled.
+    // Read the server-level config before creating a session and explicitly
+    // disable every user-configured server. If the read fails, fail closed.
+    const userMcpConfig = await client.rpc.mcp.config.list();
+    const configuredServers = userMcpConfig?.servers;
+    if (!configuredServers || typeof configuredServers !== "object" || Array.isArray(configuredServers)) {
+      throw new Error("Could not safely enumerate Copilot user MCP servers for a utility session.");
+    }
+    const configuredNames = Object.keys(configuredServers);
     const session = await client.createSession(sessionConfig({
       chatId: id,
       sessionId: id,
       cwd: req.payload.cwd,
       model: req.payload.model,
       systemMessage: req.payload.systemMessage,
+      disabledMcpServers: configuredNames,
       utility: true,
     }));
     try {
+      const materialized = await session.rpc.mcp.list();
+      postLog("debug", "Copilot utility MCP isolation", {
+        configuredNames,
+        serverStates: (materialized.servers ?? []).map((server) => ({ name: server.name, status: server.status })),
+      });
       return await session.sendAndWait(req.payload.prompt);
     } finally {
       await client.deleteSession(session.sessionId).catch(() => undefined);

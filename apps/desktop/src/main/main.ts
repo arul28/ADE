@@ -376,6 +376,8 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
+import { MCP_SECRET_VAULT_KIND } from "../shared/mcpRegistry";
 import { getOrCreateLocalAccountMachineIdentity } from "./services/account/localMachineIdentity";
 import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLink";
 import {
@@ -2257,6 +2259,15 @@ app.whenReady().then(async () => {
   const accountVaultBridge = createAccountVaultBridge({
     getPool: () => localRuntimePool,
     getRootPath: () => bootedUsageScopeRoot([...projectContexts.values()]),
+    logger: localRuntimeLogger,
+  });
+  const resolveMcpAuthToken = createMcpRegistryAuthTokenResolver({
+    adeHome: machineAdeLayout.adeDir,
+    readSecret: async (key) => {
+      const result = await accountVaultBridge.get("all", MCP_SECRET_VAULT_KIND, key);
+      return result.ok ? result.value : null;
+    },
+    writeSecret: async (key, value) => (await accountVaultBridge.set("all", MCP_SECRET_VAULT_KIND, key, value)).ok,
     logger: localRuntimeLogger,
   });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
@@ -4601,6 +4612,7 @@ app.whenReady().then(async () => {
         }
       },
       machineAdeHome: machineAdeLayout.adeDir,
+      resolveMcpAuthToken,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
       analytics: productAnalyticsService,

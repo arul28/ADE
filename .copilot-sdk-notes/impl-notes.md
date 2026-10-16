@@ -27,9 +27,10 @@
   are excluded from the packaged desktop app.
 - Interactive chat sessions enable SDK config discovery to match Copilot CLI
   behavior, including workspace `.mcp.json`. Background utility sessions turn
-  config discovery off entirely, expose no tools, skip custom instructions,
-  disable infinite sessions, and delete the temporary session afterward. This
-  avoids launching any user, workspace, or plugin MCP server for title tasks.
+  config discovery off, explicitly enumerate and disable every server in the
+  user-level Copilot MCP config, expose no tools, skip custom instructions,
+  disable infinite sessions, and delete the temporary session afterward. If
+  user-config enumeration fails, utility session creation fails closed.
 - Copilot no longer appears in ACP provider unions, metadata, model probes,
   diagnostics/update lists, or its ACP dialect and ACP-only fixtures. Copilot's
   terminal CLI and external-session import remain.
@@ -51,9 +52,12 @@
   `data.content`. `runCopilotTask` reads that field before compatibility
   fallbacks; the live title call showed why reading top-level `content` alone
   returned no usable name.
-- The MCP auth callback de-duplicates requests and posts a Settings → MCP
-  servers notice, then cancels the request. It does not yet resolve a stored
-  registry token or offer a direct sign-in action in the chat.
+- The chat MCP auth callback first skips ADE lookup when the launch config
+  already carries an Authorization header. Otherwise it resolves the owning
+  brain's account-vault token by registry server URL, refreshes due tokens via
+  the shared MCP OAuth renewal path, and returns the SDK token result. Missing
+  sign-in produces one Settings → MCP servers notice per chat/server and then
+  cancels. Browser sign-in remains desktop-only.
 - The event mapper covers streaming without replaying final messages that had
   deltas, tool progress/results and file edits, SQL todos, subagent lifecycle,
   usage/context, compaction, warnings, and served-model selection/mismatch.
@@ -174,6 +178,54 @@ The runtime was stopped after the checks with
   ADE-managed persisted-session resume using the legacy `acpSessionId` field.
   The SDK worker's resume of an existing legacy ACP id and its history was
   verified directly.
+
+## Review 2 follow-up
+
+- **1 — PASS.** `copilotSdkWorker` reads server-level `client.rpc.mcp.config.list()`
+  before utility session creation, rejects an unreadable server list, passes all
+  configured names as `disabledMcpServers`, and keeps the auth callback
+  cancelled. A rebuilt ADE CLI worker ran with an isolated user-level
+  `.copilot-sdk-notes/user-mcp-home/mcp-config.json` containing marker server
+  `review-user-marker`: `session.rpc.mcp.list()` reported it disabled, the
+  utility produced “Urban Tree Planting: Cooling Cities in Summer”, and the
+  marker script did not start. Receipt:
+  `{"configuredUserMcpNames":["review-user-marker"],"markerServerDisabled":true,"title":"Urban Tree Planting: Cooling Cities in Summer","markerStarted":false}`.
+- **2 — PASS.** An isolated resolver run matched the enabled registry entry by
+  URL, refreshed a near-expiry synthetic vault token, persisted the rotated
+  refresh token, and returned a positive lifetime:
+  `{"tokenResolved":true,"expiresInPositive":true,"refreshCalls":1,"writeCalls":1,"refreshTokenRotated":true,"rawTokenPrinted":false}`.
+  The callback is wired in the chat-owning brain and returns `{kind:"token",...}`
+  before notice/cancel when a token resolves; absent tokens keep the one-time
+  notice and cancellation. Launch configs with a nonempty Authorization header
+  are filtered before ADE token resolution. Limitation: no live external MCP
+  OAuth challenge was run; callback behavior is evidenced by the service path
+  and live resolver, not a registry server requiring OAuth.
+- **3 — PASS.** Seeded a real ACP session through ADE's `createAcpConnection`
+  and `initializeAcpConnection` host transport in the isolated
+  `legacy-copilot-home-ade-host`, temporary cwd `.copilot-sdk-notes/legacy-acp-work`.
+  The Copilot ACP session id was `82ad1440-d22c-41f0-8fde-73af4c4ef683`; its
+  persisted event history contained the seed prompt and assistant response
+  `ade-host-legacy-ok`. Created isolated personal ADE chat
+  `452c22d9-7c35-48cc-9389-f3d9ec4fb65b` with only `acpSessionId` set to that
+  value, then sent `Reply with exactly: ade-managed-resume-ok` through ADE.
+  ADE returned that answer, converted the pointer to
+  `copilotSdkSessionId: 82ad1440-d22c-41f0-8fde-73af4c4ef683`, and the same
+  Copilot `events.jsonl` now contains both the seed and ADE-managed follow-up
+  turns. The fix admits Copilot in the persisted-state provider guard.
+- **4 — PASS (UI skipped as directed).** Data validation remains the prior
+  single Auto model row and authenticated account `arul28`; the visual model
+  picker and Settings check were skipped for the coordinator.
+- **5 — PASS.** Pool key hashes the complete `buildAgentRuntimeEnv`; that
+  includes `ADE_CHAT_SESSION_ID`, so a worker is scoped to one chat. Each
+  worker is ref-counted and disposed at zero. `apps/ade-cli/package.json` does
+  not need `@github/copilot-sdk`: `apps/ade-cli/tsup.config.ts` marks it
+  `noExternal`, and the built `apps/ade-cli/dist/copilotSdkWorker.cjs` bundles
+  the SDK. `npm --prefix apps/ade-cli run build` passed and emitted the
+  733,122-byte worker; the CLI build verifier passed.
+
+The isolated CLI-only runtime for the managed resume was stopped with
+`node scripts/dev-runtime-stop.mjs --socket /tmp/ade-runtime-copilot-review2b.sock`;
+the socket was absent afterward.
 
 ## Existing test failures and cleanup
 
