@@ -1821,10 +1821,21 @@ export function createMultiProjectRpcRequestHandler(
   // Status and disconnect are recovery controls: if a project scope is already
   // alive, use it without re-entering host activation (which may be timed out
   // or backed off). Preserve the ordinary resolver when nothing is booted.
-  const resolveRecoverySyncService = async () => {
-    const scope = await scopeRegistry.resolveBootedSyncScope?.()
-      ?? await scopeRegistry.resolveActiveSyncHost();
-    return scope?.runtime.syncService ?? null;
+  const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
+    const requestedProjectId = readProjectId(params)
+      ?? (typeof params.projectRoot === "string"
+        ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
+        : null);
+    const targetProjectId = requestedProjectId
+      ?? scopeRegistry.getActiveSyncHostProjectId?.()
+      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
+    const scope = targetProjectId
+      ? await scopeRegistry.getIfBooted(targetProjectId)?.catch(() => null)
+      : null;
+    // Keep healthy status resolution on the same active-host path it used
+    // before recovery scopes were introduced.
+    const resolvedScope = scope ?? await scopeRegistry.resolveActiveSyncHost();
+    return resolvedScope?.runtime.syncService ?? null;
   };
 
   const syncServiceUnavailable = (): JsonRpcError =>
@@ -2927,7 +2938,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getStatus") {
-      const syncService = await resolveRecoverySyncService();
+      const syncService = await resolveRecoverySyncService(params);
       if (!syncService) return getMachineOnlySyncStatus();
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
@@ -2991,7 +3002,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.disconnectFromBrain") {
-      const syncService = await resolveRecoverySyncService();
+      const syncService = await resolveRecoverySyncService(params);
       if (!syncService) throw syncServiceUnavailable();
       return await syncService.disconnectFromBrain();
     }

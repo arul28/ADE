@@ -448,6 +448,19 @@ export class ProjectScopeRegistry {
     return this.syncHostProjectId;
   }
 
+  /** Most recently failed sync-host activation/initialization still in backoff. */
+  getMostRecentFailingSyncHostProjectId(): ProjectId | null {
+    let latest: { projectId: ProjectId; atMs: number } | null = null;
+    for (const [key, failure] of this.failedSyncHostPhases) {
+      if (!this.heldBackoff(failure)) continue;
+      const separator = key.indexOf("\u0000");
+      if (separator < 0) continue;
+      const projectId = key.slice(0, separator);
+      if (!latest || failure.atMs > latest.atMs) latest = { projectId, atMs: failure.atMs };
+    }
+    return latest?.projectId ?? null;
+  }
+
   /**
    * The project a caller most recently asked to host sync, whether or not that
    * switch has completed. `switchSyncHost` returns null both for "superseded by
