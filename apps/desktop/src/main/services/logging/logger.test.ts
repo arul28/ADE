@@ -84,6 +84,24 @@ describe("createFileLogger", () => {
     });
   });
 
+  // Regression: JSON.stringify wrote an Error as `{}`, so an error logged
+  // under `error` reached disk with no message and no stack.
+  it("writes an Error in meta with its message and stack", () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-")), "test.log");
+    const logger = createFileLogger(logPath);
+    const error = new Error("project database is locked");
+
+    logger.error("project.open.failed", { error });
+    logger.flushSync?.();
+
+    const [line] = fs.readFileSync(logPath, "utf8").trim().split("\n");
+    expect(JSON.parse(line).meta.error).toMatchObject({
+      name: "Error",
+      message: "project database is locked",
+      stack: error.stack,
+    });
+  });
+
   // Regression: a line landing exactly on the batch limit makes scheduleFlush
   // call flush() synchronously, which splices the batch out before its first
   // await. Draining only the queue would then write nothing and the app.exit()
