@@ -246,6 +246,45 @@ describe("createSyncService", () => {
     db.close();
   });
 
+  it("gives a lightweight status read the real readiness while the first computation is in flight", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-readiness-inflight-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    let releaseChats: () => void = () => undefined;
+    const chatsEnumeration = new Promise<unknown[]>((resolve) => {
+      releaseChats = () => resolve([]);
+    });
+    const listSessions = vi.fn(() => chatsEnumeration);
+    const service = createService(db, projectRoot, {
+      agentChatService: { listSessions } as any,
+    });
+
+    try {
+      const full = service.getStatus();
+      await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(1));
+
+      let lightSettled = false;
+      const light = service.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
+        lightSettled = true;
+        return snapshot;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The skipped placeholder reads "not ready"; the light read must wait for the real answer instead.
+      expect(lightSettled).toBe(false);
+
+      releaseChats();
+      const snapshot = await light;
+      expect(snapshot.transferReadiness.ready).toBe(true);
+      await full;
+      // The light read joined the computation already running; it did not start a second one.
+      expect(listSessions).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
+  });
+
 });
 
 describe("buildProjectlessSyncSnapshot", () => {

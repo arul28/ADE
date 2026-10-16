@@ -1541,6 +1541,21 @@ export function createSyncService(args: SyncServiceArgs) {
     return transferReadinessInFlight;
   };
 
+  /**
+   * Lightweight status reads take the cached value. Before the first computation
+   * lands there is no cache, and a caller that acts on `ready` (the CLI and SSH
+   * pairing do) must not read the skipped placeholder as "not ready" while the
+   * real answer is already being computed, so wait for that computation. With
+   * nothing in flight there is nothing to wait for and the read returns at once.
+   */
+  const getLightweightTransferReadiness = async (): Promise<SyncTransferReadiness> => {
+    if (transferReadinessCache) return transferReadinessCache.value;
+    if (transferReadinessInFlight) {
+      return transferReadinessInFlight.catch(() => buildSkippedTransferReadiness());
+    }
+    return buildSkippedTransferReadiness();
+  };
+
   const service = {
     async initialize(): Promise<void> {
       if (initialized) return;
@@ -1721,7 +1736,7 @@ export function createSyncService(args: SyncServiceArgs) {
         routeHealth,
         client,
         transferReadiness: options?.includeTransferReadiness === false
-          ? (transferReadinessCache?.value ?? buildSkippedTransferReadiness())
+          ? await getLightweightTransferReadiness()
           : await getTransferReadiness({ force: options?.forceTransferReadiness === true }),
         crdtSyncAvailable,
         survivableStateText:
