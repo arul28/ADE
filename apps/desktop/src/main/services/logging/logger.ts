@@ -66,6 +66,30 @@ const CONSOLE_FN_BY_LEVEL: Record<LogLevel, typeof console.log> = {
   info: console.log,
 };
 
+/**
+ * `JSON.stringify` writes an `Error` as `{}`, which dropped the message and
+ * stack from every line that carried one. The replacer sees each value in the
+ * meta tree, nested `cause` included, so each Error is written as its name,
+ * message, stack and code. The seen-set stops a `cause` chain that loops.
+ * Sentry gets the Error itself from `forwardLogToSentry`, not this copy.
+ */
+function errorAwareReplacer(): (key: string, value: unknown) => unknown {
+  const seen = new WeakSet<object>();
+  return (_key, value) => {
+    if (!(value instanceof Error)) return value;
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const { code, cause } = value as { code?: unknown; cause?: unknown };
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+      ...(code !== undefined ? { code } : {}),
+      ...(cause !== undefined ? { cause } : {}),
+    };
+  };
+}
+
 function createConsoleMirror(level: LogLevel, event: string, meta?: Record<string, unknown>) {
   if (!process.env.VITE_DEV_SERVER_URL) return;
   if (process.env.ADE_STDIO_TRANSPORT === "1") return;
@@ -294,7 +318,7 @@ export function createFileLogger(
       level,
       event,
       ...(meta ? { meta } : {})
-    });
+    }, errorAwareReplacer());
 
     const payload = `${line}\n`;
     if (idleCloseTimer) {
