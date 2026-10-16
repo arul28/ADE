@@ -29,6 +29,7 @@ describe("normalizeMathDelimiters", () => {
     ["a tab-indented ``` is not a fence", "\t```not-a-fence\nprose\n\\[a^2\\]", "\t```not-a-fence\nprose\n$$\na^2\n$$"],
     ["an unclosed $$ stays literal instead of swallowing the reply", "text\n$$\nE = mc^2", "text\n\\$\\$\nE = mc^2"],
     ["an unclosed \\[ stays literal", "text\n\\[\nE = mc^2", "text\n\\\\[\nE = mc^2"],
+    ["prose after a stray $$ keeps its inline math", "text\n$$\nsee $x$ here", "text\n\\$\\$\nsee $$x$$ here"],
     ["no math at all is returned as is", "no math at all", "no math at all"],
   ])("%s", (_name, input, expected) => {
     expect(normalizeMathDelimiters(input)).toBe(expected);

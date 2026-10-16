@@ -1,18 +1,15 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 import type { Plugin } from "vite";
 import { SCENE_THREE_ASSET } from "./src/shared/chatSceneThree";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { bundleSceneThree } from "./scripts/sceneThreeBundle.mjs";
 
 /**
  * three.js for 3D scenes, as one classic script that sets `window.THREE`.
  *
  * A scene frame allows inline script only (`script-src 'unsafe-inline'`, no
  * fetch, no module imports from anywhere), and three ships ESM only, split
- * across files. So it is bundled here once into a minified IIFE and shipped as
- * ONE file, `assets/ade-scene-three.js`. Two readers share it:
+ * across files. So it is bundled once (`scripts/sceneThreeBundle.mjs`, shared
+ * with the iOS shell generator) into a minified IIFE and shipped as ONE file,
+ * `assets/ade-scene-three.js`. Two readers share it:
  *
  * - the renderer, through `virtual:ade-scene-three` (that file's URL), fetches
  *   it the first time a scene that uses 3D comes on screen (`sceneThree.ts`)
@@ -27,34 +24,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const SCENE_THREE_MODULE_ID = "virtual:ade-scene-three";
 const RESOLVED_ID = `\0${SCENE_THREE_MODULE_ID}`;
 
-async function bundleThree(): Promise<string> {
-  const result = await build({
-    stdin: {
-      contents: [
-        'import * as THREE from "three";',
-        'import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";',
-        "window.THREE = Object.assign({ OrbitControls }, THREE);",
-      ].join("\n"),
-      resolveDir: __dirname,
-      loader: "js",
-    },
-    bundle: true,
-    format: "iife",
-    minify: true,
-    write: false,
-    target: "chrome120",
-    legalComments: "eof",
-    logLevel: "silent",
-  });
-  const code = result.outputFiles[0]?.text ?? "";
-  // Inlined into a <script> element, so a literal `</script` must not end it
-  // early. `<\/` means the same thing in a JS string, template or regex.
-  return code.replace(/<\/(script)/gi, "<\\/$1");
-}
-
 export function sceneThreePlugin(): Plugin {
   let bundled: Promise<string> | null = null;
-  const bundle = () => (bundled ??= bundleThree());
+  const bundle = () => (bundled ??= bundleSceneThree());
   let serving = false;
   return {
     name: "ade-scene-three",

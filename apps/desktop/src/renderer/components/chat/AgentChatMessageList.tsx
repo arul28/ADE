@@ -79,6 +79,7 @@ import { canHostMcpApps, McpAppCard } from "./McpAppFrame";
 import { MCP_APP_CARD_VARIANT } from "../../../shared/mcpApp";
 import { latestScenePreviewOutput, ScenePreviewThumb } from "./ScenePreviewThumb";
 import { SCENE_FENCE_LANGUAGE } from "../../../shared/chatScene";
+import { userMessageStartsTurn } from "../../../shared/chatTranscript";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
@@ -303,8 +304,12 @@ import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDr
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
-/** How a reply opens its scene fence (either fence character); see `activeTurnReplyWritesScene`. */
-const SCENE_FENCE_OPENERS = ["```" + SCENE_FENCE_LANGUAGE, "~~~" + SCENE_FENCE_LANGUAGE];
+/**
+ * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
+ * three spaces, ``` or ~~~, and exactly the scene language. See
+ * `activeTurnReplyWritesScene`.
+ */
+const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FENCE_LANGUAGE}[ \t]*(?=\n|$)`, "i");
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -6138,12 +6143,12 @@ function AgentChatMessageListMain({
     // of the transcript, and this runs on every streamed event.
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]!.event;
-      // A steer sent during the turn belongs to it; only an earlier turn's
-      // message ends the scan.
-      if (event.type === "user_message" && event.turnId !== activeTurnId) break;
+      // A steer the live turn took in belongs to it; only a message that
+      // started a turn ends the scan (the rule the transcript groups by).
+      if (event.type === "user_message" && userMessageStartsTurn(event, activeTurnId)) break;
       if (event.type !== "text" || event.turnId !== activeTurnId) continue;
       const joined = event.text + carry;
-      if (SCENE_FENCE_OPENERS.some((opener) => joined.includes(opener))) return true;
+      if (SCENE_FENCE_OPENER.test(joined)) return true;
       carry = joined.slice(0, 16);
     }
     return false;

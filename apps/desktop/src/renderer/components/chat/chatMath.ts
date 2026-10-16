@@ -15,7 +15,10 @@
  *   that happens to fill a paragraph.
  *
  * Code is never touched: fenced blocks and backtick spans pass through as
- * written, so a shell snippet's `$HOME` stays a shell variable.
+ * written, so a shell snippet's `$HOME` stays a shell variable. Indented code
+ * blocks (four spaces or a tab) are not recognised: telling one from an
+ * indented list paragraph needs the whole block structure, and math in list
+ * paragraphs is the commoner case, so those lines are read as prose.
  */
 
 import { fencedLineMask } from "../../../shared/chatScene";
@@ -34,7 +37,7 @@ export function normalizeMathDelimiters(markdown: string): string {
   // Inside a display block (`$$` … `$$`, or `\[` … `\]`), lines are TeX.
   let mathBlock: "$$" | "\\]" | null = null;
   /** Where the open display block's opener sits in `out`, and how it was written. */
-  let opener: { at: number; line: string } | null = null;
+  let opener: { at: number; line: string; sourceIndex: number } | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (fenced[index]) {
@@ -54,7 +57,7 @@ export function normalizeMathDelimiters(markdown: string): string {
     }
     if (trimmed === "$$" || trimmed === "\\[") {
       mathBlock = trimmed === "$$" ? "$$" : "\\]";
-      opener = { at: out.length, line };
+      opener = { at: out.length, line, sourceIndex: index };
       out.push(line.replace(trimmed, () => "$$"));
       continue;
     }
@@ -65,6 +68,11 @@ export function normalizeMathDelimiters(markdown: string): string {
   // formula. Its opener stays literal text until the closer arrives.
   if (opener) {
     out[opener.at] = opener.line.replace(/\$\$|\\\[/, (found) => (found === "$$" ? "\\$\\$" : "\\\\["));
+    // The lines after it are prose again, so their inline math still counts.
+    for (let line = opener.sourceIndex + 1; line < lines.length; line += 1) {
+      const at = opener.at + (line - opener.sourceIndex);
+      if (!fenced[line]) out[at] = rewriteLine(lines[line]!);
+    }
   }
   return out.join("\n");
 }

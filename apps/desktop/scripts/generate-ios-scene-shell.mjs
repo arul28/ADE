@@ -13,8 +13,13 @@
  * (`WorkSceneDocument.swift`) fills the tokens at run time and never assembles
  * markup of its own.
  *
- * Run it after any change to `chatScene.ts`, `chatSceneDocument.ts` or
- * `chatSceneChart.ts`, and commit the result. `--check` is the drift guard, and
+ * It also writes `apps/ios/ADE/Resources/SceneThree.js`, the three.js bundle
+ * desktop inlines into 3D scenes (`sceneThreeBundle.mjs`); Swift fills the
+ * shell's THREE token with it for a scene that uses it.
+ *
+ * Run it after any change to `chatScene.ts`, `chatSceneDocument.ts`,
+ * `chatSceneChart.ts`, `chatSceneThree.ts` or the three.js version, and
+ * commit the result. `--check` is the drift guard, and
  * CI runs it (the `lint-desktop` job).
  *
  * `--check` also guards the scene policy's other hand-kept copy: the hosted web
@@ -26,10 +31,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { bundleSceneThree } from "./sceneThreeBundle.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(here, "..");
 const outPath = path.resolve(desktopRoot, "../ios/ADE/Resources/SceneShell.html");
+/** three.js for 3D scenes, the same bytes desktop inlines; Swift fills the THREE token with it. */
+const threePath = path.resolve(desktopRoot, "../ios/ADE/Resources/SceneThree.js");
 const headersPath = path.join(desktopRoot, "src/renderer/webclient/public/_headers");
 /** The paths the web client's scene frame is served at; see the comments in `_headers`. */
 const SCENE_FRAME_PATHS = ["/scene-frame.html", "/scene-frame"];
@@ -53,6 +61,8 @@ const TOKENS = {
   danger: token("DANGER"),
   fontSans: token("FONT_SANS"),
   fontMono: token("FONT_MONO"),
+  // three.js for a scene that uses it (`sceneUsesThree`), empty otherwise.
+  three: token("THREE"),
 };
 
 /**
@@ -144,6 +154,7 @@ async function generate() {
     nonce: TOKENS.nonce,
     restored: false,
     fontFaceCss: "",
+    threeSource: TOKENS.three,
     scopeKey: null,
     theme: {
       bg: TOKENS.bg,
@@ -186,7 +197,7 @@ async function generate() {
 
   // Each color and font goes in twice (a CSS variable and ade.theme); the
   // scheme and font size too; the rest once.
-  const expected = { body: 1, nonce: 1, restored: 1 };
+  const expected = { body: 1, nonce: 1, restored: 1, three: 1 };
   for (const [name, value] of Object.entries(TOKENS)) {
     const want = expected[name] ?? 2;
     const found = countOf(html, value);
@@ -198,16 +209,22 @@ async function generate() {
 }
 
 const { html, policy } = await generate();
+const three = await bundleSceneThree();
+if (!three) fail("the three.js bundle came out empty.");
 if (process.argv.includes("--check")) {
-  let current = "";
-  try { current = readFileSync(outPath, "utf8"); } catch { /* missing counts as stale */ }
-  if (current !== html) {
-    fail(`${path.relative(process.cwd(), outPath)} is stale. Run: node apps/desktop/scripts/generate-ios-scene-shell.mjs`);
+  for (const [file, wanted] of [[outPath, html], [threePath, three]]) {
+    let current = "";
+    try { current = readFileSync(file, "utf8"); } catch { /* missing counts as stale */ }
+    if (current !== wanted) {
+      fail(`${path.relative(process.cwd(), file)} is stale. Run: node apps/desktop/scripts/generate-ios-scene-shell.mjs`);
+    }
   }
-  console.log("iOS scene shell is up to date.");
+  console.log("iOS scene shell and three.js bundle are up to date.");
   checkWebClientHeaders(policy);
   console.log(`The web client serves ${SCENE_FRAME_PATHS.join(" and ")} with the scene policy.`);
 } else {
   writeFileSync(outPath, html);
   console.log(`Wrote ${path.relative(process.cwd(), outPath)} (${html.length} bytes).`);
+  writeFileSync(threePath, three);
+  console.log(`Wrote ${path.relative(process.cwd(), threePath)} (${three.length} bytes).`);
 }
