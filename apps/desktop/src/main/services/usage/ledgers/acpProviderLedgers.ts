@@ -1,6 +1,6 @@
 /**
- * History scanners for the ACP providers that keep a usage ledger of their own
- * on disk: Pi, Qwen, Grok, and Copilot CLI's measured `session-store.db`.
+ * History scanners for providers that keep a usage ledger of their own on disk:
+ * Pi, Qwen, Grok, and Copilot CLI's measured `session-store.db`.
  *
  * The plumbing — `TokenEntry`, completeness tracking, file discovery, the
  * per-file read loop, the read-only SQLite opener — is in `ledgerScanCore.ts`.
@@ -16,7 +16,6 @@ import { finiteNumberOrNull, isRecord, safeJsonParse } from "../../shared/utils"
 import { uncachedInputTokens } from "../tokenSplit";
 import { readGrokModelUsageRow } from "../../chat/acpHost/acpDialects/grokTelemetry";
 import { QWEN_USAGE_FILE_NAME_PATTERN, readQwenUsageRow } from "../../chat/acpHost/acpDialects/qwenUsageLedger";
-import { readCopilotUsageRow } from "../../chat/acpHost/acpDialects/copilotUsageLedger";
 import {
   LOCAL_COST_SCAN_ALL_DAYS,
   LOCAL_SQLITE_SCAN_MAX_ROWS,
@@ -333,6 +332,24 @@ export async function scanGrokLogs(sessionsDir = grokSessionsDir()): Promise<Tok
 const COPILOT_EVENT_AFTER_ROW_MS = 10_000;
 const COPILOT_EVENT_BEFORE_ROW_MS = 2_000;
 
+function readCopilotUsageRow(row: Record<string, unknown>): {
+  inputTokens?: number; outputTokens?: number; cacheReadTokens?: number;
+  cacheWriteTokens?: number; reasoningTokens?: number;
+} {
+  const totalInput = numberFromRecord(row, "input_tokens");
+  const cacheReadTokens = numberFromRecord(row, "cache_read_tokens");
+  const cacheWriteTokens = numberFromRecord(row, "cache_write_tokens");
+  const outputTokens = numberFromRecord(row, "output_tokens");
+  const reasoningTokens = numberFromRecord(row, "reasoning_tokens");
+  return {
+    ...(totalInput !== undefined ? { inputTokens: uncachedInputTokens(totalInput, cacheReadTokens, cacheWriteTokens) } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+  };
+}
+
 /**
  * Map Copilot CLI `assistant_usage_events` rows to token entries.
  *
@@ -352,8 +369,8 @@ export function parseCopilotUsageEventRows(
   for (const row of rows) {
     const sessionId = textFromSqliteValue(row.session_id);
     const rowId = toNonNegativeInt(row.id);
-    // The live chat path reads the same row with the same reader, so a
-    // Copilot row never normalizes two ways.
+    // SDK turns use live usage events; history scanning keeps this legacy CLI
+    // store reader independent from the ACP adapter.
     const read = readCopilotUsageRow(row);
     const inputTokens = read.inputTokens ?? 0;
     const cachedTokens = read.cacheReadTokens ?? 0;

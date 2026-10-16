@@ -31,14 +31,6 @@ const nativeAt = (binary: string): AcpInstallerIo => ({
 const env = { PATH: "", GROK_EXECUTABLE: "/opt/bin/grok", KIMI_EXECUTABLE: "/opt/bin/kimi", QWEN_EXECUTABLE: "/opt/bin/qwen" };
 
 describe("acpProviderDiagnostics", () => {
-  it("declares doctor support rather than guessing it", () => {
-    expect(acpProviderSupportsDoctor("grok")).toBe(true);
-    expect(acpProviderSupportsDoctor("kimi")).toBe(true);
-    // Qwen and Copilot ship no `doctor`; passing the word would be read as a
-    // prompt by the agent.
-    expect(acpProviderSupportsDoctor("qwen")).toBe(false);
-    expect(acpProviderSupportsDoctor("copilot")).toBe(false);
-  });
 
   it("reports version and config home without running doctor by default", async () => {
     const run = fakeRun({ "--version": { status: 0, stdout: "1.0.14\n" } });

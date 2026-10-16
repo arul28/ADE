@@ -46,6 +46,7 @@ export default defineConfig([
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
+      copilotSdkWorker: "../desktop/src/main/services/chat/copilotSdkWorker.ts",
       usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
     },
     format: ["cjs"],
@@ -67,6 +68,7 @@ export default defineConfig([
     // small ones, which costs most of a second on Windows (Defender scans each).
     noExternal: [
       "@factory/droid-sdk",
+      "@github/copilot-sdk",
       /^@opencode\/client(?:\/.*)?$/,
       /^@muse-code\/sdk(?:\/.*)?$/,
       "yaml",

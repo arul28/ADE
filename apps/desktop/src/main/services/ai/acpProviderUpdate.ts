@@ -54,7 +54,6 @@ export type AcpProviderVersionPolicy = {
  */
 export const ACP_PROVIDER_VERSION_POLICY: Record<AcpChatProvider, AcpProviderVersionPolicy> = {
   grok: { label: "Grok", npmPackage: "@xai-official/grok", tested: { min: "1.0.40", max: "1.0.46" }, nativeUpdater: true },
-  copilot: { label: "Copilot", npmPackage: "@github/copilot", tested: { min: "1.0.82", max: "1.0.91" }, nativeUpdater: false },
   qwen: { label: "Qwen Code", npmPackage: "@qwen-code/qwen-code", tested: { min: "0.22.3", max: "0.25.0" }, nativeUpdater: false },
   kimi: { label: "Kimi", npmPackage: null, tested: { min: "0.39.1", max: "2.1.1" }, nativeUpdater: false },
   devin: { label: "Devin", npmPackage: null, tested: { min: "3000.11.3", max: "3000.11.3" }, nativeUpdater: false },

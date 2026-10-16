@@ -499,6 +499,7 @@ import type {
   ActiveTurnSendMode,
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
+  AgentChatCopilotPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatCancelDispatchedSteerResult,
@@ -1253,6 +1254,10 @@ import {
   releaseDroidSdkConnection,
   type DroidSdkPooled,
 } from "./droidSdkPool";
+import { acquireCopilotSdkConnection, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
+import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { copilotSdkModelDescriptors } from "./copilotModelsDiscovery";
+import { resolveCopilotExecutable } from "../ai/acpExecutables";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -2039,6 +2044,7 @@ type PersistedChatState = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -2071,6 +2077,8 @@ type PersistedChatState = {
   importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
+  /** Copilot SDK conversation id. Legacy Copilot ACP ids are adopted on resume. */
+  copilotSdkSessionId?: string;
   /**
    * Agent-minted ACP session id. It is the only handle a restarted ADE has on
    * an existing ACP conversation, so it is persisted for all four providers.
@@ -3398,6 +3406,20 @@ type DroidRuntime = {
   pendingDispatchAck?: { turnId: string; resolve: () => void };
 };
 
+type CopilotRuntime = {
+  kind: "copilot";
+  poolKey: string;
+  poolGeneration: number;
+  sdk: CopilotSdkPooled;
+  sdkSessionId: string;
+  modelId: string;
+  activeTurnId: string | null;
+  busy: boolean;
+  interrupted: boolean;
+  eventMapperState: CopilotSdkEventMapperState;
+  pendingSteers: QueuedSteer[];
+};
+
 type PiRuntime = {
   kind: "pi";
   poolKey: string;
@@ -3516,15 +3538,15 @@ type MuseTurnOutcome = {
   durationMs?: number;
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime | MuseRuntime;
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime;
 
 /**
  * Providers whose turn runs in a host ADE drives: a stopped turn may still be
  * settling there after the chat reads idle, so a replacing send waits for it.
  */
-const HOSTED_TURN_PROVIDERS: ReadonlySet<string> = new Set(["cursor", "droid", "muse"]);
+const HOSTED_TURN_PROVIDERS: ReadonlySet<string> = new Set(["cursor", "droid", "copilot", "muse"]);
 
-function isHostedTurnRuntime(runtime: ChatRuntime): runtime is CursorRuntime | DroidRuntime | MuseRuntime {
+function isHostedTurnRuntime(runtime: ChatRuntime): runtime is CursorRuntime | DroidRuntime | CopilotRuntime | MuseRuntime {
   return HOSTED_TURN_PROVIDERS.has(runtime.kind);
 }
 
@@ -3859,7 +3881,7 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (hasLivePendingInput(managed)) return { ready: false, reason: PENDING_INPUT_SEND_BLOCKED_MESSAGE };
   const rt = managed.runtime;
   if (
-    (rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid"
+    (rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid" || rt.kind === "copilot"
       || rt.kind === "pi" || rt.kind === "acp")
     && rt.busy
   ) {
@@ -3899,7 +3921,7 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   // Pi and the ACP providers both raise their cards through
   // `localPendingInputs`, which the check above already covered.
-  if (runtime.kind === "pi" || runtime.kind === "acp") return false;
+  if (runtime.kind === "pi" || runtime.kind === "acp" || runtime.kind === "copilot") return false;
   return false;
 }
 
@@ -4051,6 +4073,7 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
         : NO_BACKGROUND_WORK;
     case "droid":
     case "pi":
+    case "copilot":
     // ACP: a session is bounded by its prompt. No dialect exposes a background
     // task, a scheduled run, or anything else that outlives a turn, and none is
     // in `SUBAGENT_CAPABILITIES`. Zero here is a verified fact, not a default.
@@ -4186,6 +4209,8 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.pendingSteers.length > 0
         || runtime.permissionWaiters.size > 0
       );
+    case "copilot":
+      return Boolean(runtime.busy || runtime.activeTurnId || runtime.pendingSteers.length > 0);
     case "pi":
       return Boolean(
         runtime.busy
@@ -9052,6 +9077,7 @@ const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-f
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
 const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
+const VALID_COPILOT_PERMISSION_MODES = new Set(["plan", "ask", "auto-edit", "full-auto"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -9097,6 +9123,10 @@ function normalizePersistedMusePermissionMode(value: unknown): AgentChatMusePerm
 
 function normalizePersistedDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
   return normalizePersistedEnum(value, VALID_DROID_PERMISSION_MODES);
+}
+
+function normalizePersistedCopilotPermissionMode(value: unknown): AgentChatCopilotPermissionMode | undefined {
+  return normalizePersistedEnum(value, VALID_COPILOT_PERMISSION_MODES);
 }
 
 function legacyPermissionModeToClaudePermissionMode(
@@ -9200,7 +9230,7 @@ function legacyOpenCodePermissionModeToDroidPermissionMode(
 
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
+  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -9319,7 +9349,7 @@ function reassertIdentityPermissionMode(session: AgentChatSession): void {
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -9414,7 +9444,7 @@ function applyCursorModeIdFromLegacyPermissionMode(
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
 ): void {
   if (session.provider === "claude") {
@@ -10172,7 +10202,7 @@ function normalizeDroidReportedModelId(
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -12045,6 +12075,7 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  const copilotMcpAuthNotices = new Set<string>();
 
   /* MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`, `mcpAppProviderLinks.ts`). */
   const mcpApps = createMcpAppHost({
@@ -15326,6 +15357,7 @@ export function createAgentChatService(args: {
       sdkSessionId: runtime?.kind === "claude" ? runtime.sdkSessionId ?? undefined : undefined,
       providerSessionId: runtime?.kind === "opencode" ? runtime.handle.sessionId : undefined,
       droidSdkSessionId: runtime?.kind === "droid" ? runtime.sdkSessionId ?? undefined : undefined,
+      copilotSdkSessionId: runtime?.kind === "copilot" ? runtime.sdkSessionId : undefined,
       piSessionId: managed.session.piSessionId ?? undefined,
       piSessionFile: managed.session.piSessionFile ?? undefined,
       cursorSdkAgentId: runtime?.kind === "cursor" ? runtime.sdkAgentId ?? undefined : undefined,
@@ -18231,6 +18263,7 @@ export function createAgentChatService(args: {
       ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
       ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
       ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+      ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
       ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       // Muse pointer: the live runtime's session id, else the session record's
       // (a fork seed or an import), and nothing once the runtime is invalidated.
@@ -18290,6 +18323,11 @@ export function createAgentChatService(args: {
         ? { droidSdkSessionId: managed.runtime.sdkSessionId }
         : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
           ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
+          : {}),
+      ...(managed.runtime?.kind === "copilot"
+        ? { copilotSdkSessionId: managed.runtime.sdkSessionId }
+        : !managed.runtimeInvalidated && (prevPersisted?.copilotSdkSessionId || (managed.session.provider === "copilot" && prevPersisted?.acpSessionId))
+          ? { copilotSdkSessionId: prevPersisted?.copilotSdkSessionId ?? prevPersisted?.acpSessionId }
           : {}),
       // ACP pointer. Same three-tier shape as Droid: the live runtime's id
       // first, then the fork seed or the previous write, and nothing at all
@@ -18668,6 +18706,7 @@ export function createAgentChatService(args: {
           ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
           : undefined);
+      const copilotPermissionMode = normalizePersistedCopilotPermissionMode(record.copilotPermissionMode);
       const musePermissionMode = normalizePersistedMusePermissionMode(record.musePermissionMode)
         ?? (provider === "muse" ? musePermissionModeFromLegacyPermissionMode(permissionMode) : undefined);
       const museSessionId = provider === "muse" && typeof record.museSessionId === "string" && record.museSessionId.trim().length
@@ -18787,6 +18826,9 @@ export function createAgentChatService(args: {
         : claudePointer?.sessionId;
       const droidSdkSessionId = provider === "droid" && typeof record.droidSdkSessionId === "string" && record.droidSdkSessionId.trim().length
         ? record.droidSdkSessionId.trim()
+        : undefined;
+      const copilotSdkSessionId = provider === "copilot" && typeof record.copilotSdkSessionId === "string" && record.copilotSdkSessionId.trim().length
+        ? record.copilotSdkSessionId.trim()
         : undefined;
       const forkFromSdkSessionId = typeof record.forkFromSdkSessionId === "string" && record.forkFromSdkSessionId.trim().length
         ? record.forkFromSdkSessionId.trim()
@@ -18946,6 +18988,7 @@ export function createAgentChatService(args: {
         ...(codexConfigSource ? { codexConfigSource } : {}),
         ...(opencodePermissionMode ? { opencodePermissionMode } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
+      ...(copilotPermissionMode ? { copilotPermissionMode } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         ...(museSessionId ? { museSessionId } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
@@ -18994,6 +19037,7 @@ export function createAgentChatService(args: {
           ? { recoveredFromSessionId: record.recoveredFromSessionId.trim() }
           : {}),
         ...(droidSdkSessionId ? { droidSdkSessionId } : {}),
+        ...(copilotSdkSessionId ? { copilotSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
@@ -19299,6 +19343,7 @@ export function createAgentChatService(args: {
       case "codex": return { threadId: candidate.pointer };
       case "claude": return { sdkSessionId: candidate.pointer };
       case "droid": return { droidSdkSessionId: candidate.pointer };
+      case "copilot": return { copilotSdkSessionId: candidate.pointer };
       case "pi": return { piSessionId: candidate.pointer };
       case "muse": return { museSessionId: candidate.pointer };
       case "cursor": return { cursorSdkAgentId: candidate.pointer };
@@ -19306,7 +19351,6 @@ export function createAgentChatService(args: {
       case "qwen":
       case "kimi":
       case "grok":
-      case "copilot":
       case "devin": return { acpSessionId: candidate.pointer };
       default: return {};
     }
@@ -19415,7 +19459,7 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string; museSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; copilotSdkSessionId?: string; piSessionId?: string; acpSessionId?: string; museSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
@@ -19958,7 +20002,6 @@ export function createAgentChatService(args: {
     qwen: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
     kimi: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
     grok: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
-    copilot: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
     devin: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
   };
 
@@ -20435,6 +20478,7 @@ export function createAgentChatService(args: {
         ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
         ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+      ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
         ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       });
       createdId = created.id;
@@ -21227,6 +21271,7 @@ export function createAgentChatService(args: {
       ...(session.codexConfigSource !== undefined ? { codexConfigSource: session.codexConfigSource } : {}),
       ...(session.opencodePermissionMode !== undefined ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
       ...(session.droidPermissionMode !== undefined ? { droidPermissionMode: session.droidPermissionMode } : {}),
+      ...(session.copilotPermissionMode !== undefined ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
       ...(session.musePermissionMode !== undefined ? { musePermissionMode: session.musePermissionMode } : {}),
       ...(session.cursorModeId != null ? { cursorModeId: session.cursorModeId } : {}),
       ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
@@ -25576,6 +25621,16 @@ export function createAgentChatService(args: {
         "Droid tool approval was cancelled because the session closed.",
       );
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "copilot") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      cancelQueuedSteers(managed, rt, "interrupted");
+      if (preserveProviderResumeState) persistChatState(managed);
+      void rt.sdk.abort(managed.session.id).catch(() => undefined);
+      void rt.sdk.disconnect(managed.session.id).catch(() => undefined);
+      releaseCopilotSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "pi") {
@@ -31961,7 +32016,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  // ── ACP providers: qwen, kimi, grok, copilot ────────────────────────────────
+  // ── ACP providers: qwen, kimi, grok, devin ─────────────────────────────────
   //
   // One adapter for four providers. Everything that differs between them lives
   // in `acpHost/acpDialects`, so nothing below branches on a provider id except
@@ -31976,7 +32031,6 @@ export function createAgentChatService(args: {
     switch (provider) {
       case "qwen": return qwenConfigHome({ env });
       case "kimi": return kimiCodeConfigHome({ env });
-      case "copilot": return copilotConfigHome({ env });
       case "grok": return grokConfigHome({ env });
       // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
       // no override env var, so ADE sets nothing.
@@ -32024,8 +32078,8 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
-    // Qwen, Kimi, and Copilot take the whole posture through the `mode`
-    // config option, so the agent stops asking and there is nothing for ADE
+    // Qwen and Kimi take the whole posture through the `mode` config option,
+    // so the agent stops asking and there is nothing for ADE
     // to auto-answer. Grok sets only model and effort through
     // `session/set_config_option`; it has no `mode` option.
     return !(dialect.sessionConfig.declared && dialect.configOptionIds.includes("mode"));
@@ -43101,7 +43155,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime | MuseRuntime,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
@@ -43230,6 +43284,13 @@ export function createAgentChatService(args: {
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         metadata: nextSteer.metadata,
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else if (runtime.kind === "copilot") {
+      await runCopilotTurn(managed, {
+        promptText, userText: trimmed, displayText,
+        attachments: nextSteer.attachments, contextAttachments: nextSteer.contextAttachments,
+        resolvedAttachments: nextSteer.resolvedAttachments, metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "pi") {
@@ -45005,6 +45066,7 @@ export function createAgentChatService(args: {
     piSessionId: requestedPiSessionId,
     piSessionFile: requestedPiSessionFile,
     droidPermissionMode: requestedDroidPermissionModeArg,
+    copilotPermissionMode: requestedCopilotPermissionModeArg,
     musePermissionMode: requestedMusePermissionModeArg,
     museSessionId: requestedMuseSessionId,
     cursorModeId: requestedCursorModeId,
@@ -45386,6 +45448,9 @@ export function createAgentChatService(args: {
       : requestedCodexSandbox ?? (policyDrivesPermissions ? "workspace-write" : undefined);
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
+    const requestedCopilotPermissionMode = permissionsPinned
+      ? undefined
+      : normalizePersistedCopilotPermissionMode(requestedCopilotPermissionModeArg);
     const requestedMusePermissionMode = permissionsPinned
       ? undefined
       : normalizePersistedMusePermissionMode(requestedMusePermissionModeArg);
@@ -45462,6 +45527,9 @@ export function createAgentChatService(args: {
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
+      if (effectiveProvider === "copilot") {
+        return { copilotPermissionMode: requestedCopilotPermissionMode ?? "ask" };
+      }
       if (effectiveProvider === "pi") {
         return {
           permissionMode: effectivePermissionMode ?? chatConfig.piPermissionMode,
@@ -45509,6 +45577,7 @@ export function createAgentChatService(args: {
         || requestedOpenCodePermissionModeArg != null
         || requestedAcpPermissionModeArg != null
         || requestedDroidPermissionModeArg != null
+        || requestedCopilotPermissionModeArg != null
         || requestedMusePermissionModeArg != null
         || requestedCursorModeId != null
         || requestedCursorConfigValues != null;
@@ -46222,6 +46291,7 @@ export function createAgentChatService(args: {
       codexConfigSource: args.codexConfigSource ?? managed.session.codexConfigSource,
       opencodePermissionMode: args.opencodePermissionMode ?? managed.session.opencodePermissionMode,
       droidPermissionMode: args.droidPermissionMode ?? managed.session.droidPermissionMode,
+      copilotPermissionMode: args.copilotPermissionMode ?? managed.session.copilotPermissionMode,
       permissionMode: args.permissionMode ?? managed.session.permissionMode,
       cursorModeId: args.cursorModeId !== undefined ? args.cursorModeId : managed.session.cursorModeId,
       cursorConfigValues: args.cursorConfigValues !== undefined
@@ -47028,6 +47098,7 @@ export function createAgentChatService(args: {
     const targetCodexConfigSource = args.codexConfigSource || managed.session.codexConfigSource;
     const targetOpenCodePermissionMode = args.opencodePermissionMode || managed.session.opencodePermissionMode;
     const targetDroidPermissionMode = args.droidPermissionMode || managed.session.droidPermissionMode;
+    const targetCopilotPermissionMode = args.copilotPermissionMode || managed.session.copilotPermissionMode;
     const targetPermissionMode = args.permissionMode || managed.session.permissionMode;
     // An ACP chat reads its own mode before the generic one, so the source's
     // latched mode only travels when the caller didn't choose a generic one.
@@ -47062,6 +47133,7 @@ export function createAgentChatService(args: {
         ...(targetCodexConfigSource ? { codexConfigSource: targetCodexConfigSource } : {}),
         ...(targetOpenCodePermissionMode ? { opencodePermissionMode: targetOpenCodePermissionMode } : {}),
         ...(targetDroidPermissionMode ? { droidPermissionMode: targetDroidPermissionMode } : {}),
+        ...(targetCopilotPermissionMode ? { copilotPermissionMode: targetCopilotPermissionMode } : {}),
         ...(targetPermissionMode ? { permissionMode: targetPermissionMode } : {}),
         ...(targetAcpPermissionMode ? { acpPermissionMode: targetAcpPermissionMode } : {}),
         ...(targetCursorModeId !== undefined ? { cursorModeId: targetCursorModeId } : {}),
@@ -54484,6 +54556,216 @@ export function createAgentChatService(args: {
     managed.laneWorktreePath,
   ].join(":");
 
+  const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
+    if (managed.runtime?.kind === "copilot" && managed.runtime.sdk.process.exitCode == null && !managed.runtime.sdk.process.killed) {
+      return managed.runtime;
+    }
+    if (managed.runtime) teardownRuntime(managed, "handle_close");
+    const auth = await detectAuth();
+    const executable = resolveCopilotExecutable({ auth, env: buildAgentRuntimeEnv(managed) });
+    const baseEnv = buildAgentRuntimeEnv(managed);
+    const home = copilotConfigHome({ env: baseEnv });
+    const acquired = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: home, baseEnv, logger });
+    const persisted = readPersistedState(managed.session.id);
+    const modelId = resolveSessionModelDescriptor(managed.session)?.providerModelId ?? "auto";
+    try {
+      const legacySessionId = persisted?.copilotSdkSessionId
+        ?? (managed.session.provider === "copilot" ? persisted?.acpSessionId : undefined);
+      const opened = await acquired.pooled.openSession({
+        chatId: managed.session.id,
+        ...(legacySessionId ? { sessionId: legacySessionId } : {}),
+        cwd: managed.laneWorktreePath,
+        model: modelId === "auto" ? undefined : modelId,
+        reasoningEffort: managed.session.reasoningEffort,
+        permissionMode: managed.session.copilotPermissionMode ?? "ask",
+        mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
+        skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        systemMessage: isPersonalSession(managed.session)
+          ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
+          : buildCodingAgentSystemPrompt({
+              cwd: managed.laneWorktreePath,
+              mode: "coding",
+              permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+              interactive: true,
+              runtime: "copilot-sdk",
+              adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+            }),
+      }, Boolean(legacySessionId));
+      const runtime: CopilotRuntime = {
+        kind: "copilot", poolKey: acquired.poolKey, poolGeneration: acquired.generation,
+        sdk: acquired.pooled, sdkSessionId: opened.sessionId, modelId, activeTurnId: null,
+        busy: false, interrupted: false, eventMapperState: createCopilotSdkEventMapperState(), pendingSteers: [],
+      };
+      acquired.pooled.bridge.onEvent = (chatId, event) => {
+        const target = managedSessions.get(chatId);
+        const current = target?.runtime;
+        if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
+        for (const mapped of mapCopilotSdkEvent(event, { turnId: current.activeTurnId, state: current.eventMapperState })) {
+          emitChatEvent(target, mapped);
+        }
+      };
+      acquired.pooled.bridge.onPermissionRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target || target.runtime?.kind !== "copilot") return { kind: "reject", feedback: "This Copilot chat is no longer active." };
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const kind = typeof request.kind === "string" ? request.kind : "tool";
+        const mode = target.session.copilotPermissionMode ?? "ask";
+        if (request.managedApprovalRequired !== true && mode === "full-auto") {
+          return { kind: "approve-once", approvedInteractively: false };
+        }
+        if (request.managedApprovalRequired !== true && mode === "auto-edit" && (kind === "read" || kind === "write")) {
+          const requestedPath = typeof request.fileName === "string" ? request.fileName : typeof request.path === "string" ? request.path : "";
+          if (requestedPath) {
+            const resolvedPath = path.resolve(target.laneWorktreePath, requestedPath);
+            const relativePath = path.relative(target.laneWorktreePath, resolvedPath);
+            if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+              return { kind: "approve-once", approvedInteractively: false };
+            }
+          }
+        }
+        const title = typeof request.title === "string" ? request.title : `Copilot ${kind} permission`;
+        const commandText = typeof request.fullCommandText === "string"
+          ? request.fullCommandText
+          : Array.isArray(request.commands) ? request.commands.filter((value): value is string => typeof value === "string").join("\n") : null;
+        const summary = commandText
+          ?? (typeof request.diff === "string" ? request.diff : null)
+          ?? (typeof request.description === "string" ? request.description : typeof request.toolName === "string" ? request.toolName : title);
+        const itemId = typeof request.requestId === "string" ? request.requestId : randomUUID();
+        const response = await requestChatInput({
+          chatSessionId: target.session.id,
+          title,
+          body: summary,
+          source: "ade",
+          kind: kind === "exit_plan_mode" ? "plan_approval" : "approval",
+          providerMetadata: { copilotSdk: true, request },
+          eventDescription: summary,
+          eventDetail: { copilotSdk: true, request },
+          questions: [{
+            id: "copilot-permission",
+            question: kind === "exit_plan_mode" ? "Approve this plan and let Copilot continue?" : "Allow this Copilot action?",
+            options: [
+              { label: "Allow once", value: "approve-once" },
+              { label: "Allow for this session", value: "approve-for-session" },
+              { label: "Deny", value: "reject" },
+            ],
+          }],
+        });
+        const choice = response.answers["copilot-permission"]?.[0];
+        if (response.decision === "accept" && choice === "approve-for-session") return { kind: "approve-for-session" };
+        if (response.decision === "accept" && choice === "approve-once") return { kind: "approve-once", approvedInteractively: true };
+        return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
+      };
+      acquired.pooled.bridge.onUserInputRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target) return { answer: "", wasFreeform: true };
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const choices = Array.isArray(request.choices) ? request.choices.filter((value): value is string => typeof value === "string") : [];
+        const response = await requestChatInput({
+          chatSessionId: target.session.id,
+          title: "Copilot is asking a question",
+          body: typeof request.question === "string" ? request.question : "Copilot needs your input to continue.",
+          source: "ade",
+          kind: "structured_question",
+          questions: [{
+            id: "copilot-user-input",
+            question: typeof request.question === "string" ? request.question : "What would you like Copilot to know?",
+            ...(choices.length ? { options: choices.map((choice) => ({ label: choice, value: choice })) } : {}),
+            allowsFreeform: request.allowFreeform !== false,
+          }],
+        });
+        const answer = response.answers["copilot-user-input"]?.[0] ?? response.responseText ?? "";
+        return { answer, wasFreeform: !choices.includes(answer) };
+      };
+      acquired.pooled.bridge.onMcpAuthRequest = async (chatId, _waiterId, request) => {
+        const target = managedSessions.get(chatId);
+        if (!target) return { kind: "cancelled" };
+        const row = request && typeof request === "object" ? request as Record<string, unknown> : {};
+        const key = `${chatId}:${String(row.serverUrl ?? row.serverName ?? "unknown")}`;
+        if (!copilotMcpAuthNotices.has(key)) {
+          copilotMcpAuthNotices.add(key);
+          emitChatEvent(target, {
+            type: "system_notice", noticeKind: "warning", severity: "warning",
+            message: `${String(row.serverName ?? "This MCP server")} needs a sign-in. Sign in from Settings → MCP servers, then reconnect the chat.`,
+          });
+        }
+        return { kind: "cancelled" };
+      };
+      managed.runtime = runtime;
+      persistChatState(managed);
+      return runtime;
+    } catch (error) {
+      releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
+      throw error;
+    }
+  };
+
+  const runCopilotTurn = async (managed: ManagedChatSession, args: {
+    promptText: string; userText?: string; displayText: string; attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[]; resolvedAttachments: ResolvedAgentChatFileRef[];
+    metadata?: AgentChatEventMetadata | null; laneDirectiveKey?: string | null; turnId?: string;
+    onDispatched?: () => void; onBackendDispatched?: () => void;
+  }): Promise<void> => {
+    const turnId = args.turnId ?? randomUUID();
+    const runtime = await ensureCopilotRuntime(managed);
+    runtime.interrupted = false;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.eventMapperState = createCopilotSdkEventMapperState();
+    setSessionActive(managed);
+    const displayText = args.displayText.trim();
+    const userText = args.userText?.trim() || displayText;
+    emitPreparedUserMessage(managed, {
+      text: userText, displayText, attachments: args.attachments,
+      contextAttachments: args.contextAttachments, metadata: args.metadata, turnId,
+      laneDirectiveKey: args.laneDirectiveKey, onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    captureTurnBeforeSha(managed);
+    try {
+      const attachments = await Promise.all(args.resolvedAttachments.map(async (attachment) => {
+        if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
+        const bytes = await readResolvedAttachmentBytes(attachment);
+        return {
+          type: "blob" as const,
+          data: bytes.toString("base64"),
+          mimeType: attachment.mimeType || "image/png",
+          displayName: path.basename(attachment.path),
+        };
+      }));
+      args.onBackendDispatched?.();
+      const result = await runtime.sdk.send(managed.session.id, args.promptText, attachments);
+      const response = result && typeof result === "object" ? result as Record<string, unknown> : {};
+      const data = response.data && typeof response.data === "object" ? response.data as Record<string, unknown> : {};
+      const finalText = typeof data.content === "string" ? data.content : "";
+      if (finalText && !runtime.eventMapperState.servedModel) emitChatEvent(managed, { type: "text", text: finalText, turnId });
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      markSessionIdleWithFreshCache(managed);
+      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
+      emitChatEvent(managed, {
+        type: "done", status: runtime.interrupted ? "interrupted" : "completed", turnId,
+        model: managed.session.model, modelId: managed.session.modelId ?? undefined,
+        usage: copilotSdkDoneUsage(runtime.eventMapperState),
+      });
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      persistChatState(managed);
+    } catch (error) {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      markSessionIdleWithFreshCache(managed);
+      const message = error instanceof Error ? error.message : String(error);
+      emitChatEvent(managed, { type: "error", message, turnId });
+      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "failed", turnId });
+      emitChatEvent(managed, {
+        type: "done", status: runtime.interrupted ? "interrupted" : "failed", turnId,
+        model: managed.session.model, modelId: managed.session.modelId ?? undefined,
+        usage: copilotSdkDoneUsage(runtime.eventMapperState),
+      });
+      persistChatState(managed);
+    }
+  };
+
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
     const launchModelId = resolveDroidRuntimeModelId(managed.session);
     const poolKey = droidPoolKeyFor(managed);
@@ -55083,6 +55365,16 @@ export function createAgentChatService(args: {
         optimisticDroidTurnStart,
         onDispatched,
         onBackendDispatched,
+      });
+      markEpochDirectivesDelivered();
+      return;
+    }
+
+    if (managed.session.provider === "copilot") {
+      await runCopilotTurn(managed, {
+        promptText, userText: submittedText, displayText: visibleText,
+        attachments, contextAttachments, resolvedAttachments, metadata, laneDirectiveKey, turnId,
+        onDispatched, onBackendDispatched,
       });
       markEpochDirectivesDelivered();
       return;
@@ -56604,6 +56896,59 @@ export function createAgentChatService(args: {
       preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
+    }
+
+    if (managed.session.provider === "copilot" && managed.runtime?.kind === "copilot" && managed.runtime.busy) {
+      const runtime = managed.runtime;
+      const preparedSteer = prepareSendMessage({
+        sessionId,
+        text: trimmed,
+        displayText: displayText ?? trimmed,
+        attachments,
+        contextAttachments,
+        metadata,
+        allowPendingInput: options?.allowPendingInput,
+        allowActiveSession: true,
+      });
+      if (!preparedSteer) return { steerId, queued: false };
+      const row: QueuedSteer = {
+        steerId,
+        uuid: randomUUID(),
+        text: preparedSteer.submittedText,
+        ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
+        attachments: preparedSteer.attachments,
+        contextAttachments: preparedSteer.contextAttachments,
+        resolvedAttachments: preparedSteer.resolvedAttachments,
+        ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+      };
+      const deliveryMode = dispatchMode ?? "queue";
+      if (deliveryMode === "inline") emitSteerUserRow(managed, row, "accepted", runtime.activeTurnId ?? undefined);
+      else emitSteerUserRow(managed, row, "queued", runtime.activeTurnId ?? undefined);
+      persistChatState(managed);
+      try {
+        const sdkAttachments = await Promise.all(preparedSteer.resolvedAttachments.map(async (attachment) => {
+          if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
+          const bytes = await readResolvedAttachmentBytes(attachment);
+          return {
+            type: "blob" as const,
+            data: bytes.toString("base64"),
+            mimeType: attachment.mimeType || "image/png",
+            displayName: path.basename(attachment.path),
+          };
+        }));
+        const contextPrompt = buildChatContextAttachmentPrompt(preparedSteer.contextAttachments);
+        const promptText = contextPrompt ? `${contextPrompt}\n\n${preparedSteer.submittedText}` : preparedSteer.submittedText;
+        await runtime.sdk.send(sessionId, promptText, sdkAttachments, deliveryMode === "inline" ? "immediate" : "enqueue");
+        preparedSteer.onDispatched?.();
+        options?.onAcceptedDispatch?.();
+        if (deliveryMode === "inline") emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
+        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
+        persistChatState(managed);
+        return { steerId, queued: deliveryMode === "queue" };
+      } catch (error) {
+        if (deliveryMode === "inline") failAcceptedSteerRow(managed, row, runtime.activeTurnId ?? undefined);
+        throw error;
+      }
     }
 
     if (managed.session.provider === "droid") {
@@ -58216,6 +58561,15 @@ export function createAgentChatService(args: {
       return result;
     }
 
+    if (managed.runtime?.kind === "copilot") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
+      await rt.sdk.abort(managed.session.id).catch(() => undefined);
+      persistChatState(managed);
+      return result;
+    }
+
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       rt.interrupted = true;
@@ -58833,10 +59187,11 @@ export function createAgentChatService(args: {
       sessionService.setResumeCommand(sessionId, `chat:cursor:${sessionId}`);
     } else if (managed.session.provider === "droid") {
       await ensureDroidRuntime(managed);
-      managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
+    } else if (managed.session.provider === "copilot") {
+      await ensureCopilotRuntime(managed);
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       enforceManagedLocalHarnessPermissionMode(managed);
-      sessionService.setResumeCommand(sessionId, `chat:droid:${sessionId}`);
+      sessionService.setResumeCommand(sessionId, `chat:copilot:${sessionId}`);
     } else if (managed.session.provider === "muse") {
       // The Muse session id is what turns `session/start` into `session/resume`.
       managed.session.museSessionId = managed.session.museSessionId ?? persisted?.museSessionId ?? null;
@@ -59050,6 +59405,7 @@ export function createAgentChatService(args: {
         codexConfigSource: managed.session.codexConfigSource,
         opencodePermissionMode: managed.session.opencodePermissionMode,
         droidPermissionMode: managed.session.droidPermissionMode,
+      copilotPermissionMode: managed.session.copilotPermissionMode,
         cursorModeId: managed.session.cursorModeId,
         cursorConfigValues: managed.session.cursorConfigValues,
         surface: managed.session.surface,
@@ -59645,6 +60001,7 @@ export function createAgentChatService(args: {
         return typeof permission === "string" && permission.trim().length ? permission : null;
       }
       case "pi":
+      case "copilot":
       case "acp":
       case "muse":
         // All surface their cards through `localPendingInputs`, which the
@@ -60023,6 +60380,9 @@ export function createAgentChatService(args: {
       ...((liveSession?.piSessionFile ?? persisted?.piSessionFile) ? { piSessionFile: liveSession?.piSessionFile ?? persisted?.piSessionFile } : {}),
       ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
         ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
+        : {}),
+      ...(liveSession?.copilotPermissionMode || persisted?.copilotPermissionMode
+        ? { copilotPermissionMode: liveSession?.copilotPermissionMode ?? persisted?.copilotPermissionMode }
         : {}),
       ...(summaryCursorModeSnapshot
         ? { cursorModeSnapshot: summaryCursorModeSnapshot }
@@ -62670,6 +63030,31 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (provider === "copilot") {
+      try {
+        const descriptors = args.activateRuntime
+          ? await (async () => {
+              const auth = await detectAuth();
+              const baseEnv = userProcessEnv();
+              const connection = await acquireCopilotSdkConnection({
+                cliPath: resolveCopilotExecutable({ auth, env: baseEnv }).path,
+                baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
+              });
+              try { return copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models")); }
+              finally { releaseCopilotSdkConnection(connection.poolKey, connection.generation); }
+            })()
+          : copilotSdkModelDescriptors([]);
+        return descriptors.map((d, index) => ({
+          id: d.id, displayName: d.displayName, description: `${d.displayName} (GitHub Copilot SDK)`,
+          isDefault: index === 0, reasoningEfforts: d.reasoningTiers?.map((effort) => ({ effort, description: `${effort} reasoning` })) ?? [],
+          modelId: d.id, family: d.family, supportsReasoning: d.capabilities.reasoning,
+          supportsTools: d.capabilities.tools, color: d.color,
+        }));
+      } catch {
+        return [];
+      }
+    }
+
     if (provider === "pi") {
       try {
         if (args.activateRuntime) {
@@ -64108,6 +64493,7 @@ export function createAgentChatService(args: {
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    copilotPermissionMode,
     musePermissionMode: requestedMusePermissionModeArg,
     cursorModeId,
     cursorConfigValues: requestedCursorConfigValuesArg,
@@ -64152,6 +64538,7 @@ export function createAgentChatService(args: {
       codexConfigSource,
       opencodePermissionMode,
       droidPermissionMode,
+      copilotPermissionMode,
       musePermissionMode: requestedMusePermissionModeArg,
       cursorModeId,
       acpPermissionMode: requestedAcpPermissionMode,
@@ -64586,6 +64973,27 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (
+        managed.runtime?.kind === "copilot"
+        && (modelChanged || reasoningEffort !== undefined)
+      ) {
+        const copilotModelId = descriptor?.providerModelId ?? managed.runtime.modelId;
+        try {
+          await managed.runtime.sdk.setModel(
+            managed.session.id,
+            copilotModelId,
+            managed.session.reasoningEffort,
+          );
+          managed.runtime.modelId = copilotModelId;
+        } catch (error) {
+          logger.warn("agent_chat.copilot_sdk_set_model_failed", {
+            sessionId,
+            model: copilotModelId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       // Persist the CTO's model choice back into its identity so it becomes the
       // single source of truth (D3): a composer/settings switch on the live CTO
       // thread is remembered for the next session. Also runs when only the
@@ -64873,6 +65281,10 @@ export function createAgentChatService(args: {
       managed.session.droidPermissionMode = droidPermissionMode;
     }
 
+    if (copilotPermissionMode !== undefined && !permissionsPinned) {
+      managed.session.copilotPermissionMode = normalizePersistedCopilotPermissionMode(copilotPermissionMode);
+    }
+
     const requestedMusePermissionMode = normalizePersistedMusePermissionMode(requestedMusePermissionModeArg);
     if (requestedMusePermissionMode && !permissionsPinned) {
       managed.session.musePermissionMode = requestedMusePermissionMode;
@@ -65130,7 +65542,7 @@ export function createAgentChatService(args: {
   const LAUNCH_DEFAULT_UPDATE_FIELDS: ReadonlyArray<keyof AgentChatUpdateSessionArgs> = [
     "modelId", "reasoningEffort", "fastMode", "codexFastMode", "interactionMode", "permissionMode",
     "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource",
-    "opencodePermissionMode", "droidPermissionMode", "musePermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
+    "opencodePermissionMode", "droidPermissionMode", "copilotPermissionMode", "musePermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
   ] as const;
 
   /** The public update: a person changing a chat's settings also moves the machine defaults. */

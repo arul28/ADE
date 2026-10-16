@@ -87,15 +87,6 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
   {
-    ...ACP_PROVIDER_METADATA.copilot,
-    id: "copilot",
-    tagline: "Uses your GitHub account through the copilot CLI.",
-    logoFamily: "github-copilot",
-    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
-    credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
-    setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
-  },
-  {
     ...ACP_PROVIDER_METADATA.devin,
     id: "devin",
     tagline: "Your local Devin CLI.",
@@ -434,7 +425,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),

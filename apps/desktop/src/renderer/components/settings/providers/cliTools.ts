@@ -13,10 +13,11 @@ import { resolveProviderRemediation } from "../../../../shared/providerRemediati
 import type { AiClaudeAvailability, AiProviderConnectionStatus } from "../../../../shared/types";
 import { rendererPlatformAttribute } from "../../../lib/platform";
 
-export type CliName = "claude" | "codex" | "cursor" | "droid";
+export type CliName = "claude" | "codex" | "cursor" | "droid" | "copilot";
 
 /** The shared table's command for one CLI on one platform, never empty. */
 function sharedInstallCommand(cli: CliName, platform: NodeJS.Platform): string {
+  if (cli === "copilot") return "Install GitHub Copilot CLI";
   const resolved = resolveProviderRemediation(cli, platform);
   return resolved.installCommand ?? resolved.docsUrl ?? "";
 }
@@ -73,6 +74,13 @@ export const CLI_TOOLS: CliTool[] = [
     loginCmd: DROID_LOGIN_CMD,
     installHint: `${sharedInstallCommand("droid", "darwin")} — ensure \`droid\` is on PATH`,
     windowsInstallHint: `${sharedInstallCommand("droid", "win32")} — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH`,
+  },
+  {
+    cli: "copilot",
+    label: "GitHub Copilot",
+    authStory: "Uses your GitHub Copilot sign-in.",
+    loginCmd: "copilot login",
+    installHint: "npm install -g @github/copilot",
   },
 ];
 

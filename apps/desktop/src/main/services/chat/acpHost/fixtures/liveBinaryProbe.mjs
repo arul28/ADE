@@ -6,7 +6,7 @@
  * writes the initialize response as a fixture, and exercises session/new,
  * prompt, permission, cancel, and close. It never installs packages.
  *
- * Usage: node liveBinaryProbe.mjs [copilot|grok|all]
+ * Usage: node liveBinaryProbe.mjs [grok|all]
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -239,134 +239,6 @@ export function summarizeCaps(init) {
   };
 }
 
-async function probeCopilot() {
-  const report = { provider: "copilot", binary: "copilot", version: null, steps: [] };
-  const client = new AcpClient({
-    command: "copilot",
-    args: ["--acp", "--add-dir", scratchDir, "--no-auto-update"],
-    cwd: scratchDir,
-    env: { ...process.env, NO_COLOR: "1" },
-    label: "copilot",
-  });
-
-  try {
-    const init = await client.initialize();
-    report.version = init.agentInfo?.version ?? null;
-    writeFileSync(path.join(here, "copilot.initialize.json"), `${JSON.stringify(init, null, 2)}\n`);
-    report.steps.push({ step: "initialize", ok: true, caps: summarizeCaps(init) });
-
-    const authMethods = init.authMethods ?? [];
-    if (authMethods.length) {
-      const methodId = authMethods[0].id;
-      if (authMethods[0].type === "terminal") {
-        report.steps.push({
-          step: "authenticate",
-          ok: false,
-          skipped: true,
-          reason: "terminal login method advertised — treating as not signed in over ACP",
-          methodId,
-        });
-      } else {
-        try {
-          const auth = await client.request("authenticate", { methodId }, 15_000);
-          report.steps.push({ step: "authenticate", ok: true, methodId, result: auth ?? null });
-        } catch (error) {
-          report.steps.push({ step: "authenticate", ok: false, methodId, ...errInfo(error) });
-        }
-      }
-    } else {
-      report.steps.push({ step: "authenticate", ok: true, skipped: true, reason: "no authMethods advertised" });
-    }
-
-    const created = await client.request("session/new", { cwd: scratchDir, mcpServers: [] }, 45_000);
-    report.steps.push({ step: "session/new", ok: true, sessionId: created.sessionId, modes: created.modes ?? null });
-    const sessionId = created.sessionId;
-
-    client.permissionPolicy = "reject";
-    try {
-      const prompt = await client.request(
-        "session/prompt",
-        { sessionId, prompt: [{ type: "text", text: PING }] },
-        90_000,
-      );
-      const textChunks = client.notifications
-        .filter((entry) => entry.params?.update?.sessionUpdate === "agent_message_chunk")
-        .map((entry) => entry.params.update.content?.text ?? "")
-        .join("");
-      report.steps.push({
-        step: "session/prompt ping",
-        ok: true,
-        stopReason: prompt.stopReason ?? null,
-        usage: prompt.usage ?? null,
-        _meta: prompt._meta ?? null,
-        text: textChunks.slice(0, 400),
-        permissions: client.reverseRequests.filter((entry) => entry.method === "session/request_permission").length,
-      });
-    } catch (error) {
-      report.steps.push({ step: "session/prompt ping", ok: false, ...errInfo(error) });
-    }
-
-    const cancelSession = await client.request("session/new", { cwd: scratchDir, mcpServers: [] }, 45_000);
-    const cancelId = cancelSession.sessionId;
-    const promptPromise = client.request(
-      "session/prompt",
-      {
-        sessionId: cancelId,
-        prompt: [{ type: "text", text: "Count slowly from 1 to 200 in words. Do not use tools." }],
-      },
-      90_000,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    let cancelAsRequest = null;
-    try {
-      cancelAsRequest = await client.request("session/cancel", { sessionId: cancelId }, 10_000);
-    } catch (error) {
-      cancelAsRequest = { error: errInfo(error) };
-    }
-    let promptAfterCancel = null;
-    try {
-      promptAfterCancel = await promptPromise;
-    } catch (error) {
-      promptAfterCancel = { error: errInfo(error) };
-    }
-    report.steps.push({
-      step: "cancel-during-prompt",
-      ok: true,
-      cancelAsRequest,
-      promptResult: promptAfterCancel,
-      note: "Copilot is known to report stopReason end_turn after cancel (github/copilot-cli#4561)",
-    });
-
-    try {
-      await client.request("session/close", { sessionId }, 10_000);
-      report.steps.push({ step: "session/close", ok: true });
-    } catch (error) {
-      report.steps.push({ step: "session/close", ok: false, ...errInfo(error) });
-    }
-    try {
-      await client.request("session/close", { sessionId: cancelId }, 10_000);
-    } catch {
-      // best effort
-    }
-  } catch (error) {
-    report.steps.push({ step: "fatal", ok: false, ...errInfo(error), stderrTail: client.stderrTail.slice(-1_500) });
-  } finally {
-    client.dispose();
-    report.stderrTail = client.stderrTail.slice(-1_500);
-    report.notificationsSample = client.notifications.slice(0, 30).map((entry) => ({
-      method: entry.method,
-      sessionUpdate: entry.params?.update?.sessionUpdate ?? null,
-    }));
-    report.permissionRequests = client.reverseRequests
-      .filter((entry) => entry.method === "session/request_permission")
-      .map((entry) => ({
-        tool: entry.params?.toolCall?.title ?? entry.params?.toolCall?.kind ?? null,
-        options: (entry.params?.options ?? []).map((option) => ({ id: option.optionId, kind: option.kind, name: option.name })),
-      }));
-  }
-  return report;
-}
-
 async function probeGrok() {
   const report = { provider: "grok", binary: "grok", version: "1.0.13", steps: [] };
   const client = new AcpClient({
@@ -514,10 +386,6 @@ const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURL
 if (isDirectRun) {
   const target = process.argv[2] ?? "all";
   const reports = {};
-  if (target === "all" || target === "copilot") {
-    process.stderr.write("probing copilot...\n");
-    reports.copilot = await probeCopilot();
-  }
   if (target === "all" || target === "grok") {
     process.stderr.write("probing grok...\n");
     reports.grok = await probeGrok();

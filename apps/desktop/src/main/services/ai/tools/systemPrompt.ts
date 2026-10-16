@@ -16,6 +16,7 @@ export type AdeRuntimeKind =
   | "codex-cli"
   | "cursor-sdk"
   | "droid-sdk"
+  | "copilot-sdk"
   | "pi-sdk"
   | "opencode";
 
@@ -40,7 +41,7 @@ const adeMcpServersGuidance = "**MCP servers:** Servers the user adds in Setting
 
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
 
-type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
 const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily> = {
   "claude-agent-sdk-query": "claude",
@@ -49,6 +50,7 @@ const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily
   "codex-cli": "codex",
   "cursor-sdk": "cursor",
   "droid-sdk": "droid",
+  "copilot-sdk": "copilot",
   opencode: "opencode",
   "pi-sdk": "pi",
 };
@@ -58,6 +60,7 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
   codex: "For short-lived delegation whose result belongs in this Codex thread, prefer Codex's native subagent/collaboration tool.",
   cursor: "For short-lived delegation whose result belongs in this Cursor thread, prefer Cursor's native task tool.",
   droid: "For short-lived delegation whose result belongs in this Droid thread, prefer Droid's native worker/subagent capability.",
+  copilot: "Copilot's SDK path has no ADE-supported native child-session lifecycle. Use an ADE `--type subagent` chat when you need independent delegation.",
   opencode: "For short-lived delegation whose result belongs in this OpenCode thread, prefer OpenCode's native `task` tool.",
   pi: "Pi's SDK path has no ADE-supported native subagent lifecycle. Use an ADE `--type subagent` chat when you need independent delegation, and keep the child brief self-contained.",
 };
@@ -119,6 +122,14 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
+        describeSubagentRouting(runtime),
+        adeScheduledWorkGuidance,
+        adeDraftSendGuidance,
+        adeMcpServersGuidance,
+      ];
+    case "copilot-sdk":
+      return [
+        "**Runtime:** ADE Work chat hosted on the GitHub Copilot SDK and backed by the installed Copilot CLI.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         adeDraftSendGuidance,

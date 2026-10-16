@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import type { Logger } from "../logging/logger";
 import { initializeModelManifestService } from "./modelManifestService";
 import type { AdeDb } from "../state/kvDb";
@@ -115,6 +116,12 @@ import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, with
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { resolveCopilotExecutable } from "./acpExecutables";
+import { copilotConfigHome } from "../shared/providerConfigHomes";
+import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
+import { copilotSdkModelDescriptors } from "../chat/copilotModelsDiscovery";
+import { resolveAdeCacheFile } from "../shared/adeCacheFile";
+import { writeTextAtomic } from "../shared/utils";
 import {
   cursorUsageCostUsd,
   mapCursorAgentUsageToTokenEntry,
@@ -949,6 +956,24 @@ function extractDiscoveredLocalModels(connections: AiRuntimeConnections): Discov
 }
 
 const AI_STATUS_SLOW_PHASE_MS = 120;
+const COPILOT_MODELS_TTL_MS = 6 * 60 * 60_000;
+const COPILOT_MODELS_CACHE_VERSION = 1;
+const COPILOT_MODELS_CACHE_FILE = "copilot-model-catalog-cache.json";
+function readCopilotModelsCache(): { savedAt: number; descriptors: ModelDescriptor[] } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), "utf8")) as Record<string, unknown>;
+    if (parsed.version !== COPILOT_MODELS_CACHE_VERSION || typeof parsed.savedAt !== "number" || !Array.isArray(parsed.descriptors)) return null;
+    const descriptors = parsed.descriptors.filter((entry): entry is ModelDescriptor => Boolean(
+      entry && typeof entry === "object" && (entry as ModelDescriptor).family === "github-copilot"
+      && typeof (entry as ModelDescriptor).id === "string" && typeof (entry as ModelDescriptor).providerModelId === "string",
+    ));
+    return descriptors.length ? { savedAt: parsed.savedAt, descriptors } : null;
+  } catch {
+    return null;
+  }
+}
+let copilotModelsCache: { savedAt: number; descriptors: ModelDescriptor[] } | null = readCopilotModelsCache();
+let copilotModelsRequest: Promise<ModelDescriptor[]> | null = null;
 
 type AiStatusPhaseTiming = {
   name: string;
@@ -977,7 +1002,7 @@ type ModelDescriptorForStatus = ReturnType<typeof getAvailableModels>[number];
  * it by the ACP host, so one family lookup answers both — the settings page
  * does not need to know which of the two a row came from.
  */
-export const ACP_STATUS_FAMILIES = {
+export const PROVIDER_STATUS_FAMILIES = {
   qwen: "qwen",
   kimi: "moonshot",
   grok: "xai",
@@ -997,15 +1022,13 @@ function buildStatusModelLists(
     // Usable Muse models once Muse is ready (binary + sign-in). Signed out,
     // the settings page shows the registry's curated list with a sign-in note.
     muse: availability.muse ? agentModelsFromAvailable(available, "muse") : [],
-    // The ACP providers list their models whenever the CLI is present, not only
-    // once signed in: the curated list is what the settings page is for, and an
-    // empty page would say "this provider has no models" when what is true is
-    // "you are not signed in yet" — which the status word already says.
-    qwen: availability.qwen ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.qwen) : [],
-    kimi: availability.kimi ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.kimi) : [],
-    grok: availability.grok ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.grok) : [],
-    copilot: availability.copilot ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.copilot) : [],
-    devin: availability.devin ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.devin) : [],
+    // Provider-owned model catalogs are shown when the CLI is present, including
+    // before sign-in, so an empty page does not misstate an auth problem.
+    qwen: availability.qwen ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.qwen) : [],
+    kimi: availability.kimi ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.kimi) : [],
+    grok: availability.grok ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.grok) : [],
+    copilot: availability.copilot ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.copilot) : [],
+    devin: availability.devin ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.devin) : [],
   };
 }
 
@@ -1115,6 +1138,46 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
+    const copilotExecutable = resolveCopilotExecutable({ auth, env: process.env });
+    if (copilotExecutable.source !== "fallback-command") {
+      const cached = copilotModelsCache;
+      if (!cached || Date.now() - cached.savedAt >= COPILOT_MODELS_TTL_MS) {
+        if (!copilotModelsRequest) {
+          copilotModelsRequest = (async () => {
+            const baseEnv = { ...process.env };
+            const connection = await acquireCopilotSdkConnection({
+              cliPath: copilotExecutable.path,
+              baseDirectory: copilotConfigHome({ env: baseEnv }),
+              baseEnv,
+              logger,
+            });
+            try {
+              const descriptors = copilotSdkModelDescriptors(await connection.pooled.request<unknown[]>("models"));
+              const next = { savedAt: Date.now(), descriptors };
+              copilotModelsCache = next;
+              try {
+                writeTextAtomic(resolveAdeCacheFile(COPILOT_MODELS_CACHE_FILE), JSON.stringify({
+                  version: COPILOT_MODELS_CACHE_VERSION,
+                  ...next,
+                }));
+              } catch (error) {
+                logger.warn("ai.copilot_sdk_model_cache_write_failed", { error: error instanceof Error ? error.message : String(error) });
+              }
+              return descriptors;
+            } finally {
+              releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+            }
+          })().finally(() => { copilotModelsRequest = null; });
+          void copilotModelsRequest.catch((error) => {
+            logger.warn("ai.copilot_sdk_model_discovery_failed", { error: error instanceof Error ? error.message : String(error) });
+          });
+        }
+      }
+      if (copilotModelsCache) {
+        available = available.filter((descriptor) => descriptor.family !== "github-copilot");
+        available.push(...copilotModelsCache.descriptors);
+      }
+    }
     // Last session's or probe's live ACP lists, before anything merges on top.
     applyPersistedAcpModelCatalogs();
     // ACP model ids are provider-owned. In particular, Qwen can be pointed at
@@ -1131,11 +1194,10 @@ export function createAiIntegrationService(args: {
       );
     }
     const acpModelFamilies = [
-      ["qwen", ACP_STATUS_FAMILIES.qwen],
-      ["kimi", ACP_STATUS_FAMILIES.kimi],
-      ["grok", ACP_STATUS_FAMILIES.grok],
-      ["copilot", ACP_STATUS_FAMILIES.copilot],
-      ["devin", ACP_STATUS_FAMILIES.devin],
+      ["qwen", PROVIDER_STATUS_FAMILIES.qwen],
+      ["kimi", PROVIDER_STATUS_FAMILIES.kimi],
+      ["grok", PROVIDER_STATUS_FAMILIES.grok],
+      ["devin", PROVIDER_STATUS_FAMILIES.devin],
     ] as const;
     for (const [provider, family] of acpModelFamilies) {
       const health = getProviderRuntimeHealth(provider);
@@ -2112,7 +2174,7 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const installedAcp = ( ["qwen", "kimi", "grok", "copilot", "devin"] as const)
+          const installedAcp = ( ["qwen", "kimi", "grok", "devin"] as const)
             .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
           // The disk heuristic proves only that a provider left credentials on
           // disk. A forced Settings refresh must wait for the ACP handshake so
@@ -2128,7 +2190,7 @@ export function createAiIntegrationService(args: {
               }))
             : {};
           const runtimeReadyAcpProviders = new Set<string>();
-          for (const provider of ["qwen", "kimi", "grok", "copilot", "devin"] as const) {
+          for (const provider of ["qwen", "kimi", "grok", "devin"] as const) {
             const probe = acpProbeResults[provider];
             const health = getProviderRuntimeHealth(provider);
             if (probe?.state === "ready" || health?.state === "ready") {
@@ -2202,11 +2264,11 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
             if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
             if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
-            if (descriptor.family === ACP_STATUS_FAMILIES.qwen) return availability.qwen === true;
-            if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
-            if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;
-            if (descriptor.family === ACP_STATUS_FAMILIES.copilot) return availability.copilot === true;
-            if (descriptor.family === ACP_STATUS_FAMILIES.devin) return availability.devin === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.copilot) return availability.copilot === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.devin) return availability.devin === true;
             return true;
           }));
 

@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, test, vi } from "vitest";
 
 
 // ---------------------------------------------------------------------------
-// ACP providers (qwen, kimi, grok, copilot)
+// ACP providers (qwen, kimi, grok, devin)
 // ---------------------------------------------------------------------------
 //
 // These drive the real ACP host: the scripted agent is a fake child process, so

@@ -82,6 +82,10 @@ export type ModelDescriptor = {
   reasoningTiers?: string[];
   /** Runtime-recommended effort when the user has not chosen one explicitly. */
   defaultReasoningEffort?: string;
+  /** Copilot SDK model capability passthrough; retained for future context-tier controls. */
+  supportedContextTiers?: string[];
+  /** Provider-reported multiplier used for request-cost display when available. */
+  billingMultiplier?: number;
   serviceTiers?: string[];
   color: string;
   providerRoute: string;
@@ -1115,81 +1119,23 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     isCliWrapped: true,
   },
 
-  // ---- GitHub Copilot (CLI-wrapped via `copilot`, ACP, preview) ----
-  // Copilot dropped its fixed `--model` enum: the list is server-driven per
-  // account. These four are the durable picks; anything else the account can
-  // reach arrives through live discovery and is forwarded verbatim.
+  // ---- GitHub Copilot SDK ----
+  // The account's live SDK catalog owns selectable models. Auto is the safe
+  // offline/default row when listModels() returns the Auto-only empty catalog.
   {
-    id: "github-copilot/claude-sonnet-4.6",
-    shortId: "copilot-sonnet-4.6",
-    aliases: ["copilot-sonnet"],
-    displayName: "Claude Sonnet 4.6 (Copilot)",
+    id: "github-copilot/auto",
+    shortId: "auto",
+    displayName: "Auto (GitHub Copilot)",
     family: "github-copilot",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#8B5CF6",
-    providerRoute: "copilot-acp",
-    providerModelId: "claude-sonnet-4.6",
+    contextWindow: 128_000,
+    maxOutputTokens: 32_000,
+    capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+    color: "#8250DF",
+    providerRoute: "copilot-sdk",
+    providerModelId: "auto",
     cliCommand: "copilot",
     isCliWrapped: true,
-    previewTier: true,
-  },
-  {
-    id: "github-copilot/claude-opus-4.6",
-    shortId: "copilot-opus-4.6",
-    aliases: ["copilot-opus"],
-    displayName: "Claude Opus 4.6 (Copilot)",
-    family: "github-copilot",
-    authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#7C3AED",
-    providerRoute: "copilot-acp",
-    providerModelId: "claude-opus-4.6",
-    cliCommand: "copilot",
-    isCliWrapped: true,
-    previewTier: true,
-  },
-  {
-    id: "github-copilot/gpt-5.4",
-    shortId: "copilot-gpt-5.4",
-    aliases: ["copilot-gpt"],
-    displayName: "GPT-5.4 (Copilot)",
-    family: "github-copilot",
-    authTypes: ["cli-subscription"],
-    contextWindow: 400_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#6D28D9",
-    providerRoute: "copilot-acp",
-    providerModelId: "gpt-5.4",
-    cliCommand: "copilot",
-    isCliWrapped: true,
-    previewTier: true,
-  },
-  {
-    id: "github-copilot/gpt-5.3-codex",
-    shortId: "copilot-gpt-5.3-codex",
-    aliases: ["copilot-codex"],
-    displayName: "GPT-5.3 Codex (Copilot)",
-    family: "github-copilot",
-    authTypes: ["cli-subscription"],
-    contextWindow: 400_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#5B21B6",
-    providerRoute: "copilot-acp",
-    providerModelId: "gpt-5.3-codex",
-    cliCommand: "copilot",
-    isCliWrapped: true,
-    previewTier: true,
   },
 
   // ---- Devin (CLI-wrapped via `devin`, ACP, preview) ----
@@ -2315,9 +2261,9 @@ export function getDynamicOpenCodeModelDescriptors(): ModelDescriptor[] {
 // ---------------------------------------------------------------------------
 
 /** Provider groups whose models can arrive from a live ACP session. */
-export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "copilot" | "devin";
+export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "devin";
 
-const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
+const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "devin"] as const;
 
 /**
  * Provider groups whose catalog is curated rows plus a live list the runtime
@@ -2342,13 +2288,6 @@ const ACP_GROUP_METADATA: Record<
   qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: ACP_PROVIDER_MODEL_COLORS.qwen, previewTier: false },
   kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: ACP_PROVIDER_MODEL_COLORS.kimi, previewTier: false },
   grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: ACP_PROVIDER_MODEL_COLORS.grok, previewTier: false },
-  copilot: {
-    family: "github-copilot",
-    providerRoute: "copilot-acp",
-    cliCommand: "copilot",
-    color: ACP_PROVIDER_MODEL_COLORS.copilot,
-    previewTier: true,
-  },
   devin: {
     family: "devin",
     providerRoute: "devin-acp",
@@ -3642,7 +3581,8 @@ function pickDefaultModelForProvider(
     if (discovered) return models.find((model) => model.id === discovered.id) ?? models[0];
     return models[0];
   }
-  if (provider === "kimi" || provider === "grok" || provider === "copilot" || provider === "devin") {
+  if (provider === "copilot") return models.find((model) => model.providerModelId === "auto") ?? models[0];
+  if (provider === "kimi" || provider === "grok" || provider === "devin") {
     return models[0];
   }
   return pickDefaultOpenCodeModel(models);

@@ -20,6 +20,7 @@ import type { DetectedAuth } from "./authDetector";
 import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import type { AcpChatProvider } from "../../../shared/types/chat";
+type ResolvableCliProvider = AcpChatProvider | "copilot";
 
 export type AcpExecutableResolution = {
   path: string;
@@ -27,7 +28,7 @@ export type AcpExecutableResolution = {
 };
 
 /** Environment overrides ADE honors, in order, per provider. */
-const ACP_EXECUTABLE_ENV_KEYS: Record<AcpChatProvider, readonly string[]> = {
+const ACP_EXECUTABLE_ENV_KEYS: Record<ResolvableCliProvider, readonly string[]> = {
   qwen: ["QWEN_EXECUTABLE", "QWEN_CODE_EXECUTABLE"],
   kimi: ["KIMI_EXECUTABLE", "KIMI_CODE_EXECUTABLE"],
   grok: ["GROK_EXECUTABLE", "XAI_GROK_EXECUTABLE"],
@@ -36,7 +37,7 @@ const ACP_EXECUTABLE_ENV_KEYS: Record<AcpChatProvider, readonly string[]> = {
 };
 
 /** The command name each provider installs. */
-const ACP_EXECUTABLE_COMMANDS: Record<AcpChatProvider, string> = {
+const ACP_EXECUTABLE_COMMANDS: Record<ResolvableCliProvider, string> = {
   qwen: "qwen",
   kimi: "kimi",
   grok: "grok",
@@ -44,7 +45,7 @@ const ACP_EXECUTABLE_COMMANDS: Record<AcpChatProvider, string> = {
   devin: "devin",
 };
 
-function findAcpAuthPath(provider: AcpChatProvider, auth?: DetectedAuth[]): string | null {
+function findAcpAuthPath(provider: ResolvableCliProvider, auth?: DetectedAuth[]): string | null {
   for (const entry of auth ?? []) {
     if (entry.type !== "cli-subscription" || entry.cli !== provider) continue;
     const candidate = entry.path.trim();
@@ -57,7 +58,7 @@ function findAcpAuthPath(provider: AcpChatProvider, auth?: DetectedAuth[]): stri
 
 /** Resolve one ACP provider CLI. Never throws; always returns something spawnable. */
 export function resolveAcpExecutable(
-  provider: AcpChatProvider,
+  provider: ResolvableCliProvider,
   args?: { auth?: DetectedAuth[]; env?: NodeJS.ProcessEnv },
 ): AcpExecutableResolution {
   const env = args?.env ?? process.env;

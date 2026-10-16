@@ -90,7 +90,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -182,7 +182,7 @@ export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_re
 export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
 
 /** Providers whose compactions ADE records. */
-export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "muse" | AcpChatProvider;
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "copilot" | "pi" | "muse" | AcpChatProvider;
 
 /**
  * `provider` means the runtime reported the compaction itself. `inferred`
@@ -379,6 +379,8 @@ export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/** GitHub Copilot SDK approval level. Missing values are treated as `ask`. */
+export type AgentChatCopilotPermissionMode = "plan" | "ask" | "auto-edit" | "full-auto";
 /**
  * Muse Code's own approval modes (MSP `ApprovalMode`), most cautious first. The
  * value is sent verbatim as `approvalMode` on `session/start` and
@@ -2383,6 +2385,7 @@ export type AgentChatEvent =
       codexConfigSource?: AgentChatCodexConfigSource;
       opencodePermissionMode?: AgentChatOpenCodePermissionMode;
       droidPermissionMode?: AgentChatDroidPermissionMode;
+      copilotPermissionMode?: AgentChatCopilotPermissionMode;
       musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
@@ -3008,6 +3011,7 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -3211,6 +3215,7 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -4074,6 +4079,7 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /** Muse Code MSP session id (UUIDv7) used for `session/resume` and CLI handoff. */
   museSessionId?: string | null;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -4304,7 +4310,7 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * the same replay used when an agent rotates. Fork requires source and target
  * on the same provider; the model may still change within that provider.
  *
- * The ACP providers (qwen, kimi, grok, copilot) are deliberately absent. ACP
+ * The ACP providers (qwen, kimi, grok, devin) are deliberately absent. ACP
  * has no fork method, and ADE cannot replay a transcript into an ACP session
  * without a per-dialect load/resume path it does not yet have, so a handoff
  * from one of them is brief-only. Adding one here would promise a copied thread
@@ -4384,6 +4390,7 @@ export type AgentChatHandoffArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
@@ -4422,6 +4429,7 @@ export type AgentChatCrossMachineTargetConfig = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
@@ -4966,7 +4974,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
-  copilot: ["queue"],
+  copilot: ["inline", "queue"],
 };
 
 /**
@@ -5409,6 +5417,7 @@ export type AgentChatLaunchDefaults = {
   codexConfigSource?: AgentChatCodexConfigSource | null;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode | null;
   musePermissionMode?: AgentChatMusePermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
@@ -5808,6 +5817,7 @@ export type AgentChatUpdateSessionArgs = {
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: AgentChatCopilotPermissionMode;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;

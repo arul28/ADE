@@ -283,7 +283,7 @@ export function crossMachineAgentTargetPermissions(
   return { fields: { ...fields, permissionMode: GENERIC_PERMISSION_MODE_BY_LEVEL[applied] }, label: permissionLevelLabel(applied) };
 }
 
-const ACP_PROVIDERS_WITHOUT_AUTO_EDIT: ReadonlySet<string> = new Set(["kimi", "copilot"]);
+const ACP_PROVIDERS_WITHOUT_AUTO_EDIT: ReadonlySet<string> = new Set(["kimi"]);
 
 /** ADE's generic composer word for each level (mirrors permissionLadder's own table). */
 const GENERIC_PERMISSION_MODE_BY_LEVEL: Record<PermissionLevel, "plan" | "default" | "edit" | "full-auto"> = {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
+import { devinDialect, grokDialect, kimiDialect, qwenDialect } from "./acpDialects";
 import { qwenModelIdFromAgent } from "./acpDialects/qwen";
 import type { AcpDialect } from "./acpHostTypes";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
@@ -17,78 +17,6 @@ describe("createAcpRuntime", () => {
     openAcpSessionMock.mockReset();
   });
 
-  it("fails closed when the requested mode cannot be applied", async () => {
-    const modeError = new Error("session/set_config_option unavailable");
-    const session = {
-      providerId: "copilot",
-      dialect: copilotDialect,
-      sessionId: "acp-session-1",
-      entryPlan: { mode: "new", suppressReplay: false, reason: "test" },
-      connection: { isAlive: () => true, initializeResult: null },
-      initialConfigOptions: [],
-      initialModeId: null,
-      unsupervised: false,
-      turnAnswered: false,
-      prompt: vi.fn(),
-      cancel: vi.fn(),
-      setConfigOption: vi.fn().mockRejectedValue(modeError),
-      noteCurrentModel: vi.fn(),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
-    openAcpSessionMock.mockResolvedValue(session);
-
-    const onRuntimeCreated = vi.fn();
-    const onRuntimeSetupFailed = vi.fn();
-    const onOpenFailed = vi.fn();
-    const onReady = vi.fn();
-
-    await expect(createAcpRuntime({
-      owner: {
-        session: { id: "chat-1" } as never,
-        laneWorktreePath: "/lane/worktree",
-        eventSequence: 0,
-        transcriptBytesWritten: 0,
-      },
-      provider: "copilot",
-      dialect: copilotDialect,
-      spawnPlan: { command: "copilot", args: ["--acp"], env: {}, cwd: "/lane/worktree" },
-      invocationKey: "invocation-1",
-      permissionMode: "plan",
-      modelToken: null,
-      existingSessionId: null,
-      supervisionPreflight: null,
-      supervisionAlreadyNotified: false,
-      logger: { warn: vi.fn(), info: vi.fn() } as unknown as Logger,
-      runtimeBudget: { enforce: vi.fn() },
-      existingRuntime: null,
-      runtimeInvalidated: false,
-      hasExistingRuntime: false,
-      teardownExistingRuntime: vi.fn(),
-      nativeModeValue: "plan",
-      reasoningEffort: null,
-      setResumeCommand: vi.fn(),
-      binarySource: "test",
-      callbacks: {
-        onEvents: vi.fn(),
-        onPermissionRequested: vi.fn(),
-        onPermissionSettled: vi.fn(),
-        onSlashCommands: vi.fn(),
-        onConfigOptions: vi.fn(),
-        onSessionInfo: vi.fn(),
-        onProcessExit: vi.fn(),
-        onRuntimeCreated,
-        onRuntimeSetupFailed,
-        onOpenFailed,
-        onReady,
-      },
-    })).rejects.toBe(modeError);
-
-    const runtime = onRuntimeCreated.mock.calls[0]?.[0];
-    expect(session.close).toHaveBeenCalledWith("mode setup failed");
-    expect(onRuntimeSetupFailed).toHaveBeenCalledWith(runtime, modeError);
-    expect(onOpenFailed).toHaveBeenCalledWith(modeError);
-    expect(onReady).not.toHaveBeenCalled();
-  });
 
   it("degrades when an older dialect cannot apply its optional mode", async () => {
     const modeError = new Error("session/set_config_option unavailable");
@@ -448,20 +376,6 @@ describe("model and effort selection", () => {
     });
   });
 
-  it("routes Copilot's model through session/set_model, checked against a model list when Copilot sends one", async () => {
-    // A plan that includes only Auto lists no `model` option; ADE still asks.
-    const autoOnly = fakeSession(copilotDialect);
-    await openRuntime({ dialect: copilotDialect, session: autoOnly, model: "claude-haiku-4.5" });
-    expect(autoOnly.requests).toEqual([
-      { method: "session/set_model", params: { sessionId: "acp-session-1", modelId: "claude-haiku-4.5" } },
-    ]);
-
-    const logger = testLogger();
-    const picker = fakeSession(copilotDialect, { options: [selectOption("model", "auto", ["auto", "gpt-5.4"])] });
-    await openRuntime({ dialect: copilotDialect, session: picker, model: "claude-opus-4.6", logger });
-    expect(picker.requests).toEqual([]);
-    expect(warningsNamed(logger, "agent_chat.acp_model_not_offered")).toHaveLength(1);
-  });
 
   it("sets Kimi's thinking level only when the session offers it", async () => {
     const thinking = fakeSession(kimiDialect, {
@@ -552,26 +466,6 @@ describe("model and effort selection", () => {
     await expect(openRuntime({ dialect: qwenDialect, session: invalid, reasoningEffort: "high" })).resolves.toBeDefined();
   });
 
-  it("records the model ADE set as the session's current model", async () => {
-    // Copilot's `session/set_model` answers `{}`, so nothing else would tell
-    // the turn telemetry the session moved off the entry call's model.
-    const copilot = fakeSession(copilotDialect, { options: [selectOption("model", "auto", ["auto", "gpt-5.4"])] });
-    const { runtime } = await openRuntime({ dialect: copilotDialect, session: copilot, model: "gpt-5.4" });
-    expect(copilot.notedModels).toEqual(["gpt-5.4"]);
-    expect(runtime.configOptions.find((option) => option.id === "model")?.value).toBe("gpt-5.4");
-
-    const kimi = fakeSession(kimiDialect, {
-      options: [selectOption("model", "kimi-k2-turbo-preview", ["kimi-k2-turbo-preview", "kimi-k2-thinking"])],
-      silentReplies: true,
-    });
-    await openRuntime({ dialect: kimiDialect, session: kimi, model: "kimi-k2-thinking" });
-    expect(kimi.notedModels).toEqual(["kimi-k2-thinking"]);
-
-    // A model the agent does not offer is not recorded: the session kept its own.
-    const refused = fakeSession(grokDialect, { options: grokOptions("grok-4.7", "medium") });
-    await openRuntime({ dialect: grokDialect, session: refused, model: "grok-9" });
-    expect(refused.notedModels).toEqual([]);
-  });
 
   it("keeps a Grok runtime whose only change is the effort flag, when its session takes the effort as an option", async () => {
     const opened = fakeSession(grokDialect, { options: grokOptions("grok-4.7", "medium") });

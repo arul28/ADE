@@ -7,7 +7,6 @@
  */
 
 import type { AcpDialect, AcpProviderId } from "../acpHostTypes";
-import { copilotDialect } from "./copilot";
 import { devinDialect } from "./devin";
 import { devinCloudDialect } from "./devinCloud";
 import { grokDialect } from "./grok";
@@ -18,7 +17,6 @@ export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   qwen: qwenDialect,
   kimi: kimiDialect,
   grok: grokDialect,
-  copilot: copilotDialect,
   devin: devinDialect,
 };
 
@@ -31,17 +29,7 @@ export function acpDialectFor(providerId: AcpProviderId, options?: { cloud?: boo
   return ACP_DIALECTS[providerId];
 }
 
-export { copilotDialect, devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
-export {
-  COPILOT_CONFIG_OPTION_IDS,
-  COPILOT_NATIVE_MODE_IDS,
-  COPILOT_SERVED_MODEL_NOTE,
-  COPILOT_TUI_ONLY_COMMANDS,
-  copilotPermissionModeDegradationNote,
-  copilotNativeModeValue,
-  copilotSupervisionPermissionMode,
-  includeCopilotSlashCommand,
-} from "./copilot";
+export { devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_CONFIG_OPTION_IDS,

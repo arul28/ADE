@@ -4,7 +4,7 @@
  * labels, login commands, install sources, and config-home names have one owner.
  */
 
-export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
+export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "devin"] as const;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
 /**
@@ -57,14 +57,6 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginHint: "grok login or set XAI_API_KEY",
     configHomeEnv: "GROK_HOME",
     install: { kind: "npm", packageName: "@xai-official/grok" },
-  },
-  copilot: {
-    label: "GitHub Copilot",
-    statusLabel: "GitHub Copilot",
-    loginCommand: "copilot login",
-    loginHint: "copilot login",
-    configHomeEnv: "COPILOT_HOME",
-    install: { kind: "npm", packageName: "@github/copilot" },
   },
   devin: {
     label: "Devin",

@@ -67,13 +67,6 @@ describe("resolveAcpInstaller", () => {
       null,
     ],
     [
-      "a native Copilot has no exact-version updater, so it stays manual",
-      "copilot",
-      "/opt/homebrew/bin/copilot",
-      installerIo({ "/opt/homebrew/bin/copilot": null }),
-      null,
-    ],
-    [
       "Kimi has no npm package and no updater ADE can drive",
       "kimi",
       "/Users/me/.kimi-code/bin/kimi",
@@ -199,18 +192,4 @@ describe("runAcpProviderInstall", () => {
     expect(result.message).toMatch(message);
   });
 
-  it("reports a failed update without inventing a version", async () => {
-    const { calls, run } = recordingRun({ install: { status: 1, stdout: "", stderr: "EACCES: permission denied\n" } });
-    const result = await runAcpProviderInstall({
-      provider: "copilot",
-      installer: { kind: "npm", binaryPath: "/usr/local/bin/copilot", prefix: "/usr/local" },
-      run,
-      io: installerIo({}),
-    });
-    expect(result.ok).toBe(false);
-    expect(result.version).toBeNull();
-    expect(result.message).toContain("EACCES");
-    // No version re-read after a failed install.
-    expect(calls).toHaveLength(1);
-  });
 });

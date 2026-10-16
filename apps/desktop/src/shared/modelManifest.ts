@@ -183,7 +183,7 @@ export const MODEL_MANIFEST_ROUTE_CLI: Readonly<Record<string, string>> = {
   "muse-cli": "muse",
   "cursor-sdk": "cursor",
   "droid-cli": "droid",
-  "copilot-acp": "copilot",
+  "copilot-sdk": "copilot",
   "grok-acp": "grok",
   "kimi-acp": "kimi",
   "qwen-acp": "qwen",
