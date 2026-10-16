@@ -3746,9 +3746,12 @@ export function AgentChatComposer({
   // clears it with the draft. It works the same on any machine.
   const ultrathinkReadable = providerReadsUltrathink(sessionProvider) && !parallelChatMode;
   const ultrathinkActive = ultrathinkReadable && hasUltrathinkKeyword(draft);
+  const ultrathinkDraftRef = useRef(draft);
+  ultrathinkDraftRef.current = draft;
   const setUltrathinkKeyword = useCallback((enabled: boolean) => {
     if (!useRichComposer) {
-      onDraftChange(enabled ? addUltrathinkKeyword(draft) : removeUltrathinkKeyword(draft));
+      const currentDraft = ultrathinkDraftRef.current;
+      onDraftChange(enabled ? addUltrathinkKeyword(currentDraft) : removeUltrathinkKeyword(currentDraft));
       return;
     }
     const editor = richEditorRef.current;
@@ -3772,7 +3775,7 @@ export function AgentChatComposer({
       }
     }
     syncRichDraft();
-  }, [draft, onDraftChange, serializeRichEditor, syncRichDraft, useRichComposer]);
+  }, [onDraftChange, serializeRichEditor, syncRichDraft, useRichComposer]);
   const ultrathinkControl = useMemo(
     () => (ultrathinkReadable ? { active: ultrathinkActive, onChange: setUltrathinkKeyword } : null),
     [setUltrathinkKeyword, ultrathinkActive, ultrathinkReadable],
