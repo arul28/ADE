@@ -27,14 +27,12 @@ export const SHELLS_ACTIVE_CAP = 6;
 export function ChatShellsSection({
   shells,
   pin = null,
-  loading = false,
   loadError = false,
   onRetry,
 }: {
   shells: TerminalSessionSummary[];
   /** The chat's machine; a shell there must open and act there, not here. */
   pin?: OpenProjectBinding | null;
-  loading?: boolean;
   loadError?: boolean;
   onRetry?: () => void;
 }) {
@@ -57,14 +55,6 @@ export function ChatShellsSection({
       </div>
     );
   }
-  if (loading && shells.length === 0) {
-    return (
-      <div className="px-4 pb-2 font-sans text-[11px] text-fg/35" data-testid="chat-shells-loading">
-        Loading shells…
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="space-y-px px-2 pb-1">

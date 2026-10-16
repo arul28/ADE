@@ -15342,7 +15342,6 @@ export function AgentChatPane({
    * listens on the right machine.
    */
   const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
-  const [shellsLoading, setShellsLoading] = useState(false);
   const [shellsLoadError, setShellsLoadError] = useState(false);
   const [shellsReloadNonce, setShellsReloadNonce] = useState(0);
   const shellIdsRef = useRef<ReadonlySet<string>>(new Set());
@@ -15352,20 +15351,25 @@ export function AgentChatPane({
     shellIdsRef.current = new Set();
     setAttachedShells([]);
     setShellsLoadError(false);
-    if (!sessionId) {
-      setShellsLoading(false);
-      return undefined;
-    }
+    if (!sessionId) return undefined;
+    // A host that cannot list sessions has no shells to show. That is a
+    // capability it does not have, not a failed load — the same degradation
+    // every optional runtime surface here uses — so it neither errors nor
+    // pretends the chat has none.
+    const listSessions = window.ade?.sessions?.list;
+    if (typeof listSessions !== "function") return undefined;
     let cancelled = false;
     const load = async () => {
-      setShellsLoading(true);
       try {
         const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
-        const rows = pin
-          ? await window.ade.sessions.list(args, pin)
-          : await window.ade.sessions.list(args);
+        const listed = pin
+          ? await listSessions(args, pin)
+          : await listSessions(args);
         if (cancelled) return;
+        // A runtime that cannot answer this read answers with nothing; that is
+        // "no shells", not a failure (only a rejected promise is one).
+        const rows = Array.isArray(listed) ? listed : [];
         // The shared shell rule (`attachedShellNestParentId`) is what the Work
         // list files by: a shell is a session whose owner chat is NOT itself —
         // a chat's own row self-references in the database — and never a chat
@@ -15386,12 +15390,16 @@ export function AgentChatPane({
           setAttachedShells([]);
           setShellsLoadError(true);
         }
-      } finally {
-        if (!cancelled) setShellsLoading(false);
       }
     };
     void load();
-    const unsubscribe = window.ade.sessions.onChanged((event: TerminalSessionChangedEvent) => {
+    const subscribe = window.ade?.sessions?.onChanged;
+    if (typeof subscribe !== "function") {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const unsubscribe = subscribe((event: TerminalSessionChangedEvent) => {
       const changedId = event?.sessionId ?? null;
       // Unknown ids (a bulk change) and anything touching this chat or one of
       // its shells reload; everything else is somebody else's news.
@@ -15452,7 +15460,6 @@ export function AgentChatPane({
       workflowPlans={selectedWorkflowPlans}
       shells={attachedShells}
       shellsPin={chatRuntimePin}
-      shellsLoading={shellsLoading}
       shellsLoadError={shellsLoadError}
       onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
       runtimeAlive={selectedSession?.runtimeAlive}

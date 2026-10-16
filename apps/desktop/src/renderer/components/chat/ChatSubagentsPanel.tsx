@@ -1151,7 +1151,6 @@ export function ChatSubagentsPanel({
   workflowPlans,
   shells = [],
   shellsPin = null,
-  shellsLoading = false,
   shellsLoadError = false,
   onRetryShells,
 }: {
@@ -1230,8 +1229,6 @@ export function ChatSubagentsPanel({
   shells?: TerminalSessionSummary[];
   /** The chat's machine, for a shell row's open and menu requests. */
   shellsPin?: OpenProjectBinding | null;
-  /** The shells read is in flight (a row-less section says so). */
-  shellsLoading?: boolean;
   /** The shells read failed: state it with a retry, never an empty section. */
   shellsLoadError?: boolean;
   onRetryShells?: () => void;
@@ -1593,7 +1590,7 @@ export function ChatSubagentsPanel({
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
   const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || shells.length > 0
-    || shellsLoading || shellsLoadError || hasBackground || hasScheduled;
+    || shellsLoadError || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1708,7 +1705,6 @@ export function ChatSubagentsPanel({
           <ChatShellsSection
             shells={shells}
             pin={shellsPin}
-            loading={shellsLoading}
             loadError={shellsLoadError}
             onRetry={onRetryShells}
           />
