@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import type { AgentChatEvent } from "../../../shared/types";
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -105,9 +106,14 @@ export function mapOpenCodeImageAttachment(args: {
 }): Extract<AgentChatEvent, { type: "codex_image_view" }> | null {
   const file = readOpenCodeImageFile(args.part, args.emittedPartIds);
   if (!file) return null;
-  const localPath = localImagePath(file.url);
+  // OpenCode's `read` names the attachment with the absolute path it read and
+  // carries the bytes as a data URI, which storage drops once it is large
+  // (`chatEventCompaction.ts`). The path keeps the picture reachable after
+  // that; the row is named by the file name, never the whole path.
+  const localPath = localImagePath(file.url) ?? (file.filename ? localImagePath(file.filename) : null);
   const remoteUrl = isRemoteOrDataUri(file.url) ? file.url : null;
-  const displayName = file.filename ?? (localPath ? path.basename(localPath) : null);
+  const named = file.filename ?? localPath;
+  const displayName = named ? basenameCrossPlatform(named) || null : null;
   return {
     type: "codex_image_view",
     itemId: file.itemId,

@@ -194,6 +194,8 @@ const HISTORY_EVENT_TYPE_LIST = [
   "command",
   "file_change",
   "web_search",
+  // An image the agent opened (a screenshot it looked at): work, not answer.
+  "codex_image_view",
   "activity",
   "step_boundary",
   // A plan-mode proposal card (Codex). Desktop turns every other plan into

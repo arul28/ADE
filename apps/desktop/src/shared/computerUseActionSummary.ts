@@ -722,6 +722,58 @@ type TargetShape = {
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 const NUMBER = /^-?\d+(\.\d+)?$/;
 
+/** Verbs that press on one spot, which can be a point with no element under it. */
+const CLICKS = new Set(["click", "double-click", "dblclick", "right-click", "tap", "tap-element"]);
+/** Verbs whose line must say what they acted on, even an element with no name. */
+const ACTS_ON_ELEMENT = new Set([...CLICKS, "hover", "drag", "fill", "clear", "select", "select-option"]);
+
+/** Role and tag words that say something other than their own name. */
+const ROLE_NOUNS: ReadonlyMap<string, string> = new Map([
+  ["a", "link"],
+  ["img", "image"],
+  ["svg", "icon"],
+  ["input", "field"],
+  ["textarea", "text area"],
+  ["textbox", "text box"],
+  ["searchbox", "search box"],
+  ["combobox", "combo box"],
+  ["select", "menu"],
+  ["menuitem", "menu item"],
+  ["menuitemcheckbox", "menu item"],
+  ["menuitemradio", "menu item"],
+  ["li", "list item"],
+  ["listitem", "list item"],
+  ["gridcell", "cell"],
+  ["td", "cell"],
+  ["tr", "row"],
+  ["radio", "radio button"],
+  ["popupbutton", "pop-up button"],
+  ["statictext", "label"],
+  ["h1", "heading"],
+  ["h2", "heading"],
+  ["h3", "heading"],
+  ["h4", "heading"],
+  ["h5", "heading"],
+  ["h6", "heading"],
+]);
+
+/** Roles that name no kind of thing: a click on one is on "an element". */
+const GENERIC_ROLES = new Set(["element", "generic", "group", "div", "span", "other", "unknown", "none", "presentation", "any", "section", "main", "body", "html"]);
+
+/**
+ * An element with no name, by its role or tag: "a button", "an image", "a
+ * pop-up button" (`AXPopUpButton`). "an element" when the role says nothing.
+ */
+function unnamedElement(role: string | null): string {
+  const bare = (role ?? "").replace(/^AX(?=[A-Z])/, "");
+  const lower = bare.toLowerCase();
+  const spaced = bare.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+  const noun = !lower || GENERIC_ROLES.has(lower)
+    ? "element"
+    : ROLE_NOUNS.get(lower) ?? (/^[a-z][a-z -]{0,30}$/.test(spaced) ? spaced : "element");
+  return `${/^[aeiou]/.test(noun) ? "an" : "a"} ${noun}`;
+}
+
 function describeTarget(
   spec: VerbSpec,
   verbKey: string,
@@ -740,10 +792,19 @@ function describeTarget(
       if (!shape.target && (verbKey === "fill" || verbKey === "select" || verbKey === "select-option")) {
         shape.target = flagValue(invocation, "--value", "--option") ?? invocation.positionals.at(-1) ?? null;
       }
-      const x = flagValue(invocation, "--x");
-      const y = flagValue(invocation, "--y");
-      if (!shape.target && x && y && NUMBER.test(x) && NUMBER.test(y)) {
+      if (shape.target) return shape;
+      // A point as flags (`--x 412 --y 300`) or as words (`click 412 300`).
+      const [first, second] = invocation.positionals;
+      const x = flagValue(invocation, "--x") ?? (CLICKS.has(verbKey) ? first : null);
+      const y = flagValue(invocation, "--y") ?? (CLICKS.has(verbKey) ? second : null);
+      if (x && y && NUMBER.test(x) && NUMBER.test(y)) {
         return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
+      }
+      // Never a bare "Clicked": an element with no name is named by its role
+      // ("Clicked a button"), and a click on no element at all by its point.
+      if (CLICKS.has(verbKey) && parsed.hitNone) return { target: "a point", quoted: false, direction: null, point: true };
+      if (ACTS_ON_ELEMENT.has(verbKey) && !parsed.hitNone) {
+        return { target: unnamedElement(parsed.hitRole), quoted: false, direction: null, point: false };
       }
       return shape;
     }

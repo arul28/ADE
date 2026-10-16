@@ -650,6 +650,64 @@ private struct CUTargetShape {
 
 private let cuNumberPattern = #"^-?\d+(\.\d+)?$"#
 
+/// Verbs that press on one spot, which can be a point with no element under it.
+private let cuClickVerbs: Set<String> = ["click", "double-click", "dblclick", "right-click", "tap", "tap-element"]
+/// Verbs whose line must say what they acted on, even an element with no name.
+private let cuActsOnElementVerbs: Set<String> = cuClickVerbs.union(["hover", "drag", "fill", "clear", "select", "select-option"])
+
+/// Role and tag words that say something other than their own name.
+private let cuRoleNouns: [String: String] = [
+  "a": "link",
+  "img": "image",
+  "svg": "icon",
+  "input": "field",
+  "textarea": "text area",
+  "textbox": "text box",
+  "searchbox": "search box",
+  "combobox": "combo box",
+  "select": "menu",
+  "menuitem": "menu item",
+  "menuitemcheckbox": "menu item",
+  "menuitemradio": "menu item",
+  "li": "list item",
+  "listitem": "list item",
+  "gridcell": "cell",
+  "td": "cell",
+  "tr": "row",
+  "radio": "radio button",
+  "popupbutton": "pop-up button",
+  "statictext": "label",
+  "h1": "heading",
+  "h2": "heading",
+  "h3": "heading",
+  "h4": "heading",
+  "h5": "heading",
+  "h6": "heading",
+]
+
+/// Roles that name no kind of thing: a click on one is on "an element".
+private let cuGenericRoles: Set<String> = [
+  "element", "generic", "group", "div", "span", "other", "unknown", "none", "presentation", "any", "section", "main", "body", "html",
+]
+
+/// An element with no name, by its role or tag: "a button", "an image", "a
+/// pop-up button" (`AXPopUpButton`). "an element" when the role says nothing.
+private func cuUnnamedElement(_ role: String?) -> String {
+  var bare = role ?? ""
+  if bare.hasPrefix("AX"), bare.dropFirst(2).first?.isUppercase == true { bare = String(bare.dropFirst(2)) }
+  let lower = bare.lowercased()
+  let spaced = bare.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression).lowercased()
+  let noun: String
+  if lower.isEmpty || cuGenericRoles.contains(lower) {
+    noun = "element"
+  } else if let mapped = cuRoleNouns[lower] {
+    noun = mapped
+  } else {
+    noun = cuTests(#"^[a-z][a-z -]{0,30}$"#, spaced) ? spaced : "element"
+  }
+  return "\(cuTests("^[aeiou]", noun) ? "an" : "a") \(noun)"
+}
+
 /// JavaScript `Math.round` as text: halves round up, toward +∞. A value too large
 /// for `Int` prints as a Double, like JavaScript does, instead of trapping.
 private func cuJSRound(_ value: Double) -> String {
@@ -669,9 +727,23 @@ private func cuDescribeTarget(spec: CUVerbSpec, verbKey: String, invocation: CUI
     if shape.target == nil, ["fill", "select", "select-option"].contains(verbKey) {
       shape.target = invocation.flag("--value", "--option") ?? invocation.positionals.last
     }
-    if shape.target == nil, let x = invocation.flag("--x"), let y = invocation.flag("--y"),
-       cuTests(cuNumberPattern, x), cuTests(cuNumberPattern, y), let xv = Double(x), let yv = Double(y) {
-      return CUTargetShape(target: "\(cuJSRound(xv)), \(cuJSRound(yv))", quoted: false, direction: nil, point: true)
+    if shape.target == nil {
+      // A point as flags (`--x 412 --y 300`) or as words (`click 412 300`).
+      let clicks = cuClickVerbs.contains(verbKey)
+      let words = invocation.positionals
+      let x = invocation.flag("--x") ?? (clicks && words.count > 0 ? words[0] : nil)
+      let y = invocation.flag("--y") ?? (clicks && words.count > 1 ? words[1] : nil)
+      if let x, let y, cuTests(cuNumberPattern, x), cuTests(cuNumberPattern, y), let xv = Double(x), let yv = Double(y) {
+        return CUTargetShape(target: "\(cuJSRound(xv)), \(cuJSRound(yv))", quoted: false, direction: nil, point: true)
+      }
+      // Never a bare "Clicked": an element with no name is named by its role
+      // ("Clicked a button"), and a click on no element at all by its point.
+      if clicks, parsed.hitNone {
+        return CUTargetShape(target: "a point", quoted: false, direction: nil, point: true)
+      }
+      if cuActsOnElementVerbs.contains(verbKey), !parsed.hitNone {
+        return CUTargetShape(target: cuUnnamedElement(parsed.hitRole), quoted: false, direction: nil, point: false)
+      }
     }
   case .typed:
     let joined = invocation.positionals.joined(separator: " ")

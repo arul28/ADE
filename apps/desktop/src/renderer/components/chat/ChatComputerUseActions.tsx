@@ -7,11 +7,12 @@
  * "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE" — in a
  * quiet run of rows on one grid: [action icon] [text] [status], all one small
  * size since this is background work. The latest action of a run stands out by
- * colour, its status icon and any failure reason; earlier ones are one muted
- * line with a status dot. Identical actions in a row merge into
- * one line with a count ("Looked at ADE ×3"). A filed proof shows its picture
- * small under its line; a click enlarges it in place. No row opens: the line
- * is all there is to say.
+ * colour and any warning; earlier ones are one muted line. Only a warning or a
+ * failure gets a mark, and a failure always says why. Identical actions in a
+ * row merge into one line with a count ("Looked at ADE ×3"). A line with
+ * pictures (the proof it filed, or the screenshot the agent then opened) is a
+ * button: a click opens them small under it, and a click on one enlarges it.
+ * The reader gets the turn's proof at its end, so pictures start closed.
  *
  * The words come from `shared/computerUseActionSummary.ts` and
  * `shared/computerUseActionPresentation.ts`, which the iOS app mirrors; which
@@ -26,7 +27,7 @@ import {
   ArrowsDownUp,
   Browser,
   Camera,
-  CheckCircle,
+  CaretRight,
   CursorClick,
   DeviceMobile,
   Eye,
@@ -48,15 +49,16 @@ import {
   computerUseActionParts,
   computerUseActionText,
   computerUseOutcomeNote,
-  computerUseShownProofIds,
   layoutComputerUseRun,
+  type ComputerUseRunLine,
   type ComputerUseSurfaceGlyph,
 } from "../../../shared/computerUseActionPresentation";
 import type { ComputerUseActionOutcome, ComputerUseActionSummary } from "../../../shared/computerUseActionSummary";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import { cn } from "../ui/cn";
-import { collectComputerUseActions, PROOF_THUMBNAIL_HEIGHT } from "./chatComputerUseRows";
+import { collectComputerUseActions, computerUseLinePictures, PROOF_THUMBNAIL_HEIGHT } from "./chatComputerUseRows";
 import { ProofActionThumbnail } from "./ChatProofCitation";
+import { ViewedImageStrip } from "./ChatViewedImages";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
 
 /* ── App icons ───────────────────────────────────────────────────────────── */
@@ -220,11 +222,51 @@ function ComputerUseAppIcon({
 /* ── Rows ────────────────────────────────────────────────────────────────── */
 
 // [action icon] [the line] [status]. The line is only as wide as its words, so
-// the status sits right after it, not at the far edge of a wide column.
-const ROW_GRID = "grid grid-cols-[18px_minmax(0,max-content)_auto] items-center justify-start gap-x-2.5";
+// the status sits right after it, not at the far edge of a wide column. The
+// image-view line (`CodexImageViewLine`) uses the same grid, so it sits in the
+// run of actions around it.
+export const ACTION_ROW_GRID = "grid grid-cols-[18px_minmax(0,max-content)_auto] items-center justify-start gap-x-2.5";
 // Background work: every line is one small size, newest or not.
-const ACTION_TEXT = "text-[length:calc(var(--chat-font-size)*11/14)]";
-const ACTION_LINE = `inline-flex min-w-0 items-center ${ACTION_TEXT}`;
+export const ACTION_ROW_TEXT = "text-[length:calc(var(--chat-font-size)*11/14)]";
+const ACTION_LINE = `inline-flex min-w-0 items-center ${ACTION_ROW_TEXT}`;
+
+/**
+ * A line that opens pictures under it. The whole line is the button; a small
+ * caret after its words turns when it opens.
+ */
+export function ActionLineToggle({
+  open,
+  onToggle,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={onToggle}
+      className={cn(
+        "group/line inline-flex min-w-0 max-w-full cursor-pointer items-center rounded-sm text-left",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/40",
+        ACTION_ROW_TEXT,
+      )}
+    >
+      {children}
+      <CaretRight
+        size={9}
+        weight="bold"
+        aria-hidden
+        className={cn(
+          "ml-1.5 shrink-0 text-muted-fg/60 transition-transform group-hover/line:text-fg/80",
+          open && "rotate-90 text-fg/70",
+        )}
+      />
+    </button>
+  );
+}
 
 /** The icon for what the action did: a click, typing, a look, a proof. */
 function actionGlyph(summary: ComputerUseActionSummary): Icon {
@@ -311,7 +353,7 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
     <span
       className={cn(
         "min-w-0 truncate leading-[1.5]",
-        ACTION_TEXT,
+        ACTION_ROW_TEXT,
         running && "ade-thinking-shimmer [&_svg]:text-muted-fg",
         emphasize ? "text-fg/80" : "text-muted-fg",
       )}
@@ -366,30 +408,24 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
   );
 }
 
-/** How each outcome shows: the full row's status icon, and the compact row's dot. */
-const OUTCOME_STATUS: Record<ComputerUseActionOutcome, {
-  label: string;
-  icon: Icon | null;
-  iconClass: string;
-  dot: "warn" | "crit" | undefined;
-}> = {
-  running: { label: "Running", icon: null, iconClass: "", dot: undefined },
-  observed: { label: "Done", icon: CheckCircle, iconClass: "text-success", dot: undefined },
-  not_checked: { label: "Done", icon: CheckCircle, iconClass: "text-success", dot: undefined },
-  unconfirmed: { label: "No change seen", icon: Warning, iconClass: "text-warning", dot: "warn" },
-  failed: { label: "Failed", icon: XCircle, iconClass: "text-error", dot: "crit" },
+/**
+ * The mark after a line. Success needs none: the words already say what
+ * happened, and a mark on every line hid the ones that matter. A warning and a
+ * failure get the same mark on every line, newest or not.
+ */
+const OUTCOME_STATUS: Record<ComputerUseActionOutcome, { label: string; icon: Icon | null; iconClass: string }> = {
+  running: { label: "Running", icon: null, iconClass: "" },
+  observed: { label: "Done", icon: null, iconClass: "" },
+  not_checked: { label: "Done", icon: null, iconClass: "" },
+  unconfirmed: { label: "No change seen", icon: Warning, iconClass: "text-warning" },
+  failed: { label: "Failed", icon: XCircle, iconClass: "text-error" },
 };
 
-function StatusIcon({ summary }: { summary: ComputerUseActionSummary }) {
-  const status = OUTCOME_STATUS[summary.outcome];
+export function StatusIcon({ outcome }: { outcome: ComputerUseActionOutcome }) {
+  const status = OUTCOME_STATUS[outcome];
   const StatusGlyph = status.icon;
   if (!StatusGlyph) return <span aria-hidden className="size-[12px]" />;
   return <StatusGlyph size={12} weight="regular" className={status.iconClass} aria-label={status.label} />;
-}
-
-function Dot({ outcome }: { outcome: ComputerUseActionOutcome }) {
-  const status = OUTCOME_STATUS[outcome];
-  return <span className="kit-dot" data-state={status.dot} aria-label={status.label} />;
 }
 
 function ActionGlyph({ summary, emphasize }: { summary: ComputerUseActionSummary; emphasize: boolean }) {
@@ -418,60 +454,65 @@ function RepeatCount({ count }: { count: number }) {
 }
 
 /**
- * The pictures a filed-proof line filed, small, under the line. They start at
- * the row's left edge, where the thread's text starts, not under the words.
+ * What a line opens under it, once opened: the proof it filed, or the images
+ * the agent opened that its actions wrote. They start at the row's left edge,
+ * where the thread's text starts, not under the words.
  */
-function ProofThumbnails({ summary }: { summary: ComputerUseActionSummary }) {
-  const ids = computerUseShownProofIds(summary);
-  if (!ids.length) return null;
+function LinePictures({ pictures }: { pictures: ReturnType<typeof computerUseLinePictures> }) {
   return (
-    <span className="col-start-1 col-end-4 mb-1 mt-1.5 flex min-w-0 gap-1.5" data-testid="computer-use-proof-thumbnails">
-      {ids.map((id) => <ProofActionThumbnail key={id} artifactId={id} height={PROOF_THUMBNAIL_HEIGHT} />)}
+    <span className="col-start-1 col-end-4 mb-1 mt-1.5 flex min-w-0 gap-1.5" data-testid="computer-use-line-pictures">
+      {pictures.proofIds.length
+        ? pictures.proofIds.map((id) => <ProofActionThumbnail key={id} artifactId={id} height={PROOF_THUMBNAIL_HEIGHT} />)
+        : <ViewedImageStrip views={pictures.views} height={PROOF_THUMBNAIL_HEIGHT} />}
     </span>
   );
 }
 
-/** The newest action: the full line, its status, and what went wrong. */
-function FullActionRow({ summary, count }: { summary: ComputerUseActionSummary; count: number }) {
+/** The note under a line: why it failed, or (newest line only) why ADE is unsure. */
+function OutcomeNote({ summary, warnings }: { summary: ComputerUseActionSummary; warnings: boolean }) {
   const note = computerUseOutcomeNote(summary);
+  if (!note || (note.tone === "warning" && !warnings)) return null;
   return (
-    <div
-      className={cn(ROW_GRID, "py-0.5")}
-      data-testid="computer-use-action-full"
-      data-outcome={summary.outcome}
+    <span
+      className={cn(
+        "col-start-2 col-end-4 mt-0.5 min-w-0 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.45]",
+        note.tone === "danger" ? "text-error" : "text-warning",
+      )}
+      data-testid="computer-use-action-note"
     >
-      <ActionGlyph summary={summary} emphasize />
-      <span className={ACTION_LINE}>
-        <ActionLine summary={summary} emphasize />
-        <RepeatCount count={count} />
-      </span>
-      <StatusIcon summary={summary} />
-      {note ? (
-        <span
-          className={cn(
-            "col-start-2 col-end-4 mt-0.5 min-w-0 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.45]",
-            note.tone === "danger" ? "text-error" : "text-warning",
-          )}
-          data-testid="computer-use-action-note"
-        >
-          {note.text}
-        </span>
-      ) : null}
-      <ProofThumbnails summary={summary} />
-    </div>
+      {note.text}
+    </span>
   );
 }
 
-function CompactActionRow({ summary, count }: { summary: ComputerUseActionSummary; count: number }) {
+/**
+ * One line of a run. The newest action of the turn is `full`: brighter words
+ * and the warning note too. A line with pictures opens them under it.
+ */
+function ActionRow({ line, full }: { line: ComputerUseRunLine<ChatWorkLogEntry>; full: boolean }) {
+  const { summary, count } = line;
+  const [open, setOpen] = useState(false);
+  const pictures = useMemo(() => computerUseLinePictures(line), [line]);
+  const hasPictures = pictures.proofIds.length > 0 || pictures.views.length > 0;
+  const words = (
+    <>
+      <ActionLine summary={summary} emphasize={full} />
+      <RepeatCount count={count} />
+    </>
+  );
   return (
-    <div className={cn(ROW_GRID, "py-0.5")} data-testid="computer-use-action-compact">
-      <ActionGlyph summary={summary} emphasize={false} />
-      <span className={ACTION_LINE}>
-        <ActionLine summary={summary} emphasize={false} />
-        <RepeatCount count={count} />
-      </span>
-      <Dot outcome={summary.outcome} />
-      <ProofThumbnails summary={summary} />
+    <div
+      className={cn(ACTION_ROW_GRID, "py-0.5")}
+      data-testid={full ? "computer-use-action-full" : "computer-use-action-compact"}
+      data-outcome={summary.outcome}
+    >
+      <ActionGlyph summary={summary} emphasize={full} />
+      {hasPictures
+        ? <ActionLineToggle open={open} onToggle={() => setOpen((value) => !value)}>{words}</ActionLineToggle>
+        : <span className={ACTION_LINE}>{words}</span>}
+      <StatusIcon outcome={summary.outcome} />
+      <OutcomeNote summary={summary} warnings={full} />
+      {open && hasPictures ? <LinePictures pictures={pictures} /> : null}
     </div>
   );
 }
@@ -495,12 +536,8 @@ export const ChatComputerUseActionRun = React.memo(function ChatComputerUseActio
       className="w-full min-w-0 max-w-[var(--chat-content-width,52rem)] font-sans"
       data-testid="computer-use-actions"
     >
-      {layout.earlier.map((line) => (
-        <CompactActionRow key={line.action.id} summary={line.summary} count={line.count} />
-      ))}
-      {compactAll
-        ? <CompactActionRow summary={layout.latest.summary} count={layout.latest.count} />
-        : <FullActionRow summary={layout.latest.summary} count={layout.latest.count} />}
+      {layout.earlier.map((line) => <ActionRow key={line.action.id} line={line} full={false} />)}
+      <ActionRow key={layout.latest.action.id} line={layout.latest} full={!compactAll} />
     </div>
   );
 });

@@ -21,6 +21,8 @@ import { readRecord } from "./readRecord";
 
 export type ParsedOutput = {
   hitName: string | null;
+  /** The hit element's role or tag (`button`, `AXButton`, `a`), named or not. */
+  hitRole: string | null;
   hitNone: boolean;
   effect: "observed" | "unconfirmed" | "not_checked" | "waiting" | null;
   effectReason: string | null;
@@ -113,6 +115,7 @@ const PROOF_TABLE_ROW = new RegExp(`^(${PROOF_ID_PATTERN})\\s+\\S`, "i");
 export function parseOutput(output: string): ParsedOutput {
   const parsed: ParsedOutput = {
     hitName: null,
+    hitRole: null,
     hitNone: false,
     effect: null,
     effectReason: null,
@@ -137,10 +140,15 @@ export function parseOutput(output: string): ParsedOutput {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const lower = trimmed.toLowerCase();
-    if (lower.startsWith("hit:") && parsed.hitName === null && !parsed.hitNone) {
+    if (lower.startsWith("hit:") && parsed.hitName === null && parsed.hitRole === null && !parsed.hitNone) {
       const rest = trimmed.slice(4).trim();
-      if (/^no element/i.test(rest)) parsed.hitNone = true;
-      else parsed.hitName = readQuotedName(rest);
+      if (/^no element/i.test(rest)) {
+        parsed.hitNone = true;
+      } else {
+        // `<role> "<name>" (<ref>)`; an unnamed element prints `<role> (<ref>)`.
+        parsed.hitName = readQuotedName(rest);
+        parsed.hitRole = /^[^\s"(]+/.exec(rest)?.[0] ?? null;
+      }
       continue;
     }
     if (lower.startsWith("effect:") && parsed.effect === null) {
@@ -204,6 +212,7 @@ export function parseOutput(output: string): ParsedOutput {
     const match = readRecord(json.match);
     const resolved = readRecord(json.resolved) ?? readRecord(json.matched) ?? readRecord(match?.element);
     if (parsed.hitName === null) parsed.hitName = elementName(resolved);
+    parsed.hitRole ??= readString(resolved?.role) ?? readString(resolved?.tagName) ?? readString(resolved?.elementType);
     const effect = readRecord(json.effect);
     const status = readString(effect?.status);
     if (parsed.effect === null && status) {

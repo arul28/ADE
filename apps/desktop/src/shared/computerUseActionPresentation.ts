@@ -170,8 +170,11 @@ export function computerUseOutcomeNote(summary: ComputerUseActionSummary): { tex
   return null;
 }
 
-/** One drawn line: an action, and how many identical actions in a row it stands for. */
-export type ComputerUseRunLine<T> = { action: T; summary: ComputerUseActionSummary; count: number };
+/**
+ * One drawn line: an action, and how many identical actions in a row it stands
+ * for. `actions` are all of them, oldest first; `action` is the first.
+ */
+export type ComputerUseRunLine<T> = { action: T; actions: T[]; summary: ComputerUseActionSummary; count: number };
 
 /** An App Control action that named no app, told the app the run is driving. */
 function withCarriedApp(summary: ComputerUseActionSummary, appName: string): ComputerUseActionSummary {
@@ -248,9 +251,9 @@ export function layoutComputerUseRun<T>(
     const last = lines[lines.length - 1];
     if (last && last.key === key) {
       // Keeps the first action, so the line's identity holds while it grows.
-      lines[lines.length - 1] = { ...last, summary, count: last.count + 1 };
+      lines[lines.length - 1] = { ...last, actions: [...last.actions, entry.action], summary, count: last.count + 1 };
     } else {
-      lines.push({ action: entry.action, summary, count: 1, key });
+      lines.push({ action: entry.action, actions: [entry.action], summary, count: 1, key });
     }
   }
   const drawn = lines.map(({ key: _key, ...line }) => line);
