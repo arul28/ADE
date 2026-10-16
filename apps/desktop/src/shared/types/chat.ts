@@ -2391,7 +2391,7 @@ export type AgentChatEvent =
       copilotContextTier?: AgentChatCopilotContextTier;
       copilotAutoTier?: AgentChatCopilotAutoTier | null;
       copilotAutoTierPending?: boolean;
-      copilotGoal?: string | null;
+      claudeGoal?: ClaudeActiveGoal | null;
       musePermissionMode?: AgentChatMusePermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
@@ -3021,7 +3021,6 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   copilotContextTier?: AgentChatCopilotContextTier;
   copilotAutoTier?: AgentChatCopilotAutoTier | null;
   copilotAutoTierPending?: boolean;
-  copilotGoal?: string | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -3229,7 +3228,6 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   copilotContextTier?: AgentChatCopilotContextTier;
   copilotAutoTier?: AgentChatCopilotAutoTier | null;
   copilotAutoTierPending?: boolean;
-  copilotGoal?: string | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;

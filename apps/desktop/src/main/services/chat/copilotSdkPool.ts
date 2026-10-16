@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { resolveCopilotExecutable } from "../ai/acpExecutables";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
@@ -31,15 +32,16 @@ export type CopilotSdkPooled = {
   process: ChildProcess;
   bridge: CopilotSdkBridge;
   request<T = unknown>(type: CopilotSdkWorkerRequest["type"], payload?: unknown): Promise<T>;
-  openSession(config: CopilotSdkSessionConfig, resume: boolean): Promise<{ sessionId: string; events: unknown[] }>;
+  openSession(config: CopilotSdkSessionConfig, resume: boolean): Promise<{ sessionId: string; events: unknown[]; permissionMode?: string; permissionError?: string | null }>;
   send(chatId: string, prompt: string, attachments?: CopilotSdkAttachment[], mode?: "enqueue" | "immediate", agentMode?: "autopilot"): Promise<unknown>;
   setModel(chatId: string, model: string, reasoningEffort?: string | null, options?: { contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null }): Promise<void>;
   setAutoTier(chatId: string, autoTier: AgentChatCopilotAutoTier | null): Promise<{ status: "unchanged" | "pending"; [key: string]: unknown }>;
-  setPermissionMode(chatId: string, permissionMode: string): Promise<void>;
+  setPermissionMode(chatId: string, permissionMode: string): Promise<{ mode: string; error?: string | null }>;
   forkSession(chatId: string, sessionId: string, options?: { throughMessageText?: string; throughMessageOrdinal?: number }): Promise<string>;
   abort(chatId: string): Promise<void>;
   disconnect(chatId: string): Promise<void>;
   utility(args: { cwd: string; prompt: string; model?: string; systemMessage?: string }): Promise<unknown>;
+  accountQuota(gitHubToken?: string): Promise<unknown>;
   dispose(): void;
 };
 
@@ -97,11 +99,12 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     send: (chatId, prompt, attachments, mode, agentMode) => pooled.request("send", { chatId, prompt, attachments, mode, agentMode }),
     setModel: async (chatId, model, reasoningEffort, options = {}) => { await pooled.request("set_model", { chatId, model, reasoningEffort, ...options }); },
     setAutoTier: (chatId, autoTier) => pooled.request("set_auto_tier", { chatId, autoTier }),
-    setPermissionMode: async (chatId, permissionMode) => { await pooled.request("set_permission_mode", { chatId, permissionMode }); },
+    setPermissionMode: (chatId, permissionMode) => pooled.request("set_permission_mode", { chatId, permissionMode }),
     forkSession: async (chatId, sessionId, options = {}) => pooled.request("fork_session", { chatId, sessionId, ...options }),
     abort: async (chatId) => { await pooled.request("abort", { chatId }); },
     disconnect: async (chatId) => { await pooled.request("disconnect", { chatId }); },
     utility: (args) => pooled.request("utility", args),
+    accountQuota: (gitHubToken) => pooled.request("account_quota", gitHubToken ? { gitHubToken } : {}),
     dispose: () => {
       for (const waiter of waiters.values()) waiter.reject(new Error("Copilot SDK worker disposed."));
       waiters.clear();
@@ -154,6 +157,27 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
   try { await pooled.request("init", init); }
   catch (error) { pooled.dispose(); throw error; }
   return pooled;
+}
+
+/** Read quota through the SDK's server-level account RPC, without opening a chat session. */
+export async function readCopilotAccountQuota(args: {
+  env: NodeJS.ProcessEnv;
+  baseDirectory: string;
+  gitHubToken?: string;
+  logger?: Logger;
+}): Promise<unknown> {
+  const executable = resolveCopilotExecutable({ env: args.env });
+  const acquired = await acquireCopilotSdkConnection({
+    cliPath: executable.path,
+    baseDirectory: args.baseDirectory,
+    baseEnv: args.env,
+    logger: args.logger,
+  });
+  try {
+    return await acquired.pooled.accountQuota(args.gitHubToken);
+  } finally {
+    releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
+  }
 }
 
 export async function acquireCopilotSdkConnection(args: {

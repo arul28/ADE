@@ -9570,7 +9570,7 @@ export function AgentChatPane({
         if (meta.copilotContextTier !== undefined) summaryPatch.copilotContextTier = meta.copilotContextTier;
         if (meta.copilotAutoTier !== undefined) summaryPatch.copilotAutoTier = meta.copilotAutoTier;
         if (meta.copilotAutoTierPending !== undefined) summaryPatch.copilotAutoTierPending = meta.copilotAutoTierPending;
-        if (meta.copilotGoal !== undefined) summaryPatch.copilotGoal = meta.copilotGoal;
+        if (meta.claudeGoal !== undefined) summaryPatch.claudeGoal = meta.claudeGoal;
         if (meta.musePermissionMode !== undefined) summaryPatch.musePermissionMode = meta.musePermissionMode;
         if (meta.cursorModeId !== undefined) {
           summaryPatch.cursorModeId = meta.cursorModeId;
@@ -15672,18 +15672,18 @@ export function AgentChatPane({
       selectedTaskId={subagentView?.taskId ?? null}
       sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
-      claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
+      claudeGoal={selectedSession?.provider === "claude" || selectedSession?.provider === "copilot" ? selectedClaudeGoal : null}
       onEditClaudeGoal={
-        selectedSession?.provider === "claude" && selectedSessionId
+        (selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && selectedSessionId
           ? (condition) => { void sendClaudeGoalCommand(selectedSessionId, condition); }
           : undefined
       }
       onClearClaudeGoal={
-        selectedSession?.provider === "claude" && selectedSessionId
+        (selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && selectedSessionId
           ? () => { void sendClaudeGoalCommand(selectedSessionId, "clear"); }
           : undefined
       }
-      claudeGoalLocked={selectedSession?.provider === "claude" && turnActive}
+      claudeGoalLocked={(selectedSession?.provider === "claude" || selectedSession?.provider === "copilot") && turnActive}
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId

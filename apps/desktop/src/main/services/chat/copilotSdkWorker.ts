@@ -81,6 +81,13 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
 
 function watchSession(chatId: string, session: Session): void {
   session.on((event) => {
+    if (event.type === "session.task_complete") {
+      postLog("info", "Copilot task completion event", {
+        chatId,
+        success: event.data.success,
+        hasSummary: typeof event.data.summary === "string" && event.data.summary.length > 0,
+      });
+    }
     post({ type: "event", chatId, event });
     if (event.type === "session.todos_changed") {
       void session.rpc.plan.readSqlTodos().then((todos) => post({ type: "event", chatId, event: { type: "ade.todos", data: todos } }))
@@ -131,14 +138,32 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   if (!client || disposed) throw new Error("Copilot SDK worker is not initialized.");
   if (req.type === "auth") return client.getAuthStatus();
   if (req.type === "models") return client.listModels();
+  if (req.type === "account_quota") return client.rpc.account.getQuota(req.payload?.gitHubToken ? { gitHubToken: req.payload.gitHubToken } : {});
   if (req.type === "create" || req.type === "resume") {
     const config = sessionConfig(req.payload);
     const session = req.type === "resume" && req.payload.sessionId
       ? await client.resumeSession(req.payload.sessionId, { ...config, continuePendingWork: false })
       : await client.createSession(config);
+    let permissionMode: string | null = null;
+    let permissionError: string | null = null;
     if (req.payload.permissionMode === "plan") await session.rpc.mode.set({ mode: "plan" });
-    else if (req.payload.permissionMode === "assisted") await session.rpc.permissions.setMode({ mode: "assisted" });
-    else if (req.payload.permissionMode === "full-auto") await session.rpc.permissions.setMode({ mode: "allow-all" });
+    else {
+      const requestedMode = req.payload.permissionMode === "assisted" ? "assisted"
+        : req.payload.permissionMode === "full-auto" ? "allow-all" : "manual";
+      try {
+        const applied = await session.rpc.permissions.setMode({ mode: requestedMode });
+        postLog("info", "Copilot permission mode set result", { chatId: req.payload.chatId, requested: requestedMode, applied: applied.mode });
+      } catch (error) {
+        if (requestedMode !== "assisted") throw error;
+        permissionError = error instanceof Error ? error.message : String(error);
+        const fallback = await session.rpc.permissions.setMode({ mode: "manual" });
+        postLog("warn", "Copilot Assisted mode rejected; using Ask", {
+          chatId: req.payload.chatId,
+          sdkError: permissionError,
+          fallback: fallback.mode,
+        });
+      }
+    }
     sessions.set(req.payload.chatId, session);
     watchSession(req.payload.chatId, session);
     postLog("debug", "Copilot session options applied", {
@@ -147,12 +172,20 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
       autoTier: req.payload.autoTier ?? null,
       resumed: req.type === "resume",
     });
-    return { sessionId: session.sessionId, events: await session.getEvents() };
+    permissionMode = (await session.rpc.permissions.getMode()).mode;
+    postLog("info", "Copilot permission mode verified after open", { chatId: req.payload.chatId, permissionMode });
+    return { sessionId: session.sessionId, events: await session.getEvents(), permissionMode, permissionError };
   }
   if (req.type === "send") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    return session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) });
+    if (req.payload.agentMode === "autopilot") postLog("info", "Copilot turn dispatched in autopilot", { chatId: req.payload.chatId });
+    const before = (await session.rpc.permissions.getMode()).mode;
+    postLog("info", "Copilot permission mode at turn dispatch", { chatId: req.payload.chatId, permissionMode: before });
+    const result = await session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) });
+    const after = (await session.rpc.permissions.getMode()).mode;
+    postLog("info", "Copilot permission mode after turn starts", { chatId: req.payload.chatId, permissionMode: after });
+    return { result, permissionMode: after };
   }
   if (req.type === "set_model") {
     const session = sessions.get(req.payload.chatId);
@@ -180,11 +213,25 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   if (req.type === "set_permission_mode") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    if (req.payload.permissionMode === "plan") await session.rpc.mode.set({ mode: "plan" });
-    else if (req.payload.permissionMode === "assisted") await session.rpc.permissions.setMode({ mode: "assisted" });
-    else if (req.payload.permissionMode === "full-auto") await session.rpc.permissions.setMode({ mode: "allow-all" });
-    else await session.rpc.permissions.setMode({ mode: "manual" });
-    return {};
+    if (req.payload.permissionMode === "plan") {
+      await session.rpc.mode.set({ mode: "plan" });
+      return { mode: (await session.rpc.permissions.getMode()).mode, error: null };
+    }
+    const mode = req.payload.permissionMode === "assisted" ? "assisted"
+      : req.payload.permissionMode === "full-auto" ? "allow-all" : "manual";
+    try {
+      const result = await session.rpc.permissions.setMode({ mode });
+      const current = (await session.rpc.permissions.getMode()).mode;
+      postLog("info", "Copilot permission mode updated", { chatId: req.payload.chatId, requested: mode, applied: result.mode, current });
+      return { mode: current, error: null };
+    } catch (error) {
+      if (mode !== "assisted") throw error;
+      const sdkError = error instanceof Error ? error.message : String(error);
+      const fallback = await session.rpc.permissions.setMode({ mode: "manual" });
+      const current = (await session.rpc.permissions.getMode()).mode;
+      postLog("warn", "Copilot Assisted mode rejected; using Ask", { chatId: req.payload.chatId, sdkError, fallback: current });
+      return { mode: current, error: sdkError };
+    }
   }
   if (req.type === "fork_session") {
     const session = sessions.get(req.payload.chatId);

@@ -2083,7 +2083,6 @@ type PersistedChatState = {
   droidSdkSessionId?: string;
   /** Copilot SDK conversation id. Legacy Copilot ACP ids are adopted on resume. */
   copilotSdkSessionId?: string;
-  copilotGoal?: string | null;
   /**
    * Agent-minted ACP session id. It is the only handle a restarted ADE has on
    * an existing ACP conversation, so it is persisted for all four providers.
@@ -18285,7 +18284,6 @@ export function createAgentChatService(args: {
       ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
       ...(managed.session.provider === "copilot" ? { copilotContextTier: managed.session.copilotContextTier ?? "default" } : {}),
       ...(managed.session.provider === "copilot" ? { copilotAutoTier: managed.session.copilotAutoTier ?? null } : {}),
-      ...(managed.session.provider === "copilot" ? { copilotGoal: managed.session.copilotGoal ?? null } : {}),
       ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       // Muse pointer: the live runtime's session id, else the session record's
       // (a fork seed or an import), and nothing once the runtime is invalidated.
@@ -18731,7 +18729,6 @@ export function createAgentChatService(args: {
       const copilotPermissionMode = normalizePersistedCopilotPermissionMode(record.copilotPermissionMode);
       const copilotContextTier = provider === "copilot" ? normalizeCopilotContextTier(record.copilotContextTier) : undefined;
       const copilotAutoTier = provider === "copilot" ? normalizeCopilotAutoTier(record.copilotAutoTier) : undefined;
-      const copilotGoal = provider === "copilot" && typeof record.copilotGoal === "string" ? record.copilotGoal : undefined;
       const musePermissionMode = normalizePersistedMusePermissionMode(record.musePermissionMode)
         ?? (provider === "muse" ? musePermissionModeFromLegacyPermissionMode(permissionMode) : undefined);
       const museSessionId = provider === "muse" && typeof record.museSessionId === "string" && record.museSessionId.trim().length
@@ -19016,7 +19013,6 @@ export function createAgentChatService(args: {
       ...(copilotPermissionMode ? { copilotPermissionMode } : {}),
       ...(copilotContextTier ? { copilotContextTier } : {}),
       ...(provider === "copilot" ? { copilotAutoTier } : {}),
-      ...(copilotGoal !== undefined ? { copilotGoal } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         ...(museSessionId ? { museSessionId } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
@@ -20509,7 +20505,7 @@ export function createAgentChatService(args: {
       ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
         ...(managed.session.copilotContextTier ? { copilotContextTier: managed.session.copilotContextTier } : {}),
         ...(managed.session.provider === "copilot" ? { copilotAutoTier: managed.session.copilotAutoTier ?? null } : {}),
-        ...(managed.session.provider === "copilot" ? { copilotGoal: managed.session.copilotGoal ?? null } : {}),
+        ...(managed.session.provider === "copilot" && managed.session.claudeGoal ? { claudeGoal: managed.session.claudeGoal } : {}),
         ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       });
       createdId = created.id;
@@ -21305,8 +21301,8 @@ export function createAgentChatService(args: {
       ...(session.copilotPermissionMode !== undefined ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
       ...(session.copilotContextTier !== undefined ? { copilotContextTier: session.copilotContextTier } : {}),
       ...(session.copilotAutoTier !== undefined ? { copilotAutoTier: session.copilotAutoTier } : {}),
-      ...(session.copilotGoal !== undefined ? { copilotGoal: session.copilotGoal } : {}),
       ...(managed.runtime?.kind === "copilot" ? { copilotAutoTierPending: managed.runtime.pendingAutoTier != null } : {}),
+      ...(session.claudeGoal !== undefined ? { claudeGoal: session.claudeGoal } : {}),
       ...(session.musePermissionMode !== undefined ? { musePermissionMode: session.musePermissionMode } : {}),
       ...(session.cursorModeId != null ? { cursorModeId: session.cursorModeId } : {}),
       ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
@@ -54660,6 +54656,17 @@ export function createAgentChatService(args: {
               adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
             }),
       }, Boolean(legacySessionId));
+      if (managed.session.copilotPermissionMode === "assisted" && opened.permissionMode !== "assisted") {
+        managed.session.copilotPermissionMode = "ask";
+        persistChatState(managed);
+        emitSessionModeMeta(managed);
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "warning",
+          message: `Assisted isn't available on this Copilot plan; using Ask${opened.permissionError ? ` (SDK error: ${opened.permissionError}).` : opened.permissionMode ? ` (SDK reported ${opened.permissionMode}).` : "."}`,
+        });
+      }
       const eventMapperState = createCopilotSdkEventMapperState();
       eventMapperState.requestedModel = modelId;
       eventMapperState.askedAuto = modelId === "auto";
@@ -54692,17 +54699,19 @@ export function createAgentChatService(args: {
           emitChatEvent(target, { type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not switch to ${failedTier ?? "the selected"} Auto profile. The previous profile remains active.` });
           emitSessionModeMeta(target);
         }
-        if (eventRecord.type === "session.task_complete" && target.session.copilotGoal) {
+        if (eventRecord.type === "session.task_complete" && target.session.claudeGoal) {
           const success = eventData.success === true;
-          const summary = typeof eventData.summary === "string" ? eventData.summary : target.session.copilotGoal;
-          reportGoalEnded(target, summary, success ? "reached" : "blocked");
-          target.session.copilotGoal = null;
+          const goal = target.session.claudeGoal;
+          reportGoalEnded(target, typeof eventData.summary === "string" ? eventData.summary : goal.condition, success ? "reached" : "blocked");
+          target.session.claudeGoal = null;
+          emitChatEvent(target, { type: "claude_goal_cleared" });
           persistChatState(target);
           emitSessionModeMeta(target);
         }
-        if (eventRecord.type === "abort" && eventData.reason === "autopilot_credit_limit" && target.session.copilotGoal) {
-          reportGoalEnded(target, target.session.copilotGoal, "blocked");
-          target.session.copilotGoal = null;
+        if (eventRecord.type === "abort" && eventData.reason === "autopilot_credit_limit" && target.session.claudeGoal) {
+          reportGoalEnded(target, target.session.claudeGoal.condition, "blocked");
+          target.session.claudeGoal = null;
+          emitChatEvent(target, { type: "claude_goal_cleared" });
           persistChatState(target);
           emitSessionModeMeta(target);
         }
@@ -54877,23 +54886,32 @@ export function createAgentChatService(args: {
     let promptText = args.promptText;
     let agentMode: "autopilot" | undefined;
     let controlReply: string | null = null;
-    const goalCommand = (args.userText ?? args.displayText).trim().match(/^\/goal(?:\s+(.*))?$/is);
+    const rawGoalCommand = [args.userText, args.displayText, args.promptText].find((value) => /^\s*\/goal(?:\s|$)/i.test(value ?? ""));
+    const goalCommand = rawGoalCommand?.trim().match(/^\/goal(?:\s+(.*))?$/is);
     if (goalCommand) {
       const goalArg = goalCommand[1]?.trim() ?? "";
       const copilotMode = managed.session.copilotPermissionMode ?? "ask";
       if (!goalArg) {
-        controlReply = managed.session.copilotGoal ? `Goal: ${managed.session.copilotGoal}` : "No goal set.";
+        controlReply = managed.session.claudeGoal ? `Goal: ${managed.session.claudeGoal.condition}` : "No goal set.";
       } else if (/^clear$/i.test(goalArg)) {
         if (managed.runtime?.kind === "copilot" && managed.runtime.busy) await managed.runtime.sdk.abort(managed.session.id);
-        const previous = managed.session.copilotGoal;
-        managed.session.copilotGoal = null;
+        const previous = managed.session.claudeGoal;
+        managed.session.claudeGoal = null;
+        if (previous) emitChatEvent(managed, { type: "claude_goal_cleared" });
         persistChatState(managed);
         emitSessionModeMeta(managed);
         controlReply = previous ? "Goal cleared." : "No goal set.";
       } else if (copilotMode === "plan" || copilotMode === "ask") {
         controlReply = "Copilot goals need Auto-edit or higher. Change the permission mode before setting a goal.";
       } else {
-        managed.session.copilotGoal = goalArg;
+        managed.session.claudeGoal = {
+          condition: goalArg,
+          iterations: 0,
+          setAt: Date.now(),
+          tokensAtStart: 0,
+          updatedAt: Date.now(),
+        };
+        emitChatEvent(managed, { type: "claude_goal_updated", goal: managed.session.claudeGoal });
         persistChatState(managed);
         emitSessionModeMeta(managed);
         promptText = goalArg;
@@ -54944,7 +54962,20 @@ export function createAgentChatService(args: {
       const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
       runtime.turnSettled = settleTurn;
       const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
-      await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
+      const dispatch = await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
+      const dispatchRecord = dispatch && typeof dispatch === "object" ? dispatch as Record<string, unknown> : {};
+      if (managed.session.copilotPermissionMode === "assisted" && dispatchRecord.permissionMode !== "assisted") {
+        managed.session.copilotPermissionMode = "ask";
+        persistChatState(managed);
+        emitSessionModeMeta(managed);
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "warning",
+          message: `Assisted isn't available on this Copilot plan; using Ask${typeof dispatchRecord.permissionMode === "string" ? ` (SDK reported ${dispatchRecord.permissionMode}).` : "."}`,
+          turnId,
+        });
+      }
       runtime.interrupted = runtime.interrupted || await turnIdle;
       const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
       const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
@@ -65552,9 +65583,20 @@ export function createAgentChatService(args: {
     if (copilotPermissionMode !== undefined && !permissionsPinned) {
       managed.session.copilotPermissionMode = normalizePersistedCopilotPermissionMode(copilotPermissionMode);
       if (managed.runtime?.kind === "copilot" && managed.session.copilotPermissionMode) {
-        await managed.runtime.sdk.setPermissionMode(managed.session.id, managed.session.copilotPermissionMode).catch((error) => {
+        const requestedMode = managed.session.copilotPermissionMode;
+        const modeResult = await managed.runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
           logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+          return { mode: "manual", error: error instanceof Error ? error.message : String(error) };
         });
+        if (requestedMode === "assisted" && modeResult.mode !== "assisted") {
+          managed.session.copilotPermissionMode = "ask";
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: `Assisted isn't available on this Copilot plan; using Ask${modeResult.error ? ` (SDK error: ${modeResult.error}).` : modeResult.mode ? ` (SDK reported ${modeResult.mode}).` : "."}`,
+          });
+        }
       }
     }
     if (copilotContextTier !== undefined && managed.session.provider === "copilot") {

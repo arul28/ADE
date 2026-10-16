@@ -18,6 +18,7 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import { getApiKey } from "../ai/apiKeyStore";
+import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import { copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
@@ -606,7 +607,20 @@ export async function pollCopilotQuota(
     parseCopilotIdentity,
   );
   const parsed = parseCopilotQuota(response.body, resolved.nowMs, identity.email);
-  return freshResult("copilot", parsed.windows, { email: identity.email, plan: parsed.plan }, "usage response had no premium quota");
+  let sdkParsed: ReturnType<typeof parseCopilotQuota> | null = null;
+  try {
+    const quota = await readCopilotAccountQuota({
+      env: resolved.env,
+      baseDirectory: copilotConfigHome({ env: resolved.env, homeDir: resolved.homeDir }),
+      ...(token ? { gitHubToken: token } : {}),
+    });
+    sdkParsed = parseCopilotQuota(quota, resolved.nowMs, identity.email);
+  } catch {
+    // Older Copilot CLI runtimes may not expose account.getQuota. Keep the
+    // authenticated GitHub endpoint as the compatibility fallback.
+  }
+  const windows = sdkParsed?.windows.length ? sdkParsed.windows : parsed.windows;
+  return freshResult("copilot", windows, { email: identity.email, plan: sdkParsed?.plan ?? parsed.plan }, "usage response had no premium quota");
 }
 
 export async function pollGrokQuota(

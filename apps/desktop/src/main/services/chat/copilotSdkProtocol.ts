@@ -30,7 +30,7 @@ export type CopilotSdkSessionConfig = {
 
 export type CopilotSdkWorkerRequest =
   | { type: "init"; requestId: string; payload: CopilotSdkWorkerInit }
-  | { type: "auth" | "models" | "dispose"; requestId: string }
+  | { type: "auth" | "models" | "account_quota" | "dispose"; requestId: string; payload?: { gitHubToken?: string } }
   | { type: "create" | "resume"; requestId: string; payload: CopilotSdkSessionConfig }
   | { type: "send"; requestId: string; payload: { chatId: string; prompt: string; attachments?: CopilotSdkAttachment[]; mode?: "enqueue" | "immediate"; agentMode?: "autopilot" } }
   | { type: "set_model"; requestId: string; payload: { chatId: string; model: string; reasoningEffort?: string | null; contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null } }
