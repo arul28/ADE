@@ -24538,7 +24538,7 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout },
+    { resolveMachineAdeLayout, isMachineAdeHome },
     { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
@@ -24655,7 +24655,12 @@ async function runServe(
     });
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
-  const syncEnabled = !readFlag(args, ["--no-sync"]);
+  const isMachineSecretsHome = isMachineAdeHome(path.dirname(layout.secretsDir));
+  const syncEnabled = !readFlag(args, ["--no-sync"]) && isMachineSecretsHome;
+  if (!isMachineSecretsHome && !readFlag(args, ["--no-sync"])) {
+    process.stderr.write("ADE: sync disabled because ADE_HOME is not the machine's default home.\n");
+  }
+  const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
   const brainAccountAuthService = getSharedAccountAuthService({
@@ -25257,7 +25262,7 @@ async function runServe(
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
       secretsDir: layout.secretsDir,
-      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      localDeviceIdPath,
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
@@ -25336,12 +25341,12 @@ async function runServe(
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
-      hostStartupEnabled: true,
+      hostStartupEnabled: isMachineSecretsHome,
       hostDiscoveryEnabled: true,
       forceHostRole: false,
       runtimeKind: "headless",
       appVersion: VERSION,
-      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      localDeviceIdPath,
       phonePairingStateDir: layout.secretsDir,
       getAccountDirectoryHealth,
       requestAccountMachinePublish: () =>

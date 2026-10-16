@@ -65,6 +65,24 @@ const TAILSCALE_STATUS_CACHE_MS = 30_000;
 const NETWORK_INTERFACES_CACHE_MS = 5_000;
 let networkInterfacesCache: { expiresAt: number; value: ReturnType<typeof os.networkInterfaces> } | null = null;
 
+/** One machine identity shared by every project registry and sync ingress. */
+export function readOrCreateLocalDeviceId(deviceIdPath: string, legacyPath?: string): string {
+  fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
+  const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
+  if (shared) return shared;
+  const legacy = legacyPath && legacyPath !== deviceIdPath && fs.existsSync(legacyPath)
+    ? fs.readFileSync(legacyPath, "utf8").trim()
+    : "";
+  const candidate = legacy || randomUUID();
+  try {
+    fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+    return candidate;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return fs.readFileSync(deviceIdPath, "utf8").trim();
+  }
+}
+
 function readNetworkInterfaces(): ReturnType<typeof os.networkInterfaces> {
   const now = Date.now();
   if (networkInterfacesCache && networkInterfacesCache.expiresAt > now) return networkInterfacesCache.value;
@@ -317,33 +335,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const deviceIdPath = args.localDeviceIdPath ?? path.join(layout.secretsDir, DEVICE_ID_FILE);
   const legacyProjectDeviceIdPath = path.join(layout.secretsDir, DEVICE_ID_FILE);
-  fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
-
-  const readOrCreateLocalDeviceId = (): string => {
-    // One desktop, one device id: the shared file is authoritative across
-    // projects so each project's `sync_cluster_state.brain_device_id` agrees
-    // on the same local identity. If the shared file is empty, seed it from
-    // the first legacy per-project id we happen to see (one-time migration),
-    // otherwise mint a fresh id. `O_EXCL` on the seed write keeps two
-    // concurrent project contexts from racing to mint different ids.
-    const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
-    if (shared.length > 0) return shared;
-
-    const legacy = deviceIdPath !== legacyProjectDeviceIdPath && fs.existsSync(legacyProjectDeviceIdPath)
-      ? fs.readFileSync(legacyProjectDeviceIdPath, "utf8").trim()
-      : "";
-    const candidate = legacy.length > 0 ? legacy : randomUUID();
-    try {
-      fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
-      return candidate;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Another context won the race; use whatever they wrote.
-      return fs.readFileSync(deviceIdPath, "utf8").trim();
-    }
-  };
-
-  const localDeviceId = readOrCreateLocalDeviceId();
+  const localDeviceId = readOrCreateLocalDeviceId(deviceIdPath, legacyProjectDeviceIdPath);
   const localSiteId = args.db.sync.getSiteId();
 
   const upsertDeviceRecord = (record: {
@@ -457,6 +449,13 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     brainEpoch: number;
     updatedByDeviceId?: string;
   }): SyncClusterState => {
+    if (!getDevice(argsIn.brainDeviceId)) {
+      args.logger.warn("sync.cluster_state_brain_device_missing", {
+        brainDeviceId: argsIn.brainDeviceId,
+        updatedByDeviceId: argsIn.updatedByDeviceId ?? localDeviceId,
+      });
+      throw new Error(`Cannot set sync brain to unregistered device '${argsIn.brainDeviceId}'.`);
+    }
     const now = nowIso();
     args.db.run(
       `
