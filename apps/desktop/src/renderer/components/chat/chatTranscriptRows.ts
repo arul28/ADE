@@ -1880,36 +1880,68 @@ function buildHookErrorWorkLogEvent(
   };
 }
 
+/**
+ * Position of each path in a changed-file list that {@link mergeFileChanges}
+ * returned without a "(pending file)" row. A turn can touch thousands of files
+ * under one work-log row, and every streamed change merges into that row: the
+ * index lets a merge find a path without rebuilding the whole list's map. It
+ * moves to the list a merge returns, so it only ever describes that list.
+ */
+const changedFileIndexByList = new WeakMap<ReadonlyArray<ChatWorkLogFileChange>, Map<string, number>>();
+
+function mergeFileChange(existing: ChatWorkLogFileChange, change: ChatWorkLogFileChange): ChatWorkLogFileChange {
+  const diff = mergeStreamingText(existing.diff, change.diff);
+  const stats = summarizeDiffStats(diff);
+  return {
+    ...existing,
+    ...change,
+    additions: stats.additions,
+    deletions: stats.deletions,
+    diff,
+  };
+}
+
 function mergeFileChanges(
   previous: ReadonlyArray<ChatWorkLogFileChange> | undefined,
   next: ReadonlyArray<ChatWorkLogFileChange> | undefined,
 ): ChatWorkLogFileChange[] {
+  const indexed = previous ? changedFileIndexByList.get(previous) : undefined;
+  if (previous) changedFileIndexByList.delete(previous);
+  const incoming = next ?? [];
+  // The common case: a list this function built, extended by changes for new
+  // paths or by updates to known ones. Same result as the full pass below,
+  // which handles everything else, including a "(pending file)" row that the
+  // filter at its end may drop.
+  if (indexed && !incoming.some((change) => change.path === "(pending file)")) {
+    const fileChanges = previous!.slice();
+    for (const change of incoming) {
+      const at = indexed.get(change.path);
+      if (at === undefined) {
+        indexed.set(change.path, fileChanges.length);
+        fileChanges.push(change);
+      } else {
+        fileChanges[at] = mergeFileChange(fileChanges[at]!, change);
+      }
+    }
+    changedFileIndexByList.set(fileChanges, indexed);
+    return fileChanges;
+  }
+
   const merged = new Map<string, ChatWorkLogFileChange>();
 
   const ingest = (change: ChatWorkLogFileChange) => {
     const existing = merged.get(change.path);
-    if (!existing) {
-      merged.set(change.path, change);
-      return;
-    }
-    const diff = mergeStreamingText(existing.diff, change.diff);
-    const stats = summarizeDiffStats(diff);
-    merged.set(change.path, {
-      ...existing,
-      ...change,
-      additions: stats.additions,
-      deletions: stats.deletions,
-      diff,
-    });
+    merged.set(change.path, existing ? mergeFileChange(existing, change) : change);
   };
 
   for (const change of previous ?? []) ingest(change);
-  for (const change of next ?? []) ingest(change);
+  for (const change of incoming) ingest(change);
 
-  const fileChanges = [...merged.values()];
-  const knownFiles = fileChanges.filter((change) => change.path !== "(pending file)");
-  if (knownFiles.length > 0) {
-    return knownFiles;
+  const allFileChanges = [...merged.values()];
+  const knownFiles = allFileChanges.filter((change) => change.path !== "(pending file)");
+  const fileChanges = knownFiles.length > 0 ? knownFiles : allFileChanges;
+  if (!fileChanges.some((change) => change.path === "(pending file)")) {
+    changedFileIndexByList.set(fileChanges, new Map(fileChanges.map((change, index) => [change.path, index])));
   }
   return fileChanges;
 }
