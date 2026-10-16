@@ -306,10 +306,11 @@ import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
- * three spaces, ``` or ~~~, and exactly the scene language. See
+ * three spaces, ``` or ~~~, and the scene language as the info string's first
+ * token (more info may follow; CRLF endings count). See
  * `activeTurnReplyWritesScene`.
  */
-const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FENCE_LANGUAGE}[ \t]*(?=\n|$)`, "i");
+const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FENCE_LANGUAGE}(?=\\s|$)`, "i");
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];

@@ -7,7 +7,7 @@
  * transcript with no 3D never loads it.
  */
 
-import { captureError, captureProblem } from "../../../shared/sentry/capture";
+import { captureError, captureProblem, isSentryActive } from "../../../shared/sentry/capture";
 
 let loaded: string | null = null;
 /** One report per session: every 3D scene would otherwise report the same miss. */
@@ -26,7 +26,7 @@ async function fetchThree(): Promise<string> {
   if (response.ok) return await response.text();
   // Otherwise every 3D scene fails with "THREE is not defined", which reads
   // as the agent's bug; say what actually went missing.
-  if (!reported) {
+  if (!reported && isSentryActive()) {
     reported = true;
     captureProblem("Scene three.js bundle request failed", {
       fingerprint: ["scene", "three-bundle", "request"],
@@ -46,7 +46,7 @@ export function loadSceneThreeSource(): Promise<string> {
   if (loaded !== null) return Promise.resolve(loaded);
   pending ??= fetchThree()
     .catch((error: unknown) => {
-      if (!reported) {
+      if (!reported && isSentryActive()) {
         reported = true;
         captureError(error, { fingerprint: ["scene", "three-bundle", "load"], handled: true });
       }

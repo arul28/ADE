@@ -36,8 +36,8 @@ export function normalizeMathDelimiters(markdown: string): string {
   const out: string[] = [];
   // Inside a display block (`$$` … `$$`, or `\[` … `\]`), lines are TeX.
   let mathBlock: "$$" | "\\]" | null = null;
-  /** Where the open display block's opener sits in `out`, and how it was written. */
-  let opener: { at: number; line: string; sourceIndex: number } | null = null;
+  /** The open display block's opener: its line index (in `lines` and `out`, one entry per line) and text. */
+  let opener: { index: number; line: string } | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (fenced[index]) {
@@ -57,7 +57,7 @@ export function normalizeMathDelimiters(markdown: string): string {
     }
     if (trimmed === "$$" || trimmed === "\\[") {
       mathBlock = trimmed === "$$" ? "$$" : "\\]";
-      opener = { at: out.length, line, sourceIndex: index };
+      opener = { index, line };
       out.push(line.replace(trimmed, () => "$$"));
       continue;
     }
@@ -67,11 +67,10 @@ export function normalizeMathDelimiters(markdown: string): string {
   // swallow the rest of the message, prose and code included, into one
   // formula. Its opener stays literal text until the closer arrives.
   if (opener) {
-    out[opener.at] = opener.line.replace(/\$\$|\\\[/, (found) => (found === "$$" ? "\\$\\$" : "\\\\["));
+    out[opener.index] = opener.line.replace(/\$\$|\\\[/, (found) => (found === "$$" ? "\\$\\$" : "\\\\["));
     // The lines after it are prose again, so their inline math still counts.
-    for (let line = opener.sourceIndex + 1; line < lines.length; line += 1) {
-      const at = opener.at + (line - opener.sourceIndex);
-      if (!fenced[line]) out[at] = rewriteLine(lines[line]!);
+    for (let line = opener.index + 1; line < lines.length; line += 1) {
+      if (!fenced[line]) out[line] = rewriteLine(lines[line]!);
     }
   }
   return out.join("\n");

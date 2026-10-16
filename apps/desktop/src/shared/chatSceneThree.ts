@@ -25,6 +25,13 @@
 const THREE_USE = /\bTHREE\.|\bade\.three\b|\bwindow\.THREE\b|=\s*THREE\b/;
 
 /**
+ * The rule's source text. iOS keeps the same pattern in Swift
+ * (`workSceneUsesThree`), and the iOS shell generator's `--check` fails CI when
+ * the two differ.
+ */
+export const SCENE_THREE_USE_PATTERN = THREE_USE.source;
+
+/**
  * Where the three.js bundle lives, relative to the renderer's output (and the
  * dev server's root). Written by `vite.sceneThree.ts`, read back by
  * `ade scene preview` in main; one name so the two cannot drift.

@@ -38,6 +38,8 @@ const desktopRoot = path.resolve(here, "..");
 const outPath = path.resolve(desktopRoot, "../ios/ADE/Resources/SceneShell.html");
 /** three.js for 3D scenes, the same bytes desktop inlines; Swift fills the THREE token with it. */
 const threePath = path.resolve(desktopRoot, "../ios/ADE/Resources/SceneThree.js");
+/** Where Swift keeps its copy of `sceneUsesThree`; see `checkSwiftThreeRule`. */
+const swiftScenePath = path.resolve(desktopRoot, "../ios/ADE/Views/Work/WorkSceneDocument.swift");
 const headersPath = path.join(desktopRoot, "src/renderer/webclient/public/_headers");
 /** The paths the web client's scene frame is served at; see the comments in `_headers`. */
 const SCENE_FRAME_PATHS = ["/scene-frame.html", "/scene-frame"];
@@ -98,6 +100,7 @@ async function loadBuilder() {
         contents: [
           'export { buildSceneDocument } from "./chatSceneDocument";',
           'export { SCENE_CONTENT_SECURITY_POLICY } from "./chatScene";',
+          'export { SCENE_THREE_USE_PATTERN } from "./chatSceneThree";',
         ].join("\n"),
         resolveDir: path.join(desktopRoot, "src/shared"),
         loader: "ts",
@@ -145,8 +148,23 @@ function checkWebClientHeaders(policy) {
   }
 }
 
+/**
+ * Stop when Swift's `workSceneUsesThree` pattern is not desktop's
+ * `sceneUsesThree` pattern. Swift cannot import it, so a widened desktop rule
+ * would otherwise leave iOS building 3D scenes without three.js.
+ */
+function checkSwiftThreeRule(pattern) {
+  const swift = readFileSync(swiftScenePath, "utf8");
+  const match = /func workSceneUsesThree\([^)]*\)[^{]*\{[^#]*#"([^"]*)"#/.exec(swift);
+  if (!match) fail(`${path.relative(process.cwd(), swiftScenePath)} has no workSceneUsesThree pattern.`);
+  if (match[1] !== pattern) {
+    fail(`workSceneUsesThree in ${path.relative(process.cwd(), swiftScenePath)} is #"${match[1]}"#; desktop's sceneUsesThree is /${pattern}/. Make them the same.`);
+  }
+}
+
 async function generate() {
-  const { buildSceneDocument, SCENE_CONTENT_SECURITY_POLICY } = await loadBuilder();
+  const { buildSceneDocument, SCENE_CONTENT_SECURITY_POLICY, SCENE_THREE_USE_PATTERN } = await loadBuilder();
+  checkSwiftThreeRule(SCENE_THREE_USE_PATTERN);
   let html = buildSceneDocument({
     html: TOKENS.body,
     title: null,
