@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signalChildProcessTree } from "../shared/utils";
+import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
@@ -307,25 +308,45 @@ async function listenAnswerlessSocket(
  * first keeps `createConnection` off the machine's real endpoint (so it goes
  * straight to the spawn), and the second is the child it would spawn, which the
  * test can make prove whether it ran.
+ *
+ * The endpoint is DERIVED, never spelled: on Windows the runtime's endpoint is
+ * a named pipe and a filesystem path is not a connectable address, so a
+ * hand-written `<tempDir>/ade.sock` listens on POSIX only (see
+ * `machineRuntimeSocketPath` above). `ADE_HOME` is a different temp dir from
+ * the endpoint's own, which is what keeps the endpoint off the machine-layout
+ * path — otherwise the pool treats it as the primary machine socket and never
+ * reaches the spawn this test is about.
  */
 async function withFakeRuntimeCli(
   cliSource: (paths: { tempDir: string; socketPath: string; cliPath: string }) => string,
   run: (paths: { tempDir: string; socketPath: string; cliPath: string }) => Promise<void>,
 ): Promise<void> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-lifecycle-"));
-  const socketPath = path.join(tempDir, "ade.sock");
+  const endpointHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-endpoint-"));
+  const layoutHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-layout-"));
+  const socketPath = machineRuntimeSocketPath(endpointHome);
   const cliPath = path.join(tempDir, "cli.cjs");
   fs.writeFileSync(cliPath, cliSource({ tempDir, socketPath, cliPath }), "utf8");
+  // A POSIX endpoint is a file inside `<adeHome>/sock`; a Windows one is a pipe
+  // and has no directory to create.
+  if (!isAdeRuntimeNamedPipePath(socketPath)) {
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+  }
   const originalCli = process.env.ADE_CLI_JS;
   const originalSocket = process.env.ADE_RUNTIME_SOCKET_PATH;
+  const originalHome = process.env.ADE_HOME;
   process.env.ADE_CLI_JS = cliPath;
   process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+  process.env.ADE_HOME = layoutHome;
   try {
     await run({ tempDir, socketPath, cliPath });
   } finally {
     restoreEnvVar("ADE_CLI_JS", originalCli);
     restoreEnvVar("ADE_RUNTIME_SOCKET_PATH", originalSocket);
+    restoreEnvVar("ADE_HOME", originalHome);
     removeTempDir(tempDir);
+    removeTempDir(endpointHome);
+    removeTempDir(layoutHome);
   }
 }
 
@@ -2153,9 +2174,12 @@ describe("local runtime connection pool", () => {
           closeServer = server.close;
 
           const connect = pool.ensureRunning();
+          // The pool is now parked inside its `initialize` handshake. A timeout
+          // here means the endpoint is not connectable on this platform, not
+          // that the pool skipped the connect.
           await vi.waitFor(() => {
             expect(accepted.length).toBeGreaterThan(0);
-          });
+          }, { timeout: 5_000 });
 
           pool.dispose();
           accepted[0]!.destroy();
@@ -2203,9 +2227,11 @@ describe("local runtime connection pool", () => {
           closeServer = server.close;
 
           const connect = pool.ensureRunning();
+          // Parked in the same `initialize` handshake; a timeout here is an
+          // endpoint that is not connectable on this platform.
           await vi.waitFor(() => {
             expect(accepted.length).toBeGreaterThan(0);
-          });
+          }, { timeout: 5_000 });
 
           let drained = false;
           const drain = pool.drain({ timeoutMs: 5_000 }).then(() => {
