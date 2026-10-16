@@ -8,7 +8,6 @@ import {
   isUsageLimitTurn,
   parseUsageLimitResume,
   usageLimitResumePill,
-  usageLimitResumePopover,
   usageLimitResumeProviderLabel,
   usageLimitResumeRowStatus,
   usageLimitTurnFooterLabel,
@@ -94,40 +93,6 @@ describe("usageLimitResumePill", () => {
       NOW,
     );
     expect(pill.label).toBe("Resumes in 20 min · usage limit");
-  });
-});
-
-describe("usageLimitResumePopover", () => {
-  it("names the provider and states the instant plus the countdown", () => {
-    const popover = usageLimitResumePopover(resume(), NOW);
-    expect(popover.title).toBe("Claude usage limit");
-    expect(popover.body).toContain('ADE sends "continue" at ');
-    expect(popover.body).toContain("(in 3 min)");
-    expect(popover.reassurance).toBe("Nothing is lost. Subagents restart with it.");
-    expect(popover.primary).toEqual({ action: "resume-now", label: "Resume now" });
-    expect(popover.showDontContinue).toBe(true);
-    expect(popover.providerDetail).toBe("Resets at 7:31 PM ET");
-  });
-
-  it("re-arms rather than resumes for a paused streak", () => {
-    const popover = usageLimitResumePopover(resume({ state: "paused", attempts: 2 }), NOW);
-    expect(popover.primary).toEqual({ action: "enable", label: "Try again" });
-    expect(popover.showDontContinue).toBe(true);
-  });
-
-  it("offers Turn on and drops Don't continue once auto-resume is already off", () => {
-    const popover = usageLimitResumePopover(resume({ state: "opted_out" }), NOW);
-    expect(popover.primary).toEqual({ action: "enable", label: "Turn on" });
-    expect(popover.showDontContinue).toBe(false);
-  });
-
-  it("says there is nothing to schedule when the provider published no reset", () => {
-    const popover = usageLimitResumePopover(
-      resume({ state: "no_reset", provider: "codex", fireAt: null, resetAt: null }),
-      NOW,
-    );
-    expect(popover.title).toBe("Codex usage limit");
-    expect(popover.body).toContain("didn't publish a reset time");
   });
 });
 
@@ -290,10 +255,6 @@ describe("parseUsageLimitResume", () => {
       alternateAccount: { instanceId: "1028", label: "  1028  " },
     });
     expect(withOffer?.alternateAccount).toEqual({ instanceId: "1028", label: "1028" });
-    expect(usageLimitResumePopover(withOffer!, NOW).continueOnAccount).toEqual({
-      instanceId: "1028",
-      label: "1028",
-    });
 
     const dropped = parseUsageLimitResume({
       ...resume(),
@@ -301,7 +262,6 @@ describe("parseUsageLimitResume", () => {
     });
     expect(dropped?.state).toBe("armed");
     expect(dropped?.alternateAccount).toBeUndefined();
-    expect(usageLimitResumePopover(dropped!, NOW).continueOnAccount).toBeNull();
   });
 
   it("floors attempts at a finite, non-negative integer", () => {

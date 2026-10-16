@@ -202,7 +202,8 @@ import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { VoiceSessionCard } from "./VoiceSessionCard";
-import { classifyProviderFailure, TurnFailureBanner } from "./TurnFailureBanner";
+import { TurnFailureLine } from "./TurnFailureLine";
+import { classifyProviderFailure, foldTurnFailureRows } from "./turnFailureRows";
 import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
@@ -1223,6 +1224,8 @@ type RenderEnvelope = {
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
   /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
+  endedAtUsageLimit?: boolean;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -3995,16 +3998,14 @@ function renderEvent(
     }
     return (
       <div className="flex flex-col gap-2">
-        <TurnFailureBanner
-          id={`turn-failure:${event.turnId ?? event.message}`}
+        <TurnFailureLine
           presentation={presentation}
-          recovery={recovery}
-          provider={errorProvider}
+          title={recovery?.kind === "capacity" ? "Model at capacity" : undefined}
+          repeatCount={envelope.repeatCount ?? 1}
           disabled={Boolean(options?.sessionTurnActive)}
           onRetry={options?.onRetryProviderFailure
             ? () => options.onRetryProviderFailure!(event.turnId ?? null)
             : undefined}
-          onChooseModel={options?.onChooseProviderFailureModel}
         />
         {renderAgentCliAuthCard()}
       </div>
@@ -4356,6 +4357,8 @@ function DoneTurnDivider({
   turnDiffSummary = null,
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
+  endedAtUsageLimit = false,
+  repeatCount = 1,
   workSummaryInFold = false,
   turnSources,
   onOpenTurnSources,
@@ -4382,6 +4385,10 @@ function DoneTurnDivider({
    * attach a 429 to the result frame.
    */
   usageLimitResumeTurnId?: string | null;
+  /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
+  endedAtUsageLimit?: boolean;
+  /** Identical failed retries folded into this turn, itself included. */
+  repeatCount?: number;
   toolEntries: ChatWorkLogEntry[];
   /** Opens the Files tab for this lane. Not a revert — see handleReviewChanges. */
   onReviewInFiles?: () => void;
@@ -4425,9 +4432,15 @@ function DoneTurnDivider({
   // So the loud `FAILED · api error · USAGE …` line collapses to one quiet
   // sentence and the token accounting moves behind the details toggle, where
   // it stays available without competing with the one fact that matters.
-  const usageLimitPaused = !completed && isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitLive = isUsageLimitTurn(event, usageLimitResumeTurnId);
+  const usageLimitPaused = !completed && (usageLimitLive || endedAtUsageLimit);
+  const usageLimitElapsed = durationMs !== null ? formatTurnDuration(durationMs) : null;
+  // Only the turn the live limit is anchored to is "paused"; an older limited
+  // turn is history and says just what happened.
   const usageLimitLabel = usageLimitPaused
-    ? usageLimitTurnFooterLabel(durationMs !== null ? formatTurnDuration(durationMs) : null)
+    ? `${usageLimitLive
+      ? usageLimitTurnFooterLabel(usageLimitElapsed)
+      : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
     : null;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
@@ -5056,6 +5069,8 @@ const EventRow = React.memo(function EventRow({
             : null}
           turnDiffSummaries={turnDiffSummaries}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
+          endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+          repeatCount={envelope.repeatCount ?? 1}
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
@@ -6084,10 +6099,10 @@ function AgentChatMessageListMain({
     // broke activity phases — two Thinking rows separated only by a hidden
     // `context_usage` row stayed two rows instead of merging into one.
     () => {
-      const next = groupChatTranscriptRows(
+      const next = foldTurnFailureRows(groupChatTranscriptRows(
         filterVisibleTranscriptRows(rows),
         previousAllGroupedRowsRef.current,
-      );
+      ));
       previousAllGroupedRowsRef.current = next;
       return next;
     },

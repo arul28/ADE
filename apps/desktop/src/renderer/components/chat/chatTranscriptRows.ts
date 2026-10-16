@@ -646,6 +646,12 @@ export type ChatTranscriptGroupedEnvelope = {
   imageViewSiblings?: CodexImageViewRenderEvent[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `spawnCompletionSiblings`. */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /**
+   * On a `done` row: the turn ended at a usage limit, so its turn-end line
+   * says so and the error row is not drawn. Set only by `foldTurnFailureRows`.
+   * Render-side only, like `repeatCount`.
+   */
+  endedAtUsageLimit?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */

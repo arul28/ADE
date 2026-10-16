@@ -258,89 +258,68 @@ export function usageLimitResumePill(
 }
 
 /**
- * What the popover's primary button does.
- *
- * `resume-now` sends the continue prompt immediately (`chat.resumeUsageLimitNow`);
- * `enable` re-arms auto-resume (`chat.updateSession autoContinueAtUsageLimit:true`).
- * `paused` and `opted_out` both take `enable` — a chat that already refused to
- * resume twice, or that the user switched off, needs the switch flipped before
- * a resume means anything.
+ * The usage-limit chip in the composer's status row: "Usage limit reached",
+ * one short detail, and at most one toggle. Like the compact-first chip, the
+ * same place turns auto-resume off (`Cancel`) and back on (`Resume in 2h`).
+ * The provider's own sentence and the exact clock go in the tooltip.
  */
-export type UsageLimitResumeAction = "resume-now" | "enable";
-
-export type UsageLimitResumePopoverModel = {
-  title: string;
-  /** Line 1 — what ADE is about to do, with the instant and the countdown. */
-  body: string;
-  /** Line 2 — the standing reassurance. */
-  reassurance: string;
-  primary: { action: UsageLimitResumeAction; label: string };
-  /** False only when auto-resume is already off — there is nothing to decline. */
-  showDontContinue: boolean;
-  /** Raw provider text in the HOST's zone. Rendered verbatim, never reformatted. */
-  providerDetail: string | null;
-  /**
-   * Another account that still has room. Null when the host published none.
-   * The button continues the task there; it does not resume this chat.
-   */
-  continueOnAccount: { instanceId: string; label: string } | null;
+export type UsageLimitChipModel = {
+  detail: string | null;
+  tooltip: string;
+  toggle: { label: string; enable: boolean; title?: string } | null;
+  /** Milliseconds until the detail could read differently; null when static. */
+  refreshMs: number | null;
 };
 
-const USAGE_LIMIT_RESUME_REASSURANCE = "Nothing is lost. Subagents restart with it.";
-
-export function usageLimitResumePopover(
-  resume: AgentChatUsageLimitResume,
-  nowMs: number,
-): UsageLimitResumePopoverModel {
+export function usageLimitChip(resume: AgentChatUsageLimitResume, nowMs: number): UsageLimitChipModel {
   const provider = usageLimitResumeProviderLabel(resume.provider);
   const targetMs = usageLimitResumeTargetMs(resume);
   const remainingMs = targetMs == null ? null : targetMs - nowMs;
+  const future = remainingMs != null && remainingMs > 0;
+  const countdown = future ? formatUsageLimitCountdown(remainingMs) : null;
   const clock = formatUsageLimitClock(targetMs);
-
-  let body: string;
-  let primary: UsageLimitResumePopoverModel["primary"] = {
-    action: "resume-now",
-    label: "Resume now",
+  const refreshMs = future ? (remainingMs < USAGE_LIMIT_SECOND_TICK_WINDOW_MS ? 1_000 : 60_000) : null;
+  const withDetail = (text: string) => {
+    const detail = resume.providerDetail?.trim();
+    return detail ? `${text}\n\n${detail}` : text;
   };
+
   switch (resume.state) {
     case "resuming":
-      body = 'ADE is sending "continue" now.';
-      break;
+      return { detail: "resuming…", tooltip: withDetail('ADE is sending "continue" now.'), toggle: null, refreshMs: null };
     case "paused":
-      body = `The limit did not lift at the published reset. ADE stopped after ${usageLimitResumeAttemptsLabel(resume.attempts)}.`;
-      primary = { action: "enable", label: "Try again" };
-      break;
+      return {
+        detail: `paused after ${usageLimitResumeAttemptsLabel(resume.attempts)}`,
+        tooltip: withDetail("The limit did not lift at the published reset, so ADE stopped trying."),
+        toggle: { label: "Try again", enable: true },
+        refreshMs: null,
+      };
     case "opted_out":
-      body = "Auto-resume is off for this chat, so ADE won't continue it on its own.";
-      primary = { action: "enable", label: "Turn on" };
-      break;
+      return {
+        detail: "auto-resume off",
+        tooltip: withDetail(clock ? `${provider} resets at ${clock}. ADE won't continue this chat on its own.` : "ADE won't continue this chat on its own."),
+        toggle: { label: countdown ? `Resume in ${countdown}` : "Auto-resume", enable: true },
+        refreshMs,
+      };
     case "no_reset":
-      body = `${provider} didn't publish a reset time, so there is nothing to schedule.`;
-      break;
+      return {
+        detail: provider,
+        tooltip: withDetail(`${provider} didn't say when the limit resets.`),
+        toggle: null,
+        refreshMs: null,
+      };
     case "armed":
     default:
-      if (clock && remainingMs != null && remainingMs > 0) {
-        body = `ADE sends "continue" at ${clock} (in ${formatUsageLimitCountdown(remainingMs)}).`;
-      } else if (clock) {
-        body = `ADE sends "continue" at ${clock}, on the next turn boundary.`;
-      } else {
-        body = 'ADE sends "continue" as soon as the limit lifts.';
+      if (remainingMs != null && !future) {
+        return { detail: "resuming…", tooltip: withDetail('ADE sends "continue" on the next turn boundary.'), toggle: null, refreshMs: null };
       }
-      break;
+      return {
+        detail: countdown ? `resumes in ${countdown}` : "resumes when it lifts",
+        tooltip: withDetail(clock ? `ADE sends "continue" at ${clock}. Nothing is lost.` : 'ADE sends "continue" as soon as the limit lifts.'),
+        toggle: { label: "Cancel", enable: false, title: "Don't auto-resume this chat" },
+        refreshMs,
+      };
   }
-
-  const alternate = resume.alternateAccount;
-  return {
-    title: `${provider} usage limit`,
-    body,
-    reassurance: USAGE_LIMIT_RESUME_REASSURANCE,
-    primary,
-    showDontContinue: resume.state !== "opted_out",
-    providerDetail: resume.providerDetail?.trim() || null,
-    continueOnAccount: alternate?.instanceId && alternate.label
-      ? { instanceId: alternate.instanceId, label: alternate.label }
-      : null,
-  };
 }
 
 /**

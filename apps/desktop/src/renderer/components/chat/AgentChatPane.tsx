@@ -208,7 +208,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { SceneReplyContext } from "./SceneFrame";
-import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
+import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
@@ -16325,23 +16325,14 @@ export function AgentChatPane({
   const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
     <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
-  // The whole usage-limit surface: one line, above the composer, in the same
-  // capped column the prompt box uses so the two share an edge. It is an
-  // ordinary flow child (its popover is the absolutely-positioned part), so it
-  // moves the composer by its own height and by nothing else.
-  const usageLimitPill = usageLimitResume && composerSessionId ? (
-    <div
-      className={cn(
-        "px-0.5",
-        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-      )}
-    >
-      <ChatUsageLimitResumePill
-        sessionId={composerSessionId}
-        resume={usageLimitResume}
-        runtimePin={renderedChatRuntimePin}
-      />
-    </div>
+  // The usage-limit chip sits in the composer's status row with the other
+  // chips, so a limit, a branch drift and a compact offer can show at once.
+  const usageLimitChip = usageLimitResume && composerSessionId ? (
+    <UsageLimitChip
+      sessionId={composerSessionId}
+      resume={usageLimitResume}
+      runtimePin={renderedChatRuntimePin}
+    />
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
@@ -16948,6 +16939,7 @@ export function AgentChatPane({
     >
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
+        {usageLimitChip}
         <LaneBranchComposerChip laneId={laneId} />
         {compactFirstChip}
         {sessionDelta ? (
@@ -17164,7 +17156,6 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
-      {usageLimitPill}
       {claudeModUi}
       {composerElement}
     </div>
@@ -17593,8 +17584,7 @@ export function AgentChatPane({
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
                         {crossMachineArrivalBanner}
-                        {usageLimitPill}
-                        {claudeModUi}
+                                          {claudeModUi}
                         {composerElement}
                       </div>
                     ) : null}
