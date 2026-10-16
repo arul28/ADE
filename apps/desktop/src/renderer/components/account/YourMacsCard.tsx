@@ -476,23 +476,36 @@ export function YourMacsCard() {
   // listMachines here would refresh the card without updating the chip.
   const retryDirectory = workspace?.retryDirectory;
   useEffect(() => {
+    // "While visible" is literal. Nothing on this card can be seen while the
+    // window is hidden, and returning to it fires `visibilitychange`, so a
+    // backgrounded app stops asking the account directory every 30 seconds
+    // instead of refreshing a card nobody is looking at. Matches the gate
+    // `renderer/lib/laneDevServers.ts` already uses for its re-check.
+    const whileVisible = (run: () => void) => () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      run();
+    };
     if (usingWorkspaceRoster && retryDirectory) {
-      void retryDirectory();
-      const interval = window.setInterval(() => void retryDirectory(), MACHINES_REFRESH_MS);
-      const onFocus = () => void retryDirectory();
-      window.addEventListener("focus", onFocus);
+      const refresh = whileVisible(() => void retryDirectory());
+      refresh();
+      const interval = window.setInterval(refresh, MACHINES_REFRESH_MS);
+      window.addEventListener("focus", refresh);
+      document.addEventListener("visibilitychange", refresh);
       return () => {
         window.clearInterval(interval);
-        window.removeEventListener("focus", onFocus);
+        window.removeEventListener("focus", refresh);
+        document.removeEventListener("visibilitychange", refresh);
       };
     }
-    void load();
-    const interval = window.setInterval(() => void load(), MACHINES_REFRESH_MS);
-    const onFocus = () => void load();
-    window.addEventListener("focus", onFocus);
+    const refresh = whileVisible(() => void load());
+    refresh();
+    const interval = window.setInterval(refresh, MACHINES_REFRESH_MS);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
     };
   }, [load, retryDirectory, usingWorkspaceRoster]);
 
