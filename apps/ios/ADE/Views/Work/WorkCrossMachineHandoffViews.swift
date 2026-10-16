@@ -910,6 +910,8 @@ struct WorkCrossMachineHandoffSheet: View {
     if let v = wire.droidPermissionMode { args["droidPermissionMode"] = v }
     if let v = wire.musePermissionMode { args["musePermissionMode"] = v }
     if let v = wire.copilotPermissionMode { args["copilotPermissionMode"] = v }
+    if let v = wire.copilotContextTier { args["copilotContextTier"] = v }
+    if let v = wire.copilotAutoTier { args["copilotAutoTier"] = v }
     if let v = wire.cursorModeId { args["cursorModeId"] = v }
     let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedNote.isEmpty { args["continuationPrompt"] = trimmedNote }

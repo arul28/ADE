@@ -1002,6 +1002,8 @@ struct HubInlineComposer: View {
           droidPermissionMode: wire.droidPermissionMode,
           musePermissionMode: wire.musePermissionMode,
           copilotPermissionMode: wire.copilotPermissionMode,
+          copilotContextTier: wire.copilotContextTier,
+          copilotAutoTier: wire.copilotAutoTier,
           cursorModeId: wire.cursorModeId,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath

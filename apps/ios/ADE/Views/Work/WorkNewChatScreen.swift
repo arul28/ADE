@@ -676,6 +676,9 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
+  /// Copilot's context tier and Auto profile for the chat about to be created.
+  @State private var copilotContextTier: String = "default"
+  @State private var copilotAutoTier: String? = nil
   /// The catalog option the picker handed us, kept so fast-tier support is read
   /// from the live host-advertised model (its `serviceTiers`) rather than
   /// re-derived from the curated iOS catalog — which can miss a freshly
@@ -795,6 +798,8 @@ struct WorkNewChatScreen: View {
     provider = workNormalizedChatProvider(defaults.provider)
     modelId = defaults.modelId
     reasoningEffort = defaults.reasoningEffort ?? ""
+    copilotContextTier = workCopilotContextTier(defaults.copilotContextTier)
+    copilotAutoTier = defaults.copilotAutoTier
     codexFastMode = defaults.fastMode ?? false
     let mode = workRuntimeMode(
       provider: defaults.provider,
@@ -1034,6 +1039,12 @@ struct WorkNewChatScreen: View {
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
+        currentCopilotContextTier: copilotContextTier,
+        currentCopilotAutoTier: copilotAutoTier,
+        onSelectCopilotTiers: { context, auto in
+          copilotContextTier = context
+          copilotAutoTier = auto
+        },
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
         // Custom harnesses are the connected host's own; another machine's list
@@ -1711,6 +1722,8 @@ struct WorkNewChatScreen: View {
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
         copilotPermissionMode: wire.copilotPermissionMode,
+        copilotContextTier: providerFamilyKey(provider) == "copilot" ? copilotContextTier : nil,
+        copilotAutoTier: providerFamilyKey(provider) == "copilot" ? copilotAutoTier : nil,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,

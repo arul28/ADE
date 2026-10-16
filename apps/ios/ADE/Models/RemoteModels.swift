@@ -1180,6 +1180,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
+  /// True while the runtime holds an Auto-profile change as pending (`pending` status).
+  /// Transient host metadata: cleared by `session.model_change` or a failure.
+  var copilotAutoTierPending: Bool? = nil
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
@@ -1305,6 +1310,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.musePermissionMode == rhs.musePermissionMode
       && lhs.copilotPermissionMode == rhs.copilotPermissionMode
+      && lhs.copilotContextTier == rhs.copilotContextTier
+      && lhs.copilotAutoTier == rhs.copilotAutoTier
+      && lhs.copilotAutoTierPending == rhs.copilotAutoTierPending
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
@@ -1374,6 +1382,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   /// True when the event carried `cursorModeId: null` (an intentional clear the
   /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
@@ -1414,6 +1424,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case droidPermissionMode
     case musePermissionMode
     case copilotPermissionMode
+    case copilotContextTier
+    case copilotAutoTier
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
@@ -1449,6 +1461,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     musePermissionMode = try c.decodeIfPresent(String.self, forKey: .musePermissionMode)
     copilotPermissionMode = try c.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
+    copilotContextTier = try c.decodeIfPresent(String.self, forKey: .copilotContextTier)
+    copilotAutoTier = try c.decodeIfPresent(String.self, forKey: .copilotAutoTier)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
     // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
     // present-but-null key means the host cleared the cursor mode.
@@ -1509,6 +1523,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || droidPermissionMode != nil
       || musePermissionMode != nil
       || copilotPermissionMode != nil
+      || copilotContextTier != nil
+      || copilotAutoTier != nil
       || cursorModeId != nil
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
@@ -1546,6 +1562,8 @@ extension AgentChatSessionSummary {
     if let v = update.droidPermissionMode { droidPermissionMode = v }
     if let v = update.musePermissionMode { musePermissionMode = v }
     if let v = update.copilotPermissionMode { copilotPermissionMode = v }
+    if let v = update.copilotContextTier { copilotContextTier = v }
+    if let v = update.copilotAutoTier { copilotAutoTier = v }
     if let v = update.cursorModeId {
       cursorModeId = v
       cursorModeIdWasCleared = false
@@ -1624,6 +1642,8 @@ extension AgentChatSessionSummary {
     if let v = other.droidPermissionMode { droidPermissionMode = v }
     if let v = other.musePermissionMode { musePermissionMode = v }
     if let v = other.copilotPermissionMode { copilotPermissionMode = v }
+    if let v = other.copilotContextTier { copilotContextTier = v }
+    if let v = other.copilotAutoTier { copilotAutoTier = v }
     if other.cursorModeIdWasCleared == true {
       cursorModeId = nil
       cursorModeIdWasCleared = true
@@ -2092,6 +2112,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
+  var copilotAutoTierPending: Bool? = nil
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -2137,6 +2160,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case droidPermissionMode
     case musePermissionMode
     case copilotPermissionMode
+    case copilotContextTier
+    case copilotAutoTier
+    case copilotAutoTierPending
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -2183,6 +2209,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     musePermissionMode = try container.decodeIfPresent(String.self, forKey: .musePermissionMode)
     copilotPermissionMode = try container.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
+    copilotContextTier = try container.decodeIfPresent(String.self, forKey: .copilotContextTier)
+    copilotAutoTier = try container.decodeIfPresent(String.self, forKey: .copilotAutoTier)
+    copilotAutoTierPending = try container.decodeIfPresent(Bool.self, forKey: .copilotAutoTierPending)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -2228,6 +2257,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
     try container.encodeIfPresent(musePermissionMode, forKey: .musePermissionMode)
     try container.encodeIfPresent(copilotPermissionMode, forKey: .copilotPermissionMode)
+    try container.encodeIfPresent(copilotContextTier, forKey: .copilotContextTier)
+    try container.encodeIfPresent(copilotAutoTier, forKey: .copilotAutoTier)
+    try container.encodeIfPresent(copilotAutoTierPending, forKey: .copilotAutoTierPending)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -4818,6 +4850,8 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   var updatedAt: String
 }
@@ -5036,6 +5070,8 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
@@ -5093,6 +5129,11 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var supportsTools: Bool?
   var color: String?
   var cursorAvailability: CursorModelAvailability? = nil
+  /// Copilot model context tiers the catalog advertises (`default`, `long_context`).
+  /// Optional: absent for providers without tiers. Window sizes come with them.
+  var supportedContextTiers: [String]? = nil
+  var contextWindow: Int? = nil
+  var longContextWindow: Int? = nil
 }
 
 extension AgentChatModelInfo {
@@ -5137,6 +5178,11 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var piProfileId: String? = nil
   var piProviderId: String? = nil
   var piModelId: String? = nil
+  /// Copilot model context tiers the catalog advertises (`default`, `long_context`).
+  /// Optional: absent for providers without tiers. Window sizes come with them.
+  var supportedContextTiers: [String]? = nil
+  var contextWindow: Int? = nil
+  var longContextWindow: Int? = nil
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {
@@ -8606,10 +8652,10 @@ struct AgentChatCrossMachineHandoffOptions: Decodable, Equatable {
   }
 }
 
-/// Providers whose fork can travel to another machine. Mirrors
-/// `providerSupportsCrossMachineHandoffFork` in `shared/types/chat.ts`:
-/// `HANDOFF_FORK_PROVIDERS` minus droid and muse (machine-local session stores) and
-/// cursor (an ADE-side transcript replay with nothing to package).
+/// Providers whose fork can travel to another machine. Copilot is not here: its SDK
+/// session pointer lives on the source machine, so its fork stays there. The desktop's
+/// `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS` (shared/types/chat.ts) agrees. droid, cursor
+/// and muse are on the desktop list but not here yet, which is a separate change.
 func workProviderSupportsCrossMachineHandoffFork(_ provider: String?) -> Bool {
   guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
   return ["claude", "codex", "opencode"].contains(provider)

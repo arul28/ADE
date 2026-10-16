@@ -74,6 +74,8 @@ extension WorkSessionSettingsSheet {
     var droidPermissionMode: String?
     var musePermissionMode: String?
     var copilotPermissionMode: String?
+    var copilotContextTier: String?
+    var copilotAutoTier: String?
     var cursorModeId: String?
     var runtimeChanged = false
 
@@ -163,6 +165,8 @@ extension WorkSessionSettingsSheet {
         droidPermissionMode: droidPermissionMode,
         musePermissionMode: musePermissionMode,
         copilotPermissionMode: copilotPermissionMode,
+        copilotContextTier: copilotContextTier,
+        copilotAutoTier: copilotAutoTier,
         cursorModeId: cursorModeId,
         manuallyNamed: titleChanged ? true : nil
       )

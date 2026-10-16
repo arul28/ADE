@@ -697,6 +697,27 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  /// Applies a Copilot context tier and Auto profile to this chat. The runtime
+  /// answers a profile change as pending until the next message; the chat state
+  /// refresh shows that through `copilotAutoTierPending`.
+  func selectCopilotTiers(_ contextTier: String, _ autoTier: String?) async -> Bool {
+    do {
+      _ = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        copilotContextTier: contextTier,
+        copilotAutoTier: autoTier
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      ADEHaptics.light()
+      return true
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
   func selectCodexFastMode(_ enabled: Bool) async -> Bool {
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, codexFastMode: enabled)
@@ -737,6 +758,8 @@ extension WorkSessionDestinationView {
       || wire.droidPermissionMode != nil
       || wire.musePermissionMode != nil
       || wire.copilotPermissionMode != nil
+      || wire.copilotContextTier != nil
+      || wire.copilotAutoTier != nil
       || wire.cursorModeId != nil
     else { return false }
 
@@ -753,6 +776,8 @@ extension WorkSessionDestinationView {
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
         copilotPermissionMode: wire.copilotPermissionMode,
+        copilotContextTier: wire.copilotContextTier,
+        copilotAutoTier: wire.copilotAutoTier,
         cursorModeId: wire.cursorModeId
       )
       await refreshChatStateAfterAction(forceRemote: true)

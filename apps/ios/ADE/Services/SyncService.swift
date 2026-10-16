@@ -14279,6 +14279,8 @@ final class SyncService: ObservableObject {
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
     copilotPermissionMode: String? = nil,
+    copilotContextTier: String? = nil,
+    copilotAutoTier: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14308,6 +14310,8 @@ final class SyncService: ObservableObject {
       droidPermissionMode: droidPermissionMode,
       musePermissionMode: musePermissionMode,
       copilotPermissionMode: copilotPermissionMode,
+      copilotContextTier: copilotContextTier,
+      copilotAutoTier: copilotAutoTier,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14376,6 +14380,8 @@ final class SyncService: ObservableObject {
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
     copilotPermissionMode: String? = nil,
+    copilotContextTier: String? = nil,
+    copilotAutoTier: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14405,6 +14411,8 @@ final class SyncService: ObservableObject {
       droidPermissionMode: droidPermissionMode,
       musePermissionMode: musePermissionMode,
       copilotPermissionMode: copilotPermissionMode,
+      copilotContextTier: copilotContextTier,
+      copilotAutoTier: copilotAutoTier,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14470,6 +14478,8 @@ final class SyncService: ObservableObject {
     droidPermissionMode: String?,
     musePermissionMode: String? = nil,
     copilotPermissionMode: String? = nil,
+    copilotContextTier: String? = nil,
+    copilotAutoTier: String? = nil,
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
@@ -14535,6 +14545,12 @@ final class SyncService: ObservableObject {
     }
     if let copilotPermissionMode, !copilotPermissionMode.isEmpty {
       args["copilotPermissionMode"] = copilotPermissionMode
+    }
+    if let copilotContextTier, !copilotContextTier.isEmpty {
+      args["copilotContextTier"] = copilotContextTier
+    }
+    if let copilotAutoTier, !copilotAutoTier.isEmpty {
+      args["copilotAutoTier"] = copilotAutoTier
     }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
@@ -15699,6 +15715,8 @@ final class SyncService: ObservableObject {
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
     copilotPermissionMode: String? = nil,
+    copilotContextTier: String? = nil,
+    copilotAutoTier: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -15727,6 +15745,8 @@ final class SyncService: ObservableObject {
         droidPermissionMode: droidPermissionMode,
         musePermissionMode: musePermissionMode,
         copilotPermissionMode: copilotPermissionMode,
+        copilotContextTier: copilotContextTier,
+        copilotAutoTier: copilotAutoTier,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
@@ -25271,6 +25291,8 @@ extension SyncService {
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
     copilotPermissionMode: String? = nil,
+    copilotContextTier: String? = nil,
+    copilotAutoTier: String? = nil,
     cursorModeId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     try requireInvokableRemoteAction("personalChats.create")
@@ -25300,6 +25322,8 @@ extension SyncService {
     if let droidPermissionMode, !droidPermissionMode.isEmpty { args["droidPermissionMode"] = droidPermissionMode }
     if let musePermissionMode, !musePermissionMode.isEmpty { args["musePermissionMode"] = musePermissionMode }
     if let copilotPermissionMode, !copilotPermissionMode.isEmpty { args["copilotPermissionMode"] = copilotPermissionMode }
+    if let copilotContextTier, !copilotContextTier.isEmpty { args["copilotContextTier"] = copilotContextTier }
+    if let copilotAutoTier, !copilotAutoTier.isEmpty { args["copilotAutoTier"] = copilotAutoTier }
     if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
 
     let summary = try await sendDecodableCommand(

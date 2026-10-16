@@ -1115,8 +1115,9 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     return [
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "ask", title: "Ask"),
-      WorkRuntimeModeOption(id: "auto-edit", title: "Auto edit"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
+      WorkRuntimeModeOption(id: "assisted", title: "Assisted"),
+      WorkRuntimeModeOption(id: "auto-edit", title: "Auto-edit"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full-auto"),
     ]
   // Muse's own approval modes (`AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS`), plus
   // ADE's plan mode, which runs on `denyUnmatched` with plan guidance.
@@ -1198,8 +1199,9 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
   case "copilot":
     switch mode {
     case "plan": return "Plan"
-    case "auto-edit": return "Auto edit"
-    case "full-auto": return "Full access"
+    case "assisted": return "Assisted"
+    case "auto-edit": return "Auto-edit"
+    case "full-auto": return "Full-auto"
     default: return "Ask"
     }
   case "pi":
@@ -1262,7 +1264,7 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     switch mode {
     case "plan": return ADEColor.purpleAccent
     case "full-auto": return ADEColor.danger
-    case "auto-edit": return ADEColor.warning
+    case "auto-edit", "assisted": return ADEColor.warning
     default: return ADEColor.success
     }
   case "pi":
@@ -1316,6 +1318,8 @@ struct WorkRuntimeWireFields {
   var droidPermissionMode: String?
   var musePermissionMode: String?
   var copilotPermissionMode: String?
+  var copilotContextTier: String?
+  var copilotAutoTier: String?
   var cursorModeId: String?
 }
 
@@ -1601,13 +1605,58 @@ func workNormalizedOpenCodeRuntimeMode(_ mode: String?) -> String {
   }
 }
 
-/// Copilot's permission ladder, spelled as the desktop's `PERMISSION_LEVELS`.
-/// Anything else, including an empty or unknown value, is the ask tier.
+/// Copilot's permission levels, spelled as the desktop's contract: the four ladder
+/// words plus `assisted` (Copilot's LLM-reviewed approvals). Anything else,
+/// including an empty or unknown value, is the ask tier.
 func workCopilotPermissionLevel(_ mode: String) -> String {
   switch mode {
-  case "plan", "auto-edit", "full-auto": return mode
+  case "plan", "assisted", "auto-edit", "full-auto": return mode
   default: return "ask"
   }
+}
+
+/// The Copilot context tier a chat runs on. Missing or invalid is the default
+/// tier; only `long_context` selects the long window.
+func workCopilotContextTier(_ raw: String?) -> String {
+  raw == "long_context" ? "long_context" : "default"
+}
+
+/// Copilot's Auto routing profiles, in the order the effort slot lists them.
+let workCopilotAutoTiers = ["efficiency", "balance", "intelligence"]
+
+func workCopilotAutoTierLabel(_ tier: String) -> String {
+  switch tier {
+  case "efficiency": return "Efficiency"
+  case "balance": return "Balance"
+  case "intelligence": return "Intelligence"
+  default: return tier.capitalized
+  }
+}
+
+/// Copilot's Auto model. The catalog id is `github-copilot/auto` (or bare `auto`).
+func workCopilotIsAutoModel(modelId: String, provider: String) -> Bool {
+  guard providerFamilyKey(provider) == "copilot" else { return false }
+  let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return id == "auto" || id.hasSuffix("/auto")
+}
+
+/// `300k`, `1M`, `1.5M`: a context window in the form the picker shows.
+func workCompactContextWindow(_ tokens: Int) -> String {
+  if tokens >= 1_000_000 {
+    let millions = Double(tokens) / 1_000_000
+    return millions.rounded() == millions ? "\(Int(millions))M" : String(format: "%.1fM", millions)
+  }
+  return "\(tokens / 1_000)k"
+}
+
+/// The label of one Copilot context tier. The default tier shows its catalog
+/// window when the catalog gave one; the long tier shows its window, or `Long`
+/// when the catalog did not give a long size.
+func workCopilotContextTierLabel(_ tier: String, contextWindow: Int?, longContextWindow: Int?) -> String {
+  if tier == "long_context" {
+    return longContextWindow.map(workCompactContextWindow) ?? "Long"
+  }
+  return contextWindow.map(workCompactContextWindow) ?? "Default"
 }
 
 func workDroidModeFromPermissionMode(_ permissionMode: String?) -> String? {

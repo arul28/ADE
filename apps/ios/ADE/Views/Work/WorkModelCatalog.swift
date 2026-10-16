@@ -31,6 +31,12 @@ struct WorkModelOption: Identifiable, Hashable {
   let piProfileId: String?
   let piProviderId: String?
   let piModelId: String?
+  /// Copilot context tiers the catalog advertises. Set after construction, from
+  /// the catalog model; empty for every other provider.
+  var contextTiers: [String] = []
+  /// The catalog's window size for the default tier and, when given, the long tier.
+  var contextWindow: Int? = nil
+  var longContextWindow: Int? = nil
 
   init(
     id: String,
@@ -1102,7 +1108,7 @@ private func workCatalogModelOption(
 	      : "Configure this provider on the paired machine"
   }
 
-  return WorkModelOption(
+  var option = WorkModelOption(
     id: model.id,
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id),
@@ -1127,6 +1133,10 @@ private func workCatalogModelOption(
     piProviderId: piMetadata?.providerId,
     piModelId: piMetadata?.modelId
   )
+  option.contextTiers = model.supportedContextTiers ?? []
+  option.contextWindow = model.contextWindow
+  option.longContextWindow = model.longContextWindow
+  return option
 }
 
 private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [String: WorkModelOption] {
@@ -1893,7 +1903,7 @@ private func workDynamicModelOption(
     tagline = parts.isEmpty ? "Available on the paired machine" : parts.joined(separator: " · ")
   }
 
-  return WorkModelOption(
+  var option = WorkModelOption(
     id: model.id,
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id, curated: curated),
@@ -1925,6 +1935,10 @@ private func workDynamicModelOption(
     piProviderId: piMetadata?.providerId,
     piModelId: piMetadata?.modelId
   )
+  option.contextTiers = model.supportedContextTiers ?? []
+  option.contextWindow = model.contextWindow
+  option.longContextWindow = model.longContextWindow
+  return option
 }
 
 private func workDynamicModelTier(for modelId: String, curated: WorkModelOption? = nil) -> WorkModelOption.Tier {

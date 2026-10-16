@@ -306,6 +306,8 @@ struct LinearLaunchScreen: View {
           droidPermissionMode: wire.droidPermissionMode,
           musePermissionMode: wire.musePermissionMode,
           copilotPermissionMode: wire.copilotPermissionMode,
+          copilotContextTier: wire.copilotContextTier,
+          copilotAutoTier: wire.copilotAutoTier,
           cursorModeId: wire.cursorModeId,
           pendingDisplayName: cfg.kickoff
         )
