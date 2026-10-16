@@ -42513,11 +42513,21 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     reason: "interrupt" | "teardown" | "session_reset" | "timeout",
   ): void => {
+    // A warm query outlives its warmup once the warmup settles, so it must be
+    // discarded here even when no warmup is still in flight. Otherwise a reset
+    // (effort, fast mode, directive) reuses the stale warm query.
+    try { runtime.warmQuery?.close(); } catch { /* ignore */ }
+    runtime.warmQuery = null;
+    // Its thread was never written, so the id it was given is not resumable.
+    // Drop it the way a cancelled in-flight warmup does.
+    if (runtime.unwrittenWarmSessionId && runtime.sdkSessionId === runtime.unwrittenWarmSessionId) {
+      runtime.sdkSessionId = null;
+      runtime.unwrittenWarmSessionId = null;
+      persistChatState(managed);
+    }
     if (!runtime.warmupDone) return;
     runtime.warmupCancelled = true;
     runtime.warmupCancel?.();
-    try { runtime.warmQuery?.close(); } catch { /* ignore */ }
-    runtime.warmQuery = null;
     logger.info("agent_chat.claude_prewarm_cancel", {
       sessionId: managed.session.id,
       reason,
