@@ -105,13 +105,6 @@ type UseModelRecentsOptions = {
   hydrate?: boolean;
 };
 
-export function __resetModelRecentsForTests(): void {
-  useRecentsStore.setState({
-    recents: typeof window !== "undefined" ? readPersisted() : [],
-    hydrated: false,
-  });
-}
-
 export function useModelRecents(options: UseModelRecentsOptions = {}): {
   recents: string[];
   recordUsage: (modelId: string) => void;

@@ -20,10 +20,6 @@ type OriginCacheEntry = {
 
 const originCache = new Map<string, OriginCacheEntry>();
 
-export function clearRepoProjectResolverCacheForTests(): void {
-  originCache.clear();
-}
-
 function resolveGitDir(rootPath: string): string | null {
   const gitPath = path.join(rootPath, ".git");
   let stat: fs.Stats;

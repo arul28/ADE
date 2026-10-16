@@ -293,7 +293,7 @@ defect, even when it passes.
     cross-machine, IPC or sync contract a caller depends on — and no existing
     test may already catch its failure. UI layout, copy, wiring, render-only
     checks, and one past bug instance do not qualify. Most branches add none.
-    The suite already has about 1,600 test files; it should shrink, not grow.
+    The suite already has about 1,300 test files; it should shrink, not grow.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
 only when it can name the behavior, the failure that turns the test red, and
