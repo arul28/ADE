@@ -18,7 +18,6 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
-  hasColumn,
   hasTable,
   openReadOnlyDatabase,
 } from "../../../../desktop/src/main/services/projects/readOnlySqlite";
@@ -355,34 +354,39 @@ function readProjectFromDiskUncached(
     const chats = hasTable(db, "terminal_sessions")
       ? (() => {
           const activeDb = db!;
-          const chatSessionIdColumn = hasColumn(activeDb, "terminal_sessions", "chat_session_id")
+          // One PRAGMA for every column probe below: probing each column on its own
+          // re-ran table_info once per column for every project database.
+          const sessionColumns = new Set(
+            activeDb.prepare("pragma table_info(terminal_sessions)").all<{ name?: string }>().map((row) => row.name),
+          );
+          const chatSessionIdColumn = sessionColumns.has("chat_session_id")
             ? "chat_session_id"
             : "null as chat_session_id";
-          const settledAtColumn = hasColumn(activeDb, "terminal_sessions", "settled_at")
+          const settledAtColumn = sessionColumns.has("settled_at")
             ? "settled_at"
             : "null as settled_at";
-          const statusNoteColumn = hasColumn(activeDb, "terminal_sessions", "status_note")
+          const statusNoteColumn = sessionColumns.has("status_note")
             ? "status_note"
             : "null as status_note";
-          const activityStatusColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_json")
+          const activityStatusColumn = sessionColumns.has("activity_status_json")
             ? "activity_status_json"
             : "null as activity_status_json";
-          const activityStatusChangedAtColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_changed_at")
+          const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
             ? "activity_status_changed_at"
             : "null as activity_status_changed_at";
-          const attentionRequestedAtColumn = hasColumn(activeDb, "terminal_sessions", "attention_requested_at")
+          const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
             ? "attention_requested_at"
             : "null as attention_requested_at";
-          const attentionMessageColumn = hasColumn(activeDb, "terminal_sessions", "attention_message")
+          const attentionMessageColumn = sessionColumns.has("attention_message")
             ? "attention_message"
             : "null as attention_message";
-          const lastTurnFailedAtColumn = hasColumn(activeDb, "terminal_sessions", "last_turn_failed_at")
+          const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
             ? "last_turn_failed_at"
             : "null as last_turn_failed_at";
-          const snoozedUntilColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_until")
+          const snoozedUntilColumn = sessionColumns.has("snoozed_until")
             ? "snoozed_until"
             : "null as snoozed_until";
-          const snoozedAtColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_at")
+          const snoozedAtColumn = sessionColumns.has("snoozed_at")
             ? "snoozed_at"
             : "null as snoozed_at";
           return activeDb
@@ -601,10 +605,16 @@ async function buildRosterProject(
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
 
   const visibleRows = desktopVisibleRosterRows(disk.chats, visibleLaneIds);
+  // Each sidecar is read once and shared by the identity pass and the row pass
+  // below; both run synchronously, so neither can see a different file.
+  const sidecarBySessionId = new Map<string, Sidecar | null>();
+  for (const row of visibleRows) {
+    sidecarBySessionId.set(row.id, readChatSidecar(chatSessionsDir, row.id));
+  }
   const identitySessionIds = new Set<string>();
   for (const row of visibleRows) {
     const liveIdentityKey = liveBySessionId.get(row.id)?.identityKey?.trim() || null;
-    const diskIdentityKey = readChatSidecar(chatSessionsDir, row.id)?.identityKey?.trim() || null;
+    const diskIdentityKey = sidecarBySessionId.get(row.id)?.identityKey?.trim() || null;
     if (liveIdentityKey || diskIdentityKey) identitySessionIds.add(row.id);
   }
   let identityDescendantAdded = true;
@@ -626,7 +636,7 @@ async function buildRosterProject(
   let attentionCount = 0;
   for (const row of visibleRows) {
     const live = liveBySessionId.get(row.id);
-    const sidecar = readChatSidecar(chatSessionsDir, row.id);
+    const sidecar = sidecarBySessionId.get(row.id) ?? null;
     const identityKey = (live?.identityKey ?? sidecar?.identityKey ?? null)
       ?.trim() || null;
     // CTO/identity sessions have their own surface and attention path. They
