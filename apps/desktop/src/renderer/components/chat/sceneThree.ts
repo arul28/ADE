@@ -19,16 +19,28 @@ async function fetchThree(): Promise<string> {
   const { default: url } = await import("virtual:ade-scene-three");
   if (!url) return "";
   const response = await fetch(url);
-  return response.ok ? await response.text() : "";
+  if (response.ok) return await response.text();
+  // Otherwise every 3D scene fails with "THREE is not defined", which reads
+  // as the agent's bug; say what actually went missing.
+  console.warn("[scene] three.js bundle request failed", { url, status: response.status });
+  return "";
 }
 
-/** Load the bundle once; resolves "" when it cannot be had. Never rejects. */
+/**
+ * Load the bundle once; resolves "" when it cannot be had. Never rejects. Only
+ * a real bundle is kept: a failure (a dev server still starting, a bad
+ * response) is tried again the next time a 3D scene asks.
+ */
 export function loadSceneThreeSource(): Promise<string> {
   if (loaded !== null) return Promise.resolve(loaded);
   pending ??= fetchThree()
-    .catch(() => "")
+    .catch((error: unknown) => {
+      console.warn("[scene] three.js bundle failed to load", error);
+      return "";
+    })
     .then((source) => {
-      loaded = source;
+      if (source) loaded = source;
+      else pending = null;
       return source;
     });
   return pending;

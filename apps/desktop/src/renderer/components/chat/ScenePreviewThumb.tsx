@@ -34,7 +34,7 @@ function decodeIfJson(text: string): string {
 
 /** True when `path` is a screenshot `ade scene preview` wrote. */
 export function isScenePreviewImagePath(path: string | null | undefined): boolean {
-  return Boolean(path) && PREVIEW_PATH.test(path!);
+  return typeof path === "string" && PREVIEW_PATH.test(path);
 }
 
 /** The preview PNG an `ade scene preview` output names, if any. */

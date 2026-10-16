@@ -20,7 +20,7 @@ import {
   type ScenePreviewResult,
 } from "../../../shared/scenePreview";
 import { isWoff2, SCENE_FONT_FACES, sceneFontFaceRule } from "../../../shared/sceneFontFaces";
-import { sceneUsesThree } from "../../../shared/chatSceneThree";
+import { SCENE_THREE_ASSET, sceneUsesThree } from "../../../shared/chatSceneThree";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -88,8 +88,6 @@ function resolveFontFaceCss(roots: { appPath: string; rendererDir: string }): st
   return fontFaceCssCache;
 }
 
-/** The renderer's three.js bundle for 3D scenes; see `vite.sceneThree.ts`. */
-const SCENE_THREE_ASSET = "assets/ade-scene-three.js";
 let threeSourceCache: string | null = null;
 
 /**
@@ -97,7 +95,7 @@ let threeSourceCache: string | null = null;
  * renderer's assets. Dev: the Vite server, which bundles it on first request.
  * Empty when neither answers; the preview then reports the scene's own error.
  */
-async function resolveThreeSource(roots: { rendererDir: string }): Promise<string> {
+async function resolveThreeSource(roots: { rendererDir: string; logger?: Logger | null }): Promise<string> {
   if (threeSourceCache) return threeSourceCache;
   try {
     threeSourceCache = fs.readFileSync(path.join(roots.rendererDir, SCENE_THREE_ASSET), "utf8");
@@ -106,12 +104,19 @@ async function resolveThreeSource(roots: { rendererDir: string }): Promise<strin
     // Not built here; a dev run serves it.
   }
   const devServer = process.env.VITE_DEV_SERVER_URL;
-  if (!devServer) return "";
+  if (!devServer) {
+    roots.logger?.warn("scene_preview.three_source_missing", { rendererDir: roots.rendererDir, devServer: null });
+    return "";
+  }
   try {
     const response = await fetch(new URL(`/${SCENE_THREE_ASSET}`, devServer));
     if (response.ok) threeSourceCache = await response.text();
   } catch {
     // The dev server is not up; no 3D in this preview.
+  }
+  if (!threeSourceCache) {
+    // The scene will report "THREE is not defined"; this line says why.
+    roots.logger?.warn("scene_preview.three_source_missing", { rendererDir: roots.rendererDir, devServer });
   }
   return threeSourceCache ?? "";
 }

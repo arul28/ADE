@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from "react";
+import type KatexModule from "katex";
+
+import { LRUCache } from "./lruCache";
 
 /**
  * One TeX formula in a chat reply, typeset by KaTeX.
@@ -17,7 +20,7 @@ import React, { useEffect, useState } from "react";
  * spin.
  */
 
-type Katex = typeof import("katex").default;
+type Katex = typeof KatexModule;
 
 let katex: Katex | null = null;
 let loadFailed = false;
@@ -36,19 +39,13 @@ function loadKatex(): Promise<void> {
 
 /** Past this, a formula is shown as source: typesetting it would stall a frame. */
 const MAX_TEX_LENGTH = 4_000;
-const CACHE_LIMIT = 600;
-/** Insertion-ordered; the first key is the least recently used. */
-const cache = new Map<string, string | null>();
+/** Per formula: its HTML, or null when it could not be typeset. */
+const cache = new LRUCache<string, string | null>(600);
 
 function typeset(tex: string, display: boolean): string | null {
   if (!katex || tex.length > MAX_TEX_LENGTH) return null;
   const key = `${display ? "D" : "I"}${tex}`;
-  if (cache.has(key)) {
-    const hit = cache.get(key)!;
-    cache.delete(key);
-    cache.set(key, hit);
-    return hit;
-  }
+  if (cache.has(key)) return cache.get(key) ?? null;
   let html: string | null;
   try {
     html = katex.renderToString(tex, {
@@ -65,7 +62,6 @@ function typeset(tex: string, display: boolean): string | null {
     html = null;
   }
   cache.set(key, html);
-  if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;
 }
 

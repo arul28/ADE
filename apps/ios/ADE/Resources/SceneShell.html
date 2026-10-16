@@ -104,7 +104,11 @@ window.__ADE_SCENE_RESTORED__ = @@ADE_IOS:RESTORED@@;
     var body = document.body;
     if (!body) return 0;
     var style = window.getComputedStyle(body);
-    return Math.ceil(body.scrollHeight + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
+    // scrollHeight is rounded; a body 399.4px tall reports 399, and the frame
+    // sized to that overflows by a fraction of a pixel and grows a scrollbar.
+    // The layout box keeps the fraction, so take the larger and round up.
+    var height = Math.max(body.scrollHeight, body.getBoundingClientRect().height);
+    return Math.ceil(height + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
   }
 
   // Every message carries the nonce of the document it was sent from. The host

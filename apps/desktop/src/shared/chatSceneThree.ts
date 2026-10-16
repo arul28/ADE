@@ -2,9 +2,11 @@
  * 3D scenes: the `ade.three` helper that runs inside a scene frame, next to a
  * host-supplied three.js (`window.THREE`, see `vite.sceneThree.ts`).
  *
- * A scene opts in by using it: any scene whose source says `THREE.` or
- * `ade.three` gets three.js inlined into its document. Nothing to declare, so
- * an agent cannot forget a marker and get "THREE is not defined".
+ * A scene opts in by using it: a scene whose source says `THREE.`,
+ * `ade.three`, `window.THREE`, or assigns `THREE` to a name of its own gets
+ * three.js inlined into its document. There is no marker to declare. A bare
+ * mention of the word does not count, so prose about "three" items does not
+ * pull most of a megabyte into a 2D scene.
  *
  * The helper exists for cost, not convenience. A naive three.js page renders
  * at the display's refresh rate forever; `ade.three.view` renders on demand:
@@ -20,7 +22,14 @@
  * the backslash the frame runs.
  */
 
-const THREE_USE = /\bTHREE\.|\bade\.three\b/;
+const THREE_USE = /\bTHREE\.|\bade\.three\b|\bwindow\.THREE\b|=\s*THREE\b/;
+
+/**
+ * Where the three.js bundle lives, relative to the renderer's output (and the
+ * dev server's root). Written by `vite.sceneThree.ts`, read back by
+ * `ade scene preview` in main; one name so the two cannot drift.
+ */
+export const SCENE_THREE_ASSET = "assets/ade-scene-three.js";
 
 /** True when a scene's markup uses three.js and needs it in its document. */
 export function sceneUsesThree(html: string): boolean {
@@ -244,15 +253,23 @@ export const SCENE_THREE_HELPER_SOURCE = String.raw`
     function dispose() {
       if (disposed) return;
       disposed = true;
+      window.removeEventListener("pagehide", dispose);
       frameFns = [];
       if (observer) observer.disconnect();
       if (controls) controls.dispose();
       views = views.filter(function (fn) { return fn !== schedule; });
+      var released = [];
       scene.traverse(function (node) {
         if (node.geometry) node.geometry.dispose();
         var materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
-        for (var i = 0; i < materials.length; i++) materials[i].dispose();
+        for (var i = 0; i < materials.length; i++) {
+          materials[i].dispose();
+          released.push(materials[i]);
+        }
       });
+      // Its painted materials are gone too: a theme switch must not keep
+      // repainting them, and a scene that rebuilds its view must not pile up.
+      painted = painted.filter(function (entry) { return released.indexOf(entry.material) === -1; });
       renderer.dispose();
     }
     window.addEventListener("pagehide", dispose);

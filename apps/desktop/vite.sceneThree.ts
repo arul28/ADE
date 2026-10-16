@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import type { Plugin } from "vite";
+import { SCENE_THREE_ASSET } from "./src/shared/chatSceneThree";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,8 +26,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export const SCENE_THREE_MODULE_ID = "virtual:ade-scene-three";
 const RESOLVED_ID = `\0${SCENE_THREE_MODULE_ID}`;
-/** Where the bundle lives: in the build output, and on the dev server. */
-export const SCENE_THREE_ASSET = "assets/ade-scene-three.js";
 
 async function bundleThree(): Promise<string> {
   const result = await build({

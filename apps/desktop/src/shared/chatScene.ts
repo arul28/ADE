@@ -303,6 +303,21 @@ function readFenceSpans(markdown: string): FenceSpan[] {
 }
 
 /**
+ * For each line of `markdown`, whether it belongs to a fenced code block (its
+ * opening and closing lines included, and a fence still open at the end). For
+ * passes that must leave code alone, such as the math delimiter rewrite, so
+ * they read fences exactly as this module and the markdown renderer do.
+ */
+export function fencedLineMask(markdown: string): boolean[] {
+  const { spans, open } = scanFences(markdown);
+  const mask = new Array<boolean>(String(markdown ?? "").split("\n").length).fill(false);
+  for (const span of open ? [...spans, open] : spans) {
+    for (let line = span.startLine; line < span.endLineExclusive; line += 1) mask[line] = true;
+  }
+  return mask;
+}
+
+/**
  * The CommonMark fence rule both readers share: a fence opens on three or more
  * backticks or tildes (indented at most three spaces) and closes only on a
  * bare run of the SAME character at least as long. So a ~~~ line inside a ```

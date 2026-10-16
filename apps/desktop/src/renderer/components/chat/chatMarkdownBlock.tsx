@@ -326,8 +326,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     code: ({ className, children }) => {
       const text = String(children ?? "");
       // remark-math hands formulas over as code with these classes.
-      if (typeof className === "string" && className.includes("language-math")) {
-        return <MathFormula tex={text} display={className.includes("math-display")} />;
+      const classes = typeof className === "string" ? className.split(/\s+/) : [];
+      if (classes.includes("language-math")) {
+        return <MathFormula tex={text} display={classes.includes("math-display")} />;
       }
       const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
       const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;

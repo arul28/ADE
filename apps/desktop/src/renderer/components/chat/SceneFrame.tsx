@@ -267,6 +267,11 @@ export function SceneFrame({
 
   // three.js is loaded the first time a 3D scene is about to run, not before.
   const [threeSource, setThreeSource] = useState<string | null>(sceneThreeSourceNow);
+  // Retry after a failed load asks for the bundle again rather than building
+  // the same document without it.
+  useEffect(() => {
+    if (attempt > 0) setThreeSource((current) => (current === "" ? null : current));
+  }, [attempt]);
   useEffect(() => {
     if (!usesThree || !wantFrame || threeSource !== null) return;
     let cancelled = false;

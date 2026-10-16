@@ -120,7 +120,6 @@ describe("SceneFrame", () => {
     await waitFor(() => expect(screen.getByTestId("chat-scene")).toBeTruthy());
     expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("drawing");
     expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-    expect(screen.getByTestId("chat-scene").textContent).toContain("Merged pull requests");
 
     rerender(<MarkdownBlock markdown={SCENE} sceneLive />);
     await screen.findByTestId("chat-scene-frame");

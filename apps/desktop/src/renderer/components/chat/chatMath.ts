@@ -18,50 +18,53 @@
  * written, so a shell snippet's `$HOME` stays a shell variable.
  */
 
+import { fencedLineMask } from "../../../shared/chatScene";
+
 /** Cheap gate: no `$` and no `\(`/`\[` means there is nothing to rewrite. */
 const MAYBE_MATH = /\$|\\\(|\\\[/;
-
-const FENCE_OPEN = /^\s{0,3}(`{3,}|~{3,})/;
 
 /** Rewrite every math spelling into `$$` form; see the module comment. */
 export function normalizeMathDelimiters(markdown: string): string {
   if (!MAYBE_MATH.test(markdown)) return markdown;
   const lines = markdown.split("\n");
+  // Fences are read by the one shared scanner, so this pass and the renderer
+  // never disagree about what is code.
+  const fenced = fencedLineMask(markdown);
   const out: string[] = [];
-  let fence: string | null = null;
   // Inside a display block (`$$` … `$$`, or `\[` … `\]`), lines are TeX.
   let mathBlock: "$$" | "\\]" | null = null;
-  for (const line of lines) {
+  /** Where the open display block's opener sits in `out`, and how it was written. */
+  let opener: { at: number; line: string } | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (fenced[index]) {
+      out.push(line);
+      continue;
+    }
     const trimmed = line.trim();
     if (mathBlock) {
       if (trimmed === mathBlock) {
         out.push(line.replace(trimmed, () => "$$"));
         mathBlock = null;
+        opener = null;
       } else {
         out.push(line);
       }
       continue;
     }
-    if (fence) {
-      out.push(line);
-      const close = line.match(FENCE_OPEN);
-      if (close && close[1]![0] === fence[0] && close[1]!.length >= fence.length && !line.trim().slice(close[1]!.length).length) {
-        fence = null;
-      }
-      continue;
-    }
-    const open = line.match(FENCE_OPEN);
-    if (open) {
-      fence = open[1]!;
-      out.push(line);
-      continue;
-    }
     if (trimmed === "$$" || trimmed === "\\[") {
       mathBlock = trimmed === "$$" ? "$$" : "\\]";
+      opener = { at: out.length, line };
       out.push(line.replace(trimmed, () => "$$"));
       continue;
     }
     out.push(rewriteLine(line));
+  }
+  // A display block that never closes (half-streamed, or a stray `$$`) would
+  // swallow the rest of the message, prose and code included, into one
+  // formula. Its opener stays literal text until the closer arrives.
+  if (opener) {
+    out[opener.at] = opener.line.replace(/\$\$|\\\[/, (found) => (found === "$$" ? "\\$\\$" : "\\\\["));
   }
   return out.join("\n");
 }
