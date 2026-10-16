@@ -18,9 +18,14 @@ export type CopilotSdkEventMapperState = {
   contextWindow: number | null;
   servedModel: string | null;
   costUsd: number | null;
+  streamedMessages: Set<string>;
+  compactionTokens: number | null;
+  requestedModel: string | null;
+  askedAuto: boolean;
+  mismatchModels: Set<string>;
 };
 export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
-  return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null };
+  return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null, streamedMessages: new Set(), compactionTokens: null, requestedModel: null, askedAuto: false, mismatchModels: new Set() };
 }
 
 export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state: CopilotSdkEventMapperState }): AgentChatEvent[] {
@@ -33,19 +38,27 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
   switch (type) {
     case "assistant.message_delta": {
       const chunk = text(data.deltaContent);
-      return chunk ? [{ type: "text", text: chunk, turnId, itemId: text(data.messageId) ?? undefined }] : [];
+      const id = text(data.messageId);
+      if (id) state.streamedMessages.add(id);
+      return chunk ? [{ type: "text", text: chunk, turnId, itemId: id ?? undefined }] : [];
     }
     case "assistant.message": {
       const content = text(data.content);
-      return content ? [{ type: "text", text: content, turnId, itemId: text(data.messageId) ?? undefined }] : [];
+      const id = text(data.messageId);
+      if (id && state.streamedMessages.has(id)) return [];
+      return content ? [{ type: "text", text: content, turnId, itemId: id ?? undefined }] : [];
     }
     case "assistant.reasoning_delta": {
       const chunk = text(data.deltaContent);
-      return chunk ? [{ type: "reasoning", text: chunk, turnId, itemId: text(data.reasoningId) ?? undefined }] : [];
+      const id = text(data.reasoningId);
+      if (id) state.streamedMessages.add(`reasoning:${id}`);
+      return chunk ? [{ type: "reasoning", text: chunk, turnId, itemId: id ?? undefined }] : [];
     }
     case "assistant.reasoning": {
       const content = text(data.content) ?? text(data.reasoning);
-      return content ? [{ type: "reasoning", text: content, turnId, itemId: text(data.reasoningId) ?? undefined }] : [];
+      const id = text(data.reasoningId);
+      if (id && state.streamedMessages.has(`reasoning:${id}`)) return [];
+      return content ? [{ type: "reasoning", text: content, turnId, itemId: id ?? undefined }] : [];
     }
     case "tool.execution_start": {
       const id = text(data.toolCallId);
@@ -62,8 +75,15 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       const start = state.toolNames.get(id);
       state.toolNames.delete(id);
       const failed = data.success === false || text(data.status) === "failed";
-      const result = data.result ?? data.error ?? data.textOutput ?? "";
-      return [{ type: "tool_result", tool: start?.name ?? text(data.toolName) ?? "tool", result, itemId: id, turnId, status: failed ? "failed" : "completed", ...(start?.mcp ? { mcp: start.mcp } : {}) }];
+      const result = record(data.result);
+      const error = record(data.error);
+      const resultText = text(result?.detailedContent) ?? text(result?.content) ?? text(error?.message) ?? text(data.textOutput) ?? "";
+      const out: AgentChatEvent[] = [{ type: "tool_result", tool: start?.name ?? text(data.toolName) ?? "tool", result: resultText, itemId: id, turnId, status: failed ? "failed" : "completed", ...(start?.mcp ? { mcp: start.mcp } : {}) }];
+      if (Array.isArray(data.fileEdits)) for (const raw of data.fileEdits) {
+        const edit = record(raw); const filePath = text(edit?.path); if (!filePath) continue;
+        out.push({ type: "file_change", path: filePath, kind: edit?.kind === "create" ? "create" : edit?.kind === "delete" ? "delete" : "modify", diff: "", itemId: id, turnId, status: "completed" });
+      }
+      return out;
     }
     case "assistant.usage": {
       const usage = record(data) ?? {};
@@ -87,15 +107,69 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       return [{ type: "context_usage", usage, origin: "live", state: "measured", turnId }];
     }
     case "session.compaction_start":
-      return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: number(data.currentTokens) ?? undefined, provider: "copilot", state: "started", turnId }];
-    case "session.compaction_complete":
-      return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: number(data.tokensBefore) ?? undefined, postTokens: number(data.tokensAfter) ?? undefined, provider: "copilot", state: data.success === false ? "failed" : "completed", failReason: data.success === false ? "provider_error" : undefined, turnId }];
-    case "session.error":
-    case "model.call_failure":
+      state.compactionTokens = number(data.currentTokens);
+      return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: state.compactionTokens ?? undefined, provider: "copilot", state: "started", turnId }];
+    case "session.compaction_complete": {
+      const preTokens = state.compactionTokens;
+      const removed = number(data.tokensRemoved);
+      state.compactionTokens = null;
+      return [{ type: "context_compact", trigger: data.trigger === "manual" ? "manual" : "auto", preTokens: preTokens ?? undefined, postTokens: preTokens != null && removed != null ? Math.max(0, preTokens - removed) : undefined, provider: "copilot", state: data.success === false ? "failed" : "completed", failReason: data.success === false ? "provider_error" : undefined, turnId }];
+    }
     case "session.warning": {
+      const message = text(data.message) ?? text(data.reason) ?? "Copilot reported a warning.";
+      return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message, turnId }];
+    }
+    case "session.error":
+    case "model.call_failure": {
       const message = text(data.message) ?? text(data.error) ?? text(data.reason) ?? "Copilot reported a runtime error.";
       return [{ type: "error", message, errorInfo: { category: /auth|login|token/i.test(message) ? "auth" : /limit|quota|premium/i.test(message) ? "rate_limit" : /network|connect/i.test(message) ? "network" : "unknown", provider: "copilot", model: state.servedModel ?? undefined }, turnId }];
     }
+    case "session.model_change":
+    case "session.auto_mode_resolved": {
+      const served = type === "session.model_change" ? text(data.newModel) : text(data.chosenModel);
+      if (!served) return [];
+      state.servedModel = served;
+      if (!state.askedAuto && state.requestedModel && state.requestedModel !== served && !state.mismatchModels.has(served)) {
+        state.mismatchModels.add(served);
+        return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot answered with ${served}, not ${state.requestedModel}.`, turnId }];
+      }
+      return [];
+    }
+    case "ade.todos": {
+      const rows = record(data)?.rows;
+      if (!Array.isArray(rows)) return [];
+      return [{ type: "todo_update", items: rows.flatMap((raw, index) => {
+        const item = record(raw); const description = text(item?.title) ?? text(item?.description) ?? text(item?.content) ?? text(item?.text);
+        if (!description) return [];
+        const status = text(item?.status);
+        return [{ id: text(item?.id) ?? String(index), description, status: status === "inProgress" || status === "in_progress" ? "in_progress" as const : status === "completed" || status === "done" ? "completed" as const : "pending" as const }];
+      }), turnId }];
+    }
+    case "tool.execution_progress": {
+      const id = text(data.toolCallId); const start = id ? state.toolNames.get(id) : undefined;
+      const progress = text(data.progressMessage);
+      return id && progress ? [{ type: "tool_result", tool: start?.name ?? "tool", result: progress, itemId: id, turnId, status: "running", ...(start?.mcp ? { mcp: start.mcp } : {}) }] : [];
+    }
+    case "tool.shell_output":
+    case "tool.execution_partial_result": {
+      const id = text(data.toolCallId); const start = id ? state.toolNames.get(id) : undefined;
+      const output = text(data.text) ?? text(data.partialOutput);
+      return id && output ? [{ type: "tool_result", tool: start?.name ?? "shell", result: output, itemId: id, turnId, status: "running", ...(start?.mcp ? { mcp: start.mcp } : {}) }] : [];
+    }
+    case "subagent.started": {
+      const id = text(root.agentId) ?? text(data.agentId) ?? text(data.toolCallId);
+      if (!id) return [];
+      return [{ type: "subagent_started", taskId: id, agentId: id, description: text(data.agentDescription) ?? text(data.agentDisplayName) ?? text(data.agentName) ?? "Copilot subagent", ...(text(data.agentType) ? { agentType: text(data.agentType)! } : {}), ...(text(data.agentDisplayName) ? { label: text(data.agentDisplayName)! } : {}), taskType: "subagent", ...(text(data.toolCallId) ? { parentToolUseId: text(data.toolCallId)! } : {}), turnId }];
+    }
+    case "subagent.completed":
+    case "subagent.failed": {
+      const id = text(root.agentId) ?? text(data.agentId) ?? text(data.toolCallId);
+      if (!id) return [];
+      const failed = type === "subagent.failed";
+      return [{ type: "subagent_result", taskId: id, agentId: id, taskType: "subagent", status: failed ? "failed" : data.cancelled === true ? "stopped" : "completed", summary: text(data.error) ?? text(data.agentDisplayName) ?? "Copilot subagent finished.", turnId }];
+    }
+    case "abort":
+      return [{ type: "system_notice", noticeKind: "info", severity: "info", message: "Copilot turn was interrupted.", turnId }];
     default:
       return [];
   }

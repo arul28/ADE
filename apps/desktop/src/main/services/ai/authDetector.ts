@@ -78,6 +78,7 @@ export type DetectedAuth =
       path: string;
       authenticated: boolean;
       verified: boolean;
+      login?: string;
       /** Cursor: false when CLI reports hobby/free tier (chat may still open with a notice). */
       paidPlan?: boolean;
     }

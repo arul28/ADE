@@ -204,6 +204,7 @@ export type AiIntegrationStatus = {
     preferredModelId?: string | null;
     authenticated?: boolean;
     verified?: boolean;
+    login?: string;
   }>;
   /**
    * Saved harness presets and provider accounts on THIS machine, so an agent
@@ -595,6 +596,7 @@ function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
   runtimeReadyAcpProviders?: ReadonlySet<string>,
+  copilotLogin?: string | null,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -604,6 +606,7 @@ function redactDetectedAuth(
         path: entry.path,
         authenticated: entry.authenticated,
         verified: entry.verified,
+        ...(entry.cli === "copilot" && entry.login ? { login: entry.login } : {}),
       };
     }
     if (entry.type === "api-key") {
@@ -641,6 +644,7 @@ function redactDetectedAuth(
       path: cliStatus.path ?? cliStatus.cli,
       authenticated: runtimeReady || cliStatus.authenticated,
       verified: runtimeReady || cliStatus.verified,
+      ...(cliStatus.cli === "copilot" && copilotLogin ? { login: copilotLogin } : {}),
     };
     if (existingIndex >= 0) {
       redacted[existingIndex] = normalizedEntry;
@@ -1118,6 +1122,20 @@ export function createAiIntegrationService(args: {
       cursor: Boolean(process.env.CURSOR_API_KEY?.trim() || cursorStoredAuth),
       droid: Boolean(droid?.installed && (droid.authenticated || !droid.verified)),
     };
+  };
+
+  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<{ isAuthenticated: boolean; login?: string } | null> => {
+    const executable = resolveCopilotExecutable({ auth, env: process.env });
+    const baseEnv = { ...process.env };
+    const connection = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
+    try {
+      const value = await connection.pooled.request<unknown>("auth");
+      if (!value || typeof value !== "object") return null;
+      const row = value as Record<string, unknown>;
+      return { isAuthenticated: row.isAuthenticated === true, ...(typeof row.login === "string" && row.login.trim() ? { login: row.login.trim() } : {}) };
+    } finally {
+      releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+    }
   };
 
   const getAvailabilityAsync = async () => {
@@ -2167,10 +2185,33 @@ export function createAiIntegrationService(args: {
           .map((phase) => ({ phase: phase.name, durationMs: phase.durationMs }));
 
         try {
-          const auth = await timePhase("detect_auth", () => detectAuth({
+          let auth = await timePhase("detect_auth", () => detectAuth({
             force: options?.force,
             shallowCliAuth: !shouldProbeCliModels,
           }));
+          let copilotSdkLogin: string | null = null;
+          try {
+            const sdkAuth = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
+            if (sdkAuth) {
+              copilotSdkLogin = sdkAuth.login ?? null;
+              const copilotEntry: DetectedAuth = {
+                type: "cli-subscription",
+                cli: "copilot",
+                path: resolveCopilotExecutable({ auth, env: process.env }).path,
+                authenticated: sdkAuth.isAuthenticated,
+                verified: sdkAuth.isAuthenticated,
+                ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
+              };
+              const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
+              if (copilotIndex >= 0) {
+                auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
+              } else {
+                auth = [...auth, copilotEntry];
+              }
+            }
+          } catch (error) {
+            logger.debug?.("ai.copilot_sdk_auth_status_unavailable", { error: error instanceof Error ? error.message : String(error) });
+          }
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
@@ -2353,7 +2394,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotSdkLogin),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,

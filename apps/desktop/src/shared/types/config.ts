@@ -1129,6 +1129,8 @@ export type AiDetectedAuth = {
   preferredModelId?: ModelId | null;
   authenticated?: boolean;
   verified?: boolean;
+  /** Signed-in Copilot account login, returned by the SDK auth status. */
+  login?: string;
 };
 
 export type AiProviderCredentialSource =

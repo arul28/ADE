@@ -235,7 +235,12 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     permissions: { family: "github-copilot", isCliWrapped: true, key: "copilot" },
     status: (ctx) => cliStatus(ctx, "copilot"),
     models: (ctx) => descriptorModels(ctx.status?.models?.copilot ?? []),
-    facts: (ctx) => pathFacts(ctx.status?.providerConnections?.copilot?.path, "Binary"),
+    facts: (ctx) => [
+      ...pathFacts(ctx.status?.providerConnections?.copilot?.path, "Binary"),
+      ...(ctx.status?.detectedAuth?.find((entry) => entry.cli === "copilot")?.login
+        ? [{ label: "Signed in", value: ctx.status.detectedAuth.find((entry) => entry.cli === "copilot")!.login! }]
+        : []),
+    ],
     credentialLine: (ctx) => shortCredentialSource(ctx.status?.providerConnections?.copilot ?? null),
     AuthActions: CopilotAuthActions,
   },

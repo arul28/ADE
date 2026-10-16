@@ -640,7 +640,12 @@ async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTas
       systemMessage: "Return only the requested metadata. Do not use tools or access external resources.",
     });
     const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
-    const text = typeof record.content === "string" ? record.content : typeof record.message === "string" ? record.message : "";
+    const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : {};
+    const text = typeof data.content === "string"
+      ? data.content
+      : typeof record.content === "string"
+        ? record.content
+        : typeof record.message === "string" ? record.message : "";
     return { text: text.trim(), structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null, sessionId: null };
   } finally {
     releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);

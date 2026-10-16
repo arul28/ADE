@@ -3418,6 +3418,7 @@ type CopilotRuntime = {
   interrupted: boolean;
   eventMapperState: CopilotSdkEventMapperState;
   pendingSteers: QueuedSteer[];
+  turnSettled?: (aborted: boolean) => void;
 };
 
 type PiRuntime = {
@@ -25447,7 +25448,7 @@ export function createAgentChatService(args: {
     }
 
     const preserveProviderResumeState =
-      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi"
+      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi" || managed.runtime.kind === "copilot"
         // Every ACP dialect can rejoin a session by id, so an idle or
         // shutdown teardown must keep the pointer it would resume from.
         || managed.runtime.kind === "acp"
@@ -25628,6 +25629,7 @@ export function createAgentChatService(args: {
       rt.interrupted = true;
       cancelQueuedSteers(managed, rt, "interrupted");
       if (preserveProviderResumeState) persistChatState(managed);
+      cancelPendingInputsFrom(managed, "ade");
       void rt.sdk.abort(managed.session.id).catch(() => undefined);
       void rt.sdk.disconnect(managed.session.id).catch(() => undefined);
       releaseCopilotSdkConnection(rt.poolKey, rt.poolGeneration);
@@ -54560,7 +54562,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "copilot" && managed.runtime.sdk.process.exitCode == null && !managed.runtime.sdk.process.killed) {
       return managed.runtime;
     }
-    if (managed.runtime) teardownRuntime(managed, "handle_close");
+    if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
     const auth = await detectAuth();
     const executable = resolveCopilotExecutable({ auth, env: buildAgentRuntimeEnv(managed) });
     const baseEnv = buildAgentRuntimeEnv(managed);
@@ -54591,18 +54593,54 @@ export function createAgentChatService(args: {
               adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
             }),
       }, Boolean(legacySessionId));
+      const eventMapperState = createCopilotSdkEventMapperState();
+      eventMapperState.requestedModel = modelId;
+      eventMapperState.askedAuto = modelId === "auto";
       const runtime: CopilotRuntime = {
         kind: "copilot", poolKey: acquired.poolKey, poolGeneration: acquired.generation,
         sdk: acquired.pooled, sdkSessionId: opened.sessionId, modelId, activeTurnId: null,
-        busy: false, interrupted: false, eventMapperState: createCopilotSdkEventMapperState(), pendingSteers: [],
+        busy: false, interrupted: false, eventMapperState, pendingSteers: [],
       };
       acquired.pooled.bridge.onEvent = (chatId, event) => {
         const target = managedSessions.get(chatId);
         const current = target?.runtime;
         if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
-        for (const mapped of mapCopilotSdkEvent(event, { turnId: current.activeTurnId, state: current.eventMapperState })) {
-          emitChatEvent(target, mapped);
+        const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
+        const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
+        if (eventRecord.type === "session.idle") {
+          const aborted = eventData.aborted === true;
+          current.interrupted = current.interrupted || aborted;
+          current.turnSettled?.(aborted);
         }
+        for (const mapped of mapCopilotSdkEvent(event, { turnId: current.activeTurnId, state: current.eventMapperState })) emitChatEvent(target, mapped);
+      };
+      acquired.pooled.bridge.onWorkerExit = (chatId, error) => {
+        const target = managedSessions.get(chatId);
+        const current = target?.runtime;
+        if (!target || current?.kind !== "copilot" || current.sdk.process.exitCode == null) return;
+        cancelPendingInputsFrom(target, "ade");
+        current.interrupted = true;
+        current.turnSettled?.(true);
+        logger.warn("agent_chat.copilot_sdk_worker_exited", { sessionId: chatId, error: error.message });
+      };
+      acquired.pooled.bridge.onExitPlanRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target) return { approved: false, feedback: "This Copilot chat is no longer active." };
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const recommendation = typeof request.recommendedAction === "string" ? request.recommendedAction : "exit_only";
+        const safeAction = recommendation.toLowerCase().includes("autopilot") ? "exit_only" : recommendation;
+        const response = await requestChatInput({
+          chatSessionId: target.session.id, title: "Copilot is ready to leave plan mode",
+          body: typeof request.summary === "string" ? request.summary : "Review the proposed plan before Copilot continues.",
+          source: "ade", kind: "plan_approval", eventDescription: "Copilot is requesting approval to leave plan mode.",
+          questions: [{ id: "copilot-exit-plan", question: "Approve this plan and let Copilot continue?", options: [
+            { label: "Approve and continue", value: safeAction }, { label: "Reject", value: "reject" },
+          ] }],
+        });
+        const choice = response.answers["copilot-exit-plan"]?.[0];
+        return response.decision === "accept" && choice && choice !== "reject"
+          ? { approved: true, selectedAction: choice }
+          : { approved: false, feedback: response.responseText || "Plan not approved in ADE." };
       };
       acquired.pooled.bridge.onPermissionRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -54711,6 +54749,8 @@ export function createAgentChatService(args: {
     runtime.busy = true;
     runtime.activeTurnId = turnId;
     runtime.eventMapperState = createCopilotSdkEventMapperState();
+    runtime.eventMapperState.requestedModel = runtime.modelId;
+    runtime.eventMapperState.askedAuto = runtime.modelId === "auto";
     setSessionActive(managed);
     const displayText = args.displayText.trim();
     const userText = args.userText?.trim() || displayText;
@@ -54734,25 +54774,29 @@ export function createAgentChatService(args: {
         };
       }));
       args.onBackendDispatched?.();
-      const result = await runtime.sdk.send(managed.session.id, args.promptText, attachments);
-      const response = result && typeof result === "object" ? result as Record<string, unknown> : {};
-      const data = response.data && typeof response.data === "object" ? response.data as Record<string, unknown> : {};
-      const finalText = typeof data.content === "string" ? data.content : "";
-      if (finalText && !runtime.eventMapperState.servedModel) emitChatEvent(managed, { type: "text", text: finalText, turnId });
+      let settleTurn!: (aborted: boolean) => void;
+      const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
+      runtime.turnSettled = settleTurn;
+      await runtime.sdk.send(managed.session.id, args.promptText, attachments);
+      runtime.interrupted = runtime.interrupted || await turnIdle;
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
       emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
       emitChatEvent(managed, {
         type: "done", status: runtime.interrupted ? "interrupted" : "completed", turnId,
         model: managed.session.model, modelId: managed.session.modelId ?? undefined,
         usage: copilotSdkDoneUsage(runtime.eventMapperState),
+        servedModel: runtime.eventMapperState.servedModel ?? undefined,
       });
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       persistChatState(managed);
     } catch (error) {
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.turnSettled?.(runtime.interrupted);
+      runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
       emitChatEvent(managed, { type: "error", message, turnId });
@@ -54761,6 +54805,7 @@ export function createAgentChatService(args: {
         type: "done", status: runtime.interrupted ? "interrupted" : "failed", turnId,
         model: managed.session.model, modelId: managed.session.modelId ?? undefined,
         usage: copilotSdkDoneUsage(runtime.eventMapperState),
+        servedModel: runtime.eventMapperState.servedModel ?? undefined,
       });
       persistChatState(managed);
     }
@@ -58565,6 +58610,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       rt.interrupted = true;
       if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
+      cancelPendingInputsFrom(managed, "ade");
       await rt.sdk.abort(managed.session.id).catch(() => undefined);
       persistChatState(managed);
       return result;

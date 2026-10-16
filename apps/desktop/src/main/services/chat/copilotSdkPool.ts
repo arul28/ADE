@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { terminateChildProcessTree } from "../shared/utils";
+import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
   CopilotSdkSessionConfig,
   CopilotSdkAttachment,
@@ -16,7 +17,9 @@ import type {
 type Waiter = { resolve: (value: unknown) => void; reject: (error: Error) => void; type: string };
 export type CopilotSdkBridge = {
   onEvent: ((chatId: string, event: unknown) => void) | null;
+  onWorkerExit: ((chatId: string, error: Error) => void) | null;
   onPermissionRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
+  onExitPlanRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
   onUserInputRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
   onMcpAuthRequest: ((chatId: string, waiterId: string, request: unknown) => Promise<unknown>) | null;
 };
@@ -56,7 +59,9 @@ function poolKey(init: CopilotSdkWorkerInit): string {
 }
 
 async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<CopilotSdkPooled> {
-  const child = fork(resolveWorkerPath(), [], {
+  // The shared SDK orphan sweep reads this marker to distinguish a worker
+  // whose owning brain died from one owned by another live ADE instance.
+  const child = fork(resolveWorkerPath(), [cursorSdkOwnerPidArg(process.pid)], {
     cwd: process.cwd(),
     env: { ...init.baseEnv },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -69,7 +74,7 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     if (child.exitCode != null || child.killed || child.connected === false) throw errorClosed();
     child.send(message);
   };
-  const bridge: CopilotSdkBridge = { onEvent: null, onPermissionRequest: null, onUserInputRequest: null, onMcpAuthRequest: null };
+  const bridge: CopilotSdkBridge = { onEvent: null, onWorkerExit: null, onPermissionRequest: null, onExitPlanRequest: null, onUserInputRequest: null, onMcpAuthRequest: null };
   const pooled: CopilotSdkPooled = {
     process: child,
     bridge,
@@ -113,11 +118,15 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     }
     if (message.type === "event") { bridge.onEvent?.(message.chatId, message.event); return; }
     if (message.type === "log") { logger?.[message.level === "error" ? "warn" : message.level]?.(`agent_chat.copilot_sdk_worker_${message.level}`, { message: message.message, detail: message.detail }); return; }
-    const callback = message.type === "permission_request" ? bridge.onPermissionRequest : message.type === "user_input_request" ? bridge.onUserInputRequest : bridge.onMcpAuthRequest;
-    void Promise.resolve(callback?.(message.chatId, message.waiterId, message.request) ?? (message.type === "permission_request" ? { kind: "reject" } : message.type === "mcp_auth_request" ? { kind: "cancelled" } : { answer: "", wasFreeform: true }))
+    const callback = message.type === "permission_request" ? bridge.onPermissionRequest
+      : message.type === "exit_plan_request" ? bridge.onExitPlanRequest
+        : message.type === "user_input_request" ? bridge.onUserInputRequest : bridge.onMcpAuthRequest;
+    void Promise.resolve(callback?.(message.chatId, message.waiterId, message.request) ?? (message.type === "permission_request" ? { kind: "reject" } : message.type === "exit_plan_request" ? { approved: false, feedback: "No ADE plan approval handler is available." } : message.type === "mcp_auth_request" ? { kind: "cancelled" } : { answer: "", wasFreeform: true }))
       .then((result) => {
         const response = message.type === "permission_request"
           ? { type: "respond_permission" as const, payload: { waiterId: message.waiterId, result } }
+          : message.type === "exit_plan_request"
+            ? { type: "respond_exit_plan" as const, payload: { waiterId: message.waiterId, result } }
           : message.type === "user_input_request"
             ? { type: "respond_user_input" as const, payload: { waiterId: message.waiterId, response: result } }
             : { type: "respond_mcp_auth" as const, payload: { waiterId: message.waiterId, result } };
@@ -125,7 +134,13 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       });
   });
   child.on("error", (error) => rejectAll(error));
-  child.on("exit", (code, signal) => rejectAll(new Error(`Copilot SDK worker exited (${code ?? signal ?? "unknown"}).`)));
+  child.on("exit", (code, signal) => {
+    const error = new Error(`Copilot SDK worker exited (${code ?? signal ?? "unknown"}).`);
+    rejectAll(error);
+    for (const [key, entry] of pools) if (entry.pooled === pooled) pools.delete(key);
+    const chatId = typeof init.baseEnv.ADE_CHAT_SESSION_ID === "string" ? init.baseEnv.ADE_CHAT_SESSION_ID : null;
+    if (chatId) bridge.onWorkerExit?.(chatId, error);
+  });
   try { await pooled.request("init", init); }
   catch (error) { pooled.dispose(); throw error; }
   return pooled;
@@ -139,25 +154,33 @@ export async function acquireCopilotSdkConnection(args: {
 }): Promise<{ pooled: CopilotSdkPooled; generation: number; poolKey: string }> {
   const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: args.baseEnv };
   const key = poolKey(init);
-  const active = pools.get(key);
-  if (active && active.pooled.process.exitCode == null && !active.pooled.process.killed) {
-    active.refs += 1;
-    return { pooled: active.pooled, generation: active.generation, poolKey: key };
-  }
-  let promise = pending.get(key);
-  if (!promise) {
-    promise = create(init, args.logger).finally(() => pending.delete(key));
-    pending.set(key, promise);
-  }
-  const pooled = await promise;
-  const entry = pools.get(key);
-  if (entry?.pooled === pooled) {
+  for (let staleInitRetries = 0; ; staleInitRetries += 1) {
+    const active = pools.get(key);
+    if (active && active.pooled.process.exitCode == null && !active.pooled.process.killed) {
+      active.refs += 1;
+      return { pooled: active.pooled, generation: active.generation, poolKey: key };
+    }
+    if (active) pools.delete(key);
+    let promise = pending.get(key);
+    if (!promise) {
+      promise = create(init, args.logger).finally(() => pending.delete(key));
+      pending.set(key, promise);
+    }
+    const pooled = await promise;
+    let entry = pools.get(key);
+    const live = pooled.process.exitCode == null && !pooled.process.killed;
+    if (!live) {
+      pooled.dispose();
+      if (staleInitRetries >= 2) throw new Error("Copilot SDK worker initialization did not settle after retries.");
+      continue;
+    }
+    if (!entry || entry.pooled !== pooled) {
+      entry = { pooled, generation: ++generationCounter, refs: 0 };
+      pools.set(key, entry);
+    }
     entry.refs += 1;
-    return { pooled, generation: entry.generation, poolKey: key };
+    return { pooled: entry.pooled, generation: entry.generation, poolKey: key };
   }
-  const generation = ++generationCounter;
-  pools.set(key, { pooled, generation, refs: 1 });
-  return { pooled, generation, poolKey: key };
 }
 
 export function releaseCopilotSdkConnection(poolKey: string, generation: number): void {

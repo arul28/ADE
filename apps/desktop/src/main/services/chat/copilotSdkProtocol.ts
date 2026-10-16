@@ -1,4 +1,5 @@
 import type { PermissionRequest, PermissionRequestResult } from "@github/copilot-sdk";
+import type { ExitPlanModeRequest, ExitPlanModeResult } from "@github/copilot-sdk";
 
 export type CopilotSdkWorkerInit = {
   cliPath: string;
@@ -32,6 +33,7 @@ export type CopilotSdkWorkerRequest =
   | { type: "set_model"; requestId: string; payload: { chatId: string; model: string; reasoningEffort?: string | null } }
   | { type: "abort" | "disconnect"; requestId: string; payload: { chatId: string } }
   | { type: "respond_permission"; requestId: string; payload: { waiterId: string; result: PermissionRequestResult } }
+  | { type: "respond_exit_plan"; requestId: string; payload: { waiterId: string; result: ExitPlanModeResult } }
   | { type: "respond_user_input"; requestId: string; payload: { waiterId: string; response: { answer: string; wasFreeform: boolean } } }
   | { type: "respond_mcp_auth"; requestId: string; payload: { waiterId: string; result: { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number } } }
   | { type: "utility"; requestId: string; payload: { cwd: string; prompt: string; model?: string; systemMessage?: string } };
@@ -41,6 +43,7 @@ export type CopilotSdkWorkerResponse =
   | { type: "response"; requestId: string; ok: false; error: string }
   | { type: "event"; chatId: string; event: unknown }
   | { type: "permission_request"; chatId: string; waiterId: string; request: PermissionRequest }
+  | { type: "exit_plan_request"; chatId: string; waiterId: string; request: ExitPlanModeRequest }
   | { type: "user_input_request"; chatId: string; waiterId: string; request: unknown }
   | { type: "mcp_auth_request"; chatId: string; waiterId: string; request: unknown }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };

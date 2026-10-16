@@ -15,7 +15,7 @@ type UserInputResponse = { answer: string; wasFreeform: boolean };
 type McpAuthResult = { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number };
 let client: Client | null = null;
 const sessions = new Map<string, Session>();
-const waiters = new Map<string, (value: unknown) => void>();
+const waiters = new Map<string, { chatId: string; type: "permission_request" | "user_input_request" | "mcp_auth_request" | "exit_plan_request"; resolve: (value: unknown) => void }>();
 let disposed = false;
 
 function post(message: CopilotSdkWorkerResponse): void {
@@ -26,10 +26,22 @@ function postLog(level: "debug" | "info" | "warn" | "error", message: string, de
   post({ type: "log", level, message, ...(detail === undefined ? {} : { detail }) });
 }
 
-function waitFor<T>(type: "permission_request" | "user_input_request" | "mcp_auth_request", chatId: string, request: unknown): Promise<T> {
+function settleWaiters(chatId?: string): void {
+  for (const [waiterId, waiter] of waiters) {
+    if (chatId && waiter.chatId !== chatId) continue;
+    const fallback = waiter.type === "exit_plan_request" ? { approved: false, feedback: "The Copilot chat was interrupted." }
+      : waiter.type === "permission_request" ? { kind: "reject" }
+      : waiter.type === "mcp_auth_request" ? { kind: "cancelled" }
+        : { answer: "", wasFreeform: true };
+    waiter.resolve(fallback);
+    waiters.delete(waiterId);
+  }
+}
+
+function waitFor<T>(type: "permission_request" | "user_input_request" | "mcp_auth_request" | "exit_plan_request", chatId: string, request: unknown): Promise<T> {
   const waiterId = randomUUID();
   return new Promise<T>((resolve) => {
-    waiters.set(waiterId, resolve as (value: unknown) => void);
+    waiters.set(waiterId, { chatId, type, resolve: resolve as (value: unknown) => void });
     post({ type, chatId, waiterId, request } as CopilotSdkWorkerResponse);
   });
 }
@@ -45,7 +57,9 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     skillDirectories: config.skillDirectories,
     mcpServers: config.mcpServers as CopilotSdk.SessionConfig["mcpServers"],
     disabledMcpServers: config.disabledMcpServers,
-    enableConfigDiscovery: true,
+    // Interactive chats inherit workspace `.mcp.json` like the Copilot CLI.
+    // Utility sessions must remain isolated from user/workspace/plugin MCP.
+    enableConfigDiscovery: !config.utility,
     infiniteSessions: { enabled: !config.utility },
     availableTools: config.utility ? [] : undefined,
     skipCustomInstructions: config.utility,
@@ -58,13 +72,19 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     onMcpAuthRequest: config.utility
       ? async () => ({ kind: "cancelled" as const })
       : (request) => waitFor<McpAuthResult>("mcp_auth_request", config.chatId, request),
-    onExitPlanModeRequest: config.utility ? undefined : () => waitFor("permission_request", config.chatId, { kind: "exit_plan_mode" }),
+    onExitPlanModeRequest: config.utility ? undefined : (request) => waitFor("exit_plan_request", config.chatId, request),
     // Plan mode is applied after open through the experimental session mode RPC.
   } as CopilotSdk.SessionConfig;
 }
 
 function watchSession(chatId: string, session: Session): void {
-  session.on((event) => post({ type: "event", chatId, event }));
+  session.on((event) => {
+    post({ type: "event", chatId, event });
+    if (event.type === "session.todos_changed") {
+      void session.rpc.plan.readSqlTodos().then((todos) => post({ type: "event", chatId, event: { type: "ade.todos", data: todos } }))
+        .catch((error) => postLog("warn", "Could not read Copilot todos", { error: error instanceof Error ? error.message : String(error) }));
+    }
+  });
 }
 
 async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
@@ -85,29 +105,25 @@ async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
   return status;
 }
 
-async function configuredMcpNames(): Promise<string[]> {
-  if (!client) throw new Error("Copilot SDK is not initialized; utility task was not started.");
-  const result = await (client.rpc as unknown as { mcp: { listConfigured(): Promise<unknown> } }).mcp.listConfigured();
-  const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
-  const rows = Array.isArray(result) ? result : Array.isArray(record.servers) ? record.servers : null;
-  if (!rows) throw new Error("Could not enumerate configured Copilot MCP servers; utility task was not started.");
-  return rows.flatMap((row) => {
-    const name = row && typeof row === "object" ? (row as Record<string, unknown>).name : null;
-    return typeof name === "string" && name.trim() ? [name.trim()] : [];
-  });
-}
-
 async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
-  if (req.type === "respond_permission") { waiters.get(req.payload.waiterId)?.(req.payload.result); waiters.delete(req.payload.waiterId); return {}; }
-  if (req.type === "respond_user_input") { waiters.get(req.payload.waiterId)?.(req.payload.response); waiters.delete(req.payload.waiterId); return {}; }
-  if (req.type === "respond_mcp_auth") { waiters.get(req.payload.waiterId)?.(req.payload.result); waiters.delete(req.payload.waiterId); return {}; }
+  if (req.type === "respond_permission" || req.type === "respond_user_input" || req.type === "respond_mcp_auth" || req.type === "respond_exit_plan") {
+    const waiter = waiters.get(req.payload.waiterId);
+    if (waiter) {
+      const result = req.type === "respond_permission" || req.type === "respond_mcp_auth" || req.type === "respond_exit_plan" ? req.payload.result : req.payload.response;
+      waiter.resolve(result);
+      waiters.delete(req.payload.waiterId);
+    }
+    return {};
+  }
   if (req.type === "init") return initialize(req.payload);
   if (req.type === "dispose") {
     disposed = true;
+    settleWaiters();
     for (const session of sessions.values()) await session.disconnect().catch(() => undefined);
     sessions.clear();
     await client?.stop().catch(() => undefined);
     client = null;
+    if (process.connected) process.disconnect();
     return {};
   }
   if (!client || disposed) throw new Error("Copilot SDK worker is not initialized.");
@@ -128,7 +144,7 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   if (req.type === "send") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    return session.sendAndWait({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode });
+    return session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode });
   }
   if (req.type === "set_model") {
     const session = sessions.get(req.payload.chatId);
@@ -136,10 +152,9 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
     await session.setModel(req.payload.model, req.payload.reasoningEffort ? { reasoningEffort: req.payload.reasoningEffort as ReasoningEffort } : undefined);
     return {};
   }
-  if (req.type === "abort") { await sessions.get(req.payload.chatId)?.abort().catch(() => undefined); return {}; }
-  if (req.type === "disconnect") { await sessions.get(req.payload.chatId)?.disconnect().catch(() => undefined); sessions.delete(req.payload.chatId); return {}; }
+  if (req.type === "abort") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.abort().catch(() => undefined); return {}; }
+  if (req.type === "disconnect") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.disconnect().catch(() => undefined); sessions.delete(req.payload.chatId); return {}; }
   if (req.type === "utility") {
-    const disabledMcpServers = await configuredMcpNames();
     const id = `ade-utility-${randomUUID()}`;
     const session = await client.createSession(sessionConfig({
       chatId: id,
@@ -147,7 +162,6 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
       cwd: req.payload.cwd,
       model: req.payload.model,
       systemMessage: req.payload.systemMessage,
-      disabledMcpServers,
       utility: true,
     }));
     try {
@@ -172,5 +186,7 @@ process.on("message", (raw: unknown) => {
   );
 });
 
-process.once("disconnect", () => { void dispatch({ type: "dispose", requestId: "disconnect" }); });
+process.once("disconnect", () => { settleWaiters(); void dispatch({ type: "dispose", requestId: "disconnect" }); });
+process.on("unhandledRejection", (reason) => { postLog("error", "Unhandled rejection in Copilot SDK worker", { error: reason instanceof Error ? reason.message : String(reason) }); process.exit(1); });
+process.on("uncaughtException", (error) => { postLog("error", "Uncaught exception in Copilot SDK worker", { error: error.message, stack: error.stack }); process.exit(1); });
 
