@@ -360,8 +360,8 @@ final class CaptureEngine {
     /// made against a stale content snapshot.
     static let startBackoffs: [TimeInterval] = [0.25, 0.5, 1.0, 2.0]
 
-    /// How long one `screenshot` may spend, retries and content lookups
-    /// included.
+    /// How long the frame inside one `observe` may spend, retries and content
+    /// lookups included.
     ///
     /// Derived from the driver's other clocks, not chosen. `observe` is the only
     /// caller on the agent path: its accessibility walk is bounded at
@@ -378,7 +378,17 @@ final class CaptureEngine {
     /// not arrive is not a failure of the observation — the element tree is
     /// what an agent acts on, and `observe` already reports a capture that
     /// produced no frame.
-    static let screenshotBudget: TimeInterval = 5
+    static let observeScreenshotBudget: TimeInterval = 5
+
+    /// How long one explicit `screenshot` op may spend, retries and content
+    /// lookups included.
+    ///
+    /// The agent's `screenshot` action wants the picture itself, so a frame
+    /// that is slow but healthy must succeed. It is not bound by the walk's
+    /// 5 s; it is bounded by the watchdog's 15 s (a handler past it is answered
+    /// on its behalf) with a margin, so 10 s. Past that the capture is treated
+    /// as stalled, the same as before, just with room for a slow start.
+    static let explicitScreenshotBudget: TimeInterval = 10
 
     /// How long one wait may run: its own ceiling, or what is left of a budget
     /// handed down when that is less. `nil` is a caller with no budget.
@@ -538,13 +548,14 @@ final class CaptureEngine {
 
     /// One PNG on disk. Returns its pixel size.
     ///
-    /// Bounded by `screenshotBudget`, retries and all: see that constant for
-    /// why the caller of this one may not wait for it indefinitely.
+    /// Bounded by `budget`, retries and all: see `observeScreenshotBudget` and
+    /// `explicitScreenshotBudget` for why each caller may not wait indefinitely.
     func screenshot(
         laneId: String,
         displayId: CGDirectDisplayID,
         windowId: CGWindowID?,
-        path: String
+        path: String,
+        budget: TimeInterval
     ) throws -> (width: Int, height: Int) {
         guard #available(macOS 12.3, *) else {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
@@ -552,7 +563,7 @@ final class CaptureEngine {
         let image = try captureImage(
             displayId: displayId,
             windowId: windowId,
-            deadline: Date().addingTimeInterval(Self.screenshotBudget)
+            deadline: Date().addingTimeInterval(budget)
         )
         try Self.writePNG(image, to: path)
         return (image.width, image.height)
