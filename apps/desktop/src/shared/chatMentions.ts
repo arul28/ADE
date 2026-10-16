@@ -145,7 +145,7 @@ export function parseChatMentionKindFilter(query: string): {
   rest: string;
 } {
   const trimmed = query.trimStart();
-  const match = /^([A-Za-z]+)(?:[ \t]+([\s\S]*))?$/.exec(trimmed);
+  const match = /^([A-Za-z]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
   const kind = match ? KIND_FILTER_WORDS[match[1]!.toLowerCase()] : undefined;
   if (!match || !kind) return { kind: null, rest: query.trim() };
   return { kind, rest: (match[2] ?? "").trim() };

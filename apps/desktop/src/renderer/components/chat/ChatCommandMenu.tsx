@@ -880,12 +880,13 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                         >
                           <span
                             className={cn("h-1.5 w-1.5 shrink-0 rounded-full", prStateTone(prMeta.state).dot)}
+                            role="img"
                             aria-label={prStateTone(prMeta.state).label}
                           />
                           <span className={cn("shrink-0 font-medium", labelClass)}>{number}</span>
                           <span className="truncate text-fg/60">{titleText}</span>
                           {checks ? (
-                            <span className={cn("shrink-0", checks.className)} title={checks.label} aria-label={checks.label}>
+                            <span className={cn("shrink-0", checks.className)} title={checks.label} role="img" aria-label={checks.label}>
                               {checks.glyph}
                             </span>
                           ) : null}
@@ -911,6 +912,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                           <Desktop size={13} weight="duotone" className={iconClass} />
                           <span
                             className={cn("h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-emerald-400" : "bg-fg/20")}
+                            role="img"
                             aria-label={online ? "Online" : "Offline"}
                           />
                           <span className={cn("truncate", labelClass)}>{item.mention.title}</span>

@@ -396,6 +396,9 @@ function AttachmentTranscriptChip({ chip, attachment }: { chip: Chip; attachment
         }}
         onMouseEnter={(event) => setPeekAnchor(event.currentTarget)}
         onMouseLeave={() => setPeekAnchor(null)}
+        // The chip is focusable, so the peek must open for keyboard users too.
+        onFocus={(event) => setPeekAnchor(event.currentTarget)}
+        onBlur={() => setPeekAnchor(null)}
       >
         {isImage && thumbnail ? (
           <img

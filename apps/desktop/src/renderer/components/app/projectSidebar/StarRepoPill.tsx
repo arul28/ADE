@@ -50,7 +50,11 @@ export function StarRepoPill() {
       const shownWhenAnswered = visibleRef.current;
       rootAppStoreApi.getState().updateStarPill((prev) => ({
         ...prev,
-        lastCheckedAt: Date.now(),
+        // Only a definite answer advances the 6 h clock. An "unknown" result
+        // (no credential, offline, rate limited) must not suppress the next
+        // check for six hours, or someone who starred while offline keeps
+        // seeing the pill long after they starred.
+        lastCheckedAt: state === "unknown" ? prev.lastCheckedAt : Date.now(),
         starred: prev.starred || state === "starred",
       }));
       if (state === "starred" && shownWhenAnswered) setThanks("showing");

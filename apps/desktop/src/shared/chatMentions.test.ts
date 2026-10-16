@@ -28,6 +28,8 @@ describe("parseChatMentionKindFilter", () => {
     ["terminal", "terminal", ""],
     // The rest of the query is the text to search inside the chosen section.
     ["pr 1234", "pr", "1234"],
+    // "followed by whitespace" is any whitespace, not just a space or a tab.
+    ["pr\n1234", "pr", "1234"],
     // A word that merely starts with a kind name is an ordinary search, so
     // `@prService` still searches files instead of narrowing to pull requests.
     ["prService", null, "prService"],
