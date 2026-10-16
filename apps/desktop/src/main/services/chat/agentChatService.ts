@@ -54889,34 +54889,7 @@ export function createAgentChatService(args: {
     const rawGoalCommand = [args.userText, args.displayText, args.promptText].find((value) => /^\s*\/goal(?:\s|$)/i.test(value ?? ""));
     const goalCommand = rawGoalCommand?.trim().match(/^\/goal(?:\s+(.*))?$/is);
     if (goalCommand) {
-      const goalArg = goalCommand[1]?.trim() ?? "";
-      const copilotMode = managed.session.copilotPermissionMode ?? "ask";
-      if (!goalArg) {
-        controlReply = managed.session.claudeGoal ? `Goal: ${managed.session.claudeGoal.condition}` : "No goal set.";
-      } else if (/^clear$/i.test(goalArg)) {
-        if (managed.runtime?.kind === "copilot" && managed.runtime.busy) await managed.runtime.sdk.abort(managed.session.id);
-        const previous = managed.session.claudeGoal;
-        managed.session.claudeGoal = null;
-        if (previous) emitChatEvent(managed, { type: "claude_goal_cleared" });
-        persistChatState(managed);
-        emitSessionModeMeta(managed);
-        controlReply = previous ? "Goal cleared." : "No goal set.";
-      } else if (copilotMode === "plan" || copilotMode === "ask") {
-        controlReply = "Copilot goals need Auto-edit or higher. Change the permission mode before setting a goal.";
-      } else {
-        managed.session.claudeGoal = {
-          condition: goalArg,
-          iterations: 0,
-          setAt: Date.now(),
-          tokensAtStart: 0,
-          updatedAt: Date.now(),
-        };
-        emitChatEvent(managed, { type: "claude_goal_updated", goal: managed.session.claudeGoal });
-        persistChatState(managed);
-        emitSessionModeMeta(managed);
-        promptText = goalArg;
-        agentMode = "autopilot";
-      }
+      controlReply = "Copilot goals are not available yet.";
     }
     const turnId = args.turnId ?? randomUUID();
     const runtime = await ensureCopilotRuntime(managed);
@@ -67543,6 +67516,9 @@ export function createAgentChatService(args: {
   const rewindFiles = async ({ sessionId, userMessageId, dryRun = false }: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
     const managed = ensureManagedSession(sessionId);
     assertNoRerunInFlight(managed);
+    if (managed.session.provider === "copilot") {
+      throw new Error("Copilot file rewind is not available yet.");
+    }
     const messageId = userMessageId.trim();
     if (!messageId.length) {
       throw new Error("A user message id is required to rewind files.");

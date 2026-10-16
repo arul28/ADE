@@ -6033,7 +6033,6 @@ function AgentChatComposerImpl({
       const options: PermissionModePickerOption<"plan" | "ask" | "assisted" | "auto-edit" | "full-auto">[] = [
         { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
         { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
-        { value: "assisted", label: "Assisted", detail: "Copilot reviews each tool call with a safety model and approves the safe ones; asks you for the rest.", tone: "purple", icon: "agent" },
         { value: "auto-edit", label: "Auto-edit", detail: "Automatically approve file changes in the workspace.", tone: "amber", icon: "edit" },
         { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
       ];
