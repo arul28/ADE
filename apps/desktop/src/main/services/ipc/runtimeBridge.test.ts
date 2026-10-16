@@ -5,9 +5,12 @@ import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { ATTENTION_CONTRACT_VERSION, type AttentionItem } from "../../../shared/types/attention";
 import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
+import { LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import type {
   OpenProjectBinding,
   RemoteRuntimeTarget,
+  SyncRoleSnapshot,
 } from "../../../shared/types";
 
 const ipcHandlers = vi.hoisted(
@@ -3486,8 +3489,64 @@ describe("registerIpc sync bridge", () => {
         includeTransferReadiness: true,
         forceTransferReadiness: false,
       },
+      // The read's own budget, so the transport drops this call's pending
+      // entry instead of letting it queue behind a wedged runtime.
+      { timeoutMs: LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS },
     );
     expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
+  });
+
+  it("answers a local sync status read the runtime never answers with the degraded machine snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      // Accepted and never answered: the shape the measured backlog came from,
+      // where each read sat until the 30s IPC timer replaced its reason.
+      const localRuntimeConnectionPool = {
+        callSync: vi.fn(() => new Promise(() => {})),
+        syncStatusForRoot: vi.fn(),
+      };
+      registerIpc({
+        getCtx: () => ({
+          logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+          syncService: null,
+        }) as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: null,
+          binding: null,
+        }),
+        localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+        switchProjectFromDialog: vi.fn(),
+        closeCurrentProject: vi.fn(),
+        closeProjectByPath: vi.fn(),
+        globalStatePath: "/tmp/ade-state.json",
+      });
+
+      const read = ipcHandlers.get(IPC.syncGetLocalStatus)?.(
+        eventForSender(),
+        {},
+      ) as Promise<SyncRoleSnapshot>;
+      const settled = vi.fn();
+      void read.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS);
+      expect(settled).toHaveBeenCalledTimes(1);
+
+      // Not a reading of the machine, and marked as such: this is the marker
+      // the renderer's shared reader backs its polling off on. A snapshot that
+      // instead claimed a connection state would be inventing one.
+      const snapshot = await read;
+      expect(typeof snapshot.degradedReason).toBe("string");
+      expect(snapshot.degradedReason).not.toBe("");
+
+      // The invariant the 30s-vs-30s collision broke: the read's own bound
+      // expires before this channel's IPC timer, so the read's reason wins.
+      expect(LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS).toBeLessThan(
+        ipcInvokeTimeoutMs(IPC.syncGetLocalStatus),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to machine runtime sync when project sync is unavailable", async () => {

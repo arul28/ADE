@@ -1032,7 +1032,10 @@ import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureSta
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
-import { LOCAL_RUNTIME_SYNC_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import {
+  LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
@@ -6310,6 +6313,24 @@ export function registerIpc({
     getCtx().logger.warn("sync.local_status_degraded", { error: reason });
   };
 
+  /**
+   * `work`'s value, or a rejection once `timeoutMs` pass.
+   *
+   * The timer never keeps the process alive, and both handlers are attached up
+   * front so a rejection arriving after the deadline — the runtime call the
+   * deadline abandoned is still in flight — is handled here rather than
+   * surfacing as an unhandled one.
+   */
+  const withDeadline = <T>(work: Promise<T>, timeoutMs: number): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`The background service did not answer within ${timeoutMs}ms.`)),
+        Math.max(1, timeoutMs),
+      );
+      timer.unref?.();
+      work.then(resolve, reject).finally(() => clearTimeout(timer));
+    });
+
   const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {
       includeTransferReadiness: arg?.includeTransferReadiness === true,
@@ -6319,9 +6340,14 @@ export function registerIpc({
       try {
         // Machine-level call: intentionally bypasses the window's local/remote
         // project binding so Connections can always describe this computer.
+        // Bounded on both legs: the transport budget drops this call's pending
+        // entry instead of leaving it queued, and the handler's deadline covers
+        // the connect in front of it. See
+        // LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS.
         const snapshot = await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
           "sync.getStatus",
           params,
+          { timeoutMs: LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS },
         );
         lastDegradedWarnReason = null;
         return snapshot;
@@ -6369,7 +6395,21 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const snapshot = await readLocalSyncStatus(arg);
+    // A status read that does not answer in time is not an error the renderer
+    // can do anything with: it feeds a connection indicator, and both "you are
+    // connected" and "you are not" would be invented. Answer with the same
+    // synthesized machine-only snapshot this path already returns for a runtime
+    // it cannot reach — its `degradedReason` says outright that this is not a
+    // reading of the machine, which is what the renderer's shared reader keys
+    // its backoff on — so the deadline lands the renderer in a state it already
+    // understands instead of the opaque IPC timeout that used to win this race.
+    const snapshot = await withDeadline(
+      readLocalSyncStatus(arg),
+      LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
+    ).catch((error: unknown) => {
+      warnLocalStatusDegraded(error instanceof Error ? error.message : String(error));
+      return buildMachineOnlySyncSnapshot(error);
+    });
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
   });
