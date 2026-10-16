@@ -32,6 +32,58 @@ export function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): 
 }
 
 /**
+ * The share of a budget a window gives up in one trim.
+ *
+ * A trim hands on a NEW list, and a new list takes the full path everywhere it
+ * is read: the live merge rebuilds its identity index over the transcript, the
+ * display filter refilters it, and the row builder rebuilds every row. Dropping
+ * one event per flush — what a window that has reached its cap used to do — is
+ * therefore the whole transcript, three times, per streamed event.
+ *
+ * So a window that has filled its budget gives up a step of it instead. The
+ * list is new once per step; the flushes in between are appends, which all
+ * three of those paths carry forward. The window is only ever shorter than its
+ * cap by at most one step, and only in the region it was already dropping.
+ */
+const CHAT_RESIDENT_TRIM_STEP_DIVISOR = 16;
+
+function residentTrimStep(budget: number): number {
+  return Math.max(1, Math.floor(budget / CHAT_RESIDENT_TRIM_STEP_DIVISOR));
+}
+
+const residentChatEventBytesByEvents = new WeakMap<
+  readonly AgentChatEventEnvelope[],
+  { value: number }
+>();
+
+/**
+ * The resident size of a list, carried forward from the list the live merge
+ * appended to, so a streamed event costs that event and not a walk of the
+ * transcript. The merge can replace a repeated tool call in place, which
+ * changes the size of an entry the carry cannot see; a batch with replacements
+ * folds the list again (it is rare, and the answer stays exact either way).
+ */
+function residentChatEventBytes(events: AgentChatEventEnvelope[]): number {
+  return foldedOverAppends(
+    residentChatEventBytesByEvents,
+    events,
+    (before, append) => {
+      if (append.replacedIndexes.length) return null;
+      let total = before;
+      for (let index = append.appendedFrom; index < events.length; index += 1) {
+        total += estimatedChatEventResidentBytes(events[index]!);
+      }
+      return { value: total };
+    },
+    () => {
+      let total = 0;
+      for (const event of events) total += estimatedChatEventResidentBytes(event);
+      return total;
+    },
+  );
+}
+
+/**
  * Keep the newest `maxEvents` (and at most `maxBytes`) — plus every
  * `approval_request` that has no receipt yet, wherever it falls.
  *
@@ -40,25 +92,35 @@ export function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): 
  * is a card the user cannot answer while the backend still refuses their next
  * send. Every renderer path — desktop and the hosted web client, which share
  * this module — goes through here.
+ *
+ * A window inside its budgets comes back as the same list, which is what lets
+ * the live merge, the display filter and the row builder carry their work
+ * forward across a turn. A window over one gives up a step of it (see
+ * {@link CHAT_RESIDENT_TRIM_STEP_DIVISOR}), so that is a per-step cost and not
+ * a per-event one.
  */
 export function trimChatEventHistory(
   events: AgentChatEventEnvelope[],
   maxEvents: number,
   maxBytes = Number.POSITIVE_INFINITY,
 ): AgentChatEventEnvelope[] {
-  const countStart = Math.max(0, events.length - maxEvents);
-  if (!Number.isFinite(maxBytes)) {
-    return countStart > 0
-      ? retainUnresolvedApprovalRequests(events, events.slice(countStart))
-      : events;
-  }
-  let estimatedBytes = 0;
-  let byteStart = events.length;
-  for (let index = events.length - 1; index >= countStart; index -= 1) {
-    const eventBytes = estimatedChatEventResidentBytes(events[index]!);
-    if (byteStart < events.length && estimatedBytes + eventBytes > maxBytes) break;
-    estimatedBytes += eventBytes;
-    byteStart = index;
+  const overCount = events.length > maxEvents;
+  const overBytes = Number.isFinite(maxBytes) && residentChatEventBytes(events) > maxBytes;
+  if (!overCount && !overBytes) return events;
+  const countStart = overCount
+    ? Math.max(0, events.length - Math.max(1, maxEvents - residentTrimStep(maxEvents)))
+    : 0;
+  let byteStart = 0;
+  if (overBytes) {
+    const byteBudget = Math.max(1, maxBytes - residentTrimStep(maxBytes));
+    let estimatedBytes = 0;
+    byteStart = events.length;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const eventBytes = estimatedChatEventResidentBytes(events[index]!);
+      if (byteStart < events.length && estimatedBytes + eventBytes > byteBudget) break;
+      estimatedBytes += eventBytes;
+      byteStart = index;
+    }
   }
   const start = Math.max(countStart, byteStart);
   return start > 0 ? retainUnresolvedApprovalRequests(events, events.slice(start)) : events;

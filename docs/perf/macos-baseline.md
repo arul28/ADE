@@ -169,10 +169,17 @@ Run without the app (`scripts/perf/service/`).
   component renders and 3 ms of script per key in the dev build). The pane's
   header, composer and closed dialogs render with it; the same chrome renders
   once per streamed event.
-- **A chat at its resident cap** (60,000 events or 32 MB) drops one event from
-  the front on every flush. Each flush is then a new list, and the live merge
-  and the row builder fall back to full passes. Not reached by any local chat
-  (the largest is at about half the byte cap); trim in steps to fix it.
+- **A chat at its resident cap** (60,000 events or 32 MB) used to drop one
+  event from the front on every flush, so every flush was a new list and the
+  live merge and the row builder took the full path on every streamed event.
+  It now gives up a step of the budget at a time (2026-10-16, `perf/resident-cap`;
+  the two resident-cap rows in the table above). What is left on that path: a
+  trim still rebuilds the rows from scratch (about 2.6 s at 32 MB for the
+  file-change-heavy transcript the bench tiles), and the view-cache write walks
+  the whole window to size it on every flush
+  (`estimateAgentChatSessionViewBytes`, `AgentChatPane.tsx`). No real transcript
+  reaches the cap — the largest is at about half the byte cap — so both are
+  bench-only numbers.
 - **PRs tab:** the only tab with a long task on a warm visit (54-61 ms on the
   Mac Studio): the PR body's markdown parse and the mount of about 2,300
   elements.
@@ -330,12 +337,27 @@ the other, on main at `36aab9e76` and on the ADE-175 branch.
 | Live merge: cost per streamed event | same | 0.94 ms | 0.04 ms | 0.15 ms |
 | Streamed events that cost more than one 240 Hz frame (4 ms), of 2,500 | same | 340 | 4-5 | 15 |
 | Transcript rows: full pass as a chat opens (7,000-13,000 events) | same | 22.0 ms | 12.1 ms | 18 ms |
+| Transcript at the resident cap (32 MB, 33k events): cost per streamed event, between trims | `chat-transcript.bench.mts`, `RESIDENT_STREAM_EVENTS=300` | 1,362 ms | 0.62 ms | 2 ms |
+| Transcript at the resident cap (32 MB, 33k events): cost per streamed event over 2,400 events, trims included | same, `RESIDENT_STREAM_EVENTS=2400` | 1,362 ms | 2.8 ms | 4 ms |
 | Open a long chat to its first rows (fresh Chrome profile) | `npm run bench:webclient` | 287 ms | 285 ms | 360 ms |
 | Composer keystroke to paint, idle, p50 (headless, 60 Hz) | same | 28.0 ms | 28.5 ms | 35 ms |
 
 The row and merge numbers are a production-style Node run; the streaming
 numbers are the dev build, where React's own work is two to three times what a
 packaged build pays.
+
+The two resident-cap rows are the same bench on a window that has filled its
+budget, which no real transcript reaches: it tiles the largest real transcript
+until the window is at 32 MB, each copy a later stretch of the same chat. There
+a trim hands on a new list, and the live merge, the display filter and the row
+builder all fall back to a full pass — so the "before" column is one whole
+transcript per streamed event, 1,362 ms of it for this (file-change-heavy)
+transcript, flat over the stream, and `fullRebuildMs` is what one trim costs at
+that size. Trimming a step at a time (a sixteenth of the budget) makes that cost
+one flush in about 2,000 rather than every flush, which is the amortized row:
+2.8 ms per event against about 0.6 ms between trims. Measured 2026-10-16, branch
+`perf/resident-cap`; a window at the 60,000-event cap reads the same way
+(4,304 ms → 15 ms per event over 300 events).
 
 ### Find in a chat and in a diff (⌘F)
 
