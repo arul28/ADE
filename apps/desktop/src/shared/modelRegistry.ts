@@ -84,6 +84,8 @@ export type ModelDescriptor = {
   defaultReasoningEffort?: string;
   /** Copilot SDK model capability passthrough; retained for future context-tier controls. */
   supportedContextTiers?: string[];
+  /** Copilot's long-context window size, when its catalog publishes one. */
+  longContextWindow?: number;
   /** Provider-reported multiplier used for request-cost display when available. */
   billingMultiplier?: number;
   serviceTiers?: string[];

@@ -8,7 +8,7 @@ type CopilotModel = {
   capabilities?: { supports?: { vision?: unknown; reasoningEffort?: unknown }; limits?: { max_context_window_tokens?: unknown; max_output_tokens?: unknown; max_prompt_tokens?: unknown } };
   supportedReasoningEfforts?: unknown;
   defaultReasoningEffort?: unknown;
-  billing?: { multiplier?: unknown };
+  billing?: { multiplier?: unknown; tokenPrices?: { longContext?: { contextMax?: unknown } } };
   supportedContextTiers?: unknown;
 };
 
@@ -23,6 +23,7 @@ export function copilotSdkModelDescriptors(models: readonly unknown[]): ModelDes
     seen.add(id);
     const context = model.capabilities?.limits?.max_context_window_tokens;
     const output = model.capabilities?.limits?.max_output_tokens;
+    const longContextWindow = model.billing?.tokenPrices?.longContext?.contextMax;
     const efforts = Array.isArray(model.supportedReasoningEfforts)
       ? model.supportedReasoningEfforts.filter((effort): effort is string => typeof effort === "string")
       : [];
@@ -38,6 +39,7 @@ export function copilotSdkModelDescriptors(models: readonly unknown[]): ModelDes
       ...(efforts.length ? { reasoningTiers: efforts } : {}),
       ...(typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
       ...(Array.isArray(model.supportedContextTiers) ? { supportedContextTiers: model.supportedContextTiers.filter((tier): tier is string => typeof tier === "string") } : {}),
+      ...(typeof longContextWindow === "number" && Number.isFinite(longContextWindow) && longContextWindow > 0 ? { longContextWindow } : {}),
       ...(typeof model.billing?.multiplier === "number" ? { billingMultiplier: model.billing.multiplier } : {}),
       color: "#8250df",
       providerRoute: "copilot-sdk",

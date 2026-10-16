@@ -57,6 +57,8 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     skillDirectories: config.skillDirectories,
     mcpServers: config.mcpServers as CopilotSdk.SessionConfig["mcpServers"],
     disabledMcpServers: config.disabledMcpServers,
+    contextTier: config.contextTier,
+    capi: config.autoTier ? { autoTier: config.autoTier } : undefined,
     // Interactive chats inherit workspace `.mcp.json` like the Copilot CLI.
     // Utility sessions must remain isolated from user/workspace/plugin MCP.
     enableConfigDiscovery: !config.utility,
@@ -134,23 +136,89 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
     const session = req.type === "resume" && req.payload.sessionId
       ? await client.resumeSession(req.payload.sessionId, { ...config, continuePendingWork: false })
       : await client.createSession(config);
-    if (req.payload.permissionMode === "plan") {
-      await session.rpc.mode.set({ mode: "plan" });
-    }
+    if (req.payload.permissionMode === "plan") await session.rpc.mode.set({ mode: "plan" });
+    else if (req.payload.permissionMode === "assisted") await session.rpc.permissions.setMode({ mode: "assisted" });
+    else if (req.payload.permissionMode === "full-auto") await session.rpc.permissions.setMode({ mode: "allow-all" });
     sessions.set(req.payload.chatId, session);
     watchSession(req.payload.chatId, session);
+    postLog("debug", "Copilot session options applied", {
+      chatId: req.payload.chatId,
+      contextTier: req.payload.contextTier ?? "default",
+      autoTier: req.payload.autoTier ?? null,
+      resumed: req.type === "resume",
+    });
     return { sessionId: session.sessionId, events: await session.getEvents() };
   }
   if (req.type === "send") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    return session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode });
+    return session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) });
   }
   if (req.type === "set_model") {
     const session = sessions.get(req.payload.chatId);
     if (!session) throw new Error("Copilot session is not open.");
-    await session.setModel(req.payload.model, req.payload.reasoningEffort ? { reasoningEffort: req.payload.reasoningEffort as ReasoningEffort } : undefined);
+    await session.setModel(req.payload.model, {
+      ...(req.payload.reasoningEffort ? { reasoningEffort: req.payload.reasoningEffort as ReasoningEffort } : {}),
+      ...(req.payload.contextTier ? { contextTier: req.payload.contextTier } : {}),
+      ...(req.payload.autoTier !== undefined ? { autoTier: req.payload.autoTier } : {}),
+    });
+    postLog("debug", "Copilot model options applied", {
+      chatId: req.payload.chatId,
+      model: req.payload.model,
+      contextTier: req.payload.contextTier ?? "default",
+      autoTier: req.payload.autoTier ?? null,
+    });
     return {};
+  }
+  if (req.type === "set_auto_tier") {
+    const session = sessions.get(req.payload.chatId);
+    if (!session) throw new Error("Copilot session is not open.");
+    const result = await session.setAutoTier(req.payload.autoTier);
+    postLog("debug", "Copilot Auto tier selection", { chatId: req.payload.chatId, requested: req.payload.autoTier, status: result.status });
+    return result;
+  }
+  if (req.type === "set_permission_mode") {
+    const session = sessions.get(req.payload.chatId);
+    if (!session) throw new Error("Copilot session is not open.");
+    if (req.payload.permissionMode === "plan") await session.rpc.mode.set({ mode: "plan" });
+    else if (req.payload.permissionMode === "assisted") await session.rpc.permissions.setMode({ mode: "assisted" });
+    else if (req.payload.permissionMode === "full-auto") await session.rpc.permissions.setMode({ mode: "allow-all" });
+    else await session.rpc.permissions.setMode({ mode: "manual" });
+    return {};
+  }
+  if (req.type === "fork_session") {
+    const session = sessions.get(req.payload.chatId);
+    if (!session) throw new Error("Copilot session is not open.");
+    let toEventId: string | undefined;
+    if (req.payload.throughMessageText !== undefined) {
+      const events = await session.getEvents() as Array<{ id?: string; type?: string; agentId?: string; data?: { content?: string } }>;
+      const roots = events.flatMap((event, index) => event.type === "user.message" && !event.agentId && typeof event.data?.content === "string"
+        ? [{ index, id: event.id, text: event.data.content }]
+        : []);
+      const matches = roots.filter((event) => event.text.trim() === req.payload.throughMessageText?.trim());
+      const selected = matches[req.payload.throughMessageOrdinal ?? 0];
+      if (!selected?.id) throw new Error("Could not map the selected ADE turn to a Copilot user event; fork the full chat instead.");
+      const nextRoot = roots.find((event) => event.index > selected.index);
+      toEventId = events[(nextRoot?.index ?? events.length) - 1]?.id;
+      if (!toEventId) throw new Error("Copilot history did not expose an event boundary for the selected turn.");
+    }
+    const result = await (client.rpc as unknown as { sessions: { fork: (args: { sessionId: string; toEventId?: string }) => Promise<{ sessionId?: string }> } }).sessions.fork({ sessionId: req.payload.sessionId, ...(toEventId ? { toEventId } : {}) });
+    const forkedId = result.sessionId?.trim();
+    if (!forkedId) throw new Error("Copilot fork did not return a new session id.");
+    return forkedId;
+  }
+  if (req.type === "rewind") {
+    const session = sessions.get(req.payload.chatId);
+    if (!session) throw new Error("Copilot session is not open.");
+    if (req.payload.action === "list") return session.rpc.history.listRewindPoints();
+    if (!req.payload.eventId) throw new Error("Copilot rewind requires an event id.");
+    if (req.payload.action === "preview") return session.rpc.history.previewRewind({ eventId: req.payload.eventId });
+    return session.rpc.history.rewind({ eventId: req.payload.eventId, mode: "conversation-and-files" });
+  }
+  if (req.type === "usage_metrics") {
+    const session = sessions.get(req.payload.chatId);
+    if (!session) throw new Error("Copilot session is not open.");
+    return session.rpc.usage.getMetrics();
   }
   if (req.type === "abort") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.abort().catch(() => undefined); return {}; }
   if (req.type === "disconnect") { settleWaiters(req.payload.chatId); await sessions.get(req.payload.chatId)?.disconnect().catch(() => undefined); sessions.delete(req.payload.chatId); return {}; }

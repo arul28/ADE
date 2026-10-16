@@ -500,6 +500,8 @@ import type {
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatCopilotPermissionMode,
+  AgentChatCopilotContextTier,
+  AgentChatCopilotAutoTier,
   AgentChatMusePermissionMode,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatCancelDispatchedSteerResult,
@@ -2045,6 +2047,8 @@ type PersistedChatState = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   droidPermissionMode?: AgentChatDroidPermissionMode;
   copilotPermissionMode?: AgentChatCopilotPermissionMode;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  copilotAutoTier?: AgentChatCopilotAutoTier | null;
   musePermissionMode?: AgentChatMusePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
@@ -2079,6 +2083,7 @@ type PersistedChatState = {
   droidSdkSessionId?: string;
   /** Copilot SDK conversation id. Legacy Copilot ACP ids are adopted on resume. */
   copilotSdkSessionId?: string;
+  copilotGoal?: string | null;
   /**
    * Agent-minted ACP session id. It is the only handle a restarted ADE has on
    * an existing ACP conversation, so it is persisted for all four providers.
@@ -3413,6 +3418,9 @@ type CopilotRuntime = {
   sdk: CopilotSdkPooled;
   sdkSessionId: string;
   modelId: string;
+  contextTier: AgentChatCopilotContextTier;
+  autoTier: AgentChatCopilotAutoTier | null;
+  pendingAutoTier: AgentChatCopilotAutoTier | null;
   activeTurnId: string | null;
   busy: boolean;
   interrupted: boolean;
@@ -9078,7 +9086,7 @@ const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-f
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
 const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
-const VALID_COPILOT_PERMISSION_MODES = new Set(["plan", "ask", "auto-edit", "full-auto"]);
+const VALID_COPILOT_PERMISSION_MODES = new Set(["plan", "ask", "assisted", "auto-edit", "full-auto"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -9128,6 +9136,14 @@ function normalizePersistedDroidPermissionMode(value: unknown): AgentChatDroidPe
 
 function normalizePersistedCopilotPermissionMode(value: unknown): AgentChatCopilotPermissionMode | undefined {
   return normalizePersistedEnum(value, VALID_COPILOT_PERMISSION_MODES);
+}
+
+function normalizeCopilotContextTier(value: unknown): AgentChatCopilotContextTier {
+  return value === "long_context" ? "long_context" : "default";
+}
+
+function normalizeCopilotAutoTier(value: unknown): AgentChatCopilotAutoTier | null {
+  return value === "efficiency" || value === "balance" || value === "intelligence" ? value : null;
 }
 
 function legacyPermissionModeToClaudePermissionMode(
@@ -10550,7 +10566,7 @@ export function createAgentChatService(args: {
    */
   readAccountSecret?: ((vaultKey: string) => string | null) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
-  resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken: string; expiresIn: number } | null>) | null;
+  resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -18267,6 +18283,9 @@ export function createAgentChatService(args: {
       ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
       ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
       ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
+      ...(managed.session.provider === "copilot" ? { copilotContextTier: managed.session.copilotContextTier ?? "default" } : {}),
+      ...(managed.session.provider === "copilot" ? { copilotAutoTier: managed.session.copilotAutoTier ?? null } : {}),
+      ...(managed.session.provider === "copilot" ? { copilotGoal: managed.session.copilotGoal ?? null } : {}),
       ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       // Muse pointer: the live runtime's session id, else the session record's
       // (a fork seed or an import), and nothing once the runtime is invalidated.
@@ -18710,6 +18729,9 @@ export function createAgentChatService(args: {
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
           : undefined);
       const copilotPermissionMode = normalizePersistedCopilotPermissionMode(record.copilotPermissionMode);
+      const copilotContextTier = provider === "copilot" ? normalizeCopilotContextTier(record.copilotContextTier) : undefined;
+      const copilotAutoTier = provider === "copilot" ? normalizeCopilotAutoTier(record.copilotAutoTier) : undefined;
+      const copilotGoal = provider === "copilot" && typeof record.copilotGoal === "string" ? record.copilotGoal : undefined;
       const musePermissionMode = normalizePersistedMusePermissionMode(record.musePermissionMode)
         ?? (provider === "muse" ? musePermissionModeFromLegacyPermissionMode(permissionMode) : undefined);
       const museSessionId = provider === "muse" && typeof record.museSessionId === "string" && record.museSessionId.trim().length
@@ -18992,6 +19014,9 @@ export function createAgentChatService(args: {
         ...(opencodePermissionMode ? { opencodePermissionMode } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
       ...(copilotPermissionMode ? { copilotPermissionMode } : {}),
+      ...(copilotContextTier ? { copilotContextTier } : {}),
+      ...(provider === "copilot" ? { copilotAutoTier } : {}),
+      ...(copilotGoal !== undefined ? { copilotGoal } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         ...(museSessionId ? { museSessionId } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
@@ -20482,6 +20507,9 @@ export function createAgentChatService(args: {
         ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
       ...(managed.session.copilotPermissionMode ? { copilotPermissionMode: managed.session.copilotPermissionMode } : {}),
+        ...(managed.session.copilotContextTier ? { copilotContextTier: managed.session.copilotContextTier } : {}),
+        ...(managed.session.provider === "copilot" ? { copilotAutoTier: managed.session.copilotAutoTier ?? null } : {}),
+        ...(managed.session.provider === "copilot" ? { copilotGoal: managed.session.copilotGoal ?? null } : {}),
         ...(managed.session.musePermissionMode ? { musePermissionMode: managed.session.musePermissionMode } : {}),
       });
       createdId = created.id;
@@ -21275,6 +21303,10 @@ export function createAgentChatService(args: {
       ...(session.opencodePermissionMode !== undefined ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
       ...(session.droidPermissionMode !== undefined ? { droidPermissionMode: session.droidPermissionMode } : {}),
       ...(session.copilotPermissionMode !== undefined ? { copilotPermissionMode: session.copilotPermissionMode } : {}),
+      ...(session.copilotContextTier !== undefined ? { copilotContextTier: session.copilotContextTier } : {}),
+      ...(session.copilotAutoTier !== undefined ? { copilotAutoTier: session.copilotAutoTier } : {}),
+      ...(session.copilotGoal !== undefined ? { copilotGoal: session.copilotGoal } : {}),
+      ...(managed.runtime?.kind === "copilot" ? { copilotAutoTierPending: managed.runtime.pendingAutoTier != null } : {}),
       ...(session.musePermissionMode !== undefined ? { musePermissionMode: session.musePermissionMode } : {}),
       ...(session.cursorModeId != null ? { cursorModeId: session.cursorModeId } : {}),
       ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
@@ -39958,7 +39990,7 @@ export function createAgentChatService(args: {
               turnId,
               error: error instanceof Error ? error.message : String(error),
             });
-            return null;
+            return { data: [] };
           })
         : null;
       const turns = Array.isArray(turnsResponse?.data)
@@ -45071,6 +45103,8 @@ export function createAgentChatService(args: {
     piSessionFile: requestedPiSessionFile,
     droidPermissionMode: requestedDroidPermissionModeArg,
     copilotPermissionMode: requestedCopilotPermissionModeArg,
+    copilotContextTier: requestedCopilotContextTierArg,
+    copilotAutoTier: requestedCopilotAutoTierArg,
     musePermissionMode: requestedMusePermissionModeArg,
     museSessionId: requestedMuseSessionId,
     cursorModeId: requestedCursorModeId,
@@ -45532,7 +45566,9 @@ export function createAgentChatService(args: {
         };
       }
       if (effectiveProvider === "copilot") {
-        return { copilotPermissionMode: requestedCopilotPermissionMode ?? "ask" };
+        return {
+          copilotPermissionMode: requestedCopilotPermissionMode ?? "ask",
+        };
       }
       if (effectiveProvider === "pi") {
         return {
@@ -45679,6 +45715,8 @@ export function createAgentChatService(args: {
           ? { devinCloud: normalizeDevinCloudConfig(requestedDevinCloud), devinRuntime: "cloud" as const }
           : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
+        ...(effectiveProvider === "copilot" ? { copilotContextTier: resolvedDescriptor?.supportedContextTiers?.includes("long_context") ? normalizeCopilotContextTier(requestedCopilotContextTierArg) : "default" as const } : {}),
+        ...(effectiveProvider === "copilot" ? { copilotAutoTier: (resolvedDescriptor?.providerModelId ?? normalizedModel) === "auto" ? normalizeCopilotAutoTier(requestedCopilotAutoTierArg) : null } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
           // Ultrafast is a Codex tier; never stored for another provider, or
           // for a model whose catalog says it lacks the tier.
@@ -46099,7 +46137,7 @@ export function createAgentChatService(args: {
     const nativeFork = handoffMode === "fork"
       && providerSupportsHandoffFork(sourceProvider)
       && targetProvider === sourceProvider
-      && (!forkFromEarlierTurn || codexForkBeforeTurnId != null);
+      && (!forkFromEarlierTurn || codexForkBeforeTurnId != null || sourceProvider === "copilot");
     // Cursor's "native" fork is native only in the sense that it stays on the
     // same provider — there is no SDK fork API, so the new chat starts on a
     // fresh agent and needs the same full transcript replay a cross-provider
@@ -46194,6 +46232,21 @@ export function createAgentChatService(args: {
         throw new Error("Droid fork did not return a new session id.");
       }
       sourceDroidForkSessionId = newSessionId;
+    }
+    let sourceCopilotForkSessionId: string | null = null;
+    if (nativeFork && sourceProvider === "copilot") {
+      const runtime = await ensureCopilotRuntime(managed);
+      if (runtime.busy) throw new Error("Wait for the current Copilot turn to finish before forking this chat.");
+      let forkOptions: { throughMessageText?: string; throughMessageOrdinal?: number } = {};
+      if (forkFromEarlierTurn) {
+        const targetMessage = forkPoint?.envelopes.find((envelope) => envelope.event.type === "user_message" && envelope.event.turnId === requestedThroughTurnId)?.event;
+        if (!targetMessage || targetMessage.type !== "user_message") throw new Error("Could not find the selected Copilot user turn; fork the full chat instead.");
+        const beforeTarget = readTranscriptEnvelopes(managed, { includeBuffered: true })
+          .filter((envelope) => envelope.event.type === "user_message" && envelope.event.text.trim() === targetMessage.text.trim());
+        const targetOrdinal = beforeTarget.findIndex((envelope) => envelope.event.type === "user_message" && envelope.event.messageId === targetMessage.messageId);
+        forkOptions = { throughMessageText: targetMessage.text, throughMessageOrdinal: targetOrdinal < 0 ? 0 : targetOrdinal };
+      }
+      sourceCopilotForkSessionId = await runtime.sdk.forkSession(managed.session.id, runtime.sdkSessionId, forkOptions);
     }
     let sourceMuseForkSessionId: string | null = null;
     if (nativeFork && sourceProvider === "muse") {
@@ -46296,6 +46349,8 @@ export function createAgentChatService(args: {
       opencodePermissionMode: args.opencodePermissionMode ?? managed.session.opencodePermissionMode,
       droidPermissionMode: args.droidPermissionMode ?? managed.session.droidPermissionMode,
       copilotPermissionMode: args.copilotPermissionMode ?? managed.session.copilotPermissionMode,
+      copilotContextTier: args.copilotContextTier ?? managed.session.copilotContextTier,
+      copilotAutoTier: args.copilotAutoTier !== undefined ? args.copilotAutoTier : managed.session.copilotAutoTier,
       permissionMode: args.permissionMode ?? managed.session.permissionMode,
       cursorModeId: args.cursorModeId !== undefined ? args.cursorModeId : managed.session.cursorModeId,
       cursorConfigValues: args.cursorConfigValues !== undefined
@@ -46331,6 +46386,10 @@ export function createAgentChatService(args: {
       if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
         seedForkedProviderPointer(createdManaged, { droidSdkSessionId: sourceDroidForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
+      }
+      if (createdManaged.session.provider === "copilot" && sourceCopilotForkSessionId) {
+        seedForkedProviderPointer(createdManaged, { copilotSdkSessionId: sourceCopilotForkSessionId });
+        sessionService.setResumeCommand(created.id, `chat:copilot:${created.id}`);
       }
       if (createdManaged.session.provider === "muse" && sourceMuseForkSessionId) {
         seedForkedProviderPointer(createdManaged, { museSessionId: sourceMuseForkSessionId });
@@ -47103,6 +47162,8 @@ export function createAgentChatService(args: {
     const targetOpenCodePermissionMode = args.opencodePermissionMode || managed.session.opencodePermissionMode;
     const targetDroidPermissionMode = args.droidPermissionMode || managed.session.droidPermissionMode;
     const targetCopilotPermissionMode = args.copilotPermissionMode || managed.session.copilotPermissionMode;
+    const targetCopilotContextTier = args.copilotContextTier ?? managed.session.copilotContextTier;
+    const targetCopilotAutoTier = args.copilotAutoTier !== undefined ? args.copilotAutoTier : managed.session.copilotAutoTier;
     const targetPermissionMode = args.permissionMode || managed.session.permissionMode;
     // An ACP chat reads its own mode before the generic one, so the source's
     // latched mode only travels when the caller didn't choose a generic one.
@@ -47138,6 +47199,8 @@ export function createAgentChatService(args: {
         ...(targetOpenCodePermissionMode ? { opencodePermissionMode: targetOpenCodePermissionMode } : {}),
         ...(targetDroidPermissionMode ? { droidPermissionMode: targetDroidPermissionMode } : {}),
         ...(targetCopilotPermissionMode ? { copilotPermissionMode: targetCopilotPermissionMode } : {}),
+        ...(targetCopilotContextTier ? { copilotContextTier: targetCopilotContextTier } : {}),
+        ...(targetCopilotAutoTier !== undefined ? { copilotAutoTier: targetCopilotAutoTier } : {}),
         ...(targetPermissionMode ? { permissionMode: targetPermissionMode } : {}),
         ...(targetAcpPermissionMode ? { acpPermissionMode: targetAcpPermissionMode } : {}),
         ...(targetCursorModeId !== undefined ? { cursorModeId: targetCursorModeId } : {}),
@@ -54581,6 +54644,8 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
         model: modelId === "auto" ? undefined : modelId,
         reasoningEffort: managed.session.reasoningEffort,
+        contextTier: managed.session.copilotContextTier ?? "default",
+        autoTier: managed.session.copilotAutoTier ?? null,
         permissionMode: managed.session.copilotPermissionMode ?? "ask",
         mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
         skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
@@ -54600,7 +54665,11 @@ export function createAgentChatService(args: {
       eventMapperState.askedAuto = modelId === "auto";
       const runtime: CopilotRuntime = {
         kind: "copilot", poolKey: acquired.poolKey, poolGeneration: acquired.generation,
-        sdk: acquired.pooled, sdkSessionId: opened.sessionId, modelId, activeTurnId: null,
+        sdk: acquired.pooled, sdkSessionId: opened.sessionId, modelId,
+        contextTier: managed.session.copilotContextTier ?? "default",
+        autoTier: managed.session.copilotAutoTier ?? null,
+        pendingAutoTier: null,
+        activeTurnId: null,
         busy: false, interrupted: false, eventMapperState, pendingSteers: [],
       };
       acquired.pooled.bridge.onEvent = (chatId, event) => {
@@ -54609,6 +54678,34 @@ export function createAgentChatService(args: {
         if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
+        if (eventRecord.type === "session.model_change" && typeof eventData.autoTier === "string") {
+          current.autoTier = normalizeCopilotAutoTier(eventData.autoTier);
+          current.pendingAutoTier = null;
+          target.session.copilotAutoTier = current.autoTier;
+          persistChatState(target);
+          emitSessionModeMeta(target);
+        }
+        if (eventRecord.type === "session.auto_tier_switch_failed") {
+          const failedTier = current.pendingAutoTier;
+          current.pendingAutoTier = null;
+          target.session.copilotAutoTier = current.autoTier;
+          emitChatEvent(target, { type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not switch to ${failedTier ?? "the selected"} Auto profile. The previous profile remains active.` });
+          emitSessionModeMeta(target);
+        }
+        if (eventRecord.type === "session.task_complete" && target.session.copilotGoal) {
+          const success = eventData.success === true;
+          const summary = typeof eventData.summary === "string" ? eventData.summary : target.session.copilotGoal;
+          reportGoalEnded(target, summary, success ? "reached" : "blocked");
+          target.session.copilotGoal = null;
+          persistChatState(target);
+          emitSessionModeMeta(target);
+        }
+        if (eventRecord.type === "abort" && eventData.reason === "autopilot_credit_limit" && target.session.copilotGoal) {
+          reportGoalEnded(target, target.session.copilotGoal, "blocked");
+          target.session.copilotGoal = null;
+          persistChatState(target);
+          emitSessionModeMeta(target);
+        }
         if (eventRecord.type === "session.idle") {
           const aborted = eventData.aborted === true;
           current.interrupted = current.interrupted || aborted;
@@ -54739,9 +54836,18 @@ export function createAgentChatService(args: {
               server: serverName,
               error: error instanceof Error ? error.message : String(error),
             });
-            return null;
+            return { registryConfigured: false, accessToken: undefined, expiresIn: undefined };
           });
-          if (token?.accessToken) return { kind: "token", ...token };
+          if (token.accessToken) return { kind: "token", accessToken: token.accessToken, expiresIn: token.expiresIn ?? 3600 };
+          const signInMessage = token.registryConfigured
+            ? `${serverName} needs a sign-in. Sign in from Settings → MCP servers.`
+            : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers → Import) and sign in once — every agent will use it.`;
+          const key = `${chatId}:${serverUrl || serverName}`;
+          if (!copilotMcpAuthNotices.has(key)) {
+            copilotMcpAuthNotices.add(key);
+            emitChatEvent(target, { type: "system_notice", noticeKind: "warning", severity: "warning", message: signInMessage });
+          }
+          return { kind: "cancelled" };
         }
         const key = `${chatId}:${serverUrl || serverName}`;
         if (!copilotMcpAuthNotices.has(key)) {
@@ -54768,6 +54874,32 @@ export function createAgentChatService(args: {
     metadata?: AgentChatEventMetadata | null; laneDirectiveKey?: string | null; turnId?: string;
     onDispatched?: () => void; onBackendDispatched?: () => void;
   }): Promise<void> => {
+    let promptText = args.promptText;
+    let agentMode: "autopilot" | undefined;
+    let controlReply: string | null = null;
+    const goalCommand = (args.userText ?? args.displayText).trim().match(/^\/goal(?:\s+(.*))?$/is);
+    if (goalCommand) {
+      const goalArg = goalCommand[1]?.trim() ?? "";
+      const copilotMode = managed.session.copilotPermissionMode ?? "ask";
+      if (!goalArg) {
+        controlReply = managed.session.copilotGoal ? `Goal: ${managed.session.copilotGoal}` : "No goal set.";
+      } else if (/^clear$/i.test(goalArg)) {
+        if (managed.runtime?.kind === "copilot" && managed.runtime.busy) await managed.runtime.sdk.abort(managed.session.id);
+        const previous = managed.session.copilotGoal;
+        managed.session.copilotGoal = null;
+        persistChatState(managed);
+        emitSessionModeMeta(managed);
+        controlReply = previous ? "Goal cleared." : "No goal set.";
+      } else if (copilotMode === "plan" || copilotMode === "ask") {
+        controlReply = "Copilot goals need Auto-edit or higher. Change the permission mode before setting a goal.";
+      } else {
+        managed.session.copilotGoal = goalArg;
+        persistChatState(managed);
+        emitSessionModeMeta(managed);
+        promptText = goalArg;
+        agentMode = "autopilot";
+      }
+    }
     const turnId = args.turnId ?? randomUUID();
     const runtime = await ensureCopilotRuntime(managed);
     runtime.interrupted = false;
@@ -54787,6 +54919,15 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
     captureTurnBeforeSha(managed);
+    if (controlReply) {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      setSessionIdle(managed);
+      emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: controlReply, turnId });
+      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+      emitChatEvent(managed, { type: "done", status: "completed", turnId, model: managed.session.model, modelId: managed.session.modelId });
+      return;
+    }
     try {
       const attachments = await Promise.all(args.resolvedAttachments.map(async (attachment) => {
         if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
@@ -54802,8 +54943,14 @@ export function createAgentChatService(args: {
       let settleTurn!: (aborted: boolean) => void;
       const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
       runtime.turnSettled = settleTurn;
-      await runtime.sdk.send(managed.session.id, args.promptText, attachments);
+      const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
+      await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
       runtime.interrupted = runtime.interrupted || await turnIdle;
+      const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
+      const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
+      if (Number.isFinite(premiumDelta) && premiumDelta > runtime.eventMapperState.premiumRequestCost) {
+        runtime.eventMapperState.premiumRequestCost = premiumDelta;
+      }
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.turnSettled = undefined;
@@ -60452,9 +60599,12 @@ export function createAgentChatService(args: {
       ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
         ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
         : {}),
-      ...(liveSession?.copilotPermissionMode || persisted?.copilotPermissionMode
-        ? { copilotPermissionMode: liveSession?.copilotPermissionMode ?? persisted?.copilotPermissionMode }
-        : {}),
+      ...(provider === "copilot" ? {
+        copilotPermissionMode: liveSession?.copilotPermissionMode ?? persisted?.copilotPermissionMode ?? "ask",
+        copilotContextTier: liveSession?.copilotContextTier ?? persisted?.copilotContextTier ?? "default",
+        copilotAutoTier: liveSession?.copilotAutoTier ?? persisted?.copilotAutoTier ?? null,
+        copilotAutoTierPending: liveManaged?.runtime?.kind === "copilot" && liveManaged.runtime.pendingAutoTier != null,
+      } : {}),
       ...(summaryCursorModeSnapshot
         ? { cursorModeSnapshot: summaryCursorModeSnapshot }
         : {}),
@@ -63120,6 +63270,9 @@ export function createAgentChatService(args: {
           isDefault: index === 0, reasoningEfforts: d.reasoningTiers?.map((effort) => ({ effort, description: `${effort} reasoning` })) ?? [],
           modelId: d.id, family: d.family, supportsReasoning: d.capabilities.reasoning,
           supportsTools: d.capabilities.tools, color: d.color,
+          supportedContextTiers: d.supportedContextTiers ?? [],
+          contextWindow: d.contextWindow,
+          ...(d.longContextWindow ? { longContextWindow: d.longContextWindow } : {}),
         }));
       } catch {
         return [];
@@ -63712,6 +63865,15 @@ export function createAgentChatService(args: {
                     ? { cursorCliVariants: descriptor.cursorCliVariants }
                     : {}),
                 ...(descriptor.openCodeFast ? { openCodeFast: descriptor.openCodeFast } : {}),
+                ...(runtimeProvider === "copilot" ? {
+                  supportedContextTiers: descriptor.supportedContextTiers ?? entry?.info.supportedContextTiers ?? [],
+                  contextWindow: descriptor.contextWindow,
+                  ...(descriptor.longContextWindow != null
+                    ? { longContextWindow: descriptor.longContextWindow }
+                    : entry?.info.longContextWindow != null
+                      ? { longContextWindow: entry.info.longContextWindow }
+                      : {}),
+                } : {}),
                 isAvailable: Boolean(entry),
                 connected: providerMeta?.connected ?? Boolean(entry),
                 requiresConfiguration: !entry && (group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"),
@@ -64565,6 +64727,8 @@ export function createAgentChatService(args: {
     opencodePermissionMode,
     droidPermissionMode,
     copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
     musePermissionMode: requestedMusePermissionModeArg,
     cursorModeId,
     cursorConfigValues: requestedCursorConfigValuesArg,
@@ -65044,9 +65208,22 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (managed.session.provider === "copilot") {
+        if (modelChanged && !descriptor?.supportedContextTiers?.includes("long_context")) {
+          managed.session.copilotContextTier = "default";
+        }
+        if (copilotContextTier !== undefined) {
+          const selected = resolveSessionModelDescriptor(managed.session);
+          managed.session.copilotContextTier = selected?.supportedContextTiers?.includes("long_context")
+            ? normalizeCopilotContextTier(copilotContextTier)
+            : "default";
+        }
+        if (copilotAutoTier !== undefined) managed.session.copilotAutoTier = normalizeCopilotAutoTier(copilotAutoTier);
+      }
+
       if (
         managed.runtime?.kind === "copilot"
-        && (modelChanged || reasoningEffort !== undefined)
+        && (modelChanged || reasoningEffort !== undefined || copilotContextTier !== undefined)
       ) {
         const copilotModelId = descriptor?.providerModelId ?? managed.runtime.modelId;
         try {
@@ -65054,14 +65231,34 @@ export function createAgentChatService(args: {
             managed.session.id,
             copilotModelId,
             managed.session.reasoningEffort,
+            {
+              contextTier: managed.session.copilotContextTier ?? "default",
+            },
           );
           managed.runtime.modelId = copilotModelId;
+          managed.runtime.contextTier = managed.session.copilotContextTier ?? "default";
+          managed.runtime.autoTier = managed.session.copilotAutoTier ?? null;
         } catch (error) {
           logger.warn("agent_chat.copilot_sdk_set_model_failed", {
             sessionId,
             model: copilotModelId,
             error: error instanceof Error ? error.message : String(error),
           });
+        }
+      }
+
+      if (managed.runtime?.kind === "copilot" && copilotAutoTier !== undefined) {
+        const previous = managed.runtime.autoTier;
+        try {
+          const result = await managed.runtime.sdk.setAutoTier(managed.session.id, managed.session.copilotAutoTier ?? null);
+          managed.runtime.pendingAutoTier = result.status === "pending" ? managed.session.copilotAutoTier ?? null : null;
+          if (result.status === "unchanged") managed.runtime.autoTier = managed.session.copilotAutoTier ?? null;
+          emitSessionModeMeta(managed);
+        } catch (error) {
+          managed.session.copilotAutoTier = previous;
+          managed.runtime.pendingAutoTier = null;
+          emitSessionModeMeta(managed);
+          emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not switch Auto profile: ${error instanceof Error ? error.message : String(error)}` });
         }
       }
 
@@ -65354,6 +65551,20 @@ export function createAgentChatService(args: {
 
     if (copilotPermissionMode !== undefined && !permissionsPinned) {
       managed.session.copilotPermissionMode = normalizePersistedCopilotPermissionMode(copilotPermissionMode);
+      if (managed.runtime?.kind === "copilot" && managed.session.copilotPermissionMode) {
+        await managed.runtime.sdk.setPermissionMode(managed.session.id, managed.session.copilotPermissionMode).catch((error) => {
+          logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    }
+    if (copilotContextTier !== undefined && managed.session.provider === "copilot") {
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      managed.session.copilotContextTier = descriptor?.supportedContextTiers?.includes("long_context")
+        ? normalizeCopilotContextTier(copilotContextTier)
+        : "default";
+    }
+    if (copilotAutoTier !== undefined && managed.session.provider === "copilot") {
+      managed.session.copilotAutoTier = normalizeCopilotAutoTier(copilotAutoTier);
     }
 
     const requestedMusePermissionMode = normalizePersistedMusePermissionMode(requestedMusePermissionModeArg);
@@ -65603,6 +65814,9 @@ export function createAgentChatService(args: {
       });
     }
 
+    if (copilotPermissionMode !== undefined || copilotContextTier !== undefined || copilotAutoTier !== undefined) {
+      emitSessionModeMeta(managed);
+    }
     persistChatState(managed);
     return managed.session;
   };
@@ -67377,6 +67591,33 @@ export function createAgentChatService(args: {
         conversationRollback: true,
         ...skipped,
       };
+    }
+    if (managed.session.provider === "copilot") {
+      const runtime = await ensureCopilotRuntime(managed);
+      if (!dryRun && runtime.busy) throw turnInFlightError("Wait for the current Copilot turn to finish before rewinding files.");
+      const envelopes = readTranscriptEnvelopes(managed, { includeBuffered: true });
+      const messages = envelopes.flatMap((envelope) => envelope.event.type === "user_message" && envelope.event.messageId
+        ? [{ id: envelope.event.messageId, text: envelope.event.text }]
+        : []);
+      const selectedIndex = messages.findIndex((message) => message.id === messageId);
+      if (selectedIndex < 0) return { canRewind: false, error: "Could not find that user message in the Copilot transcript.", filesChanged: [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
+      const selectedText = messages[selectedIndex]!.text.trim();
+      const sameTextOrdinal = messages.slice(0, selectedIndex + 1).filter((message) => message.text.trim() === selectedText).length - 1;
+      const listing = await runtime.sdk.request<{ fileChangeTrackingEnabled: boolean; unavailableReason?: string; points: Array<{ eventId: string; userMessage: string; canRestoreFiles: boolean; linesAdded: number; linesRemoved: number }> }>("rewind", { chatId: sessionId, action: "list" });
+      const candidates = listing.points.filter((point) => point.userMessage.trim() === selectedText);
+      const point = candidates[sameTextOrdinal];
+      if (!point) return { canRewind: false, error: "Copilot has no rewind point matching that user message. The SDK exposes only its captured root user turns.", filesChanged: [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
+      if (!listing.fileChangeTrackingEnabled || !point.canRestoreFiles) {
+        return { canRewind: false, error: listing.unavailableReason ?? "Copilot did not capture file changes for this turn.", filesChanged: [], insertions: point.linesAdded, deletions: point.linesRemoved, dryRun, conversationRollback: true };
+      }
+      const preview = await runtime.sdk.request<{ available: boolean; reason?: string; files: Array<{ path: string; linesAdded: number; linesRemoved: number }> }>("rewind", { chatId: sessionId, action: "preview", eventId: point.eventId });
+      if (!preview.available) return { canRewind: false, error: preview.reason ?? "Copilot cannot restore files from this rewind point.", filesChanged: [], insertions: point.linesAdded, deletions: point.linesRemoved, dryRun, conversationRollback: true };
+      if (dryRun) return { canRewind: true, filesChanged: preview.files.map((file) => file.path), insertions: preview.files.reduce((sum, file) => sum + file.linesAdded, 0), deletions: preview.files.reduce((sum, file) => sum + file.linesRemoved, 0), dryRun, conversationRollback: true };
+      const result = await runtime.sdk.request<{ outcome: string; restoredFiles: string[]; skippedFiles: Array<{ path: string; reason: string }>; error?: string }>("rewind", { chatId: sessionId, action: "apply", eventId: point.eventId });
+      const canRewind = result.outcome === "success" || result.outcome === "checkpoint-cleanup-failed" || result.outcome === "snapshot-prune-failed";
+      if (!canRewind) return { canRewind: false, error: result.error ?? `Copilot rewind ended with ${result.outcome}.`, filesChanged: result.restoredFiles ?? [], insertions: 0, deletions: 0, dryRun, conversationRollback: true };
+      emitChatEvent(managed, { type: "system_notice", noticeKind: "file_persist", message: result.restoredFiles.length ? `Copilot context rolled back and ${result.restoredFiles.length} file${result.restoredFiles.length === 1 ? "" : "s"} restored.` : "Copilot context rolled back.", detail: result.restoredFiles.join("\n") || undefined });
+      return { canRewind: true, filesChanged: result.restoredFiles, insertions: preview.files.reduce((sum, file) => sum + file.linesAdded, 0), deletions: preview.files.reduce((sum, file) => sum + file.linesRemoved, 0), dryRun, conversationRollback: true };
     }
     if (managed.runtime?.kind === "claude" && managed.runtime.busy && !dryRun) {
       throw turnInFlightError("Wait for the current Claude turn to finish before rewinding files.");

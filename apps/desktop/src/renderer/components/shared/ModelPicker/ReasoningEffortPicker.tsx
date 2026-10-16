@@ -33,6 +33,9 @@ export type ReasoningEffortPickerProps = {
    * that stacks on any level. Omitted for providers that do not read it.
    */
   ultrathink?: { active: boolean; onChange: (active: boolean) => void } | null;
+  copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
+  onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
+  copilotAutoTierPending?: boolean;
 };
 
 export function reasoningChipLabel(
@@ -207,6 +210,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   triggerClassName,
   catalogScopeKey,
   ultrathink,
+  copilotAutoTier,
+  onCopilotAutoTierChange,
+  copilotAutoTierPending = false,
 }: ReasoningEffortPickerProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -431,6 +437,26 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [activeIndex, commitEffort, disabled, tiers],
   );
 
+  const copilotAuto = descriptor?.family === "github-copilot" && descriptor.providerModelId === "auto";
+  if (copilotAuto && onCopilotAutoTierChange) {
+    const options = [["efficiency", "Efficiency"], ["balance", "Balance"], ["intelligence", "Intelligence"]] as const;
+    const selected = copilotAutoTier ?? "balance";
+    return (
+      <Popover.Root open={open} onOpenChange={(next) => setOpen(disabled ? false : next)}>
+        <Popover.Trigger asChild>
+          <button type="button" disabled={disabled} className={cn("inline-flex h-7 items-center gap-1 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11px] text-fg/75", triggerClassName, className)} aria-label="Copilot Auto profile">
+            {options.find(([value]) => value === selected)?.[1] ?? "Balance"}
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal container={portalContainer ?? undefined}>
+          <Popover.Content side="top" align="start" sideOffset={6} className="rounded-lg border border-fg/10 bg-panel p-1 shadow-xl" style={{ zIndex: Z_LAYERS.popover }}>
+            {options.map(([value, label]) => <button key={value} type="button" className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-fg/5" aria-pressed={selected === value} onClick={() => { onCopilotAutoTierChange(value); setOpen(false); }}>{label}</button>)}
+            {copilotAutoTierPending ? <div role="status" className="px-2 py-1.5 text-[11px] text-muted-fg">Applies from the next message</div> : null}
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+    );
+  }
   if (tiers.length === 0) return null;
 
   const shortLabel = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";

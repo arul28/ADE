@@ -89,21 +89,22 @@ export function createMcpRegistryAuthTokenResolver(args: {
   writeSecret: (key: string, value: string) => boolean | Promise<boolean>;
   logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
   fetch?: McpFetch;
-}): (serverUrl: string) => Promise<{ accessToken: string; expiresIn: number } | null> {
+}): (serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }> {
   const fetchImpl = args.fetch ?? fetch;
   return async (serverUrl) => {
     const url = serverUrl.trim();
-    if (!url) return null;
+    if (!url) return { registryConfigured: false };
     try {
       const { cached } = readCachedMcpRegistry(args.adeHome, null);
-      const server = cached?.servers.find((candidate) =>
-        candidate.url === url
-        && mcpRegistryState(candidate, { machine: cached.off.machine, project: cached.off.project }) === "on",
-      );
-      if (!server) return null;
+      if (!cached) return { registryConfigured: false };
+      const server = cached.servers.find((candidate) => candidate.url === url);
+      if (!server) return { registryConfigured: false };
+      if (mcpRegistryState(server, { machine: cached.off.machine, project: cached.off.project }) !== "on") {
+        return { registryConfigured: true };
+      }
       const key = mcpOAuthVaultKey(server.name);
       const token = parseMcpOAuthToken(await args.readSecret(key));
-      if (!token || mcpOAuthTokenState(token, server) === "none") return null;
+      if (!token || mcpOAuthTokenState(token, server) === "none") return { registryConfigured: true };
       let current = token;
       if (token.refreshToken && token.expiresAt && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
         let pending = renewingMcpOAuthTokens.get(key);
@@ -122,16 +123,16 @@ export function createMcpRegistryAuthTokenResolver(args: {
         }
         current = await pending;
       }
-      if (mcpOAuthTokenState(current, server) !== "valid") return null;
+      if (mcpOAuthTokenState(current, server) !== "valid") return { registryConfigured: true };
       const expiresIn = current.expiresAt
         ? Math.max(0, Math.ceil((Date.parse(current.expiresAt) - Date.now()) / 1000))
         : 3600;
-      return { accessToken: current.accessToken, expiresIn };
+      return { accessToken: current.accessToken, expiresIn, registryConfigured: true };
     } catch (error) {
       args.logger?.warn("mcp_registry.oauth_chat_lookup_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return null;
+      return { registryConfigured: false };
     }
   };
 }

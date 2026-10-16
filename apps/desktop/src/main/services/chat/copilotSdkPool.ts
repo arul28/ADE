@@ -7,6 +7,10 @@ import type { Logger } from "../logging/logger";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
+  AgentChatCopilotAutoTier,
+  AgentChatCopilotContextTier,
+} from "../../../shared/types/chat";
+import type {
   CopilotSdkSessionConfig,
   CopilotSdkAttachment,
   CopilotSdkWorkerInit,
@@ -28,8 +32,11 @@ export type CopilotSdkPooled = {
   bridge: CopilotSdkBridge;
   request<T = unknown>(type: CopilotSdkWorkerRequest["type"], payload?: unknown): Promise<T>;
   openSession(config: CopilotSdkSessionConfig, resume: boolean): Promise<{ sessionId: string; events: unknown[] }>;
-  send(chatId: string, prompt: string, attachments?: CopilotSdkAttachment[], mode?: "enqueue" | "immediate"): Promise<unknown>;
-  setModel(chatId: string, model: string, reasoningEffort?: string | null): Promise<void>;
+  send(chatId: string, prompt: string, attachments?: CopilotSdkAttachment[], mode?: "enqueue" | "immediate", agentMode?: "autopilot"): Promise<unknown>;
+  setModel(chatId: string, model: string, reasoningEffort?: string | null, options?: { contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null }): Promise<void>;
+  setAutoTier(chatId: string, autoTier: AgentChatCopilotAutoTier | null): Promise<{ status: "unchanged" | "pending"; [key: string]: unknown }>;
+  setPermissionMode(chatId: string, permissionMode: string): Promise<void>;
+  forkSession(chatId: string, sessionId: string, options?: { throughMessageText?: string; throughMessageOrdinal?: number }): Promise<string>;
   abort(chatId: string): Promise<void>;
   disconnect(chatId: string): Promise<void>;
   utility(args: { cwd: string; prompt: string; model?: string; systemMessage?: string }): Promise<unknown>;
@@ -87,8 +94,11 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       });
     },
     openSession: (config, resume) => pooled.request(resume ? "resume" : "create", config),
-    send: (chatId, prompt, attachments, mode) => pooled.request("send", { chatId, prompt, attachments, mode }),
-    setModel: async (chatId, model, reasoningEffort) => { await pooled.request("set_model", { chatId, model, reasoningEffort }); },
+    send: (chatId, prompt, attachments, mode, agentMode) => pooled.request("send", { chatId, prompt, attachments, mode, agentMode }),
+    setModel: async (chatId, model, reasoningEffort, options = {}) => { await pooled.request("set_model", { chatId, model, reasoningEffort, ...options }); },
+    setAutoTier: (chatId, autoTier) => pooled.request("set_auto_tier", { chatId, autoTier }),
+    setPermissionMode: async (chatId, permissionMode) => { await pooled.request("set_permission_mode", { chatId, permissionMode }); },
+    forkSession: async (chatId, sessionId, options = {}) => pooled.request("fork_session", { chatId, sessionId, ...options }),
     abort: async (chatId) => { await pooled.request("abort", { chatId }); },
     disconnect: async (chatId) => { await pooled.request("disconnect", { chatId }); },
     utility: (args) => pooled.request("utility", args),

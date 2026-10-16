@@ -223,6 +223,8 @@ export type ModelPickerContentProps = {
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
   onServiceTierChange?: (modelId: string, next: CursorCloudServiceTier | null) => void;
+  copilotContextTier?: "default" | "long_context";
+  onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   /** Prompt-box / chat machine for OpenCode-installed and auth probes. */
   runtimePin?: OpenProjectBinding | null;
 };
@@ -257,6 +259,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
+  copilotContextTier = "default",
+  onCopilotContextTierChange,
   runtimePin = null,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
@@ -1183,6 +1187,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                           serviceTier: isActive ? serviceTier : null,
                           onServiceTierChange: handleServiceTierChange,
                         } : {})}
+                        {...(onCopilotContextTierChange ? { copilotContextTier, onCopilotContextTierChange } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
                         {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
                       />

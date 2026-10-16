@@ -221,7 +221,9 @@ export function permissionLevelForFamily(family: PermissionLadderFamily, control
     case "opencode":
     case "acp": return permissionLevelForOpenCode(controls.opencodePermissionMode);
     case "droid": return permissionLevelForDroid(controls.droidPermissionMode);
-    case "copilot": return controls.copilotPermissionMode ?? "ask";
+    case "copilot": return controls.copilotPermissionMode === "assisted"
+      ? "auto-edit"
+      : controls.copilotPermissionMode ?? "ask";
     case "cursor": return permissionLevelForCursorMode(controls.cursorModeId);
     case "muse": return permissionLevelForMuse(controls.musePermissionMode ?? "onRequest");
   }
@@ -365,7 +367,9 @@ export function sessionPermissionLevel(
   if (provider === "droid") {
     return fields.droidPermissionMode ? permissionLevelForDroid(fields.droidPermissionMode) : unknown;
   }
-  if (provider === "copilot") return fields.copilotPermissionMode ?? "ask";
+  if (provider === "copilot") {
+    return fields.copilotPermissionMode === "assisted" ? "auto-edit" : fields.copilotPermissionMode ?? "ask";
+  }
   if (provider === "opencode") {
     if (!fields.opencodePermissionMode || fields.opencodePermissionMode === "config-toml") {
       return levelForGenericMode(fields.permissionMode) ?? unknown;

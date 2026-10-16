@@ -18,6 +18,7 @@ export type CopilotSdkEventMapperState = {
   contextWindow: number | null;
   servedModel: string | null;
   costUsd: number | null;
+  premiumRequestCost: number;
   streamedMessages: Set<string>;
   compactionTokens: number | null;
   requestedModel: string | null;
@@ -25,7 +26,7 @@ export type CopilotSdkEventMapperState = {
   mismatchModels: Set<string>;
 };
 export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
-  return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null, streamedMessages: new Set(), compactionTokens: null, requestedModel: null, askedAuto: false, mismatchModels: new Set() };
+  return { toolNames: new Map(), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0, contextTokens: null, contextWindow: null, servedModel: null, costUsd: null, premiumRequestCost: 0, streamedMessages: new Set(), compactionTokens: null, requestedModel: null, askedAuto: false, mismatchModels: new Set() };
 }
 
 export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state: CopilotSdkEventMapperState }): AgentChatEvent[] {
@@ -95,6 +96,9 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       state.contextTokens = number(usage.inputTokens) ?? state.contextTokens;
       state.servedModel = text(usage.model) ?? state.servedModel;
       state.costUsd = number(usage.cost) ?? state.costUsd;
+      const copilotUsage = record(usage.copilotUsage);
+      const premiumCost = number(copilotUsage?.totalPremiumRequestCost) ?? number(copilotUsage?.premiumRequestCost);
+      if (premiumCost != null) state.premiumRequestCost = Math.max(state.premiumRequestCost, premiumCost);
       return [];
     }
     case "session.usage_info": {
@@ -184,6 +188,7 @@ export function copilotSdkDoneUsage(state: CopilotSdkEventMapperState): NonNulla
     reasoningTokens: state.reasoningTokens || undefined,
     contextTokens: state.contextTokens ?? undefined,
     contextWindow: state.contextWindow ?? undefined,
+    ...(state.premiumRequestCost > 0 ? { planUsage: [{ unit: "premium_request", amount: state.premiumRequestCost }] } : {}),
   };
 }
 

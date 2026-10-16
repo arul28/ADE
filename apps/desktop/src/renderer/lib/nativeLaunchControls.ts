@@ -96,6 +96,9 @@ export function summarizeNativeControls(
   | "codexConfigSource"
   | "opencodePermissionMode"
   | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "copilotContextTier"
+  | "copilotAutoTier"
   | "musePermissionMode"
   | "permissionMode"
   | "cursorModeId"
@@ -169,6 +172,13 @@ export function summarizeNativeControls(
       permissionMode: controls.interactionMode === "plan"
         ? "plan"
         : legacyPermissionModeFromMusePermissionMode(controls.musePermissionMode),
+    };
+  }
+  if (provider === "copilot") {
+    return {
+      copilotPermissionMode: controls.copilotPermissionMode ?? "ask",
+      copilotContextTier: controls.copilotContextTier ?? "default",
+      copilotAutoTier: controls.copilotAutoTier ?? null,
     };
   }
   // Pi's native permission field IS `permissionMode` — it has no provider

@@ -63,6 +63,9 @@ export type NativeControlState = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   droidPermissionMode: AgentChatDroidPermissionMode;
+  copilotPermissionMode?: import("../../shared/types/chat").AgentChatCopilotPermissionMode;
+  copilotContextTier?: import("../../shared/types/chat").AgentChatCopilotContextTier;
+  copilotAutoTier?: import("../../shared/types/chat").AgentChatCopilotAutoTier | null;
   musePermissionMode: AgentChatMusePermissionMode;
   cursorModeId: string | null;
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;

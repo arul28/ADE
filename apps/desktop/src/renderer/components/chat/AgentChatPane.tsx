@@ -4249,6 +4249,9 @@ export function AgentChatPane({
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
   const [droidPermissionMode, setDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(initialNativeControls.droidPermissionMode);
+  const [copilotPermissionMode, setCopilotPermissionMode] = useState<NonNullable<NativeControlState["copilotPermissionMode"]>>(initialNativeControls.copilotPermissionMode ?? "ask");
+  const [copilotContextTier, setCopilotContextTier] = useState<NonNullable<NativeControlState["copilotContextTier"]>>(initialNativeControls.copilotContextTier ?? "default");
+  const [copilotAutoTier, setCopilotAutoTier] = useState<NativeControlState["copilotAutoTier"]>(initialNativeControls.copilotAutoTier ?? null);
   const [musePermissionMode, setMusePermissionMode] = useState<AgentChatMusePermissionMode>(initialNativeControls.musePermissionMode);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
@@ -6813,6 +6816,9 @@ export function AgentChatPane({
     setCodexConfigSource(config.controls.codexConfigSource);
     setOpenCodePermissionMode(config.controls.opencodePermissionMode);
     setDroidPermissionMode(config.controls.droidPermissionMode);
+    setCopilotPermissionMode(config.controls.copilotPermissionMode ?? "ask");
+    setCopilotContextTier(config.controls.copilotContextTier ?? "default");
+    setCopilotAutoTier(config.controls.copilotAutoTier ?? null);
     setMusePermissionMode(config.controls.musePermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
@@ -6840,6 +6846,9 @@ export function AgentChatPane({
       setCodexConfigSource(initialNativeControls.codexConfigSource);
       setOpenCodePermissionMode(initialNativeControls.opencodePermissionMode);
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
+      setCopilotPermissionMode(initialNativeControls.copilotPermissionMode ?? "ask");
+      setCopilotContextTier(initialNativeControls.copilotContextTier ?? "default");
+      setCopilotAutoTier(initialNativeControls.copilotAutoTier ?? null);
       setMusePermissionMode(initialNativeControls.musePermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
@@ -6890,6 +6899,9 @@ export function AgentChatPane({
         ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
         ?? initialNativeControls.droidPermissionMode,
     );
+    setCopilotPermissionMode(session.copilotPermissionMode ?? "ask");
+    setCopilotContextTier(session.copilotContextTier ?? "default");
+    setCopilotAutoTier(session.copilotAutoTier ?? null);
     setMusePermissionMode(
       session.musePermissionMode
         ?? musePermissionModeFromLegacyPermissionMode(session.permissionMode)
@@ -9554,6 +9566,11 @@ export function AgentChatPane({
         if (meta.codexConfigSource !== undefined) summaryPatch.codexConfigSource = meta.codexConfigSource;
         if (meta.opencodePermissionMode !== undefined) summaryPatch.opencodePermissionMode = meta.opencodePermissionMode;
         if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
+        if (meta.copilotPermissionMode !== undefined) summaryPatch.copilotPermissionMode = meta.copilotPermissionMode;
+        if (meta.copilotContextTier !== undefined) summaryPatch.copilotContextTier = meta.copilotContextTier;
+        if (meta.copilotAutoTier !== undefined) summaryPatch.copilotAutoTier = meta.copilotAutoTier;
+        if (meta.copilotAutoTierPending !== undefined) summaryPatch.copilotAutoTierPending = meta.copilotAutoTierPending;
+        if (meta.copilotGoal !== undefined) summaryPatch.copilotGoal = meta.copilotGoal;
         if (meta.musePermissionMode !== undefined) summaryPatch.musePermissionMode = meta.musePermissionMode;
         if (meta.cursorModeId !== undefined) {
           summaryPatch.cursorModeId = meta.cursorModeId;
@@ -9611,6 +9628,9 @@ export function AgentChatPane({
           if (meta.codexConfigSource !== undefined) setCodexConfigSource(meta.codexConfigSource);
           if (meta.opencodePermissionMode !== undefined) setOpenCodePermissionMode(meta.opencodePermissionMode);
           if (meta.droidPermissionMode !== undefined) setDroidPermissionMode(meta.droidPermissionMode);
+          if (meta.copilotPermissionMode !== undefined) setCopilotPermissionMode(meta.copilotPermissionMode);
+          if (meta.copilotContextTier !== undefined) setCopilotContextTier(meta.copilotContextTier);
+          if (meta.copilotAutoTier !== undefined) setCopilotAutoTier(meta.copilotAutoTier);
           if (meta.musePermissionMode !== undefined) setMusePermissionMode(meta.musePermissionMode);
           if (
             meta.cursorModeId !== undefined
@@ -10550,6 +10570,9 @@ export function AgentChatPane({
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
     musePermissionMode,
     cursorModeId,
     cursorConfigValues,
@@ -10561,6 +10584,9 @@ export function AgentChatPane({
     codexConfigSource,
     opencodePermissionMode,
     droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
     musePermissionMode,
     cursorModeId,
     cursorConfigValues,
@@ -14576,6 +14602,9 @@ export function AgentChatPane({
     setCodexConfigSource(nextControls.codexConfigSource);
     setOpenCodePermissionMode(nextControls.opencodePermissionMode);
     setDroidPermissionMode(nextControls.droidPermissionMode);
+    setCopilotPermissionMode(nextControls.copilotPermissionMode ?? "ask");
+    setCopilotContextTier(nextControls.copilotContextTier ?? "default");
+    setCopilotAutoTier(nextControls.copilotAutoTier ?? null);
     setMusePermissionMode(nextControls.musePermissionMode);
     setCursorModeId(nextControls.cursorModeId);
     setCursorConfigValues(nextControls.cursorConfigValues);
@@ -14598,6 +14627,11 @@ export function AgentChatPane({
     const nextSummary = {
       ...summarizeNativeControls(provider, nextControls),
       ...(provider === "cursor" ? { cursorConfigValues: userSetCursorConfigValues(nextControls.cursorConfigValues) } : {}),
+      ...(provider === "copilot" ? {
+        copilotPermissionMode: nextControls.copilotPermissionMode,
+        copilotContextTier: nextControls.copilotContextTier,
+        copilotAutoTier: nextControls.copilotAutoTier,
+      } : {}),
     };
     patchSessionSummary(selectedSessionId, nextSummary);
     if (isPersistentIdentitySurface) {
@@ -14630,6 +14664,9 @@ export function AgentChatPane({
           codexConfigSource: updatedSession.codexConfigSource,
           opencodePermissionMode: updatedSession.opencodePermissionMode,
           droidPermissionMode: updatedSession.droidPermissionMode,
+          copilotPermissionMode: updatedSession.copilotPermissionMode,
+          copilotContextTier: updatedSession.copilotContextTier,
+          copilotAutoTier: updatedSession.copilotAutoTier,
           musePermissionMode: updatedSession.musePermissionMode,
           cursorModeId: updatedSession.cursorModeId,
           cursorModeSnapshot: updatedSession.cursorModeSnapshot,
@@ -16746,6 +16783,16 @@ export function AgentChatPane({
             codexConfigSource={codexConfigSource}
             opencodePermissionMode={opencodePermissionMode}
             droidPermissionMode={droidPermissionMode}
+            copilotPermissionMode={copilotPermissionMode}
+            copilotContextTier={copilotContextTier}
+            copilotAutoTier={copilotAutoTier}
+            copilotAutoTierPending={selectedSession?.copilotAutoTierPending === true}
+            onCopilotAutoTierChange={(tier) => { void updateNativeControls({ copilotAutoTier: tier }); }}
+            onCopilotContextTierChange={(modelId, tier) => {
+              if (!selectedSessionId || modelId === selectedSession?.modelId || modelId === selectedSession?.model) {
+                void updateNativeControls({ copilotContextTier: tier });
+              }
+            }}
             musePermissionMode={musePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
@@ -16777,6 +16824,7 @@ export function AgentChatPane({
             onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
+            onCopilotPermissionModeChange={(value) => { void updateNativeControls({ copilotPermissionMode: value }); }}
             onMusePermissionModeChange={(value, nextInteractionMode) => {
               void updateNativeControls({ musePermissionMode: value, interactionMode: nextInteractionMode });
             }}

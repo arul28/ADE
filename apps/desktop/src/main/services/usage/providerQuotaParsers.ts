@@ -320,7 +320,14 @@ export function parseCopilotQuota(payload: unknown, nowMs: number, email?: strin
   const snapshots = asRecord(root?.quotaSnapshots) ?? asRecord(root?.quota_snapshots);
   const premium = asRecord(snapshots?.premiumInteractions) ?? asRecord(snapshots?.premium_interactions);
   const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining);
-  const percent = remaining == null ? null : wholePercent(100 - remaining);
+  const usedCount = finiteNumberOrNull(premium?.usedRequests ?? premium?.used_requests);
+  const entitlementCount = finiteNumberOrNull(premium?.entitlementRequests ?? premium?.entitlement_requests);
+  const unlimited = premium?.unlimited === true;
+  const percent = remaining == null
+    ? entitlementCount != null && entitlementCount > 0 && usedCount != null
+      ? wholePercent(usedCount / entitlementCount * 100)
+      : unlimited ? 0 : null
+    : wholePercent(100 - remaining);
   if (percent == null) return { windows: [], plan: null };
   const plan = stringField(root, "copilotPlan", "copilot_plan");
   const resetsAt = isoField(premium, "resetAt", "reset_at")
@@ -333,14 +340,14 @@ export function parseCopilotQuota(payload: unknown, nowMs: number, email?: strin
       "quota_reset_date",
     );
   return {
-    windows: [quotaWindow({
+    windows: [{ ...quotaWindow({
       provider: "copilot",
       windowType: "monthly",
       percentUsed: percent,
       resetsAt,
       nowMs,
       email,
-    })],
+    }), ...(usedCount != null ? { usedCount } : {}), ...(entitlementCount != null ? { entitlementCount } : {}), ...(unlimited ? { unlimited: true } : {}) }],
     plan,
   };
 }

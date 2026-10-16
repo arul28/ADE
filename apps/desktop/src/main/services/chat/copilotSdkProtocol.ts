@@ -1,5 +1,6 @@
 import type { PermissionRequest, PermissionRequestResult } from "@github/copilot-sdk";
 import type { ExitPlanModeRequest, ExitPlanModeResult } from "@github/copilot-sdk";
+import type { AgentChatCopilotAutoTier, AgentChatCopilotContextTier } from "../../../shared/types/chat";
 
 export type CopilotSdkWorkerInit = {
   cliPath: string;
@@ -17,6 +18,8 @@ export type CopilotSdkSessionConfig = {
   cwd: string;
   model?: string;
   reasoningEffort?: string | null;
+  contextTier?: AgentChatCopilotContextTier;
+  autoTier?: AgentChatCopilotAutoTier | null;
   systemMessage?: string;
   skillDirectories?: string[];
   mcpServers?: Record<string, unknown>;
@@ -29,8 +32,13 @@ export type CopilotSdkWorkerRequest =
   | { type: "init"; requestId: string; payload: CopilotSdkWorkerInit }
   | { type: "auth" | "models" | "dispose"; requestId: string }
   | { type: "create" | "resume"; requestId: string; payload: CopilotSdkSessionConfig }
-  | { type: "send"; requestId: string; payload: { chatId: string; prompt: string; attachments?: CopilotSdkAttachment[]; mode?: "enqueue" | "immediate" } }
-  | { type: "set_model"; requestId: string; payload: { chatId: string; model: string; reasoningEffort?: string | null } }
+  | { type: "send"; requestId: string; payload: { chatId: string; prompt: string; attachments?: CopilotSdkAttachment[]; mode?: "enqueue" | "immediate"; agentMode?: "autopilot" } }
+  | { type: "set_model"; requestId: string; payload: { chatId: string; model: string; reasoningEffort?: string | null; contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null } }
+  | { type: "set_auto_tier"; requestId: string; payload: { chatId: string; autoTier: AgentChatCopilotAutoTier | null } }
+  | { type: "set_permission_mode"; requestId: string; payload: { chatId: string; permissionMode: string } }
+  | { type: "fork_session"; requestId: string; payload: { chatId: string; sessionId: string; throughMessageText?: string; throughMessageOrdinal?: number } }
+  | { type: "rewind"; requestId: string; payload: { chatId: string; action: "list" | "preview" | "apply"; eventId?: string } }
+  | { type: "usage_metrics"; requestId: string; payload: { chatId: string } }
   | { type: "abort" | "disconnect"; requestId: string; payload: { chatId: string } }
   | { type: "respond_permission"; requestId: string; payload: { waiterId: string; result: PermissionRequestResult } }
   | { type: "respond_exit_plan"; requestId: string; payload: { waiterId: string; result: ExitPlanModeResult } }
