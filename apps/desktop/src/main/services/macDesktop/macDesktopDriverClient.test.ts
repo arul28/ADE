@@ -5,7 +5,10 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMacDesktopDriverClient } from "./macDesktopDriverClient";
+import {
+  createMacDesktopDriverClient,
+  isMacDesktopDriverStillRunning,
+} from "./macDesktopDriverClient";
 
 const logger = {
   debug: () => {},
@@ -226,6 +229,124 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
     expect(client.getHealth().state).toBe("running");
     // The service decides whether a retirement took a screen with it.
     expect(lost).toEqual(["retired", "retired", "retired", "retired", "retired"]);
+    client.dispose();
+  });
+
+  /**
+   * A helper that dies on sight, over and over.
+   *
+   * The point is what the client does with the *ninth* one. A restart budget
+   * that runs out inside the window the client measures stability against
+   * cannot tell a burst of transient failures — an update replacing the binary,
+   * a window-server hiccup — from a helper that will never come up, and the
+   * state it then reports ("restart ADE") is the one state nothing here can
+   * leave. So the budget has to span that window, and reaching the end of it
+   * has to slow the retries down rather than stop them.
+   */
+  it("keeps retrying a helper that exits again and again, and only slows down", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const children: Array<ReturnType<typeof createChild>> = [];
+    const spawnProcess = vi.fn(() => {
+      const next = createChild(600 + children.length);
+      children.push(next);
+      return next;
+    });
+    const { lines, logger: recorded } = recordingLogger();
+    let crashLoopAt: number | null = null;
+    const clocked = {
+      ...recorded,
+      error: (event: string, meta?: Record<string, unknown>) => {
+        recorded.error(event, meta);
+        if (event === "mac_desktop.driver_crash_loop" && crashLoopAt === null) crashLoopAt = Date.now();
+      },
+    };
+    const client = createMacDesktopDriverClient({
+      logger: clocked,
+      platform: "darwin",
+      resolveExecutablePath: binaryPath,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+    await client.ensureStarted();
+    const startedAt = Date.now();
+
+    // Advance in small steps until the expected restart lands, so the test
+    // states "a restart happens" rather than pinning the backoff schedule.
+    const nextRestart = async (expected: number): Promise<void> => {
+      for (let elapsed = 0; elapsed < 20_000; elapsed += 100) {
+        await vi.advanceTimersByTimeAsync(100);
+        if (spawnProcess.mock.calls.length >= expected) return;
+      }
+      throw new Error(`no restart within 20s (wanted spawn ${expected})`);
+    };
+
+    // Eleven deaths in a row: past the four attempts this used to allow, and
+    // far enough that the last rounds can only be the slowed-down retry.
+    for (let round = 0; round < 11; round += 1) {
+      children.at(-1)!.exit(1);
+      await nextRestart(round + 2);
+    }
+
+    expect(spawnProcess).toHaveBeenCalledTimes(12);
+    // With the retry pending, the state says what is true — the helper is not
+    // up — rather than "starting".
+    children.at(-1)!.exit(1);
+    expect(client.getHealth().state).toBe("crash_loop");
+    // And it is still trying: the death after the budget buys one more start.
+    await nextRestart(13);
+    expect(spawnProcess).toHaveBeenCalledTimes(13);
+    expect(lines.filter((line) => line.event === "mac_desktop.driver_crash_loop")).toHaveLength(1);
+    // And the budget spanned the 30 s window it is measured against before it
+    // called this a loop: the whole point is that the cause had time to clear.
+    expect(crashLoopAt).not.toBeNull();
+    expect(crashLoopAt! - startedAt).toBeGreaterThanOrEqual(30_000);
+    client.dispose();
+  });
+
+  it("tells the driver's give-up answer apart from a refusal and from a dead driver", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const child = createChild(303);
+    const client = createMacDesktopDriverClient({
+      logger,
+      platform: "darwin",
+      resolveExecutablePath: binaryPath,
+      spawnProcess: (() => child) as unknown as typeof import("node:child_process").spawn,
+    });
+    await client.ensureStarted();
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    const answer = async (error: Record<string, unknown>): Promise<unknown> => {
+      const request = client.request("observe", { laneId: "lane-1" });
+      await settle();
+      const id = JSON.parse(child.stdin.read()!.toString()).id;
+      child.stdout.write(`${JSON.stringify({ id, ok: false, error })}\n`);
+      return await request.catch((failure: unknown) => failure);
+    };
+
+    // The watchdog answering for a handler that is still running: alive, and
+    // the work may yet land.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "internal_error",
+      message: "observe did not complete within 15s. "
+        + "The driver gave up waiting and answered on its behalf; the operation may still be running.",
+    }))).toBe(true);
+    // The same code with a real internal failure behind it is not a give-up.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "internal_error",
+      message: "The element map could not be written.",
+    }))).toBe(false);
+    // Nor is a refusal.
+    expect(isMacDesktopDriverStillRunning(await answer({
+      code: "no_display",
+      message: "Lane lane-1 has no display. Start one before observing it.",
+    }))).toBe(false);
+
+    // And a driver that is simply gone is the other failure, not this one.
+    // The rejection is handled where it is made, not after the exit lands.
+    const gone = client.request("observe", { laneId: "lane-1" }).catch((failure: unknown) => failure);
+    await settle();
+    child.exit(1);
+    await settle();
+    expect(isMacDesktopDriverStillRunning(await gone)).toBe(false);
     client.dispose();
   });
 

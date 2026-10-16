@@ -51,6 +51,7 @@ import {
 } from "../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
+import { isMacDesktopDriverStillRunning } from "./macDesktopDriverClient";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import { clampFps } from "./macDesktopStreamServer";
 
@@ -64,15 +65,6 @@ function isRecorderTakenError(error: unknown): boolean {
   if (error && typeof error === "object" && (error as { code?: unknown }).code === "capture_starting") return true;
   const message = error instanceof Error ? error.message : String(error);
   return /is already recording|recording is already starting/i.test(message);
-}
-
-/**
- * The helper's watchdog reply for a request it gave up on. The work behind it
- * may still be running (`PendingRequestTracker.swift`).
- */
-function isWatchdogTimeout(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /did not complete within \d+s/.test(message);
 }
 
 /** The file a `record.stop` reply names, if it names one. */
@@ -119,7 +111,7 @@ export async function startHelperRecording(args: {
     }
   };
   const clearIfTimedOut = async (error: unknown): Promise<void> => {
-    if (isWatchdogTimeout(error) && (args.stillOwned?.() ?? true)) await clear("timed_out");
+    if (isMacDesktopDriverStillRunning(error) && (args.stillOwned?.() ?? true)) await clear("timed_out");
   };
   try {
     await args.start();
