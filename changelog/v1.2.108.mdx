@@ -1,0 +1,42 @@
+---
+title: "v1.2.108"
+description: "Release notes for ADE v1.2.108 - October 16, 2026"
+---
+
+ADE 1.2.108 adds 3D scenes and math to chat, Jira Cloud issues, and native spreadsheet and presentation previews.
+
+## Chat
+
+- 3D scenes with three.js, KaTeX math, and a drawing box for scenes in progress, on desktop and iOS.
+- Better image handling in prompts: attachment chips, peek on focus, and a paste rule (#1655).
+- Agents and shells read as runs instead of walls of cards (#1658).
+- Quieter computer-use and image rows that fold with the turn.
+- Ultrathink and ultracode controls (#1654).
+- Thread UI polish (#1656) and a prompt box animation pass (#1657).
+- Codex, Pi and OpenCode compact first after the cache expires (#1643).
+
+## Issues
+
+- Jira Cloud support, one launcher for every tracker, and quieter failed turns (#1653).
+
+## Providers
+
+- Custom providers say which models can run, and why (#1648).
+
+## Files
+
+- Spreadsheet and presentation files preview natively (#1642).
+
+## Lanes
+
+- A renamed branch updates the lane instead of offering a dead switch-back (#1659).
+- PRs use the worktree's branch (#1646).
+
+## Home
+
+- The home page opens on the new default widget stack (#1645).
+
+## Fixes
+
+- A scheduled wake is delivered once across brains (#1646).
+- `ade chat` honors `--project-root` (#1644).

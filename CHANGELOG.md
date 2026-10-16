@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.108] - 2026-10-16
+
+### Desktop and web
+
+- 3D scenes, KaTeX math, and a drawing box for scenes in progress.
+- Image handling in prompts: attachment chips, peek, paste rule (#1655).
+- Agents and shells read as runs, not walls of cards (#1658).
+- Ultrathink and ultracode controls (#1654).
+- Jira Cloud and one launcher for every tracker (#1653).
+- Custom providers say which models can run, and why (#1648).
+- Native spreadsheet and presentation previews (#1642).
+- A renamed branch updates the lane (#1659).
+- New default home widget stack (#1645).
+- Compact first for Codex, Pi and OpenCode after cache expiry (#1643).
+- Scheduled wakes deliver once across brains (#1646).
+- `ade chat` honors `--project-root` (#1644).
+
+### iOS
+
+- 3D scenes and math in chat.
+
 ## [1.2.107] - 2026-10-15
 
 ### Desktop and web
@@ -2528,7 +2549,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.107...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.108...HEAD
+[1.2.108]: https://github.com/arul28/ADE/compare/v1.2.107...v1.2.108
 [1.2.107]: https://github.com/arul28/ADE/compare/v1.2.106...v1.2.107
 [1.2.106]: https://github.com/arul28/ADE/compare/v1.2.105...v1.2.106
 [1.2.105]: https://github.com/arul28/ADE/compare/v1.2.104...v1.2.105
