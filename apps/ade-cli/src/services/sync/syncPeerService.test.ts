@@ -76,7 +76,7 @@ describe("createSyncPeerService", () => {
     const startedAt = Date.now();
     await expect(peerService.connect({ host: "192.0.2.1", port: 8788, token: "token" })).rejects.toThrow();
     expect(Date.now() - startedAt).toBeLessThan(6_000);
-  });
+  }, 8_000);
 
   it("uses a two-interval heartbeat only as the peer fallback", () => {
     expect(peerHeartbeatFallbackDelayMs(30_000)).toBe(60_000);

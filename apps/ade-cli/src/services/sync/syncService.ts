@@ -422,10 +422,9 @@ const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
-// A remote laptop can be offline for hours without being stale. Only reclaim
-// after three days without a registry heartbeat; same-hostname ghosts are
-// handled separately after their transport dial has failed.
-const STALE_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
+const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+const STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS = 3 * 24 * 60 * 60_000;
+const GHOST_BRAIN_LAST_SEEN_MS = 60 * 60_000;
 
 /**
  * This project follows another machine's sync brain, so this machine cannot
@@ -530,6 +529,51 @@ function isViewerDraftTransportError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
+}
+
+export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
+  hostStartupEnabled: boolean;
+  crdtSyncAvailable: boolean;
+  cluster: { brainDeviceId: string } | null;
+  localDevice: SyncRoleSnapshot["localDevice"];
+  brain: { lastSeenAt: string | null; updatedAt: string; metadata: Record<string, unknown> } | null;
+  draft: SyncDesktopConnectionDraft;
+  error: unknown;
+  now?: number;
+}): boolean {
+  if (!args.hostStartupEnabled || !args.crdtSyncAvailable) return false;
+  if (!isViewerDraftTransportError(args.error)) return false;
+  const originalLastSeenRaw = args.brain?.lastSeenAt ?? args.brain?.updatedAt;
+  const originalLastSeenMs = originalLastSeenRaw ? Date.parse(originalLastSeenRaw) : Number.NaN;
+  const lastSeenMs = args.brain?.lastSeenAt ? Date.parse(args.brain.lastSeenAt) : Number.NaN;
+  const staleByOriginalRule = args.cluster != null
+    && args.cluster.brainDeviceId !== args.localDevice.deviceId
+    && (!args.brain || !Number.isFinite(originalLastSeenMs)
+      || (args.now ?? Date.now()) - originalLastSeenMs > STALE_BRAIN_LAST_SEEN_MS);
+  // Preserve the original recovery for a draft that explicitly points back
+  // to this device; no cluster or the original stale check is enough.
+  if (isDraftTargetLocalDevice(args.draft, args.localDevice) && (!args.cluster || staleByOriginalRule)) return true;
+  if (!args.cluster) return false;
+  if (args.cluster.brainDeviceId === args.localDevice.deviceId) return false;
+  const localHostname = normalizeHostKey(
+    typeof args.localDevice.metadata?.hostname === "string" ? args.localDevice.metadata.hostname : null,
+  );
+  const brainHostname = normalizeHostKey(
+    typeof args.brain?.metadata.hostname === "string" ? args.brain.metadata.hostname : null,
+  );
+  const unseenForMs = Number.isFinite(lastSeenMs) ? (args.now ?? Date.now()) - lastSeenMs : Number.NaN;
+  // Default macOS hostnames collide, so require a distinct device id and a
+  // full hour without a heartbeat before treating a matching name as a ghost.
+  if (
+    localHostname
+    && brainHostname === localHostname
+    && args.cluster.brainDeviceId !== args.localDevice.deviceId
+    && unseenForMs >= GHOST_BRAIN_LAST_SEEN_MS
+  ) return true;
+  // A remote machine may be offline for hours; the longer threshold avoids
+  // disrupting ordinary reconnects while still clearing abandoned clusters.
+  return Number.isFinite(unseenForMs)
+    && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
@@ -1290,21 +1334,18 @@ export function createSyncService(args: SyncServiceArgs) {
     draft: SyncDesktopConnectionDraft;
     error: unknown;
   }): boolean => {
-    if (!hostStartupEnabled || !isCrdtSyncAvailable()) return false;
-    if (!isViewerDraftTransportError(argsIn.error)) return false;
     const brain = argsIn.cluster
       ? deviceRegistryService.getDevice(argsIn.cluster.brainDeviceId)
       : null;
-    const localHostname = normalizeHostKey(
-      typeof argsIn.localDevice.metadata?.hostname === "string"
-        ? argsIn.localDevice.metadata.hostname
-        : null,
-    );
-    const brainHostname = normalizeHostKey(
-      typeof brain?.metadata.hostname === "string" ? brain.metadata.hostname : null,
-    );
-    if (localHostname && brainHostname && localHostname === brainHostname) return true;
-    return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
+    return shouldReclaimStaleViewerDraftAfterTransportFailure({
+      hostStartupEnabled,
+      crdtSyncAvailable: isCrdtSyncAvailable(),
+      cluster: argsIn.cluster,
+      localDevice: argsIn.localDevice,
+      brain,
+      draft: argsIn.draft,
+      error: argsIn.error,
+    });
   };
 
   /**
@@ -1322,10 +1363,9 @@ export function createSyncService(args: SyncServiceArgs) {
     if (savedDraft) {
       // A draft aimed at this machine is a leftover the refresh reclaims once
       // the dial fails, so it ends with this machine hosting. The reclaim only
-      // runs when the cluster record is absent or names a stale brain: a fresh
-      // record naming another machine wins, and the refresh leaves this
-      // project a viewer. Report the blocker there too, so a caller never tears
-      // down the current host for a target that will not take over.
+      // runs when the cluster record is absent or names a brain stale by the
+      // ordinary five-minute rule. A fresh record naming another machine wins,
+      // and refresh leaves this project a viewer.
       if (
         isDraftTargetLocalDevice(savedDraft, localDevice)
         && (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId))

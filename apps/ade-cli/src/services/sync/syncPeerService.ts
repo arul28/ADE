@@ -82,6 +82,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let outboundChangesetRecoveryNotBeforeMs = 0;
   const pendingRequests = new Map<string, PendingRequest>();
   let pendingConnect: { resolve: () => void; reject: (error: Error) => void } | null = null;
+  let pendingConnectSocket: WebSocket | null = null;
+  let pendingConnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const status: InternalStatus = {
     state: "disconnected",
@@ -368,10 +370,24 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
 
   const disconnectInternal = (state: SyncClientStatus["state"], message: string | null, error: string | null) => {
     stopTimers();
+    if (pendingConnectTimeout) clearTimeout(pendingConnectTimeout);
+    pendingConnectTimeout = null;
+    pendingConnectSocket = null;
+    if (pendingConnect) {
+      pendingConnect.reject(new Error(error ?? message ?? "Sync peer disconnected."));
+      pendingConnect = null;
+    }
     if (ws) {
       try {
         ws.removeAllListeners();
-        ws.close();
+        if (ws.readyState === WebSocket.CONNECTING) {
+          // ws emits an error when terminate() aborts a pre-open connection.
+          // Keep a listener while teardown runs so that expected abort cannot
+          // escape as an uncaught exception.
+          ws.once("error", () => {});
+          ws.terminate();
+        }
+        else ws.close();
       } catch {
         // ignore
       }
@@ -419,12 +435,18 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         startRelay();
         scheduleHeartbeatFallback(payload.heartbeatIntervalMs);
         pendingConnect?.resolve();
+        if (pendingConnectTimeout) clearTimeout(pendingConnectTimeout);
+        pendingConnectTimeout = null;
+        pendingConnectSocket = null;
         pendingConnect = null;
         break;
       }
       case "hello_error": {
         const payload = envelope.payload as { message?: string };
         pendingConnect?.reject(new Error(payload?.message ?? "Sync peer authentication failed."));
+        if (pendingConnectTimeout) clearTimeout(pendingConnectTimeout);
+        pendingConnectTimeout = null;
+        pendingConnectSocket = null;
         pendingConnect = null;
         disconnectInternal("error", null, payload?.message ?? "Sync peer authentication failed.");
         break;
@@ -577,18 +599,21 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const socket = new WebSocket(`ws://${status.host}:${String(status.port)}`);
         ws = socket;
         pendingConnect = { resolve, reject };
-        const connectTimeout = setTimeout(() => {
+        pendingConnectSocket = socket;
+        pendingConnectTimeout = setTimeout(() => {
+          if (pendingConnectSocket !== socket || !pendingConnect) return;
           const error = Object.assign(
             new Error(`Connection to ${status.host}:${String(status.port)} timed out after ${VIEWER_CONNECT_TIMEOUT_MS}ms.`),
             { code: "ETIMEDOUT" },
           );
           pendingConnect?.reject(error);
           pendingConnect = null;
+          pendingConnectSocket = null;
+          pendingConnectTimeout = null;
           disconnectInternal("error", null, error.message);
         }, VIEWER_CONNECT_TIMEOUT_MS);
 
         const cleanup = () => {
-          clearTimeout(connectTimeout);
           socket.removeListener("open", onOpen);
           socket.removeListener("error", onError);
         };
@@ -622,6 +647,11 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const onError = (error: Error) => {
           cleanup();
           pendingConnect?.reject(error);
+          if (pendingConnectSocket === socket) {
+            if (pendingConnectTimeout) clearTimeout(pendingConnectTimeout);
+            pendingConnectTimeout = null;
+            pendingConnectSocket = null;
+          }
           pendingConnect = null;
           disconnectInternal("error", null, error.message);
         };
@@ -639,6 +669,11 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         });
         socket.on("close", () => {
           if (disposed) return;
+          if (pendingConnectSocket === socket) {
+            if (pendingConnectTimeout) clearTimeout(pendingConnectTimeout);
+            pendingConnectTimeout = null;
+            pendingConnectSocket = null;
+          }
           if (pendingConnect) {
             pendingConnect.reject(new Error("Connection closed before authentication completed."));
             pendingConnect = null;

@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
-import { createSyncService, type SyncService } from "./syncService";
+import {
+  createSyncService,
+  shouldReclaimStaleViewerDraftAfterTransportFailure,
+  type SyncService,
+} from "./syncService";
 import {
   buildDegradedProjectlessSyncSnapshot,
   buildProjectlessSyncSnapshot,
@@ -94,6 +98,102 @@ describe("createSyncService", () => {
   afterEach(async () => {
     for (const root of cleanupRoots.splice(0)) {
       await removeTestTree(root);
+    }
+  });
+
+  const failedDial = Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+  const testDraft = {
+    host: "192.0.2.20",
+    port: 45872,
+    token: "token",
+    authKind: "bootstrap" as const,
+    pairedDeviceId: null,
+    lastRemoteDbVersion: 0,
+  };
+  const rolePolicyLocalDevice = (hostname = "MacBook-Pro-567.local") => ({
+    deviceId: "this-device",
+    ipAddresses: [],
+    tailscaleIp: null,
+    metadata: { hostname },
+  } as any);
+
+  it("reclaims a same-hostname ghost brain after its failed viewer dial", () => {
+    const now = Date.now();
+    const localDevice = rolePolicyLocalDevice();
+    expect(shouldReclaimStaleViewerDraftAfterTransportFailure({
+      hostStartupEnabled: true,
+      crdtSyncAvailable: true,
+      cluster: { brainDeviceId: "ghost-brain" },
+      localDevice,
+      brain: {
+        lastSeenAt: new Date(now - 2 * 60 * 60_000).toISOString(),
+        updatedAt: new Date(now).toISOString(),
+        metadata: { hostname: "MacBook-Pro-567.local" },
+      },
+      draft: testDraft,
+      error: failedDial,
+      now,
+    })).toBe(true);
+  });
+
+  it("does not reclaim a same-hostname brain seen five minutes ago", () => {
+    const now = Date.now();
+    expect(shouldReclaimStaleViewerDraftAfterTransportFailure({
+      hostStartupEnabled: true,
+      crdtSyncAvailable: true,
+      cluster: { brainDeviceId: "recent-collision" },
+      localDevice: rolePolicyLocalDevice(),
+      brain: {
+        lastSeenAt: new Date(now - 5 * 60_000).toISOString(),
+        updatedAt: new Date(now).toISOString(),
+        metadata: { hostname: "MacBook-Pro-567.local" },
+      },
+      draft: testDraft,
+      error: failedDial,
+      now,
+    })).toBe(false);
+  });
+
+  it("does not reclaim a recently seen remote brain after its failed dial", () => {
+    const now = Date.now();
+    expect(shouldReclaimStaleViewerDraftAfterTransportFailure({
+      hostStartupEnabled: true,
+      crdtSyncAvailable: true,
+      cluster: { brainDeviceId: "recent-remote" },
+      localDevice: rolePolicyLocalDevice(),
+      brain: {
+        lastSeenAt: new Date(now - 2 * 60_000).toISOString(),
+        updatedAt: new Date(now).toISOString(),
+        metadata: { hostname: "different-machine.local" },
+      },
+      draft: testDraft,
+      error: failedDial,
+      now,
+    })).toBe(false);
+  });
+
+  it("keeps the no-draft five-minute stale-brain failover", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-no-draft-failover-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const service = createService(db, projectRoot, { hostStartupEnabled: false });
+    const registry = service.getDeviceRegistryService();
+    const localDevice = registry.ensureLocalDevice();
+    registry.upsertPeerMetadata({
+      deviceId: "dead-brain",
+      deviceName: "Dead brain",
+      platform: "macOS",
+      deviceType: "desktop",
+      siteId: "dead-site",
+      dbVersion: 1,
+    } as any, { lastSeenAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+    registry.setClusterState({ brainDeviceId: "dead-brain", brainEpoch: 3 });
+    try {
+      await service.reevaluateHostRole();
+      expect(registry.getClusterState()?.brainDeviceId).toBe(localDevice.deviceId);
+    } finally {
+      await service.dispose();
+      db.close();
     }
   });
 
