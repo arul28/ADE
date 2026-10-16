@@ -34,6 +34,7 @@
 
 import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browserTabMention";
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
+import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { getModelById } from "./modelRegistry";
 import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
@@ -68,6 +69,10 @@ export type ChipKind =
   | "skill"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
   | "ade_link"
+  /** An ADE account machine, from a `@mac:` mention. */
+  | "machine"
+  /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
+  | "attachment"
   /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
   | "browser_tab";
 
@@ -81,6 +86,7 @@ export type ChipSource =
   | { origin: "path"; path: string }
   | { origin: "deeplink"; url: string; target: DeeplinkTarget }
   | { origin: "url"; url: string }
+  | { origin: "attachment"; attachmentKind: AttachmentLabelKind; ordinal: number; name?: string }
   | { origin: "model"; mention: ModelMention }
   | { origin: "permission"; provider: string; value: string }
   | { origin: "skill"; name: string }
@@ -130,6 +136,8 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   permission: "⛨",
   skill: "/",
   ade_link: "A",
+  machine: "▢",
+  attachment: "▣",
   browser_tab: "🌐",
 };
 
@@ -161,6 +169,8 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   permission: "P",
   skill: "/",
   ade_link: "A",
+  machine: "M",
+  attachment: "I",
   browser_tab: "B",
 };
 
@@ -207,9 +217,10 @@ export function chipFromPath(path: string, options: { isDirectory?: boolean } = 
   };
 }
 
-/** A `@chat:` / `@lane:` / `@term:` mention chip. */
+/** A `@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` mention chip. */
 export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?: string): Chip {
-  const kind: ChipKind = mentionKind === "terminal" ? "terminal" : mentionKind;
+  // Every mention kind names a chip kind of the same spelling.
+  const kind: ChipKind = mentionKind;
   return {
     kind,
     token: formatChatMentionToken(mentionKind, id),
@@ -237,6 +248,8 @@ export function chipFromModelMention(mention: ModelMention, token: string): Chip
 function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "chat") return `Chat ${shortId(id)}`;
   if (mentionKind === "lane") return `Lane ${shortId(id)}`;
+  if (mentionKind === "pr") return `PR ${shortId(id)}`;
+  if (mentionKind === "machine") return `Machine ${shortId(id)}`;
   return `Terminal ${shortId(id)}`;
 }
 
@@ -305,6 +318,26 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       // and the linear.app url for the same issue drew different labels.
       return { kind: "linear_issue", token: url, label: target.issueIdentifier.toUpperCase(), source };
   }
+}
+
+/**
+ * An `[Image #k]` / `[File #k: name]` attachment chip. The label drops the
+ * `#` and the file name (`Image 2`, `File 1`) — the pill is a pointer, and the
+ * thumbnail or the hover names the rest.
+ */
+export function chipFromAttachmentToken(
+  attachmentKind: AttachmentLabelKind,
+  ordinal: number,
+  token: string,
+  name?: string,
+): Chip {
+  return {
+    kind: "attachment",
+    token,
+    label: `${attachmentKind === "image" ? "Image" : "File"} ${ordinal}`,
+    detail: name ?? null,
+    source: { origin: "attachment", attachmentKind, ordinal, ...(name ? { name } : {}) },
+  };
 }
 
 /** Map one `SmartLinkPreview` onto the shared model, typing ADE links properly. */
@@ -450,6 +483,10 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
 
   matches.push(...parsePathMentions(text));
 
+  for (const token of parseAttachmentTokens(text)) {
+    const chip = chipFromAttachmentToken(token.kind, token.ordinal, token.token, token.name);
+    matches.push({ ...chip, start: token.start, end: token.end });
+  }
   // An attached tab's block holds a URL and a title that would otherwise chip
   // on their own; the block starts first, so the overlap pass below drops them.
   for (const tab of parseBrowserTabMentions(text)) {

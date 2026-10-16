@@ -335,8 +335,8 @@ describe("requestChipPreview", () => {
 
     // Whitespace is collapsed the way the runtime's own `cleanTitle` does, so
     // the transcript and the composer print the same string.
-    await expect(first).resolves.toEqual({ title: "Release notes", iconDataUrl: "data:image/png;base64,AAAB" });
-    await expect(second).resolves.toEqual({ title: "Release notes", iconDataUrl: "data:image/png;base64,AAAB" });
+    await expect(first).resolves.toEqual({ title: "Release notes", iconDataUrl: "data:image/png;base64,AAAB", imageUrl: null });
+    await expect(second).resolves.toEqual({ title: "Release notes", iconDataUrl: "data:image/png;base64,AAAB", imageUrl: null });
 
     await requestChipPreview("https://example.com/post");
     expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(1);
@@ -347,16 +347,16 @@ describe("requestChipPreview", () => {
     installRuntime(resolveSmartLinkPreview);
 
     await expect(requestChipPreview("https://example.com/down"))
-      .resolves.toEqual({ title: null, iconDataUrl: null });
+      .resolves.toEqual({ title: null, iconDataUrl: null, imageUrl: null });
     await expect(requestChipPreview("https://example.com/down"))
-      .resolves.toEqual({ title: null, iconDataUrl: null });
+      .resolves.toEqual({ title: null, iconDataUrl: null, imageUrl: null });
     expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(1);
   });
 
   it("resolves empty when the runtime does not expose the route at all", async () => {
     (window as unknown as { ade: unknown }).ade = { agentChat: {} };
     await expect(requestChipPreview("https://example.com/missing"))
-      .resolves.toEqual({ title: null, iconDataUrl: null });
+      .resolves.toEqual({ title: null, iconDataUrl: null, imageUrl: null });
   });
 
   it("drops an icon payload that is not an inline image", async () => {
@@ -369,6 +369,6 @@ describe("requestChipPreview", () => {
       iconDataUrl: "javascript:alert(1)",
     }));
     await expect(requestChipPreview("https://example.com/evil"))
-      .resolves.toEqual({ title: "Evil", iconDataUrl: null });
+      .resolves.toEqual({ title: "Evil", iconDataUrl: null, imageUrl: null });
   });
 });

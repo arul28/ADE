@@ -1,12 +1,14 @@
-// Suggestion + expansion backend for composer @-mentions of chats, lanes, and
-// terminals.
+// Suggestion + expansion backend for composer @-mentions of chats, lanes,
+// terminals, pull requests, and account machines.
 //
 // Two responsibilities, deliberately split by cost:
 //   1. `listChatMentionSuggestions` — menu-time. Roster reads only (session
-//      list, lane list, terminal list). No transcript or PTY reads happen here,
-//      so keystroke-rate calls stay cheap.
+//      list, lane list, terminal list, local PR rows, a cached machine
+//      directory read). No transcript or PTY reads happen here, so
+//      keystroke-rate calls stay cheap.
 //   2. `resolveChatMentionDetails` — send-time, once per message. Adds the
-//      bounded preview (last exchange / lane branch+PR / PTY tail).
+//      bounded preview (last exchange / lane branch+PR / PTY tail / machine
+//      snapshot).
 //
 // Everything is injected so the module is testable without Electron, and so the
 // desktop main process and the `ade` runtime share one implementation.
@@ -18,10 +20,21 @@ import {
   CHAT_MENTION_MAX_RESULTS,
   appendChatMentionBlocks,
   collectChatMentionTargets,
+  isChatMentionId,
+  parseChatMentionKindFilter,
   rankChatMentionSuggestions,
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
 } from "../../../shared/chatMentions";
+import {
+  buildAccountMachineSnapshot,
+  describeAccountMachinePresence,
+  findMachineByMentionId,
+  formatAccountMachineSnapshotText,
+  machineMentionId,
+} from "../../../shared/accountMachineSnapshot";
+import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
+import type { AttentionSnapshot } from "../../../shared/types/attention";
 import {
   buildModelMentionDetail,
   parseModelMentions,
@@ -55,6 +68,16 @@ const TERMINAL_PREVIEW_MAX_BYTES = 4096;
  * shows up on the user's next pause.
  */
 const ROSTER_CACHE_TTL_MS = 1500;
+/**
+ * The machine directory and Activity feed are network reads (account Worker,
+ * push relay), so the menu reuses one read for longer than the local roster.
+ * Send time always reads fresh: an expansion is a snapshot of "now".
+ */
+const MACHINE_CACHE_TTL_MS = 30_000;
+/** Upper bound on one directory/Activity read, so a hung relay never blocks the menu or a send. */
+const MACHINE_READ_TIMEOUT_MS = 4_000;
+/** How long one menu query waits for a cold machine read before answering without it. */
+const MACHINE_MENU_WAIT_MS = 800;
 
 export type ChatMentionServiceDeps = {
   /** Project-scoped chat roster. Archived/personal rows are filtered here. */
@@ -74,6 +97,17 @@ export type ChatMentionServiceDeps = {
   previewTerminal?:
     | ((args: { terminalId: string; maxBytes: number }) => Promise<ChatTerminalPreviewResult | null>)
     | null;
+  /**
+   * Optional: the ADE account machine directory, read inside the brain. This
+   * is deliberately NOT the CTO-only `account.listMachines` action: the
+   * mention service only ever reads presence through it, so a chat-role
+   * caller can mention a machine without being granted that action.
+   */
+  listAccountMachines?: (() => Promise<AdeAccountMachinesResult>) | null;
+  /** Optional: account-wide Activity, the only cross-machine source of projects, lanes and chats. */
+  getAccountActivity?: (() => Promise<AttentionSnapshot | null>) | null;
+  /** Optional: this machine's directory key, so its row reads "this machine". */
+  getLocalMachineKey?: (() => string | null) | null;
   logger?: { warn?: (message: string, meta?: Record<string, unknown>) => void } | null;
   /**
    * Optional: coarse product-analytics hook, invoked once per send whose text
@@ -156,6 +190,24 @@ type MentionRoster = {
   terminalsError: unknown;
 };
 
+/** One directory read plus the Activity items that describe each machine's work. */
+type MachineRoster = {
+  state: AdeAccountMachinesResult["state"] | "unsupported";
+  machines: AdeAccountMachine[];
+  message: string | null;
+  /** Null when Activity could not be read (unknown, not empty). */
+  activity: AttentionSnapshot["items"] | null;
+};
+
+/** Open and draft PRs are the ones worth pointing an agent at. */
+function isMentionablePr(pr: PrSummary): boolean {
+  return (pr.state === "open" || pr.state === "draft") && isChatMentionId(pr.id);
+}
+
+function prMentionTitle(pr: PrSummary): string {
+  return `#${pr.githubPrNumber} ${firstLine(pr.title) ?? "Untitled pull request"}`;
+}
+
 export function createChatMentionService(deps: ChatMentionServiceDeps) {
   // Single in-flight roster read shared by every caller inside the TTL: a burst
   // of keystrokes collapses to one session/lane/terminal read, and send-time
@@ -200,6 +252,67 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       if (rosterCache?.promise === promise) rosterCache = null;
     });
     return promise;
+  };
+
+  // ---- Account machines (network; separate cache so they never slow chats) ----
+
+  let machineCache: { at: number; promise: Promise<MachineRoster> } | null = null;
+
+  const withTimeout = <T,>(promise: Promise<T>, label: string): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${MACHINE_READ_TIMEOUT_MS}ms`)),
+        MACHINE_READ_TIMEOUT_MS,
+      );
+      promise.then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
+
+  const readMachineRoster = async (): Promise<MachineRoster> => {
+    const list = deps.listAccountMachines;
+    if (!list) return { state: "unsupported", machines: [], message: null, activity: null };
+    const activityRead = deps.getAccountActivity
+      ? withTimeout(deps.getAccountActivity(), "account activity read")
+        .then((snapshot) => snapshot?.items ?? null)
+        .catch((error: unknown) => {
+          deps.logger?.warn?.("chat mention activity read failed", { error });
+          return null;
+        })
+      : Promise.resolve(null);
+    const [listed, activity] = await Promise.all([
+      withTimeout(list(), "machine directory read").catch((error: unknown): AdeAccountMachinesResult => ({
+        state: "unavailable",
+        machines: [],
+        message: error instanceof Error ? error.message : String(error),
+      })),
+      activityRead,
+    ]);
+    return { state: listed.state, machines: listed.machines ?? [], message: listed.message, activity };
+  };
+
+  /** `fresh` bypasses the menu cache (send time) and refreshes it for the menu. */
+  const loadMachineRoster = (fresh = false): Promise<MachineRoster> => {
+    const now = Date.now();
+    if (!fresh && machineCache && now - machineCache.at < MACHINE_CACHE_TTL_MS) return machineCache.promise;
+    const promise = readMachineRoster();
+    machineCache = { at: now, promise };
+    promise.then((roster) => {
+      // Only a good read is worth reusing; a failure retries on the next keystroke burst.
+      if (roster.state !== "ok" && machineCache?.promise === promise) machineCache = null;
+    }, () => {
+      if (machineCache?.promise === promise) machineCache = null;
+    });
+    return promise;
+  };
+
+  const localMachineKey = (): string | null => {
+    try {
+      return deps.getLocalMachineKey?.()?.trim() || null;
+    } catch {
+      return null;
+    }
   };
 
   const buildChatCandidates = async (
@@ -256,6 +369,68 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     }));
   };
 
+  const buildPrCandidates = async (): Promise<ChatMentionSuggestion[]> => {
+    const listPrs = deps.listPrs;
+    if (!listPrs) return [];
+    // Local DB rows only: the menu never waits on GitHub.
+    const prs = listPrs().filter(isMentionablePr);
+    const roster = prs.length ? await loadRoster() : null;
+    return prs.map((pr) => {
+      const lane = roster?.lanesById.get(pr.laneId);
+      const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : null;
+      return {
+        kind: "pr" as const,
+        id: pr.id,
+        title: prMentionTitle(pr),
+        subtitle: [repo, lane?.name, pr.state === "draft" ? "draft" : null].filter(Boolean).join(" · "),
+        lastActivityAt: toEpoch(pr.updatedAt) ?? toEpoch(pr.createdAt),
+        pr: { number: pr.githubPrNumber, state: pr.state, checks: pr.checksStatus },
+      };
+    });
+  };
+
+  const buildMachineCandidates = async (): Promise<ChatMentionSuggestion[]> => {
+    if (!deps.listAccountMachines) return [];
+    // The menu waits only briefly for a cold network read: the read keeps
+    // going and fills the cache, so the machine rows join on the next
+    // keystroke instead of holding the chat and lane rows back.
+    let budgetTimer: ReturnType<typeof setTimeout> | null = null;
+    const roster = await Promise.race([
+      loadMachineRoster(),
+      new Promise<null>((resolve) => {
+        budgetTimer = setTimeout(() => resolve(null), MACHINE_MENU_WAIT_MS);
+      }),
+    ]).finally(() => {
+      if (budgetTimer) clearTimeout(budgetTimer);
+    });
+    if (!roster || roster.state !== "ok") return [];
+    const localKey = localMachineKey();
+    const now = Date.now();
+    return roster.machines.map((machine) => {
+      const snapshot = buildAccountMachineSnapshot({
+        machine,
+        activityItems: roster.activity,
+        localMachineKey: localKey,
+      });
+      const projects = snapshot.activityAvailable && snapshot.projects.length
+        ? `${snapshot.projects.length} project${snapshot.projects.length === 1 ? "" : "s"}`
+        : null;
+      return {
+        kind: "machine" as const,
+        id: snapshot.mentionId,
+        title: snapshot.name,
+        subtitle: [
+          snapshot.isThisMachine ? "this machine" : null,
+          describeAccountMachinePresence(snapshot, now),
+          projects,
+        ].filter(Boolean).join(" · "),
+        // Online machines first (all "now"), then by last heartbeat.
+        lastActivityAt: machine.online ? now : machine.lastSeenAt,
+        machine: { online: machine.online, isThisMachine: snapshot.isThisMachine },
+      };
+    });
+  };
+
   const candidateBuildersByKind: Record<
     ChatMentionKind,
     (args: ChatMentionSuggestArgs) => Promise<ChatMentionSuggestion[]>
@@ -263,31 +438,49 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     chat: (args) => buildChatCandidates(args.excludeSessionId),
     lane: () => buildLaneCandidates(),
     terminal: () => buildTerminalCandidates(),
+    pr: () => buildPrCandidates(),
+    machine: () => buildMachineCandidates(),
   };
 
   /**
-   * Menu-time suggestions. All three kinds are collected, then ranked as one
-   * list by match quality (not by kind). Each source is still capped before
-   * the mix so a huge chat roster cannot starve lanes/terminals of candidates;
-   * the visible order is best-match only.
+   * Menu-time suggestions.
+   *
+   * - A leading kind word (`pr`, `mac`, `chat`, `lane`, `term`) narrows the
+   *   result to that kind and searches the rest of the query.
+   * - An empty query is a browse: each kind's most recent rows, capped per
+   *   kind, so a client can show them in sections without one busy kind
+   *   crowding the others out.
+   * - Otherwise every kind is collected and ranked as one list by match
+   *   quality (not by kind). Each source is still capped before the mix so a
+   *   huge chat roster cannot starve the other kinds of candidates.
+   *
+   * Kinds are read in parallel and each failure is contained, so a slow
+   * machine directory can never blank (or hold up) the chat and lane rows for
+   * longer than its own timeout.
    */
   const listChatMentionSuggestions = async (
     args: ChatMentionSuggestArgs = {},
   ): Promise<ChatMentionSuggestResult> => {
-    const query = typeof args.query === "string" ? args.query : "";
-    const pool: ChatMentionSuggestion[] = [];
-    for (const kind of CHAT_MENTION_KINDS) {
-      let candidates: ChatMentionSuggestion[] = [];
+    const rawQuery = typeof args.query === "string" ? args.query : "";
+    const filter = parseChatMentionKindFilter(rawQuery);
+    const query = filter.rest;
+    const kinds = filter.kind ? [filter.kind] : CHAT_MENTION_KINDS;
+    const perKind = await Promise.all(kinds.map(async (kind) => {
       try {
-        candidates = await candidateBuildersByKind[kind](args);
+        const candidates = await candidateBuildersByKind[kind](args);
+        return rankChatMentionSuggestions(
+          candidates,
+          query,
+          filter.kind ? CHAT_MENTION_MAX_RESULTS : CHAT_MENTION_MAX_PER_KIND,
+        );
       } catch (error) {
         // One failing roster must not blank the whole menu.
         deps.logger?.warn?.("chat mention suggestions failed for kind", { kind, error });
-        continue;
+        return [] as ChatMentionSuggestion[];
       }
-      pool.push(...rankChatMentionSuggestions(candidates, query, CHAT_MENTION_MAX_PER_KIND));
-    }
-    return { suggestions: rankChatMentionSuggestions(pool, query, CHAT_MENTION_MAX_RESULTS) };
+    }));
+    if (filter.kind || !query.trim()) return { suggestions: perKind.flat() };
+    return { suggestions: rankChatMentionSuggestions(perKind.flat(), query, CHAT_MENTION_MAX_RESULTS) };
   };
 
   // -------------------------------------------------------------------------
@@ -453,24 +646,131 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     };
   };
 
+  /**
+   * Status only, from the local PR row: no GitHub call happens at send time.
+   * The hint names the `ade prs` reads for anything deeper.
+   */
+  const resolvePrDetail = async (
+    prId: string,
+    roster: MentionRoster,
+  ): Promise<ChatMentionDetail | null> => {
+    const pr = deps.listPrs?.().find((entry) => entry.id === prId);
+    if (!pr) return null;
+    const lane = roster.lanesById.get(pr.laneId);
+    const checks = pr.checksReason?.trim()
+      ? `${pr.checksStatus} (${pr.checksReason.trim()})`
+      : pr.checksStatus;
+    return {
+      kind: "pr",
+      id: pr.id,
+      title: firstLine(pr.title) ?? `Pull request #${pr.githubPrNumber}`,
+      attributes: [
+        ["number", `#${pr.githubPrNumber}`],
+        ["repo", pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : ""],
+        ["state", pr.state],
+        ["review", pr.reviewStatus],
+        ["checks", checks],
+        ["lines", `+${pr.additions}/-${pr.deletions}`],
+        ...(typeof pr.mergeConflicts === "boolean"
+          ? ([["conflicts", pr.mergeConflicts ? "true" : "false"]] as Array<[string, string]>)
+          : []),
+        ...(typeof pr.behindBaseBy === "number"
+          ? ([["behindBase", String(pr.behindBaseBy)]] as Array<[string, string]>)
+          : []),
+        ["head", pr.headBranch],
+        ["base", pr.baseBranch],
+        ["lane", lane?.name ?? ""],
+        ["url", pr.githubUrl],
+        ["lastSynced", pr.lastSyncedAt ?? ""],
+      ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
+      hint:
+        "Pointer to a pull request tracked by ADE. The status above is ADE's last sync, not a live read. "
+        + `Read more with \`ade prs show ${pr.id} --text\`, `
+        + `\`ade prs checks ${pr.id} --text\` (CI rollup and per-check rows), and `
+        + `\`ade prs comments ${pr.id} --text\` (unresolved review work).`,
+    };
+  };
+
+  const machineUnresolvedReason = (roster: MachineRoster): string | null => {
+    switch (roster.state) {
+      case "ok":
+        return null;
+      case "signed_out":
+        return "The ADE account is signed out on this machine, so account machines cannot be read.";
+      case "auth_expired":
+        return "The ADE account session on this machine expired, so account machines cannot be read.";
+      case "not_configured":
+        return "The ADE account machine directory is not configured on this machine.";
+      case "unsupported":
+        return "This ADE runtime cannot read account machines.";
+      default:
+        return "The ADE account machine directory could not be reached.";
+    }
+  };
+
+  const resolveMachineDetail = async (
+    id: string,
+    machines: MachineRoster,
+    unresolvedReasons: Map<string, string>,
+  ): Promise<ChatMentionDetail | null> => {
+    const reason = machineUnresolvedReason(machines);
+    if (reason) {
+      unresolvedReasons.set(`machine:${id}`, reason);
+      return null;
+    }
+    const machine = findMachineByMentionId(machines.machines, id);
+    if (!machine) return null;
+    const snapshot = buildAccountMachineSnapshot({
+      machine,
+      activityItems: machines.activity,
+      localMachineKey: localMachineKey(),
+    });
+    return {
+      kind: "machine",
+      id: machineMentionId(machine),
+      title: snapshot.name,
+      attributes: [
+        ["machineKey", snapshot.machineKey],
+        ["platform", snapshot.platform ?? ""],
+        ["status", describeAccountMachinePresence(snapshot)],
+        ["thisMachine", snapshot.isThisMachine ? "true" : ""],
+        ["snapshotAt", new Date().toISOString()],
+      ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
+      hint:
+        "The user referenced this machine connected through ADE. You may READ from it with the commands below. "
+        + "Do not run commands, start chats, or change anything on it unless the user explicitly asks you to. "
+        + `Read its current status, projects, lanes and recent chats with \`ade machines show ${snapshot.machineKey} --text\`. `
+        + "Projects, lanes and chats below come from ADE Activity (recent work only, not a full listing).",
+      previewLabel: "Snapshot at send time:",
+      preview: formatAccountMachineSnapshotText(snapshot, Date.now(), { compact: true }),
+    };
+  };
+
   const detailResolversByKind: Record<
-    ChatMentionKind,
+    Exclude<ChatMentionKind, "machine">,
     (id: string, roster: MentionRoster) => Promise<ChatMentionDetail | null>
   > = {
     chat: resolveChatDetail,
     lane: resolveLaneDetail,
     terminal: resolveTerminalDetail,
+    pr: resolvePrDetail,
   };
 
   /**
    * Resolve every mention target for one outgoing message. Roster reads are
-   * shared across all targets; only previews are per-target.
+   * shared across all targets; only previews are per-target. The machine
+   * directory is read once, fresh, and only when the message mentions one.
    */
-  const resolveChatMentionDetails = async (
+  const resolveDetailsWithReasons = async (
     targets: Array<{ kind: ChatMentionKind; id: string }>,
-  ): Promise<Map<string, ChatMentionDetail | null>> => {
+  ): Promise<{
+    details: Map<string, ChatMentionDetail | null>;
+    /** Why a target did not resolve, when that says more than "not found". */
+    reasons: Map<string, string>;
+  }> => {
     const out = new Map<string, ChatMentionDetail | null>();
-    if (!targets.length) return out;
+    const reasons = new Map<string, string>();
+    if (!targets.length) return { details: out, reasons };
     const roster = await loadRoster().catch((): MentionRoster => ({
       sessions: [],
       sessionsError: null,
@@ -480,34 +780,51 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       terminals: [],
       terminalsError: null,
     }));
+    let machines: Promise<MachineRoster> | null = null;
     for (const target of targets) {
       const key = `${target.kind}:${target.id}`;
       try {
-        out.set(key, await detailResolversByKind[target.kind](target.id, roster));
+        if (target.kind === "machine") {
+          machines ??= loadMachineRoster(true).catch((): MachineRoster => ({
+            state: "unavailable",
+            machines: [],
+            message: null,
+            activity: null,
+          }));
+          out.set(key, await resolveMachineDetail(target.id, await machines, reasons));
+        } else {
+          out.set(key, await detailResolversByKind[target.kind](target.id, roster));
+        }
       } catch (error) {
         deps.logger?.warn?.("chat mention resolution failed", { target, error });
         out.set(key, null);
       }
     }
-    return out;
+    return { details: out, reasons };
   };
 
+  const resolveChatMentionDetails = async (
+    targets: Array<{ kind: ChatMentionKind; id: string }>,
+  ): Promise<Map<string, ChatMentionDetail | null>> =>
+    (await resolveDetailsWithReasons(targets)).details;
+
   /**
-   * Expand `@chat:` / `@lane:` / `@term:` chips into `<ade-mention>` pointer
-   * blocks. Only ever touches the prompt text — the transcript keeps the raw
-   * chips the user typed.
+   * Expand `@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` chips into
+   * `<ade-mention>` pointer blocks. Only ever touches the prompt text — the
+   * transcript keeps the raw chips the user typed.
    */
   const expandChatMentionsForSend = async (text: string): Promise<string> => {
     const userText = maskBrowserTabMentions(text);
     const targets = collectChatMentionTargets(userText);
     const modelBlocks = renderModelMentionBlocks(userText);
     if (!targets.length && !modelBlocks.length) return text;
-    const details = await resolveChatMentionDetails(targets);
+    const { details, reasons } = await resolveDetailsWithReasons(targets);
     const blocks = targets.map((target) => {
-      const detail = details.get(`${target.kind}:${target.id}`);
+      const key = `${target.kind}:${target.id}`;
+      const detail = details.get(key);
       return detail
         ? renderChatMentionBlock(detail)
-        : renderUnresolvedChatMentionBlock(target.kind, target.id);
+        : renderUnresolvedChatMentionBlock(target.kind, target.id, reasons.get(key));
     });
     return appendChatMentionBlocks(text, [...blocks, ...modelBlocks]);
   };

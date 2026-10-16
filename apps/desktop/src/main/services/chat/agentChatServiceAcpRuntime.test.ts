@@ -415,6 +415,8 @@ describe("acp chat runtime", () => {
     const sentPrompt = promptParams as unknown as Record<string, unknown>;
     expect(sentPrompt.prompt).toEqual([
       { type: "text", text: expect.stringContaining("Review this image.") },
+      // The `[Image #1]` label rides right before the image it names.
+      { type: "text", text: "\n[Image #1]" },
       {
         type: "image",
         data: "",

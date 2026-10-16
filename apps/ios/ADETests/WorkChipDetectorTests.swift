@@ -24,6 +24,8 @@ func workChipFixtureKindName(_ kind: WorkSmartLink.Kind) -> String {
   case .skill: return "skill"
   case .browserTab: return "browser_tab"
   case .adeLink: return "ade_link"
+  case .machine: return "machine"
+  case .image: return "image"
   }
 }
 

@@ -36,10 +36,15 @@ export type ChipPreview = {
   title: string | null;
   /** Sanitized, bounded favicon the runtime already validated. */
   iconDataUrl: string | null;
+  /**
+   * The page's og:image URL — a pointer only. The hover card fetches its bytes
+   * on open (`useChipPreviewImage`); the pill itself never shows it.
+   */
+  imageUrl: string | null;
 };
 
 /** Cached "we asked and there was nothing to show" — stops the retry loop. */
-const EMPTY_PREVIEW: ChipPreview = { title: null, iconDataUrl: null };
+const EMPTY_PREVIEW: ChipPreview = { title: null, iconDataUrl: null, imageUrl: null };
 
 /** Bounded like the runtime's own cache; a long session must not grow forever. */
 const MAX_ENTRIES = 256;
@@ -116,6 +121,11 @@ function sanitizeIconDataUrl(value: unknown): string | null {
     : null;
 }
 
+function sanitizeImageUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2_048) return null;
+  return /^https?:\/\//i.test(value) ? value : null;
+}
+
 function sanitizeTitle(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const title = value.replace(/\s+/g, " ").trim();
@@ -146,7 +156,8 @@ export function requestChipPreview(url: string, scope = ""): Promise<ChipPreview
       const preview = await window.ade?.agentChat?.resolveSmartLinkPreview?.({ url });
       const title = sanitizeTitle(preview?.title);
       const iconDataUrl = sanitizeIconDataUrl(preview?.iconDataUrl);
-      if (title || iconDataUrl) value = { title, iconDataUrl };
+      const imageUrl = sanitizeImageUrl(preview?.imageUrl);
+      if (title || iconDataUrl || imageUrl) value = { title, iconDataUrl, imageUrl };
     } catch {
       value = EMPTY_PREVIEW;
     }
@@ -198,7 +209,105 @@ export function useChipPreview(url: string | null): ChipPreview | null {
   return preview;
 }
 
+// ---------------------------------------------------------------------------
+// Preview images (og:image) for the link hover card.
+//
+// Fetched only when a card opens, never when a chip renders: a transcript of
+// two hundred links must cost zero image reads until one is hovered. Keyed by
+// image URL alone — the runtime only ever fetches PUBLIC hosts for it, with no
+// credentials, so unlike titles the answer cannot differ per project.
+
+export type ChipPreviewImage =
+  | { status: "loading"; dataUrl: null }
+  | { status: "ready"; dataUrl: string }
+  | { status: "failed"; dataUrl: null };
+
+const IMAGE_LOADING: ChipPreviewImage = { status: "loading", dataUrl: null };
+const IMAGE_FAILED: ChipPreviewImage = { status: "failed", dataUrl: null };
+/** The runtime caps images at 256 KiB; base64 inflates by 4/3, plus the header. */
+const MAX_IMAGE_DATA_URL_LENGTH = 352 * 1024;
+/** A renderer-side byte budget; the runtime keeps its own, larger cache. */
+const MAX_IMAGE_CACHE_CHARS = 4 * 1024 * 1024;
+const MAX_IMAGE_ENTRIES = 64;
+
+const imagesByUrl = new Map<string, ChipPreviewImage>();
+const imagesInFlight = new Map<string, Promise<ChipPreviewImage>>();
+let imageCacheChars = 0;
+
+function forgetImage(url: string): void {
+  const entry = imagesByUrl.get(url);
+  if (!entry) return;
+  imageCacheChars -= entry.dataUrl?.length ?? 0;
+  imagesByUrl.delete(url);
+}
+
+function rememberImage(url: string, value: ChipPreviewImage): ChipPreviewImage {
+  forgetImage(url);
+  imagesByUrl.set(url, value);
+  imageCacheChars += value.dataUrl?.length ?? 0;
+  while ((imageCacheChars > MAX_IMAGE_CACHE_CHARS || imagesByUrl.size > MAX_IMAGE_ENTRIES) && imagesByUrl.size > 1) {
+    const oldest = imagesByUrl.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    forgetImage(oldest);
+  }
+  return value;
+}
+
+function sanitizeImageDataUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > MAX_IMAGE_DATA_URL_LENGTH) return null;
+  // Bitmap types only (never SVG), whatever a future transport does upstream.
+  return /^data:image\/(png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/=]+$/.test(value) ? value : null;
+}
+
+/** Resolve (or join) one preview image. Always fulfils; a miss is cached. */
+export function requestChipPreviewImage(imageUrl: string): Promise<ChipPreviewImage> {
+  const cached = imagesByUrl.get(imageUrl);
+  if (cached) return Promise.resolve(cached);
+  const existing = imagesInFlight.get(imageUrl);
+  if (existing) return existing;
+
+  const request = (async (): Promise<ChipPreviewImage> => {
+    let value: ChipPreviewImage = IMAGE_FAILED;
+    try {
+      const result = await window.ade?.agentChat?.resolveSmartLinkImage?.({ url: imageUrl });
+      const dataUrl = sanitizeImageDataUrl(result?.dataUrl);
+      if (dataUrl) value = { status: "ready", dataUrl };
+    } catch {
+      value = IMAGE_FAILED;
+    }
+    rememberImage(imageUrl, value);
+    imagesInFlight.delete(imageUrl);
+    emit();
+    return value;
+  })();
+
+  imagesInFlight.set(imageUrl, request);
+  return request;
+}
+
+/**
+ * Subscribe a hover card to one preview image. Pass null while the card is
+ * closed: nothing is requested until it is non-null.
+ */
+export function useChipPreviewImage(imageUrl: string | null): ChipPreviewImage | null {
+  const image = useSyncExternalStore(
+    subscribe,
+    () => (imageUrl ? imagesByUrl.get(imageUrl) ?? IMAGE_LOADING : null),
+    () => null,
+  );
+
+  useEffect(() => {
+    if (!imageUrl) return;
+    void requestChipPreviewImage(imageUrl);
+  }, [imageUrl]);
+
+  return image;
+}
+
 export function resetChipPreviewCacheForTesting(): void {
   resolvedByKey.clear();
   inFlightByKey.clear();
+  imagesByUrl.clear();
+  imagesInFlight.clear();
+  imageCacheChars = 0;
 }

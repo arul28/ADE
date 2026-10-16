@@ -497,6 +497,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
@@ -8893,6 +8894,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
+    // No runtime bound: no image; the hover card shows the title alone.
+    resolveSmartLinkImage: async (args: { url: string }): Promise<{ dataUrl: string | null }> =>
+      callProjectRuntimeActionOr("chat", "resolveSmartLinkImage", { args }, async () => ({ dataUrl: null })),
     // MCP Apps. Both go to the machine that owns the chat: the page is filed
     // with the chat there, and a call can only reach the chat's live session.
     getMcpApp: async (
@@ -12153,6 +12157,10 @@ const adeBridge = {
     getRequestBudget: async (): Promise<GitHubRequestBudget> =>
       callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
         ipcRenderer.invoke(IPC.githubGetRequestBudget),
+      ),
+    isRepoStarred: async (): Promise<GitHubRepoStarState> =>
+      callProjectRuntimeActionOr("github", "isRepoStarred", {}, () =>
+        ipcRenderer.invoke(IPC.githubIsRepoStarred),
       ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;

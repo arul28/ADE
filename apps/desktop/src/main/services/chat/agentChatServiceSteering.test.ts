@@ -2649,8 +2649,12 @@ describe("createAgentChatService", () => {
       expect(message.role).toBe("user");
       expect(message.content[0]?.type).toBe("text");
       expect(String(message.content[0]?.text ?? "")).toContain("Now use this screenshot");
-      expect(message.content[1]?.type).toBe("image");
-      expect((message.content[1]?.source as Record<string, unknown>).type).toBe("base64");
+      // The label block comes right before the image, so `[Image #1]` in the
+      // prompt names the screenshot the model receives.
+      expect(message.content[1]?.type).toBe("text");
+      expect(String(message.content[1]?.text ?? "")).toContain("[Image #1]");
+      expect(message.content[2]?.type).toBe("image");
+      expect((message.content[2]?.source as Record<string, unknown>).type).toBe("base64");
     });
 
     it("omits large Cursor SDK file attachments without reading the full file", async () => {

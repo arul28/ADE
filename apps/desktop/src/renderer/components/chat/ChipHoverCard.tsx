@@ -53,6 +53,7 @@ import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChipPreviewImage } from "./chipPreviewStore";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -115,13 +116,15 @@ export type ChipCardData =
     state: "open" | "closed";
     stateReason: string | null;
     assignees: string[];
-  };
+  }
+  | { kind: "link"; host: string; title: string | null; imageUrl: string };
 
 type ChipCardTarget =
   | { kind: "pr"; number: number; owner: string | null; repo: string | null }
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
   | { kind: "linear"; identifier: string }
+  | { kind: "link"; host: string }
   | { kind: "github-issue"; owner: string; repo: string; number: number };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
@@ -166,6 +169,14 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         : null;
     case "linear_issue":
       return chip.label.trim() ? { kind: "linear", identifier: chip.label.trim().toUpperCase() } : null;
+    case "web_page": {
+      if (source.origin !== "url") return null;
+      try {
+        return { kind: "link", host: new URL(source.url).hostname.replace(/^www\./i, "") };
+      } catch {
+        return null;
+      }
+    }
     case "issue": {
       const ref = source.origin === "url" ? issueRefFromUrl(source.url) : null;
       return ref?.provider === "github" ? { kind: "github-issue", owner: ref.owner, repo: ref.repo, number: ref.number } : null;
@@ -189,13 +200,21 @@ function linearTitleFromLanes(lanes: LaneSummary[], identifier: string): string 
 /**
  * Resolve one card's contents. `previewTitle` is the already-fetched smart-link
  * title for the same chip, so a Linear issue nobody has linked to a lane still
- * has something to show without a second round trip.
+ * has something to show without a second round trip. `previewImageUrl` is the
+ * same preview's og:image: a web page gets a card only when it has one — the
+ * pill already shows the title, so a title-only card would repeat it.
  */
 export async function loadChipCardData(
   sources: ChipCardSources,
   target: ChipCardTarget,
   previewTitle: string | null,
+  previewImageUrl: string | null = null,
 ): Promise<ChipCardData | null> {
+  if (target.kind === "link") {
+    return previewImageUrl
+      ? { kind: "link", host: target.host, title: previewTitle, imageUrl: previewImageUrl }
+      : null;
+  }
   if (target.kind === "lane") {
     const lane = sources.lanes.find((candidate) => candidate.id === target.laneId);
     return lane ? { kind: "lane", name: lane.name, branch: lane.branchRef || null } : null;
@@ -277,7 +296,36 @@ const PR_STATE_DOT: Record<PrState, string> = {
   closed: "bg-rose-400",
 };
 
+/** og:image width; the box is reserved at 1.91:1 (the Open Graph ratio) before bytes land. */
+const LINK_IMAGE_WIDTH = 240;
+
+function LinkCardBody({ data }: { data: Extract<ChipCardData, { kind: "link" }> }) {
+  // Requested here, i.e. only once the card is open — never by the pill.
+  const image = useChipPreviewImage(data.imageUrl);
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div style={{ width: LINK_IMAGE_WIDTH }}>
+      {image?.status === "failed" ? null : (
+        <div className="mb-1.5 aspect-[1.91/1] w-full overflow-hidden rounded-md bg-white/[0.05]">
+          {image?.status === "ready" ? (
+            <img
+              src={image.dataUrl}
+              alt=""
+              draggable={false}
+              onLoad={() => setLoaded(true)}
+              className={`h-full w-full object-cover transition-opacity duration-200 ease-out ${loaded ? "opacity-100" : "opacity-0"}`}
+            />
+          ) : null}
+        </div>
+      )}
+      {data.title ? <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div> : null}
+      <div className="mt-0.5 truncate text-[11px] text-white/55">{data.host}</div>
+    </div>
+  );
+}
+
 function ChipCardBody({ data }: { data: ChipCardData }) {
+  if (data.kind === "link") return <LinkCardBody data={data} />;
   if (data.kind === "pr") {
     return (
       <>
@@ -334,6 +382,26 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   );
 }
 
+function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacement {
+  const triggerBox = trigger.getBoundingClientRect();
+  const cardBox = card.getBoundingClientRect();
+  return computeTooltipPosition({
+    preferredSide: "top",
+    trigger: {
+      top: triggerBox.top,
+      left: triggerBox.left,
+      right: triggerBox.right,
+      bottom: triggerBox.bottom,
+      width: triggerBox.width,
+      height: triggerBox.height,
+    },
+    tooltip: { width: cardBox.width, height: cardBox.height },
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    gap: GAP,
+    pad: VIEWPORT_PAD,
+  });
+}
+
 export type ChipHoverCard = {
   /** True when this chip has a card kind at all — drives the native-title swap. */
   supported: boolean;
@@ -366,6 +434,7 @@ export function useChipHoverCard(
    * hundreds of pills subscribes to each list once per pill, not twice.
    */
   scoped: ChipScopeSources,
+  previewImageUrl: string | null = null,
 ): ChipHoverCard {
   const cardId = useId();
   const scope = useChatRuntimeScope();
@@ -429,7 +498,7 @@ export function useChipHoverCard(
   useEffect(() => {
     if (!open || !target) return;
     let cancelled = false;
-    void loadChipCardData(sourcesRef.current, target, previewTitle)
+    void loadChipCardData(sourcesRef.current, target, previewTitle, previewImageUrl)
       .catch(() => null)
       .then((loaded) => {
         if (!cancelled) setData(loaded);
@@ -437,7 +506,7 @@ export function useChipHoverCard(
     return () => {
       cancelled = true;
     };
-  }, [open, target, previewTitle, pinKey]);
+  }, [open, target, previewTitle, previewImageUrl, pinKey]);
 
   // Escape dismisses, and any scroll does too: the card is absolutely placed
   // against a trigger that a scrolling transcript moves out from under it.
@@ -459,27 +528,21 @@ export function useChipHoverCard(
     const trigger = triggerElementRef.current;
     const card = cardRef.current;
     if (!trigger || !card) return;
-    const triggerBox = trigger.getBoundingClientRect();
-    const cardBox = card.getBoundingClientRect();
-    const next = computeTooltipPosition({
-      preferredSide: "top",
-      trigger: {
-        top: triggerBox.top,
-        left: triggerBox.left,
-        right: triggerBox.right,
-        bottom: triggerBox.bottom,
-        width: triggerBox.width,
-        height: triggerBox.height,
-      },
-      tooltip: { width: cardBox.width, height: cardBox.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      gap: GAP,
-      pad: VIEWPORT_PAD,
-    });
-    setCoords((prev) => (
-      prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
-    ));
+    const place = () => {
+      const next = cardPlacement(trigger, card);
+      setCoords((prev) => (
+        prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
+      ));
+    };
+    place();
+    // A link card's reserved image box collapses when the image fails; re-place
+    // so a top-placed card stays attached to its chip instead of floating.
+    if (data.kind !== "link" || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(place);
+    observer.observe(card);
+    return () => observer.disconnect();
   }, [open, data]);
+
 
   const triggerRef = useCallback((node: HTMLElement | null) => {
     triggerElementRef.current = node;

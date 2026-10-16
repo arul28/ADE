@@ -19,6 +19,13 @@ const LANE_MARK = svg(
 const TERMINAL_MARK = svg(
   '<rect x="3" y="4" width="18" height="16" rx="2" /><path d="m8 9 3 3-3 3" /><path d="M13 15h4" />',
 );
+// Lucide git-pull-request and monitor.
+const PR_MARK = svg(
+  '<circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><path d="M6 9v12" />',
+);
+const MACHINE_MARK = svg(
+  '<rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" />',
+);
 const FILE_MARK = svg(
   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" />',
 );
@@ -46,6 +53,10 @@ export function mentionChipMarkSvg(kind: ComposerAtChipKind): string {
       return LANE_MARK;
     case "terminal":
       return TERMINAL_MARK;
+    case "pr":
+      return PR_MARK;
+    case "machine":
+      return MACHINE_MARK;
     case "file":
       return FILE_MARK;
     default: {

@@ -414,6 +414,13 @@ export type GitHubRequestBudget = {
   retryAt: string | null;
 };
 
+/**
+ * Whether the signed-in GitHub user has starred ADE's own repository.
+ * `unknown` covers no credential, a network failure and any unexpected status;
+ * callers treat it as "not known to be starred".
+ */
+export type GitHubRepoStarState = "starred" | "not_starred" | "unknown";
+
 export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat";
 
 export type GitHubCredentialCapability = "read" | "write";

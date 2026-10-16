@@ -3348,7 +3348,8 @@ describe("AgentChatComposer", () => {
     }));
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(saveTempAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "pasted-text.txt" }),
+      // `pasted-<epoch ms>.<ext>`, the name iOS stages too.
+      expect.objectContaining({ filename: expect.stringMatching(/^pasted-\d+\.txt$/) }),
       null,
     );
     expect(props.onDraftChange).not.toHaveBeenCalledWith(pastedLog);

@@ -1,28 +1,43 @@
-// Composer @-mention pointers to other ADE entities (chats, lanes, terminals).
+// Composer @-mention pointers to other ADE entities (chats, lanes, terminals,
+// pull requests, account machines).
 //
 // A mention is a POINTER, not an attachment: the composer inserts a chip whose
-// serialized form is `@chat:<id>` / `@lane:<id>` / `@term:<id>`, and the chat
-// service expands it into a compact `<ade-mention>` block at SEND time. The
-// block carries identity metadata, a small deterministic preview, and the exact
-// `ade` CLI commands the agent can use to read more.
+// serialized form is `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<id>` /
+// `@mac:<id>`, and the chat service expands it into a compact `<ade-mention>`
+// block at SEND time. The block carries identity metadata, a small
+// deterministic preview, and the exact `ade` CLI commands the agent can use to
+// read more.
 
-export type ChatMentionKind = "chat" | "lane" | "terminal";
+import type { PrChecksStatus, PrState } from "./prs";
+
+export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine";
 
 /** One row in the @-menu. Cheap: no transcript reads happen to build these. */
 export type ChatMentionSuggestion = {
   kind: ChatMentionKind;
-  /** Session id / lane id / terminal id. Serialized into the chip token. */
+  /**
+   * Session id / lane id / terminal id / PR row id / machine mention id
+   * (`machineMentionId`). Serialized into the chip token.
+   */
   id: string;
-  /** Primary label (chat title, lane name, terminal title). */
+  /** Primary label (chat title, lane name, terminal title, `#12 PR title`, machine name). */
   title: string;
-  /** Secondary label: lane name, provider, branch, running state. */
+  /** Secondary label: lane name, provider, branch, running state, presence. */
   subtitle?: string;
   /** Epoch ms of last activity; drives recency-first ranking. */
   lastActivityAt?: number | null;
+  /** PR rows only: what the menu draws as the state dot and checks glyph. */
+  pr?: { number: number; state: PrState; checks: PrChecksStatus } | null;
+  /** Machine rows only: directory presence, and whether it is the caller's own machine. */
+  machine?: { online: boolean; isThisMachine: boolean } | null;
 };
 
 export type ChatMentionSuggestArgs = {
-  /** Fuzzy query typed after `@`. Empty string means "most recent". */
+  /**
+   * Fuzzy query typed after `@`. Empty string means "most recent, per kind".
+   * A leading kind word (`pr`, `mac`, `chat`, `lane`, `term`, see
+   * `parseChatMentionKindFilter`) narrows the result to that kind.
+   */
   query?: string;
   /** Caller's own chat session id, so a chat never suggests itself. */
   excludeSessionId?: string;

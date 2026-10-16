@@ -31,7 +31,7 @@ const ChatAttachmentPreviewModal = lazy(() => import("./ChatAttachmentPreviewMod
  * attachment that lives outside every workspace, where the Files viewers
  * cannot reach it. A file chip has no such bytes and passes nothing.
  */
-function useAttachmentPreview(args: {
+export function useAttachmentPreview(args: {
   path: string;
   title: string;
   pin: OpenProjectBinding | null;
@@ -54,6 +54,34 @@ function useAttachmentPreview(args: {
   };
 }
 
+/**
+ * The same preview popup, for a caller that picks the attachment at click time
+ * — the composer's inline `[Image #k]` chips are DOM nodes, not components, so
+ * they cannot each own a `useAttachmentPreview`.
+ */
+export function ChatAttachmentPreviewDialog({
+  target,
+  pin,
+  onClose,
+}: {
+  target: { path: string; title: string; fallbackImageDataUrl?: string | null } | null;
+  pin: OpenProjectBinding | null;
+  onClose: () => void;
+}) {
+  if (!target) return null;
+  return (
+    <Suspense fallback={null}>
+      <ChatAttachmentPreviewModal
+        attachmentPath={target.path}
+        title={target.title}
+        pin={pin}
+        fallbackImageDataUrl={target.fallbackImageDataUrl}
+        onClose={onClose}
+      />
+    </Suspense>
+  );
+}
+
 function attachmentName(path: string): string {
   // Split on both POSIX and Windows separators so a Windows path
   // like "C:\\Users\\foo\\bar.png" yields "bar.png" instead of the
@@ -73,6 +101,28 @@ function middleTruncateFilename(name: string, maxLength = 32): string {
   const head = Math.ceil((maxLength - 1) / 2);
   const tail = Math.floor((maxLength - 1) / 2);
   return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
+}
+
+/**
+ * The linked-hover ring: a tray item lit while its inline `[Image #k]` chip in
+ * the composer is hovered, and the reverse. Accent-tinted like the tray tone.
+ */
+const LINKED_HOVER_CLASS =
+  "ring-1 ring-[color:color-mix(in_srgb,var(--chat-accent)_60%,transparent)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--chat-accent)_18%,transparent)]";
+
+type LinkedHoverProps = {
+  /** True while this item's inline chip is hovered. */
+  highlighted?: boolean;
+  /** Reports pointer enter/leave so the matching inline chip can light up. */
+  onHoverChange?: (hovered: boolean) => void;
+};
+
+function linkedHoverHandlers(onHoverChange: LinkedHoverProps["onHoverChange"]) {
+  if (!onHoverChange) return {};
+  return {
+    onMouseEnter: () => onHoverChange(true),
+    onMouseLeave: () => onHoverChange(false),
+  };
 }
 
 export type ChatAttachmentPendingImage = {
@@ -335,6 +385,8 @@ function ImageAttachmentPreview({
   accepted = false,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
@@ -343,7 +395,7 @@ function ImageAttachmentPreview({
   accepted?: boolean;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const [dataUrl, setDataUrl] = useState<string | null>(initialPreviewUrl ?? null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
@@ -421,9 +473,12 @@ function ImageAttachmentPreview({
     <>
       <div
         className={cn(
-          "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+          "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
           toneClassName,
+          highlighted ? LINKED_HOVER_CLASS : null,
         )}
+        data-chat-attachment-path={attachment.path}
+        {...linkedHoverHandlers(onHoverChange)}
       >
         <button
           type="button"
@@ -566,6 +621,8 @@ function FileAttachmentChip({
   machinePin,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
@@ -573,7 +630,7 @@ function FileAttachmentChip({
   machinePin: OpenProjectBinding | null;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const name = attachmentName(attachment.path);
   const preview = useAttachmentPreview({ path: attachment.path, title: name, pin: machinePin });
   const onOpen = preview.open;
@@ -585,9 +642,12 @@ function FileAttachmentChip({
     <>
     <span
       className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+        "ade-liquid-glass-pill group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
+        highlighted ? LINKED_HOVER_CLASS : null,
       )}
+      data-chat-attachment-path={attachment.path}
+      {...linkedHoverHandlers(onHoverChange)}
       title={sizeLabel ? `${name} — ${sizeLabel}` : name}
       role="button"
       aria-label={`Open ${name}`}
@@ -642,6 +702,8 @@ function ImageUrlAttachmentChip({
   toneClassName,
   onRemove,
   onFocusPrompt,
+  highlighted,
+  onHoverChange,
 }: {
   path: string;
   url: string;
@@ -649,14 +711,17 @@ function ImageUrlAttachmentChip({
   toneClassName: string;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
-}) {
+} & LinkedHoverProps) {
   const [imageFailed, setImageFailed] = useState(false);
   return (
     <span
       className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-[color,background-color,box-shadow] focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
+        highlighted ? LINKED_HOVER_CLASS : null,
       )}
+      data-chat-attachment-path={path}
+      {...linkedHoverHandlers(onHoverChange)}
       title={url}
       tabIndex={0}
       data-chat-image-attachment-focus-target="true"
@@ -720,6 +785,10 @@ type ChatAttachmentTrayProps = {
   onOpenContext?: (attachment: AgentChatContextAttachment) => void;
   onRemovePendingImageAttachment?: (id: string) => void;
   onFocusPrompt?: () => void;
+  /** Path whose inline composer chip is hovered; that tray item lights up. */
+  highlightedPath?: string | null;
+  /** Hovering a tray item reports its path (null on leave), for the reverse glow. */
+  onHoverAttachment?: (path: string | null) => void;
   className?: string;
 };
 
@@ -737,6 +806,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   onOpenContext,
   onRemovePendingImageAttachment,
   onFocusPrompt,
+  highlightedPath = null,
+  onHoverAttachment,
   className,
 }, ref) {
   if (!attachments.length && !contextAttachments.length && !pendingImageAttachments.length) return null;
@@ -775,6 +846,10 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
         />
       ))}
       {attachments.map((attachment) => {
+        const highlighted = highlightedPath === attachment.path;
+        const onHoverChange = onHoverAttachment
+          ? (hovered: boolean) => onHoverAttachment(hovered ? attachment.path : null)
+          : undefined;
         if (attachment.type === "image-url") {
           const label = (() => {
             try {
@@ -793,6 +868,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               toneClassName={chipTone}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
+              highlighted={highlighted}
+              onHoverChange={onHoverChange}
             />
           );
         }
@@ -807,6 +884,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               accepted={accepted}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
+              highlighted={highlighted}
+              onHoverChange={onHoverChange}
             />
           );
         }
@@ -819,6 +898,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
             machinePin={machinePin}
             onRemove={onRemove}
             onFocusPrompt={onFocusPrompt}
+            highlighted={highlighted}
+            onHoverChange={onHoverChange}
           />
         );
       })}

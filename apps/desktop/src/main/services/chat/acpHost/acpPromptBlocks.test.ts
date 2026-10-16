@@ -42,6 +42,7 @@ describe("buildAcpPromptBlocks", () => {
 
     expect(blocks).toEqual([
       { type: "text", text: "Describe this image." },
+      { type: "text", text: "\n[Image #1]" },
       { type: "image", data: Buffer.from("png-bytes").toString("base64"), mimeType: "image/png" },
     ]);
   });
@@ -57,6 +58,7 @@ describe("buildAcpPromptBlocks", () => {
 
     expect(blocks).toEqual([
       { type: "text", text: "Review the attachment." },
+      { type: "text", text: "\n[Image #1]" },
       {
         type: "text",
         text: "\nImage attachment omitted: assets/example.png (this provider does not support image prompts).",
@@ -79,6 +81,7 @@ describe("buildAcpPromptBlocks", () => {
 
     expect(blocks).toEqual([
       { type: "text", text: "Review the remote image." },
+      { type: "text", text: "\n[Image #1]" },
       {
         type: "image",
         data: "",
@@ -99,6 +102,7 @@ describe("buildAcpPromptBlocks", () => {
 
     expect(blocks).toEqual([
       { type: "text", text: "Review the file." },
+      { type: "text", text: "\n[File #1: README.md]" },
       { type: "text", text: "\n[File: README.md]\n# Hello" },
     ]);
   });

@@ -3283,6 +3283,21 @@ func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
   }
 }
 
+/// One row of `chat.listMentionSuggestions` (`ChatMentionSuggestion` in
+/// apps/desktop/src/shared/types/chatMentions.ts). `kind` stays a string so a
+/// newer host's kind decodes and is skipped instead of failing the whole list.
+struct ChatMentionSuggestionRow: Codable, Equatable {
+  var kind: String
+  var id: String
+  var title: String
+  var subtitle: String?
+  var lastActivityAt: Double?
+}
+
+struct ChatMentionSuggestionResult: Codable, Equatable {
+  var suggestions: [ChatMentionSuggestionRow]
+}
+
 /// What a thread comment points at. Mirrors `ChatThreadCommentAnchor` in
 /// `apps/desktop/src/shared/threadComments.ts`. An unknown `kind` fails to
 /// decode, and the list decoder skips that one comment.

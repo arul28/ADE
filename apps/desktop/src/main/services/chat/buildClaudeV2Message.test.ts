@@ -77,7 +77,7 @@ describe("buildClaudeV2MessageAsync", () => {
     const msg = result as SDKUserMessagePartial;
     expect(msg.message.content).toEqual([{
       type: "text",
-      text: "/automate is available?\n\n[File attached: /some/dir/data.csv]",
+      text: "/automate is available?\n\n[File #1: data.csv] [File attached: /some/dir/data.csv]",
     }]);
   });
 
@@ -100,13 +100,16 @@ describe("buildClaudeV2MessageAsync", () => {
     expect(msg.parent_tool_use_id).toBeNull();
     expect(msg.message.role).toBe("user");
 
-    // Should have two content blocks: text + image
+    // Three content blocks: the prompt text, the `[Image #1]` label, then the
+    // image. The label is a block of its own so the number in the prompt names
+    // the image the model receives.
     const content = msg.message.content;
-    expect(content).toHaveLength(2);
+    expect(content).toHaveLength(3);
     expect(content[0]).toEqual({ type: "text", text: "Describe this image" });
+    expect(content[1]).toEqual({ type: "text", text: "\n[Image #1]" });
 
     // Image block should have base64-encoded data
-    const imgBlock = content[1] as Record<string, unknown>;
+    const imgBlock = content[2] as Record<string, unknown>;
     expect(imgBlock.type).toBe("image");
     const source = imgBlock.source as Record<string, unknown>;
     expect(source.type).toBe("base64");
@@ -126,7 +129,7 @@ describe("buildClaudeV2MessageAsync", () => {
     const msg = result as SDKUserMessagePartial;
     expect(msg.session_id).toBe("");
     expect(msg.parent_tool_use_id).toBeNull();
-    const imgBlock = msg.message.content[1] as Record<string, unknown>;
+    const imgBlock = msg.message.content[2] as Record<string, unknown>;
     const source = imgBlock.source as Record<string, unknown>;
 
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("fake-image-bytes");
@@ -143,7 +146,7 @@ describe("buildClaudeV2MessageAsync", () => {
       getDirtyFileTextForPath: () => "unsaved-image-bytes",
     });
     const msg = result as SDKUserMessagePartial;
-    const imgBlock = msg.message.content[1] as Record<string, unknown>;
+    const imgBlock = msg.message.content[2] as Record<string, unknown>;
     const source = imgBlock.source as Record<string, unknown>;
 
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("unsaved-image-bytes");
@@ -266,7 +269,7 @@ describe("buildClaudeV2MessageAsync", () => {
     expect(content[0]).toEqual({ type: "text", text: "Check this diagram" });
     expect(content[1]).toEqual({
       type: "text",
-      text: `\n[Image attached (image/svg+xml): ${svgPath}]`,
+      text: `\n[Image #1] [Image attached (image/svg+xml): ${svgPath}]`,
     });
   });
 
@@ -279,7 +282,7 @@ describe("buildClaudeV2MessageAsync", () => {
     expect(msg.message.content).toHaveLength(2);
     expect(msg.message.content[1]).toEqual({
       type: "text",
-      text: `\n[Image attached (image/heic): ${heicPath}]`,
+      text: `\n[Image #1] [Image attached (image/heic): ${heicPath}]`,
     });
     expect((msg.message.content[1] as { text: string }).text).not.toContain("image/png");
   });
@@ -303,29 +306,32 @@ describe("buildClaudeV2MessageAsync", () => {
     expect(msg.parent_tool_use_id).toBeNull();
     const content = msg.message.content;
 
-    // 4 blocks: prompt text + file hint + image + file hint
-    expect(content).toHaveLength(4);
+    // 5 blocks: prompt text + file hint + image label + image + file hint
+    expect(content).toHaveLength(5);
 
     // First block: prompt text
     expect(content[0]).toEqual({ type: "text", text: "Review these" });
 
-    // Second block: non-image file hint
+    // Second block: non-image file hint, with its own `[File #k]` label
     expect(content[1]).toEqual({
       type: "text",
-      text: "\n[File attached: /workspace/readme.md]",
+      text: "\n[File #1: readme.md] [File attached: /workspace/readme.md]",
     });
 
-    // Third block: base64 image
-    const imgBlock = content[2] as Record<string, unknown>;
+    // Third block: the image's `[Image #1]` label
+    expect(content[2]).toEqual({ type: "text", text: "\n[Image #1]" });
+
+    // Fourth block: base64 image
+    const imgBlock = content[3] as Record<string, unknown>;
     expect(imgBlock.type).toBe("image");
     const source = imgBlock.source as Record<string, unknown>;
     expect(source.type).toBe("base64");
     expect(source.media_type).toBe("image/png");
 
-    // Fourth block: non-image file hint
-    expect(content[3]).toEqual({
+    // Fifth block: the second non-image file hint, numbered #2 among files
+    expect(content[4]).toEqual({
       type: "text",
-      text: "\n[File attached: /workspace/config.json]",
+      text: "\n[File #2: config.json] [File attached: /workspace/config.json]",
     });
   });
 });

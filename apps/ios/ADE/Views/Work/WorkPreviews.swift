@@ -483,7 +483,11 @@ private enum WorkPreviewData {
 /// turns it into an idle Claude chat whose 5-minute cache has expired, so the
 /// composer offers Compact first.
 @MainActor
-func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil, compactFirst: Bool = false) -> WorkChatSessionView {
+func workPreviewChatSessionView(
+  laneTools: WorkLaneToolsPreview? = nil,
+  compactFirst: Bool = false,
+  transcript: [WorkChatEnvelope] = WorkPreviewData.transcript
+) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
   if compactFirst {
     summary.compactionIdleMode = "ask"
@@ -495,7 +499,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil, compactF
     chatSummaryContext: WorkChatSummaryRenderContext(summary),
     thread: workPreviewThreadModel(
       sessionId: WorkPreviewData.terminalSession.id,
-      transcript: WorkPreviewData.transcript,
+      transcript: transcript,
       artifacts: [WorkPreviewData.artifact],
       provider: WorkPreviewData.chatSummary.provider
     ),
@@ -1327,6 +1331,10 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// to screenshot that the list does NOT banner it. See
   /// `WorkConnectivityBannerPreviewHost`.
   case connectivityBanner = "connectivity-banner"
+  /// The real chat with a seeded draft: image, pasted-file, PR, machine and
+  /// link pills in the composer, and a sent bubble naming `[Image #1]`. See
+  /// `WorkComposerPillsPreviewHost`.
+  case composerPills = "composer-pills"
   /// An answer that cites proof inline and as a before/after pair.
   case proofAnswer = "proof-answer"
   /// The real Work tab list seeded with lanes, subagents, CLI rows and PR
@@ -1519,6 +1527,8 @@ struct ADEPreviewScreenHost: View {
       WorkQueuedSteerPreviewHost()
     case .connectivityBanner:
       WorkConnectivityBannerPreviewHost()
+    case .composerPills:
+      WorkComposerPillsPreviewHost()
     case .workList:
       WorkListPreviewHost()
     case .newChat:
@@ -1537,6 +1547,31 @@ struct ADEPreviewScreenHost: View {
       .environmentObject(WorkPreviewData.syncService)
     case .handoffCard:
       WorkCrossMachineHandoffCardsPreviewHost()
+    }
+  }
+}
+
+/// Seeds the fixture chat's persisted draft — text with grammar tokens, plus an
+/// image and a big-paste file in the offline attachment cache — then mounts the
+/// real chat, so the composer restores both through its own draft path.
+private struct WorkComposerPillsPreviewHost: View {
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          workPreviewChatSessionView(transcript: WorkComposerPillsPreviewData.transcript)
+        }
+        .environmentObject(WorkPreviewData.syncService)
+        .environmentObject(WorkPreviewData.dictationController)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      WorkComposerPillsPreviewData.seedDraft()
+      seeded = true
     }
   }
 }
@@ -1658,6 +1693,64 @@ private struct WorkModelPickerPreviewHost: View {
       .environmentObject(WorkPreviewData.syncService)
     }
   }
+}
+
+@MainActor
+private enum WorkComposerPillsPreviewData {
+  static let image: UIImage = {
+    let size = CGSize(width: 240, height: 160)
+    return UIGraphicsImageRenderer(size: size).image { context in
+      let colors = [UIColor.systemTeal.cgColor, UIColor.systemIndigo.cgColor] as CFArray
+      let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1])!
+      context.cgContext.drawLinearGradient(
+        gradient,
+        start: .zero,
+        end: CGPoint(x: size.width, y: size.height),
+        options: []
+      )
+      UIColor.white.withAlphaComponent(0.85).setFill()
+      UIBezierPath(roundedRect: CGRect(x: 24, y: 24, width: 120, height: 18), cornerRadius: 9).fill()
+      UIBezierPath(roundedRect: CGRect(x: 24, y: 56, width: 190, height: 70), cornerRadius: 12).fill()
+    }
+  }()
+
+  static let pastedText = (1...212).map { "line \($0): GET /api/lanes 200 in \($0 % 40)ms" }.joined(separator: "\n")
+
+  static func seedDraft() {
+    let key = WorkComposerDraftStore.chatKey(sessionId: WorkPreviewData.terminalSession.id)
+    guard let imageAttachment = workChatInputAttachment(from: image, filename: "screenshot.jpg") else { return }
+    var pasted = WorkComposerBigPaste.attachment(for: pastedText, at: Date(timeIntervalSince1970: 1_760_000_000))
+    pasted.state = .ready
+    workChatPersistComposerAttachments([imageAttachment, pasted], for: key)
+    // Left on the clipboard so a Paste in the fixture exercises the real
+    // image-paste path (pill at the caret).
+    UIPasteboard.general.image = image
+    WorkComposerMentionTitleCache.remember(token: "@pr:pr-1318", title: "#1318 Configure a new lane")
+    WorkComposerMentionTitleCache.remember(token: "@mac:studio", title: "Mac Studio")
+    WorkComposerDraftStore.save(
+      "Fix [Image #1] like @pr:pr-1318 on @mac:studio, see [File #1: \(pasted.filename)] and https://linear.app/ade/issue/ADE-42 ",
+      for: key
+    )
+  }
+
+  static let transcript: [WorkChatEnvelope] = {
+    let sentImage = WorkPendingUploadPreviewStore.shared.register([
+      WorkChatInputAttachment(image: image, filename: "screenshot.jpg", state: .ready)
+    ])
+    return [
+      WorkPreviewData.envelope(
+        sequence: 1,
+        event: .userMessage(
+          text: "Make the header match [Image #1] and check @lane:3f2a9c1e-0000-4000-8000-000000000001 against [File #1: notes.txt]",
+          attachments: sentImage + [AgentChatFileRef(path: "/tmp/notes.txt", type: "file")],
+          turnId: "turn-1",
+          steerId: nil,
+          deliveryState: "delivered",
+          processed: true
+        )
+      ),
+    ] + Array(WorkPreviewData.transcript.dropFirst())
+  }()
 }
 
 @MainActor

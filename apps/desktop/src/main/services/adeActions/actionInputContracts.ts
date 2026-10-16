@@ -501,6 +501,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
     },
+    resolveSmartLinkImage: {
+      description: "Fetch a link preview's og:image (public hosts only, max 256 KiB, bitmap image types) as a data URL; null when unavailable.",
+      input: "object { url: string }",
+      example: "ade actions run chat.resolveSmartLinkImage --input-json '{\"url\":\"https://example.com/og.png\"}' --json",
+    },
     getMcpApp: {
       description: "Read the MCP App a tool call produced: its HTML page, the network origins it declared, and the tool input and result it replays.",
       input: "object { sessionId: string, itemId: string }",

@@ -63,6 +63,12 @@ import type {
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import {
+  formatAttachedImageLegend,
+  labelAttachments,
+  labelAttachmentsByRef,
+  type AttachmentLabel,
+} from "../../../shared/attachmentLabels";
+import {
   claimScheduledDraft,
   draftLaunchModel,
   getDraft,
@@ -830,7 +836,7 @@ import {
   type EvictableRuntime,
   type RuntimeBudgetParticipant,
 } from "./chatRuntimeBudget";
-import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
+import { createChatMentionService, markChatMentionsExpanded, type ChatMentionServiceDeps } from "./chatMentionService";
 import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
@@ -5192,12 +5198,21 @@ type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _rootPath: string;
 };
 
-/** Name every attachment in the prompt text, including any that could not be sent as a file part. */
+/**
+ * Name every attachment in the prompt text, including any that could not be sent
+ * as a file part.
+ *
+ * Each line opens with the attachment's `[Image #k]` / `[File #k: name]` label
+ * when the caller supplies one, so the label here matches the token the user's
+ * prompt text uses. Without a label it falls back to the attachment type.
+ */
 function formatAttachedContextHint(
-  items: ReadonlyArray<{ type: string; path: string }>,
+  items: ReadonlyArray<{ type: string; path: string; label?: string }>,
 ): string {
   return items.length
-    ? `\n\nAttached context:\n${items.map((item) => `- ${item.type}: ${item.path}`).join("\n")}`
+    ? `\n\nAttached context:\n${items.map((item) => (
+        item.label ? `- ${item.label}: ${item.path}` : `- ${item.type}: ${item.path}`
+      )).join("\n")}`
     : "";
 }
 
@@ -8335,8 +8350,13 @@ async function buildStreamingUserContent(
   const parts: Array<{ type: "text"; text: string } | ImagePart | FilePart> = [
     { type: "text", text: args.baseText },
   ];
+  const labels = labelAttachments(args.attachments);
 
-  for (const attachment of args.attachments) {
+  for (const [index, attachment] of args.attachments.entries()) {
+    // Every attachment's block is preceded by its `[Image #k]` /
+    // `[File #k: name]` label, so a label in the prompt names this block.
+    const token = labels[index]?.token;
+    if (token) parts.push({ type: "text", text: `\n${token}` });
     try {
       if (attachment.type === "image-url") {
         parts.push({
@@ -10721,6 +10741,15 @@ export function createAgentChatService(args: {
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   /**
+   * Brain-side account reads behind `@mac:` mentions: the machine directory,
+   * account Activity, and this machine's directory key. Absent in hosts that
+   * hold no account, where machine mentions resolve as unavailable.
+   */
+  accountMachineMentions?: Pick<
+    ChatMentionServiceDeps,
+    "listAccountMachines" | "getAccountActivity" | "getLocalMachineKey"
+  > | null;
+  /**
    * Content-free hook for the one product question a handoff replay raises: did
    * the conversation reach the new model whole, in part, or not at all. Fired
    * once when the handoff pre-flight resolves, and once per overflow-recovery
@@ -10861,6 +10890,7 @@ export function createAgentChatService(args: {
     onClaudeHooksIgnored,
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
+    accountMachineMentions,
     onChatHandoffReplay,
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
@@ -11979,6 +12009,39 @@ export function createAgentChatService(args: {
     fs.writeFileSync(tempPath, content);
     fs.renameSync(tempPath, stagedPath);
     return stagedPath;
+  };
+
+  /**
+   * Codex input items for a turn's attachments. Each attachment is preceded by
+   * a text item carrying its `[Image #k]` / `[File #k: name]` label, so a label
+   * in the prompt text names the item that follows it. One builder for the
+   * turn-start and steer paths so the two cannot label differently.
+   */
+  const buildCodexAttachmentInputItems = async (
+    attachments: readonly ResolvedAgentChatFileRef[],
+  ): Promise<Array<Record<string, unknown>>> => {
+    const labels = labelAttachments(attachments);
+    const items: Array<Record<string, unknown>> = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const label = labels[index];
+      if (label) items.push({ type: "text", text: label.token, text_elements: [] });
+      if (attachment.type === "image-url") {
+        items.push({ type: "image", url: attachment.url });
+        continue;
+      }
+      if (attachmentIsReferenceOnly(attachment)) {
+        items.push(codexReferenceOnlyAttachmentInput(attachment));
+        continue;
+      }
+      const stagedPath = await stageAttachmentForCodexInput(attachment);
+      if (attachment.type === "image") {
+        items.push({ type: "localImage", path: stagedPath });
+        continue;
+      }
+      const name = path.basename(attachment.path) || attachment.path;
+      items.push({ type: "mention", name, path: stagedPath });
+    }
+    return items;
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
@@ -26927,23 +26990,7 @@ export function createAgentChatService(args: {
         text_elements: []
       });
 
-      for (const attachment of resolvedAttachments) {
-        if (attachment.type === "image-url") {
-          input.push({ type: "image", url: attachment.url });
-          continue;
-        }
-        if (attachmentIsReferenceOnly(attachment)) {
-          input.push(codexReferenceOnlyAttachmentInput(attachment));
-          continue;
-        }
-        const stagedPath = await stageAttachmentForCodexInput(attachment);
-        if (attachment.type === "image") {
-          input.push({ type: "localImage", path: stagedPath });
-          continue;
-        }
-        const name = path.basename(attachment.path) || attachment.path;
-        input.push({ type: "mention", name, path: stagedPath });
-      }
+      input.push(...await buildCodexAttachmentInputItems(resolvedAttachments));
       runtime.awaitingTurnStart = true;
       runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
       result = await runtime.request<{ turn?: { id?: string } }>("turn/start", {
@@ -35229,11 +35276,15 @@ export function createAgentChatService(args: {
 
       const providerSlashCommand = args.providerSlashCommand === true;
       // The resolved path, like every other attachment hint: a relative path
-      // means nothing once it reaches the model.
+      // means nothing once it reaches the model. Each line opens with the
+      // attachment's `[Image #k]` / `[File #k: name]` label, so it matches the
+      // token the user's prompt text uses.
+      const attachmentLabels = labelAttachments(resolvedAttachments);
       const attachmentHint = formatAttachedContextHint(
-        resolvedAttachments.map((attachment) => ({
+        resolvedAttachments.map((attachment, index) => ({
           type: attachment.type,
           path: attachmentAgentPath(attachment),
+          label: attachmentLabels[index]?.token,
         })),
       );
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
@@ -50814,11 +50865,16 @@ export function createAgentChatService(args: {
   const buildAgentPromptTextBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
+    labels: ReadonlyMap<ResolvedAgentChatFileRef, AttachmentLabel> = labelAttachmentsByRef(resolvedAttachments),
   ): Promise<Array<{ type: "text"; text: string }>> => {
     const blocks: Array<{ type: "text"; text: string }> = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
+      // A file's text block opens with its `[File #k: name]` label, numbered
+      // against the whole attachment list rather than this filtered subset.
+      const label = labels.get(attachment);
+      const labelPrefix = label ? `${label.token} ` : "";
       if (attachmentIsReferenceOnly(attachment)) {
-        blocks.push({ type: "text", text: attachmentPathHint(attachment) });
+        blocks.push({ type: "text", text: `${labelPrefix}${attachmentPathHint(attachment)}` });
         continue;
       }
       try {
@@ -50832,7 +50888,7 @@ export function createAgentChatService(args: {
           if (fileSize > MAX_INLINE_BYTES) {
             blocks.push({
               type: "text",
-              text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+              text: `${labelPrefix}[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
             });
             continue;
           }
@@ -50844,20 +50900,20 @@ export function createAgentChatService(args: {
           if (hasNullByte(buf)) {
             blocks.push({
               type: "text",
-              text: `[File: ${attachment.path} omitted: binary or unsupported type]`,
+              text: `${labelPrefix}[File: ${attachment.path} omitted: binary or unsupported type]`,
             });
           } else {
             const text = buf.toString("utf-8");
             blocks.push({
               type: "text",
-              text: `[File: ${attachment.path}]\n${text}`,
+              text: `${labelPrefix}[File: ${attachment.path}]\n${text}`,
             });
           }
         } else {
           // File is too large to inline -- push a placeholder with a truncated preview.
           blocks.push({
             type: "text",
-            text: `[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
+            text: `${labelPrefix}[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
           });
         }
       } catch {
@@ -50878,55 +50934,92 @@ export function createAgentChatService(args: {
         attachment.type !== "image-url"
         && (attachment.type !== "image" || attachmentIsReferenceOnly(attachment))
       )),
+      labelAttachmentsByRef(resolvedAttachments),
     );
     return promptBlocks.map((block) => block.text).join("\n\n");
+  };
+
+  /** One local image as a path-only worker image, or null when it has no root. */
+  const pathImageFromResolved = (
+    attachment: ResolvedAgentChatFileRef,
+  ): { path: string; mimeType: string; rootPath: string } | null => {
+    if (attachment.type !== "image" || attachmentIsReferenceOnly(attachment)) return null;
+    const rootPath = attachment._rootPath.trim();
+    if (!rootPath) return null;
+    return workerPathImagesFromAttachments([{
+      path: attachment.path,
+      resolvedPath: attachment._resolvedPath,
+      rootPath,
+    }])[0] ?? null;
   };
 
   const pathImagesFromResolved = (
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Array<{ path: string; mimeType: string; rootPath: string }> => (
-    workerPathImagesFromAttachments(
-      resolvedAttachments.flatMap((attachment) => {
-        if (attachment.type !== "image" || attachmentIsReferenceOnly(attachment)) return [];
-        const rootPath = attachment._rootPath.trim();
-        if (!rootPath) return [];
-        return [{
-          path: attachment.path,
-          resolvedPath: attachment._resolvedPath,
-          rootPath,
-        }];
-      }),
-    )
+    resolvedAttachments.flatMap((attachment) => {
+      const image = pathImageFromResolved(attachment);
+      return image ? [image] : [];
+    })
   );
 
+  /**
+   * Cursor carries images beside the prompt, not inside it, so a label cannot
+   * sit right before each image block. The images go in attachment-list order
+   * instead (local and URL images interleaved, exactly as the user attached
+   * them), and the prompt ends with a legend naming each one, so `[Image #2]`
+   * in the prompt is the second image the model receives.
+   */
   const buildCursorWorkerPrompt = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => ({
-    promptText: await promptTextWithoutInlineImages(promptText, resolvedAttachments),
-    images: [
-      ...pathImagesFromResolved(resolvedAttachments),
-      ...resolvedAttachments.flatMap((attachment) => {
-        if (attachment.type !== "image-url") return [];
+  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => {
+    const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
+    const labels = labelAttachments(resolvedAttachments);
+    const images: WorkerIpcImage[] = [];
+    const sentLabels: AttachmentLabel[] = [];
+    resolvedAttachments.forEach((attachment, index) => {
+      const label = labels[index];
+      let image: WorkerIpcImage | null = null;
+      if (attachment.type === "image-url") {
         const url = attachment.url?.trim();
-        if (!url) return [];
-        return [{ url }];
-      }),
-    ],
-  });
+        image = url ? { url } : null;
+      } else {
+        image = pathImageFromResolved(attachment);
+      }
+      if (!image) return;
+      images.push(image);
+      if (label) sentLabels.push(label);
+    });
+    const legend = formatAttachedImageLegend(sentLabels);
+    return {
+      promptText: [...(text ? [text] : []), ...(legend ? [legend] : [])].join("\n\n"),
+      images,
+    };
+  };
 
   const buildPathOnlyWorkerPrompt = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Promise<{ promptText: string; images: Array<{ path: string; mimeType: string; rootPath: string }> }> => {
     const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
-    const urlHints = resolvedAttachments.flatMap((attachment) => {
-      if (attachment.type !== "image-url") return [];
-      const url = attachment.url?.trim();
-      return url ? [`Image URL: ${url}`] : [];
+    const labels = labelAttachments(resolvedAttachments);
+    // Path images travel beside the prompt, URL images as text. The legend
+    // names the path images in the order they are sent; each URL hint carries
+    // its own label, so every `[Image #k]` the prompt uses resolves.
+    const sentImageLabels: AttachmentLabel[] = [];
+    const urlHints: string[] = [];
+    resolvedAttachments.forEach((attachment, index) => {
+      const label = labels[index];
+      if (attachment.type === "image-url") {
+        const url = attachment.url?.trim();
+        if (url) urlHints.push(label ? `${label.token} Image URL: ${url}` : `Image URL: ${url}`);
+        return;
+      }
+      if (label && pathImageFromResolved(attachment)) sentImageLabels.push(label);
     });
+    const legend = formatAttachedImageLegend(sentImageLabels);
     return {
-      promptText: [...(text ? [text] : []), ...urlHints].join("\n\n"),
+      promptText: [...(text ? [text] : []), ...urlHints, ...(legend ? [legend] : [])].join("\n\n"),
       images: pathImagesFromResolved(resolvedAttachments),
     };
   };
@@ -56083,16 +56176,25 @@ export function createAgentChatService(args: {
           const files = openCodePromptFiles(preparedSteer.resolvedAttachments
             .filter((attachment) => !attachmentIsReferenceOnly(attachment))
             .map((attachment) => attachment._resolvedPath));
-          const referenceOnlyHints = preparedSteer.resolvedAttachments
-            .filter(attachmentIsReferenceOnly)
-            .map((attachment) => attachmentPathHint(attachment));
+          // The `{uri}` file part has no slot for a per-file label, so every
+          // attachment is named here with its `[Image #k]` / `[File #k: name]`
+          // label — the v1 send names them all too — and a label in the steer
+          // text points at the right part.
+          const steerAttachmentLabels = labelAttachments(preparedSteer.resolvedAttachments);
+          const attachmentHints = preparedSteer.resolvedAttachments.map((attachment, index) => {
+            const token = steerAttachmentLabels[index]?.token;
+            const hint = attachmentIsReferenceOnly(attachment)
+              ? attachmentPathHint(attachment)
+              : attachmentAgentPath(attachment);
+            return token ? `${token} ${hint}` : hint;
+          });
           // The inbox takes text only, so an ADE `/ship …` goes in expanded
           // (`promptText` is the expansion for a slash command) and any other
           // leading `/word` goes in as the user typed it.
           const text = [
             buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null,
             preparedSteer.providerSlashCommand ? preparedSteer.promptText : preparedSteer.submittedText,
-            referenceOnlyHints.length ? referenceOnlyHints.join("\n") : null,
+            attachmentHints.length ? attachmentHints.join("\n") : null,
           ]
             .filter((section): section is string => Boolean(section))
             .join("\n\n");
@@ -56656,23 +56758,7 @@ export function createAgentChatService(args: {
           text_elements: [],
         });
       }
-      for (const attachment of preparedSteer.resolvedAttachments) {
-        if (attachment.type === "image-url") {
-          input.push({ type: "image", url: attachment.url });
-          continue;
-        }
-        if (attachmentIsReferenceOnly(attachment)) {
-          input.push(codexReferenceOnlyAttachmentInput(attachment));
-          continue;
-        }
-        const stagedPath = await stageAttachmentForCodexInput(attachment);
-        if (attachment.type === "image") {
-          input.push({ type: "localImage", path: stagedPath });
-          continue;
-        }
-        const name = path.basename(attachment.path) || attachment.path;
-        input.push({ type: "mention", name, path: stagedPath });
-      }
+      input.push(...await buildCodexAttachmentInputItems(preparedSteer.resolvedAttachments));
 
       let deliveredTurnId = runtime.activeTurnId;
       if (codexTurnRejectsSteer(runtime)) {
@@ -68128,6 +68214,9 @@ export function createAgentChatService(args: {
       : null,
     logger,
     onMentionsExpanded: onChatMentionsExpanded ?? null,
+    listAccountMachines: accountMachineMentions?.listAccountMachines ?? null,
+    getAccountActivity: accountMachineMentions?.getAccountActivity ?? null,
+    getLocalMachineKey: accountMachineMentions?.getLocalMachineKey ?? null,
     describeModel: (modelId) => {
       const descriptor = getModelById(modelId);
       if (!descriptor) return null;

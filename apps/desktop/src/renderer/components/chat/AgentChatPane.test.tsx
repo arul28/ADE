@@ -7442,16 +7442,20 @@ describe("AgentChatPane submit recovery", () => {
       },
     });
     fireEvent(textbox, pasteEvent);
-    await screen.findByText("pasted-text.txt");
+    // The tray chip shows the staged basename; the same name must reach the
+    // agent as the token's `[File #1: <name>]`, or the label points nowhere.
+    const pastedName = (await screen.findByText(/^pasted-\d+\.txt$/)).textContent ?? "";
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
-        text: "",
-        displayText: "",
+        // The folded paste leaves a chip in the text, so the message is the
+        // token rather than the empty draft the old path sent.
+        text: `[File #1: ${pastedName}]`,
+        displayText: `[File #1: ${pastedName}]`,
         attachments: [{
-          path: "/tmp/project-under-test/.ade/attachments/pasted-text.txt",
+          path: `/tmp/project-under-test/.ade/attachments/${pastedName}`,
           type: "file",
           intent: "user_prompt",
         }],

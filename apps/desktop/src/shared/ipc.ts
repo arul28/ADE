@@ -994,6 +994,7 @@ export const IPC = {
   githubClearToken: "ade.github.clearToken",
   githubStatusChanged: "ade.github.statusChanged",
   githubGetRequestBudget: "ade.github.getRequestBudget",
+  githubIsRepoStarred: "ade.github.isRepoStarred",
   githubGetAppUserAuthStatus: "ade.github.getAppUserAuthStatus",
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",

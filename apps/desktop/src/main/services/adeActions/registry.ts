@@ -216,6 +216,7 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
+import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
@@ -766,6 +767,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     // icons of domains it already shows. Same resolver as the sync command.
     resolveSourceFavicons: (args?: unknown) =>
       getSourceFaviconService().resolve(asActionRecord(args) as ResolveSourceFaviconsArgs),
+    // Stateless and public-only, like favicons: a link hover card's og:image.
+    resolveSmartLinkImage: (args?: unknown) => {
+      const url = asActionRecord(args).url;
+      return resolveSmartLinkImage({ url: typeof url === "string" ? url : "" });
+    },
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
       const laneId = await resolvePrimaryLaneId(runtime);
       return agentChatService.ensureIdentitySession({

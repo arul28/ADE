@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createChatMentionService, type ChatMentionServiceDeps } from "./chatMentionService";
-import { CHAT_MENTION_MAX_RESULTS, renderChatMentionBlock } from "../../../shared/chatMentions";
+import { CHAT_MENTION_MAX_PER_KIND, CHAT_MENTION_MAX_RESULTS, renderChatMentionBlock } from "../../../shared/chatMentions";
 import type { AgentChatSessionSummary } from "../../../shared/types/chat";
 import type { LaneStatus, LaneSummary } from "../../../shared/types/lanes";
 import type { ChatTerminalSession } from "../../../shared/types/sessions";
@@ -130,7 +130,7 @@ describe("listChatMentionSuggestions", () => {
     expect(suggestions.filter((s) => s.kind === "lane").map((s) => s.id)).toEqual(["l-live"]);
   });
 
-  it("caps the mixed list so a huge roster cannot unbounded-grow the menu", async () => {
+  it("bounds a huge roster: a browse caps each kind, a query caps the mixed list", async () => {
     const { service } = makeService({
       listChatSessions: async () =>
         Array.from({ length: 30 }, (_, i) =>
@@ -142,8 +142,19 @@ describe("listChatMentionSuggestions", () => {
         Array.from({ length: 30 }, (_, i) =>
           terminal({ terminalId: `t${i}`, title: `Term ${i}` })),
     });
-    const { suggestions } = await service.listChatMentionSuggestions({ query: "" });
-    expect(suggestions).toHaveLength(CHAT_MENTION_MAX_RESULTS);
+
+    // An empty query is a browse: the sections can each show their own cap, so
+    // the ceiling is per-kind and the menu still cannot grow without bound.
+    const browse = await service.listChatMentionSuggestions({ query: "" });
+    expect(browse.suggestions).toHaveLength(CHAT_MENTION_MAX_PER_KIND * 3);
+    for (const kind of ["chat", "lane", "terminal"] as const) {
+      expect(browse.suggestions.filter((entry) => entry.kind === kind))
+        .toHaveLength(CHAT_MENTION_MAX_PER_KIND);
+    }
+
+    // A real query is one ranked mixed list under the single flat cap.
+    const mixed = await service.listChatMentionSuggestions({ query: "a" });
+    expect(mixed.suggestions.length).toBeLessThanOrEqual(CHAT_MENTION_MAX_RESULTS);
   });
 
   it("ranks a better title match above a more recent weak match across kinds", async () => {

@@ -4655,6 +4655,15 @@ app.whenReady().then(async () => {
         projectId,
         sessionId: event.sessionId,
       }),
+      // `@mac:` mentions on the in-process path. Activity (projects, lanes,
+      // chats) is brain-owned and not readable here, so the snapshot reports
+      // it as unavailable rather than guessing.
+      accountMachineMentions: {
+        listAccountMachines: () => ipcBridge
+          ? ipcBridge.listAccountMachines()
+          : Promise.resolve({ state: "unavailable" as const, machines: [], message: null }),
+        getLocalMachineKey: () => ipcBridge?.getLocalMachineIdentity().machineKey ?? null,
+      },
       onCompactionOutcome: (event) => captureChatCompactionAnalytics({
         analytics: productAnalyticsService,
         projectId,

@@ -2740,12 +2740,15 @@ private struct WorkChatComposerDraftInput: View {
   var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.colorScheme) private var colorScheme
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var compactFirstChoice: Bool? = nil
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   /// Collapsed composer: the keyboard is down and the card is one capsule —
   /// [⋯ menu] [one-line field] [send / stop]. It follows focus: the field
@@ -2887,6 +2890,15 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
+  /// Whether a big text paste may become a file here: the host must take the
+  /// chunked file route, and personal chats are images-only.
+  private var acceptsPastedFiles: Bool {
+    canAttach
+      && attachmentsAvailable
+      && !isPersonalChat
+      && syncService.supportsViewerRemoteAction(workChatFileAttachmentHostAction)
+  }
+
   /// The folded one-line capsule. The CTO (compact) composer folds the same
   /// way now.
   private var showsFoldedCapsule: Bool {
@@ -2998,7 +3010,8 @@ private struct WorkChatComposerDraftInput: View {
       attachments: $inputAttachments,
       compact: composerCollapsed,
       onExpand: { applyFold(.expand) },
-      chatSessionId: sessionId.isEmpty ? nil : sessionId
+      chatSessionId: sessionId.isEmpty ? nil : sessionId,
+      openRequest: $attachmentPreviewRequest
     )
   }
 
@@ -3050,6 +3063,9 @@ private struct WorkChatComposerDraftInput: View {
             onPasteImages: { images in
               workChatInputPasteImages(images, into: $inputAttachments)
             },
+            attachments: $inputAttachments,
+            acceptsPastedFiles: acceptsPastedFiles,
+            onOpenAttachment: { attachmentPreviewRequest = $0 },
             maxLines: composerMaxLines,
             collapsed: composerCollapsed,
             onFoldSwipeDown: { applyFold(.collapse) }
@@ -3451,6 +3467,7 @@ private struct WorkChatComposerDraftInput: View {
     suggestionController.provider = chatSummary.provider
     suggestionController.laneId = laneId.isEmpty ? nil : laneId
     suggestionController.syncService = syncService
+    suggestionController.sessionId = sessionId.isEmpty ? nil : sessionId
   }
 
   /// Red stop circle, the desktop's colour
@@ -3888,6 +3905,9 @@ private struct WorkChatComposerTextField: View {
   let placeholder: String
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  var attachments: Binding<[WorkChatInputAttachment]>? = nil
+  var acceptsPastedFiles = false
+  var onOpenAttachment: ((UUID) -> Void)? = nil
   var maxLines = 6
   /// Folded composer. The field keeps its measured height and is clipped to one
   /// line from the top, so folding a long draft animates one frame height
@@ -3919,6 +3939,9 @@ private struct WorkChatComposerTextField: View {
       measuredHeight: $measuredHeight,
       acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
+      attachments: attachments,
+      acceptsPastedFiles: acceptsPastedFiles,
+      onOpenAttachment: onOpenAttachment,
       maxLines: maxLines,
       collapsed: collapsed,
       onFoldSwipeDown: onFoldSwipeDown
@@ -3938,7 +3961,10 @@ private struct WorkChatComposerSendButton: View {
   let sending: Bool
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
-  var minimumTapTargetSize: CGFloat = 28
+  var minimumTapTargetSize: CGFloat = 34
+  /// The disc. 34pt in the chat composer; the active-turn split control keeps
+  /// it at its 32pt row height.
+  var diameter: CGFloat = 34
   var hasSendableThreadComments = false
   /// The send itself lives on the composer, not here: the retry row runs the
   /// exact same action, and two copies of "clear the field, stage, restore on
@@ -3961,7 +3987,8 @@ private struct WorkChatComposerSendButton: View {
       sending: sending,
       accessibilityLabelText: accessibilityLabelText,
       systemImageName: systemImageName,
-      minimumTapTargetSize: minimumTapTargetSize
+      minimumTapTargetSize: minimumTapTargetSize,
+      diameter: diameter
     ) {
       action()
     }

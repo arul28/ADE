@@ -106,6 +106,11 @@ import {
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
+import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
+import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
+import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
+import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
+import type { AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -2109,6 +2114,70 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
+      if (action === "showMachine") {
+        // Read-only and open to every role on purpose: `ade machines show` is
+        // how a chat agent reads a machine the user @-mentioned. It returns
+        // presence plus the machine's recent Activity, never credentials or
+        // routes, and it changes nothing (no trust reconciliation either —
+        // that is `listMachines`' housekeeping, and stays CTO-only).
+        const actionArgs = isRecord(params.args) ? params.args : {};
+        const selector = typeof actionArgs.machine === "string" ? actionArgs.machine.trim() : "";
+        if (!selector) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "account.showMachine requires a machine name, machine key, or device id.",
+          );
+        }
+        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
+          appVersion: options.serverVersion,
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+          }),
+        });
+        const listed = await machineDirectory.listMachines();
+        if (listed.state !== "ok") {
+          return {
+            domain: "account",
+            action,
+            result: { state: listed.state, message: listed.message, machine: null },
+            statusHints: {},
+          };
+        }
+        let machine: AdeAccountMachine;
+        try {
+          machine = findMachineByMentionId(listed.machines, selector)
+            ?? selectAccountMachine(listed.machines, selector);
+        } catch (error) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        // Activity is the only cross-machine record of projects, lanes and
+        // chats. Unreadable Activity degrades to "unknown", never to "idle".
+        let activityItems: AttentionItem[] | null = null;
+        try {
+          const publisher = (await scopeRegistry.resolveActiveSyncHost())?.runtime.pushPublisherService;
+          if (publisher) activityItems = (await publisher.getAttentionSnapshot(0)).items ?? [];
+        } catch {
+          activityItems = null;
+        }
+        let localMachineKey: string | null = null;
+        try {
+          localMachineKey = createSyncCloudRelayStore({
+            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+          }).getMachineIdentity().machineKey;
+        } catch {
+          localMachineKey = null;
+        }
+        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey });
+        return {
+          domain: "account",
+          action,
+          result: { state: "ok", message: null, machine: snapshot },
+          statusHints: {},
+        };
+      }
       if (action === "startSyncHost") {
         if (!options.startSyncHost) {
           throw new JsonRpcError(

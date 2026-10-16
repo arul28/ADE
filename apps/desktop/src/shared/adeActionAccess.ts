@@ -168,7 +168,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudePluginUi", "getMcpApp", "listMcpAppGrants",
       "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
       "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
-      "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSourceFavicons",
+      "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
       "generateAutoLaneIdentity",
     ],
@@ -366,7 +366,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   github: {
     read: [
       "getAppInstallationStatus", "getAppUserAuthStatus", "getRepoOrThrow", "getRemoteStatus",
-      "getRequestBudget", "getStatus", "listRepoAutolinks", "listRepoCollaborators",
+      "getRequestBudget", "getStatus", "isRepoStarred", "listRepoAutolinks", "listRepoCollaborators",
       "listRepoIssues", "getIssue", "getRepoIssueSummary", "listRepoIssueList",
       "getIssueWriteAccess", "listIssueTemplates", "listIssueTypes", "listRepoMilestones",
       "listIssueComments", "listRepoLabels",

@@ -2842,7 +2842,7 @@ function renderEvent(
             switch (body.kind) {
               case "brief":
                 return body.text ? (
-                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={body.text} />
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={body.text} attachments={event.attachments} />
                 ) : null;
               case "review":
                 return (
@@ -2859,7 +2859,7 @@ function renderEvent(
                 return body.markdown ? (
                   <MarkdownBlock markdown={body.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
                 ) : (
-                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={body.text} />
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={body.text} attachments={event.attachments} />
                 );
               case "chips":
                 // Prompts render in full, however long.

@@ -33,6 +33,7 @@ import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
+import { DEFAULT_STAR_PILL_PREFS, normalizeStarPillPrefs, type StarPillPrefs } from "../lib/starPill";
 import {
   normalizeWorkLiveCardPosition,
   normalizeWorkLiveCardWidth,
@@ -1255,6 +1256,30 @@ function persistUserPreferencesFrom(state: {
   });
 }
 
+/**
+ * The star pill's prefs keep their own storage key rather than riding in the
+ * preferences blob: project stores persist that blob from their own copy of
+ * state, and a root-only value there would be overwritten with a stale one.
+ */
+const STAR_PILL_STORAGE_KEY = "ade.starPill.v1";
+
+function readPersistedStarPillPrefs(): StarPillPrefs {
+  try {
+    const raw = window.localStorage.getItem(STAR_PILL_STORAGE_KEY);
+    return raw ? normalizeStarPillPrefs(JSON.parse(raw)) : { ...DEFAULT_STAR_PILL_PREFS };
+  } catch {
+    return { ...DEFAULT_STAR_PILL_PREFS };
+  }
+}
+
+function persistStarPillPrefs(prefs: StarPillPrefs): void {
+  try {
+    window.localStorage.setItem(STAR_PILL_STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
+
 function readInitialUserPreferences(): PersistedUserPreferences {
   const unified = readUnifiedUserPreferences();
   if (unified) return unified;
@@ -1492,6 +1517,11 @@ export type AppState = {
   /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
+  /**
+   * Root-store only (not copied into project stores): read it with
+   * `useRootAppStore` and write it with `updateStarPill`.
+   */
+  starPill: StarPillPrefs;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -1672,6 +1702,7 @@ export type AppState = {
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
+  updateStarPill: (next: (prev: StarPillPrefs) => StarPillPrefs) => void;
   setCodexVoicePreferences: (patch: Partial<CodexVoicePreferences>) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
   setDictationPhase: (phase: DictationPhase) => void;
@@ -2119,6 +2150,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
   harnessPresets: initialUserPreferences.harnessPresets,
   appleDevice: initialUserPreferences.appleDevice,
+  starPill: readPersistedStarPillPrefs(),
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -2784,6 +2816,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
       return { voiceInputEnabled: enabled };
+    }),
+  updateStarPill: (next) =>
+    set((prev) => {
+      const starPill = normalizeStarPillPrefs(next(prev.starPill));
+      persistStarPillPrefs(starPill);
+      return { starPill };
     }),
   setCodexVoicePreferences: (patch) =>
     set((prev) => {

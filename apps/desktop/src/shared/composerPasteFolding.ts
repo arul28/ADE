@@ -3,37 +3,31 @@
  *
  * Pasting a log or a whole file used to dump thousands of lines into the
  * composer, pushing the caret out of reach and making a steer unreadable. The
- * composer folds a large plain-text paste into a staged `.txt` attachment
- * instead, using the same chip + preview path as any other file.
+ * composer folds a large plain-text paste into a staged attachment instead,
+ * using the same chip + preview path as any other file: it is named
+ * `pasted-<epoch ms>.<ext>` (see `shared/pastedTextAttachment.ts`) and carries
+ * a "Pasted · N lines" chip.
+ *
+ * The rule itself — the thresholds, the line count, the extension sniffing and
+ * the file name — lives in `shared/pastedTextAttachment.ts`, which iOS mirrors
+ * exactly, so desktop and phone fold the same paste. This module is the thin
+ * composer-side adapter: it builds the `File` and marks it, so a paste that
+ * reaches the composer can be told apart from a file the user dropped.
  *
  * Small pastes are untouched: they keep native selection-replace and undo. Only
  * plain text is considered — files, images, and short link pastes never reach
  * this decision, so the existing attachment and smart-link paths are unchanged.
  */
 
-/** Pasted text at or below this length stays draft text. */
-export const PASTE_FOLD_CHAR_THRESHOLD = 2_000;
-
-/** Pasted text at or below this many lines stays draft text. */
-export const PASTE_FOLD_LINE_THRESHOLD = 20;
-
-/** The staged attachment's name; the Files viewer picks the type from it. */
-export const PASTED_TEXT_ATTACHMENT_FILENAME = "pasted-text.txt";
+import {
+  pastedTextFilename,
+  shouldPasteTextAsFile,
+} from "./pastedTextAttachment";
 
 /** Pasted text's media type, so the host stages it as a plain text file. */
 export const PASTED_TEXT_ATTACHMENT_MIME = "text/plain";
 
 const pastedTextAttachmentFiles = new WeakSet<File>();
-
-/**
- * Lines in pasted text, CRLF and lone-CR normalized, a single trailing newline
- * ignored. A text that ends with one newline is not one line longer than it is.
- */
-function countPasteLines(text: string): number {
-  const normalized = text.replace(/\r\n?/g, "\n").replace(/\n$/, "");
-  if (!normalized) return 0;
-  return normalized.split("\n").length;
-}
 
 /**
  * True when a plain-text paste should become a text attachment rather than
@@ -42,16 +36,17 @@ function countPasteLines(text: string): number {
  */
 export function shouldFoldPastedText(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
-  if (text.length > PASTE_FOLD_CHAR_THRESHOLD) return true;
-  return countPasteLines(text) > PASTE_FOLD_LINE_THRESHOLD;
+  return shouldPasteTextAsFile(text);
 }
 
 /**
- * Build the File the composer stages for a folded paste. Constructed (not read
+ * Build the File the composer stages for a folded paste. Named
+ * `pasted-<epoch ms>.<ext>` so the staged file keeps that name on disk and the
+ * agent's `[File #k: <name>]` label matches the chip. Constructed (not read
  * from disk), so the existing base64 staging leg carries it to the host.
  */
 export function pastedTextAttachmentFile(text: string): File {
-  const file = new File([text], PASTED_TEXT_ATTACHMENT_FILENAME, {
+  const file = new File([text], pastedTextFilename(text), {
     type: PASTED_TEXT_ATTACHMENT_MIME,
   });
   pastedTextAttachmentFiles.add(file);

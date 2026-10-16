@@ -38,6 +38,10 @@ regexes = [
   # const ends in KEY and the namespaced value has mild entropy. Regex rather
   # than a commit fingerprint so a rebase does not revive the finding.
   '''ai\.api_key\.provenance\.v1''',
+  # Star-on-GitHub pill's localStorage key name (`ade.starPill.v1`), not a
+  # secret. Same generic-api-key false positive: `STAR_PILL_STORAGE_KEY` ends in
+  # KEY and the namespaced value has mild entropy. Regex for the same reason.
+  '''ade\.starPill\.v1''',
 ]
 paths = [
   '''\.env\.example$''',

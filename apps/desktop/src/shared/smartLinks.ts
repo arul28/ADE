@@ -25,6 +25,12 @@ export type SmartLinkPreview = {
   title?: string | null;
   /** Sanitized, bounded image payload returned by the ADE runtime. */
   iconDataUrl?: string | null;
+  /**
+   * The page's `og:image` / `twitter:image`, as an absolute http(s) URL. Only
+   * the URL: the hover card fetches the bytes lazily via
+   * `chat.resolveSmartLinkImage`, which applies the public-host guard.
+   */
+  imageUrl?: string | null;
 };
 
 export type SmartLinkMatch = SmartLinkPreview & {

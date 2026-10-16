@@ -128,6 +128,10 @@ import {
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
 import {
+  formatAccountMachineSnapshotText,
+  type AccountMachineSnapshot,
+} from "../../desktop/src/shared/accountMachineSnapshot";
+import {
   accountMachinePresence,
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
@@ -558,6 +562,7 @@ export type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "account-machine-show"
   | "machines-roster"
   | "account-machine-rename"
   | "account-machine-remove"
@@ -1135,6 +1140,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
+    $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
@@ -1458,6 +1464,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines show <name|machine-key|device-id> --text
     $ ade machines list --projects --text          Agent-safe roster with each machine's projects
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
@@ -1472,6 +1479,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   stable machine keys to choose from. Directory presence is only a recent hint:
   a verified relay route remains connectable after its heartbeat expires.
   Machines without a verified route stay listed but cannot be connected.
+
+  \`show\` is read-only and open to agents: it prints the machine's status and
+  the projects, lanes and up to five recent chats (with their latest activity
+  lines) that the machine published to ADE Activity. It is recent work, not a
+  full listing, and it never reads a whole transcript or changes the machine.
 
   Sign in with \`ade login\`. \`connect\` and its \`hop\` alias securely save the
   selected machine for that account, then launch ADE Code. Signing out removes
@@ -21910,6 +21922,29 @@ function buildMachinesPlan(args: string[]): CliPlan {
       steps: [accountActionStep("result", "listMachines")],
     };
   }
+  if (sub === "show" || sub === "get" || sub === "view" || sub === "info") {
+    // Read-only, so no `connectRole: "cto"`: a chat agent reads the machine a
+    // user @-mentioned with this. `account.showMachine` returns presence plus
+    // the machine's recent ADE Activity and changes nothing.
+    const machine = readValue(args, ["--machine", "--target"])
+      ?? firstStandalonePositional(args);
+    if (!machine?.trim()) {
+      throw new CliUsageError(
+        `machines ${sub} requires a machine name, machine key, or device id.`,
+      );
+    }
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError(`machines ${sub} accepts one machine selector. Quote names with spaces.`);
+    }
+    return {
+      kind: "execute",
+      label: "account machine show",
+      formatter: "account-machine-show",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [accountActionStep("result", "showMachine", { machine: machine.trim() })],
+    };
+  }
   if (sub === "rename") {
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
@@ -22015,7 +22050,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       remoteArgs: args,
     };
   }
-  throw new CliUsageError("machines supports list, rename, remove, reconnect, connect, or hop.");
+  throw new CliUsageError("machines supports list, show, rename, remove, reconnect, connect, or hop.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -31732,6 +31767,14 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "account-machine-show": {
+      const result = isRecord(value) ? value : {};
+      if (asString(result.state) !== "ok" || !isRecord(result.machine)) {
+        // Same sentences as `machines list` for every non-ok directory state.
+        return formatAccountMachines(value);
+      }
+      return formatAccountMachineSnapshotText(result.machine as unknown as AccountMachineSnapshot);
+    }
     case "machines-roster":
       return formatMachinesRoster(value);
     case "account-machine-rename": {

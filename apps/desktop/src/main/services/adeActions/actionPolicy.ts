@@ -54,6 +54,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "signOut",
       "getToken",
       "createToken",
+      // `listMachines` stays CTO-only: it also reconciles this install's
+      // machine trust. `showMachine` (`ade machines show`) is deliberately NOT
+      // listed — it is a read-only status + recent-Activity view of one machine
+      // that chat-role agents use to read a machine the user @-mentioned.
       "listMachines",
       "pairMachine",
       "deleteMachine",
@@ -763,6 +767,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listMcpAppGrants",
     "revokeMcpAppGrant",
     "resolveSmartLinkPreview",
+    // og:image bytes for a link's hover card; same public-host guard.
+    "resolveSmartLinkImage",
     // Sources favicons: a first-party fetch of the icon of a site the chat
     // already visited, bounded and SSRF-guarded (chat/sourceFaviconService.ts).
     "resolveSourceFavicons",
@@ -996,6 +1002,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getRemoteStatus",
     "getRequestBudget",
     "getStatus",
+    "isRepoStarred",
     "createRepoAutolink",
     "listRepoAutolinks",
     "listRepoCollaborators",

@@ -11,6 +11,7 @@ import {
 } from "../shared/utils";
 import { imageNotInlinedHintPart } from "./attachmentInlineGuard";
 import { fitImageForProviderInline } from "./providerInlineImage";
+import { labelAttachments } from "../../../shared/attachmentLabels";
 import type { Logger } from "../logging/logger";
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
@@ -87,6 +88,11 @@ export type SDKUserMessagePartial = {
   };
 };
 
+/** The label of the attachment a block is about, with its trailing space. */
+function labelPrefix(token: string | undefined): string {
+  return token ? `${token} ` : "";
+}
+
 type BuildClaudeV2MessageOptions = {
   baseDir?: string;
   sessionId?: string | null;
@@ -108,9 +114,10 @@ export async function buildClaudeV2MessageAsync(
   });
 
   const imageAttachments = attachments.filter(sendsImageBytes);
+  const labels = labelAttachments(attachments);
   if (!imageAttachments.length) {
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map(attachmentPathHint).join("\n")}`
+      ? `${promptText}\n\n${attachments.map((a, index) => `${labelPrefix(labels[index]?.token)}${attachmentPathHint(a)}`).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -119,22 +126,23 @@ export async function buildClaudeV2MessageAsync(
     { type: "text", text: promptText },
   ];
 
-  for (const attachment of attachments) {
+  for (const [index, attachment] of attachments.entries()) {
+    const token = labels[index]?.token;
     if (!sendsImageBytes(attachment)) {
-      content.push({ type: "text", text: `\n${attachmentPathHint(attachment)}` });
+      content.push({ type: "text", text: `\n${labelPrefix(token)}${attachmentPathHint(attachment)}` });
       continue;
     }
 
     try {
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
+        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image attached (${mediaType}): ${attachment.path}]` });
         continue;
       }
       const secureRoot = attachment._rootPath ?? options.baseDir;
       const resolvedPath = attachment._resolvedPath ?? attachment.path;
       if (!secureRoot) {
-        content.push({ type: "text", text: `\n[Image unavailable: ${attachment.path}]` });
+        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}]` });
         continue;
       }
       const data = await readAgentAccessibleFileBytes({
@@ -151,9 +159,13 @@ export async function buildClaudeV2MessageAsync(
         logger: options.logger,
       });
       if (fitted.kind === "omit") {
+        if (token) content.push({ type: "text", text: `\n${token}` });
         content.push(imageNotInlinedHintPart(attachment.path, fitted.reason));
         continue;
       }
+      // The label goes right before the image block, so `[Image #2]` in the
+      // prompt points the model at this exact image.
+      if (token) content.push({ type: "text", text: `\n${token}` });
       content.push({
         type: "image",
         source: { type: "base64", media_type: fitted.mediaType, data: fitted.data.toString("base64") },
@@ -161,7 +173,7 @@ export async function buildClaudeV2MessageAsync(
     } catch (error) {
       content.push({
         type: "text",
-        text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
+        text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
       });
     }
   }

@@ -1939,6 +1939,8 @@ private struct WorkNewChatComposerBar: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   /// Live viewport width of the controls scroll area, so the access control
   /// collapses to the in-session composer's dot-Menu at the same threshold.

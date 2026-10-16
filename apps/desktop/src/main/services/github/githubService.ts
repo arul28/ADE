@@ -20,6 +20,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubStatus,
 } from "../../../shared/types";
@@ -55,6 +56,7 @@ import {
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { readCredentialWithState } from "./credentialReadState";
 import {
+  readGithubRepoStarState,
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "./githubRawRequest";
@@ -2682,6 +2684,11 @@ export function createGithubService({
     },
 
     requestRawWithCredentialFallback,
+
+    /** Whether the user starred ADE's repo; `unknown` instead of throwing. */
+    async isRepoStarred(): Promise<GitHubRepoStarState> {
+      return await readGithubRepoStarState(requestRawWithCredentialFallback);
+    },
 
     async getAppUserTokenForRelay(): Promise<string> {
       return await appUserAuth.getValidTokenForRelay();

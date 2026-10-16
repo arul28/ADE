@@ -289,6 +289,7 @@ import {
   getSignedInAccountAccessToken,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
+import { AccountMachineDirectoryService } from "./services/account/accountMachineDirectoryService";
 import {
   getSharedAccountAuthService,
   getSharedAccountDirectoryBaseUrl,
@@ -2418,6 +2419,18 @@ export async function createAdeRuntime(args: {
           projectId,
           sessionId: event.sessionId,
         }),
+        // `@mac:` mentions read the account directory and Activity inside the
+        // brain, so a chat-role caller never needs the CTO-only
+        // `account.listMachines` / `attention.getSnapshot` actions. Both are
+        // read lazily (the publisher and relay store are created below).
+        accountMachineMentions: {
+          listAccountMachines: () => new AccountMachineDirectoryService(accountAuthService, {
+            appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+            directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
+          }).listMachines({ timeoutMs: 4_000 }),
+          getAccountActivity: () => pushPublisherService.getAttentionSnapshot(0),
+          getLocalMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+        },
         onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
           analytics: productAnalyticsService,
           projectId,
