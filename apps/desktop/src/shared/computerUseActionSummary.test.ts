@@ -154,6 +154,33 @@ describe("computer-use command summary", () => {
         reason: "Its output was cut off, so ADE could not see the proof filed.",
       },
     ],
+    // A click never reads as a bare "Clicked": an element with no name is named
+    // by the role its output printed, and a click on no element by its point.
+    [
+      "an unnamed element is named by its role",
+      ok("ade browser click --handle e1", 'hit: button (e1)\neffect: observed'),
+      { text: "Clicked a button using ADE browser", surface: "ade_browser", outcome: "observed" },
+    ],
+    [
+      "an Accessibility role reads as words",
+      ok("ade screen click --handle e5", 'hit: AXPopUpButton (e5)\neffect: observed'),
+      { text: "Clicked a pop-up button on the lane screen", surface: "lane_screen", outcome: "observed" },
+    ],
+    [
+      "a generic tag says nothing, so it reads as an element",
+      ok("ade screen click --handle e9", 'hit: div (e9)\neffect: observed'),
+      { text: "Clicked an element on the lane screen", surface: "lane_screen", outcome: "observed" },
+    ],
+    [
+      "a click that hit no element reads as its point",
+      ok("ade screen click --handle e1", "hit: no element; acted on a point (412, 300)\neffect: observed"),
+      { text: "Clicked at a point on the lane screen", surface: "lane_screen", outcome: "observed" },
+    ],
+    [
+      "positional coordinates are a point",
+      ok("ade screen click 120 420"),
+      { text: "Clicked at 120, 420 on the lane screen", surface: "lane_screen", outcome: "not_checked" },
+    ],
   ])("%s", (_name, input, expected) => {
     const summary = summarizeComputerUseCommand(input);
     if (expected === null) {
