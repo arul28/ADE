@@ -142,7 +142,18 @@ Run without the app (`scripts/perf/service/`).
   Files.
 - **First Work open after launch:** a long chat backfills its older history
   in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
-  work, once per chat per session.
+  work, once per chat per session. A page is 256 KB of raw JSONL
+  (`CHAT_HISTORY_PAGE_MAX_BYTES`), and the batch reader stops at the first page
+  that holds a `user_message`, which a full page almost always does — so one
+  idle slot is one page, and the count is the older transcript's bytes over
+  256 KB. Each page re-collapsed the whole resident transcript, with a scan of
+  every row per `tool_result` on top of it (quadratic over a backfill); the
+  scan is gone in `334ea36ad`. Measured with `chat-backfill.bench.mts` (new; a
+  54,000-event chat over 63 pages, this machine, Node 22.13.1), before → after:
+  row pipeline per backfill 2,478 ms → 1,063 ms, last page 93.3 ms → 31.4 ms,
+  first page 3.7 ms → 3.5 ms, with identical pages, resident events and
+  resident rows. What is left is one linear collapse pass plus the list's
+  commit per page. The app-level numbers above were not re-measured.
 - **Remote browser host, not measured:** a desktop that has shown a chat
   from another machine keeps one runtime event subscription for that machine
   after the chat leaves the front, so it can run that chat's browser commands
@@ -225,12 +236,16 @@ UI, against a running dev app (`scripts/perf/ui/`):
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
-`search-fanout`, `chat-transcript`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+`search-fanout`, `chat-transcript`, `chat-backfill`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
 comparison and not a timing). They read temp copies of state and never write
 to `~/.ade`.
 `chat-transcript` is the chat renderer's own pipeline (live merge, display
 filter, row builder) run on real transcripts: one full pass as a chat opens,
 then 500 events one at a time as a turn streams.
+`chat-backfill` is the same pipeline as a chat's older history pages in: the
+pager's byte window and turn anchoring, the capped merge, and the row build per
+landed page, reported per page (`--synthetic N` builds a transcript instead of
+reading one).
 
 Production-build chat streaming and typing:
 `scripts/perf-chat-stream.mjs` (headless Chromium against `vite preview`).
