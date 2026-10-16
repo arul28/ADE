@@ -428,6 +428,54 @@ describe("ProjectRecoveryService.repair", () => {
     expect(openDatabase).not.toHaveBeenCalled();
   });
 
+  it("reads an endpoint held by this machine's own service as a crash loop, not another copy of ADE", async () => {
+    // The service is running and something is listening, but it will not
+    // answer. A service child is what binds the primary socket, so the owner
+    // is ADE's own brain: "another copy of ADE is open" is the one diagnosis
+    // that offers no repair and tells the person to quit a copy that is not
+    // there.
+    const service = createProjectRecoveryService(deps({
+      connectionPool: pool(status({
+        serviceHealth: {
+          state: "running", installed: true, running: true,
+          path: null, message: null, checkedAt: new Date(NOW).toISOString(),
+        },
+      })),
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => false),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("brain_crash_looping");
+    expect(diagnosis.canAutoRepair).toBe(true);
+  });
+
+  it("stops this machine's own service when the endpoint will not identify itself", async () => {
+    // The only lever repair has over the endpoint is this machine's service,
+    // and a wedged brain cannot answer `ping`. Refusing to stop on a failed
+    // identity check stranded the very brain repair exists to clear.
+    const stopService = vi.fn(async () => {});
+    const service = createProjectRecoveryService(deps({
+      connectionPool: pool(status({
+        serviceHealth: {
+          state: "running", installed: true, running: true,
+          path: null, message: null, checkedAt: new Date(NOW).toISOString(),
+        },
+      })),
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => false),
+      stopService,
+      waitForSocketState: vi.fn(async () => true),
+    }));
+
+    const report = await service.repair(tempRoot());
+
+    expect(stopService).toHaveBeenCalledTimes(1);
+    expect(report.steps[1]).toMatchObject({ id: "stop_service", status: "ok" });
+    expect(report.ok).toBe(true);
+  });
+
   it("does not touch the database when exclusive ownership cannot be verified", async () => {
     const openDatabase = vi.fn(async () => ({ close: vi.fn() } as any));
     const service = createProjectRecoveryService(deps({

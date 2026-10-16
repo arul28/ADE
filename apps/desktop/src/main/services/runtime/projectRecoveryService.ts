@@ -396,6 +396,28 @@ export class ProjectRecoveryService {
   }
 
   /**
+   * Whether an endpoint a probe found a listener on belongs to this machine's
+   * own service child rather than to another copy of ADE.
+   *
+   * A service brain is the only thing that binds the primary channel socket
+   * while launchd (or the Windows supervisor) reports the service running, and
+   * the install's own `starting` flag marks that same child: it is set when the
+   * installer left a live replacement that had not answered yet. So "the
+   * endpoint is reachable and the service is running" identifies the owner
+   * without a second handshake.
+   *
+   * This is what keeps `socket_owned_by_other` honest. That state means a
+   * *different copy* of ADE holds the endpoint; it is the only state whose copy
+   * offers no repair and tells the person to quit the other copy, so reporting
+   * it for ADE's own brain strands exactly the failure repair exists for.
+   */
+  private serviceOwnsEndpoint(
+    status: ReturnType<ProjectRecoveryConnectionPool["getStatus"]>,
+  ): boolean {
+    return status.serviceHealth.running === true || status.serviceInstall.starting === true;
+  }
+
+  /**
    * Install the service, wait for the machine endpoint to come back, then ping
    * it — the one verified brain-restart sequence, shared by `repair()`'s
    * restart_service/verify_endpoint steps and by `restartBrain()`.
@@ -712,11 +734,28 @@ export class ProjectRecoveryService {
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),
     ];
 
+    // Something is listening on the machine endpoint while this machine's own
+    // service is running, so that listener is ADE's own brain — a service child
+    // is what binds the primary socket — and never "another copy of ADE". See
+    // `serviceOwnsEndpoint`.
+    const endpointOwnedByOwnService = socketReachable && this.serviceOwnsEndpoint(serviceStatus);
+
     let state: ProjectRecoveryDiagnosis["state"];
     let code: AdeRecoveryErrorCode;
     if (free < GIB) {
       state = "disk_full";
       code = "disk_full";
+    } else if (
+      actionableFailure
+      && actionableFailure.code === "socket_owned_by_other"
+      && endpointOwnedByOwnService
+    ) {
+      // A recorded "another copy of ADE owns the endpoint" cannot be true while
+      // this machine's own service is running. What it describes is a brain
+      // that is up and not answering, which is the crash loop its own count
+      // already tells us about.
+      state = "brain_crash_looping";
+      code = "brain_crash_looping";
     } else if (actionableFailure) {
       state = stateForCode(actionableFailure.code);
       code = actionableFailure.code;
@@ -734,6 +773,13 @@ export class ProjectRecoveryService {
       // bound but cannot answer on yet is this brain's, not a stranger's.
       state = "brain_starting";
       code = "unknown";
+    } else if (endpointOwnedByOwnService) {
+      // Reachable, own service running, and it did not answer `ping`: a brain
+      // that is up and not working. Saying "another copy of ADE is open" would
+      // send the person to quit a copy that is not there, on the one screen
+      // that offers no repair.
+      state = "brain_crash_looping";
+      code = "brain_crash_looping";
     } else if (socketReachable) {
       state = "socket_owned_by_other";
       code = "socket_owned_by_other";
@@ -891,7 +937,17 @@ export class ProjectRecoveryService {
       } catch (error) {
         return fail("stop_service", "unknown", "Quit any other copy of ADE, then try again.", errorMessage(error));
       }
-      if (!isAdeEndpoint) {
+      // A failed identity check used to end repair here. But `ping` is also
+      // what a brain that is wedged or crash-looping cannot answer, and the
+      // only lever repair has over the endpoint is this machine's own service
+      // — so refusing to stop on a failed ping stranded exactly the brain
+      // repair exists to clear, behind a screen that offers no repair and
+      // says to quit a copy of ADE that is not there. When the machine's own
+      // service is the plausible owner, stop it and let the release check
+      // below decide: an endpoint that survives that is genuinely someone
+      // else's.
+      const serviceCouldOwnEndpoint = this.serviceOwnsEndpoint(this.deps.connectionPool.getStatus());
+      if (!isAdeEndpoint && !serviceCouldOwnEndpoint) {
         return fail(
           "stop_service",
           "socket_owned_by_other",
@@ -911,10 +967,18 @@ export class ProjectRecoveryService {
           "stop_service",
           "socket_owned_by_other",
           "Quit any other copy of ADE, then try again.",
-          "ADE could not verify exclusive access to the project data.",
+          isAdeEndpoint
+            ? "ADE could not verify exclusive access to the project data."
+            : "The machine endpoint did not identify itself as ADE, and stopping ADE's background service did not release it.",
         );
       }
-      addStep("stop_service", "ok", "The previous background service stopped.");
+      addStep(
+        "stop_service",
+        "ok",
+        isAdeEndpoint
+          ? "The previous background service stopped."
+          : "ADE's background service stopped and released the endpoint.",
+      );
     } else {
       addStep("stop_service", "ok", "No running background service was found.");
     }

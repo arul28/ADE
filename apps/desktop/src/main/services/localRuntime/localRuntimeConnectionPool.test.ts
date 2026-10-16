@@ -3745,6 +3745,67 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it.each([
+    // A service child is what binds the primary socket, so a live listener
+    // with the supervisor reporting the service running is ADE's own brain.
+    // "Another copy of ADE is open" is the one code whose screen offers no
+    // repair and tells the person to quit a copy that does not exist here.
+    { serviceRunning: true, expected: "brain_crash_looping" },
+    // The service is down: a live listener on its socket is somebody else.
+    { serviceRunning: false, expected: "socket_owned_by_other" },
+  ])(
+    "codes a live primary endpoint as $expected when the service is running=$serviceRunning",
+    async ({ serviceRunning, expected }) => {
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-owned-endpoint-"));
+      vi.stubEnv("ADE_HOME", adeHome);
+      vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
+      const socketPath = resolveMachineAdeLayout().socketPath;
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+      // A real listener, not a stubbed probe: the pool decides the owner with
+      // a plain connect, so the boundary under test is the socket itself.
+      const listener = net.createServer();
+      await new Promise<void>((resolve) => listener.listen(socketPath, resolve));
+      try {
+        for (let count = 0; count < 3; count += 1) {
+          recordLastFailure({ kind: "machine" }, {
+            code: "brain_crash_looping",
+            component: "brain_startup",
+            message: "ADE's background service could not start.",
+          });
+        }
+        const pool = new LocalRuntimeConnectionPool("1.2.3", {
+          debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+        } as never, {
+          preferServiceRepair: true,
+          queryServiceStatusAsync: async () => ({
+            ok: true,
+            serviceName: "com.ade.runtime",
+            action: "status",
+            installed: true,
+            running: serviceRunning,
+            path: "/tmp/com.ade.runtime.plist",
+            message: "ADE service status.",
+          }),
+        });
+        const internals = pool as unknown as {
+          createConnection: () => Promise<unknown>;
+          tryConnect: () => Promise<unknown>;
+          tryRepairServiceConnection: () => Promise<unknown>;
+        };
+        vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+        vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+
+        const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
+        expect(error.code).toBe(expected);
+        pool.dispose();
+      } finally {
+        await new Promise<void>((resolve) => listener.close(() => resolve()));
+        vi.unstubAllEnvs();
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
   it("does not spawn a primary sync runtime when service repair is not configured", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-primary-block-"));
     const originalEnv = {
