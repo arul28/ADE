@@ -4380,6 +4380,7 @@ declare global {
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
+        onChanged?: (listener: () => void) => () => void;
       };
       /**
        * Settings > MCP servers: this computer's view of the registry, and the
