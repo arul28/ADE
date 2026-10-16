@@ -3078,6 +3078,68 @@ describe("spawn_completed notice folding", () => {
     expect(incremental).toEqual(rows);
   });
 
+  it("folds an image view into the computer-use action whose output printed its file", () => {
+    // macOS reaches the same file as /var and /private/var; a Windows path is
+    // case-insensitive and may use either slash. The view joins the action in
+    // every spelling instead of drawing a row of its own.
+    const cases: Array<{ printed: string; viewed: string }> = [
+      { printed: "/private/var/folders/xy/T/shot.png", viewed: "/var/folders/xy/T/shot.png" },
+      { printed: "/var/folders/xy/T/shot.png", viewed: "/private/var/folders/xy/T/shot.png" },
+      { printed: "C:\\Users\\dev\\AppData\\shot.png", viewed: "c:/users/dev/appdata/shot.png" },
+    ];
+    for (const { printed, viewed } of cases) {
+      const rows = collapseChatTranscriptEvents([
+        env("2026-06-01T10:00:00.000Z", { type: "user_message", text: "look", turnId: "turn-1" }),
+        env("2026-06-01T10:00:01.000Z", {
+          type: "command",
+          command: "ade screen screenshot",
+          cwd: "/repo",
+          output: `screenshot  ${printed}`,
+          itemId: "c-1",
+          turnId: "turn-1",
+          status: "completed",
+        }),
+        env("2026-06-01T10:00:02.000Z", {
+          type: "codex_image_view",
+          itemId: "v-1",
+          turnId: "turn-1",
+          path: viewed,
+          status: "completed",
+        }),
+      ]);
+
+      // No row of its own: the view joined the screenshot action.
+      expect(rows.some((row) => row.event.type === "codex_image_view"), printed).toBe(false);
+      const action = rows.find((row) => row.event.type === "work_log_entry");
+      expect(action, printed).toBeTruthy();
+      if (action?.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+      expect(action.event.entry.imageViews?.map((view) => view.path), printed).toEqual([viewed]);
+    }
+
+    // An image no action of the turn printed keeps its own row: the fold is not
+    // unconditional.
+    const stray = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", { type: "user_message", text: "read", turnId: "turn-1" }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "command",
+        command: "ade screen screenshot",
+        cwd: "/repo",
+        output: "screenshot  /var/folders/xy/T/other.png",
+        itemId: "c-1",
+        turnId: "turn-1",
+        status: "completed",
+      }),
+      env("2026-06-01T10:00:02.000Z", {
+        type: "codex_image_view",
+        itemId: "v-1",
+        turnId: "turn-1",
+        path: "/tmp/pasted.png",
+        status: "completed",
+      }),
+    ]);
+    expect(stray.filter((row) => row.event.type === "codex_image_view")).toHaveLength(1);
+  });
+
   it("does not fold across an intervening row, and never folds a different child", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
@@ -4826,8 +4888,8 @@ describe("turn fold (desktop adapter)", () => {
     }
   });
 
-  it("keeps subagent results, proof and computer-use actions visible, and never folds rows after the answer", () => {
-    const { display } = fold([
+  it("folds a turn's computer-use work, keeps subagent results and proof visible, and never folds rows after the answer", () => {
+    const { display, folds } = fold([
       ev({ type: "user_message", text: "fan out", turnId: "t1" }),
       ev({ type: "command", command: "ade screen click --label Save", cwd: "/r", output: 'hit: AXButton "Save" (e1)', itemId: "c1", turnId: "t1", status: "completed" }),
       ev({ type: "reasoning", text: "Clicked.", turnId: "t1" }),
@@ -4839,16 +4901,19 @@ describe("turn fold (desktop adapter)", () => {
       ev({ type: "reasoning", text: "Late thought.", turnId: "t1" }),
       ev({ type: "done", turnId: "t1", status: "completed" }),
     ]);
+    // The computer-use group is work, not answer: it folds with the turn, so its
+    // row is a hidden key of the fold. A subagent result card and a filed proof
+    // stay visible — the reader keeps both.
     expect(types(display)).toEqual([
       "user_message",
       "turn_fold",
-      "work_log_group",
       "subagent_result_card",
       "ade_card",
       "text",
       "reasoning",
       "done",
     ]);
+    expect([...folds[0]!.hiddenKeys].some((key) => key.includes("c1"))).toBe(true);
     const foldRow = display[1]!.event;
     if (foldRow.type !== "turn_fold") throw new Error("expected fold row");
     expect(foldRow.subagentCount).toBe(1);

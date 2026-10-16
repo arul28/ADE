@@ -100,6 +100,22 @@ describe("mapOpenCodeImageAttachment", () => {
     }));
   });
 
+  it.each([
+    ["/var/folders/xy/T/pasted.png", "pasted.png"],
+    ["C:\\Users\\dev\\Pictures\\pasted.png", "pasted.png"],
+  ])("keeps the absolute path a data-URI attachment names, and titles it by file name (%s)", (filename, expectedName) => {
+    const view = mapOpenCodeImageAttachment({
+      part: { id: "attach-4", type: "file", mime: "image/png", filename, url: "data:image/png;base64,AAAA" },
+      turnId: "turn-1",
+      emittedPartIds: new Set(),
+    });
+    // The row is named by the file, never by the whole path. The path is kept
+    // so the picture stays reachable after the size cap drops the data URI.
+    expect(view?.title).toBe(expectedName);
+    expect(view?.path).toBe(filename);
+    expect(view?.url).toBe("data:image/png;base64,AAAA");
+  });
+
   it("falls back to a generic title when the attachment is unnamed", () => {
     const view = mapOpenCodeImageAttachment({
       part: { id: "attach-3", type: "file", mime: "image/png", url: "https://cdn.example.com/a.png" },

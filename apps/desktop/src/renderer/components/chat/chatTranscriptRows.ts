@@ -39,6 +39,8 @@ import {
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import { computerUseEntryWroteImage } from "./chatComputerUseRows";
+import { imageViewLocalPath } from "../../../shared/chatImageUrls";
 import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import {
   isChatTaskListEvent,
@@ -101,6 +103,13 @@ export type ChatWorkLogEntry = {
   itemId?: string;
   turnId?: string;
   parentItemId?: string;
+  /**
+   * Images the agent opened that this computer-use action wrote (its
+   * screenshot, or the picture its observation saved), folded into its line
+   * instead of drawing rows of their own (`foldImageViewIntoAction`).
+   * Render-side only.
+   */
+  imageViews?: CodexImageViewRenderEvent[];
 };
 
 type HiddenTranscriptEvent =
@@ -1922,6 +1931,67 @@ function appendWorkLogRow(
   });
 }
 
+/** How far back an image view looks for the action that wrote its file. */
+const IMAGE_VIEW_WRITER_SCAN_LIMIT = 400;
+
+function sameImageView(left: CodexImageViewRenderEvent, right: CodexImageViewRenderEvent): boolean {
+  return left.itemId === right.itemId && (left.turnId ?? null) === (right.turnId ?? null);
+}
+
+function mergeImageView(previous: CodexImageViewRenderEvent, next: CodexImageViewRenderEvent): CodexImageViewRenderEvent {
+  return {
+    ...previous,
+    ...next,
+    path: next.path ?? previous.path,
+    url: next.url ?? previous.url,
+    title: next.title ?? previous.title,
+  };
+}
+
+/**
+ * An image the agent opened that a computer-use action of the same turn wrote
+ * (the screenshot it took, the picture its observation saved) joins that
+ * action's line instead of drawing a row of its own: one line says the agent
+ * took the screenshot and looked at it, and the picture opens under it. A later
+ * update of the same view (Codex sends `running`, then `completed`) lands on
+ * the same line. Returns false when the view stays a row of its own: no action
+ * of this turn printed its path, or it already has a row.
+ */
+function foldImageViewIntoAction(rows: ChatTranscriptRenderEnvelope[], event: CodexImageViewRenderEvent): boolean {
+  const turnId = event.turnId ?? null;
+  const path = imageViewLocalPath(event);
+  let writerIndex = -1;
+  const stop = Math.max(0, rows.length - IMAGE_VIEW_WRITER_SCAN_LIMIT);
+  for (let index = rows.length - 1; index >= stop; index -= 1) {
+    const row = rows[index]!;
+    const candidate = row.event;
+    if (candidate.type === "user_message") break;
+    if (candidate.type === "codex_image_view") {
+      if (sameImageView(candidate, event) || row.imageViewSiblings?.some((sibling) => sameImageView(sibling, event))) return false;
+      continue;
+    }
+    if (candidate.type !== "work_log_entry") continue;
+    const { entry } = candidate;
+    if (turnId && entry.turnId && entry.turnId !== turnId) break;
+    const held = entry.imageViews?.findIndex((view) => sameImageView(view, event)) ?? -1;
+    if (held >= 0) {
+      const imageViews = [...entry.imageViews!];
+      imageViews[held] = mergeImageView(imageViews[held]!, event);
+      rows[index] = { ...row, event: { ...candidate, entry: { ...entry, imageViews } } };
+      return true;
+    }
+    if (writerIndex < 0 && path && computerUseEntryWroteImage(entry, path)) writerIndex = index;
+  }
+  if (writerIndex < 0) return false;
+  const writer = rows[writerIndex]!;
+  const writerEvent = writer.event as WorkLogRenderEvent;
+  rows[writerIndex] = {
+    ...writer,
+    event: { ...writerEvent, entry: { ...writerEvent.entry, imageViews: [...(writerEvent.entry.imageViews ?? []), event] } },
+  };
+  return true;
+}
+
 // ── Subagent lifecycle rows ────────────────────────────────────────────────
 // A real subagent renders as exactly ONE row: a spawn anchor (mutated in place
 // as progress arrives) that the terminal event converts IN PLACE into the
@@ -3205,11 +3275,9 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // Subagent lifecycle → two-row spawn/result cards (or a single live one-liner
-  // for background shell commands). Normalize canonical dotted events first, then
-  // fold every lifecycle event into the anchor state (handled BEFORE the generic
-  // passthrough so no raw subagent_* row ever reaches the activity bundler).
   if (event.type === "codex_image_view") {
+    // The screenshot or observation picture an action just took: its line.
+    if (foldImageViewIntoAction(rows, event)) return;
     // An update to an image already folded into a strip: merge it in place.
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const siblings = rows[index]!.imageViewSiblings;
@@ -3287,6 +3355,9 @@ export function appendCollapsedChatTranscriptEvent(
           };
           return;
         }
+        // A row that draws nothing (an automatic context-usage snapshot) sits
+        // between nearly every step of some providers and must not split it.
+        if (!rowDrawsVisibleItem(candidate)) continue;
         if (candidate.event.type !== "text" && classifyTurnFoldEvent(candidate.event) !== "history") break;
       }
     }
@@ -3319,6 +3390,10 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  // Subagent lifecycle → two-row spawn/result cards (or a single live one-liner
+  // for background shell commands). Normalize canonical dotted events first, then
+  // fold every lifecycle event into the anchor state (handled BEFORE the generic
+  // passthrough so no raw subagent_* row ever reaches the activity bundler).
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
   if (normalizedSubagentEvent) {
     const activeContext = context ?? createCollapseTranscriptContext();

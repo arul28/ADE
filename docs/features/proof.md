@@ -500,10 +500,11 @@ Proof surfaces across chat and linked workflow contexts:
 
 - **Chat transcript** — proof is bucketed by capture time into the turn that
   produced it. The turn rule and the turn's fold line show a "N proof filed"
-  count that opens the drawer narrowed to those records. The pictures show
-  under the "Filed proof" action rows that filed them: a small thumbnail
-  (`ProofActionThumbnail`) that enlarges in place, no drawer needed. Proof is
-  never pinned to the thread tail.
+  count that opens the drawer narrowed to those records. The pictures open
+  under the "Filed proof" action rows that filed them on a click: a small
+  thumbnail (`ProofActionThumbnail`) that enlarges in place, no drawer needed.
+  They start closed, since the turn's proof shows at its end. Proof is never
+  pinned to the thread tail.
 - **Proof drawer** — the Proof section of the chat actions drawer
   (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
   Proof is grouped by the turn that filed it, newest first, under that turn's
@@ -544,8 +545,8 @@ runtime host's filesystem path. Desktop shows local images through the
 video, local or remote, plays from main's token-guarded loopback media server,
 which answers each Range read; a remote one is pulled in 2 MiB slices from that
 machine's broker. See
-[computer use › Renderer](./computer-use/README.md#renderer). The thumbnail under a
-"Filed proof" row reads its picture through the same preview path as answer
+[computer use › Renderer](./computer-use/README.md#renderer). The thumbnail a
+"Filed proof" row opens reads its picture through the same preview path as answer
 citations, local or on a paired machine; a record it cannot draw (a trace, a
 log, a missing file) draws nothing, since the row's words already say what was
 filed. iOS requests artifact content over its

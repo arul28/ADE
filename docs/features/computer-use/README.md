@@ -69,7 +69,7 @@ Shared modules:
 - `apps/desktop/src/shared/computerUseActionOutput.ts` — the output half: `hit:` / `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:` errors, the user's-browser lines, `--json` results.
 - `apps/desktop/src/shared/computerUseActionPresentation.ts` — a summary in words, and a run's layout (latest in full, earlier compact, the app or device carried forward, repeats merged as "×N", a PR post added to the line that filed the proof).
 - `apps/desktop/src/shared/readRecord.ts` — the dependency-free plain-object guard these shared modules use.
-- `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` and `ChatComputerUseActions.tsx` — which transcript entries are actions, and the rows that draw them.
+- `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` and `ChatComputerUseActions.tsx` — which transcript entries are actions, which image views an action wrote (its screenshot or observation picture joins its line), and the rows that draw them. `ChatViewedImages.tsx` draws those pictures once a line is opened.
 - `apps/desktop/src/main/services/apps/appIcons.ts` — an app's icon by name for those rows (`ade.app.getAppIcon`, macOS only).
 - iOS: `apps/ios/ADE/Views/Work/WorkComputerUseSummary.swift` (parser port), `WorkComputerUsePresentation.swift` (words), `WorkComputerUseActions.swift` (rows).
 
@@ -224,8 +224,8 @@ any of them later.
   `chatCardPrimitives.tsx` — bucket artifacts by capture time into the completed
   turn that produced them and draw that turn's "N proof filed" count
   (`ChatProofCount`), which opens the proof drawer narrowed to those records.
-  The pictures themselves show under the "Filed proof" action rows
-  (`ProofActionThumbnail` in `ChatProofCitation.tsx`).
+  The pictures themselves open under the "Filed proof" action rows on a
+  click (`ProofActionThumbnail` in `ChatProofCitation.tsx`).
 - `apps/desktop/src/renderer/lib/computerUse.ts` — renderer helpers that call `window.ade.computerUse.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.

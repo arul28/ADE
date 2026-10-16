@@ -10,6 +10,8 @@ import Foundation
 
 struct CUOutput {
   var hitName: String?
+  /// The hit element's role or tag (`button`, `AXButton`, `a`), named or not.
+  var hitRole: String?
   var hitNone = false
   var effect: String?
   var effectReason: String?
@@ -91,9 +93,16 @@ func cuParseOutput(_ output: String) -> CUOutput {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { continue }
     let lower = trimmed.lowercased()
-    if lower.hasPrefix("hit:"), parsed.hitName == nil, !parsed.hitNone {
+    if lower.hasPrefix("hit:"), parsed.hitName == nil, parsed.hitRole == nil, !parsed.hitNone {
       let rest = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespaces)
-      if rest.lowercased().hasPrefix("no element") { parsed.hitNone = true } else { parsed.hitName = cuQuotedName(rest) }
+      if rest.lowercased().hasPrefix("no element") {
+        parsed.hitNone = true
+      } else {
+        // `<role> "<name>" (<ref>)`; an unnamed element prints `<role> (<ref>)`.
+        parsed.hitName = cuQuotedName(rest)
+        let role = String(rest.prefix { !$0.isWhitespace && $0 != "\"" && $0 != "(" })
+        parsed.hitRole = role.isEmpty ? nil : role
+      }
       continue
     }
     if lower.hasPrefix("effect:"), parsed.effect == nil {
@@ -159,6 +168,9 @@ func cuParseOutput(_ output: String) -> CUOutput {
     let match = json["match"] as? [String: Any]
     let resolved = (json["resolved"] as? [String: Any]) ?? (json["matched"] as? [String: Any]) ?? (match?["element"] as? [String: Any])
     if parsed.hitName == nil { parsed.hitName = cuElementName(resolved) }
+    if parsed.hitRole == nil {
+      parsed.hitRole = cuReadString(resolved?["role"]) ?? cuReadString(resolved?["tagName"]) ?? cuReadString(resolved?["elementType"])
+    }
     if parsed.effect == nil, let effect = json["effect"] as? [String: Any], let status = cuReadString(effect["status"]) {
       parsed.effect = ["observed", "unconfirmed", "not_checked"].contains(status) ? status : (status == "waiting_for_approval" ? "waiting" : nil)
       parsed.effectReason = cuReadString(effect["reason"])

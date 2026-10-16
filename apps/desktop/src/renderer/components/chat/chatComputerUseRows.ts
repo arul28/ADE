@@ -16,9 +16,11 @@ import {
   computerUseShownProofIds,
   layoutComputerUseRun,
 } from "../../../shared/computerUseActionPresentation";
+import { imageViewHasPicture } from "../../../shared/chatImageUrls";
 import { readRecord } from "../../../shared/readRecord";
+import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { isShellToolName } from "./toolPresentation";
-import type { ChatWorkLogEntry, ChatWorkLogGroupEvent } from "./chatTranscriptRows";
+import type { ChatWorkLogEntry, ChatWorkLogGroupEvent, CodexImageViewRenderEvent } from "./chatTranscriptRows";
 
 /* ── Reading a work-log entry ─────────────────────────────────────────────── */
 
@@ -87,6 +89,8 @@ type EntryParse = {
   summary: ComputerUseActionSummary | null;
   /** The command it ran, as one line of shell. */
   commandText: string | null;
+  /** What it printed, as the parser read it. */
+  outputText: string;
 };
 
 const parseByEntry = new WeakMap<ChatWorkLogEntry, EntryParse>();
@@ -121,6 +125,7 @@ function parseEntry(entry: ChatWorkLogEntry): EntryParse {
     status: entry.status,
     summary,
     commandText: summary && input ? computerUseCommandText(input.command) : null,
+    outputText: summary ? input?.output ?? "" : "",
   };
   parseByEntry.set(entry, parse);
   return parse;
@@ -139,8 +144,75 @@ export function computerUseEntryCommand(entry: ChatWorkLogEntry): string | null 
   return parseEntry(entry).commandText;
 }
 
+/**
+ * The ways a tool can print the path an image view names: macOS reaches `/var`
+ * and `/tmp` through `/private`, and a Windows path can come with either slash
+ * or with the doubled backslash of a JSON string.
+ */
+function imagePathSpellings(path: string): string[] {
+  const spellings = new Set([path]);
+  const underPrivate = /^\/private(\/(?:var|tmp)\/.*)$/.exec(path);
+  if (underPrivate) spellings.add(underPrivate[1]!);
+  else if (/^\/(?:var|tmp)\//.test(path)) spellings.add(`/private${path}`);
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    const backslashed = path.replace(/\//g, "\\");
+    spellings.add(backslashed);
+    spellings.add(backslashed.replace(/\\/g, "\\\\"));
+    spellings.add(path.replace(/\\/g, "/"));
+  }
+  return [...spellings];
+}
+
+/**
+ * `text` names `path` whole, not as the tail or the head of a longer path.
+ * Windows paths are case-insensitive, so a drive or UNC path (either slash
+ * shape) is compared case-folded — the rule `normalizePathForComparison` uses,
+ * since a tool can print `c:\users\…` where the event says `C:\Users\…`.
+ */
+function namesPath(text: string, path: string): boolean {
+  const windows = isWindowsAbsolutePath(path);
+  const haystack = windows ? text.toLowerCase() : text;
+  const needle = windows ? path.toLowerCase() : path;
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    const before = haystack[at - 1] ?? "";
+    const after = haystack[at + needle.length] ?? "";
+    const startsHere = !/[\w\-./\\]/.test(before) || haystack.slice(Math.max(0, at - 7), at).toLowerCase() === "file://";
+    if (startsHere && !/[\w\-/\\]/.test(after)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether this entry is a computer-use action whose output names the image at
+ * `path`: the screenshot it took, or the picture its observation saved. The
+ * agent opening that file is part of the same action, not a row of its own.
+ */
+export function computerUseEntryWroteImage(entry: ChatWorkLogEntry, path: string): boolean {
+  const { summary, outputText } = parseEntry(entry);
+  if (!summary || !outputText) return false;
+  return imagePathSpellings(path).some((spelling) => namesPath(outputText, spelling));
+}
+
 export function hasComputerUseEntries(entries: readonly ChatWorkLogEntry[]): boolean {
   return entries.some((entry) => computerUseSummaryForEntry(entry) !== null);
+}
+
+/**
+ * A screenshot the agent then opened reads as one line that moves on: "Taking
+ * a screenshot", "Took a screenshot", then "Viewing a screenshot" while the
+ * agent opens it, and "Viewed a screenshot" once it has.
+ */
+function withViewedScreenshot(summary: ComputerUseActionSummary, views: readonly CodexImageViewRenderEvent[] | undefined): ComputerUseActionSummary {
+  if (summary.verb !== "screenshot" || summary.outcome === "running" || summary.outcome === "failed") return summary;
+  const viewing = views?.some((view) => view.status === "running") ?? false;
+  if (!viewing && !views?.some((view) => view.status === "completed")) return summary;
+  return {
+    ...summary,
+    past: "Viewed a screenshot of",
+    progressive: "Viewing a screenshot of",
+    infinitive: "view a screenshot of",
+    ...(viewing ? { outcome: "running" as const } : {}),
+  };
 }
 
 /** Pairs every computer-use entry of a group with its summary, in order. */
@@ -150,26 +222,44 @@ export function collectComputerUseActions(
   const actions: Array<{ action: ChatWorkLogEntry; summary: ComputerUseActionSummary }> = [];
   for (const entry of entries) {
     const summary = computerUseSummaryForEntry(entry);
-    if (summary) actions.push({ action: entry, summary });
+    if (summary) actions.push({ action: entry, summary: withViewedScreenshot(summary, entry.imageViews) });
   }
   return actions;
 }
 
-/** Height of the proof picture under a filed-proof line, in px. */
+/**
+ * The pictures a drawn line can open under it: the proof it filed, else the
+ * images the agent opened that its actions wrote. Proof wins because a view of
+ * a filed proof's file is the same picture.
+ */
+export function computerUseLinePictures(line: { actions: readonly ChatWorkLogEntry[]; summary: ComputerUseActionSummary }): {
+  proofIds: readonly string[];
+  views: CodexImageViewRenderEvent[];
+} {
+  const proofIds = computerUseShownProofIds(line.summary);
+  if (proofIds.length) return { proofIds, views: [] };
+  const views = line.actions.flatMap((action) => action.imageViews ?? []).filter(imageViewHasPicture);
+  return { proofIds, views };
+}
+
+/** Height of the pictures a line opens under it, in px. */
 export const PROOF_THUMBNAIL_HEIGHT = 64;
 
 /**
- * Height estimate for the virtualizer: compact lines, plus the full row, plus
- * the proof pictures under filed-proof lines.
+ * Height estimate for the virtualizer: one line per action line, plus the note
+ * under every failed line and under the full row. Pictures stay closed until
+ * the reader opens them, so they add nothing here.
  */
 export function estimateComputerUseRunHeight(entries: readonly ChatWorkLogEntry[], compactAll = false): number {
   const { earlier, latest } = layoutComputerUseRun(collectComputerUseActions(entries));
   if (!latest) return 0;
-  const pictures = [...earlier, latest].filter((line) => computerUseShownProofIds(line.summary).length > 0).length
-    * (PROOF_THUMBNAIL_HEIGHT + 10);
-  if (compactAll) return (earlier.length + 1) * 22 + pictures;
+  const failedNotes = earlier.filter((line) => computerUseOutcomeNote(line.summary)?.tone === "danger").length * 18;
+  if (compactAll) {
+    const latestNote = computerUseOutcomeNote(latest.summary)?.tone === "danger" ? 18 : 0;
+    return (earlier.length + 1) * 22 + failedNotes + latestNote;
+  }
   const note = computerUseOutcomeNote(latest.summary) ? 18 : 0;
-  return earlier.length * 22 + 46 + note + pictures;
+  return earlier.length * 22 + 46 + note + failedNotes;
 }
 
 /* ── Runs in the drawn timeline ───────────────────────────────────────────── */

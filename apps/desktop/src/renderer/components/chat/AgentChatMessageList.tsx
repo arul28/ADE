@@ -5226,7 +5226,8 @@ export function estimateTranscriptRowHeight(
       return 96;
     case "background_job_line":
     case "background_job_group":
-      // One compact line; a group opens inline only on a click.
+    case "codex_image_view":
+      // One compact line; a group or a picture opens inline only on a click.
       return 28;
     case "subagent_card_grid": {
       // Cards in one grid row share its height; rows stack with an 8px gap.

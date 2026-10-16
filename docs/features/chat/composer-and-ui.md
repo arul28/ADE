@@ -162,7 +162,7 @@ its chip row. The footer's height reaches the body through
 `chatComposerOverlayInset.tsx` and is written straight onto the elements that
 must stay clear of it: the transcript's `padding-bottom` and
 `scroll-padding-bottom`, the right panes, the floating Chat Actions pane, the
-notice overlay, and the floating Jump To Latest pill. A pinned reader stays
+notice overlay, and the floating Jump to latest pill. A pinned reader stays
 pinned when the prompt grows. Status chips and docked banners get an opaque
 backing there. The gaps between controls stay click-through to the thread.
 With an app panel open the composer docks below the column instead.
@@ -2005,8 +2005,8 @@ render unwindowed. Key rules:
   carries non-empty body text, it is rendered as a `MarkdownBlock`
   (`chatMarkdownBlock.tsx`) beneath the header.
 - The jump-to-latest pill (shown while scrolled away from the bottom of
-  a live session) reads `N new · Jump To Latest` when rows arrived after
-  the reader detached, and plain `Jump To Latest` otherwise. The count
+  a live session) reads `N new · Jump to latest` when rows arrived after
+  the reader detached, and plain `Jump to latest` otherwise. The count
   comes from `countRowsAppendedSince` in `chatTranscriptRows.ts`. While the
   composer's chip row shows a chip, the pill (`ChatJumpToLatestPill.tsx`)
   docks at the right end of that row; otherwise it floats centered above the

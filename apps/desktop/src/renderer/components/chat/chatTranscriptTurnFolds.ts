@@ -7,7 +7,6 @@ import {
   type TurnFoldRow,
 } from "../../../shared/chatTurnFold";
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
-import { hasComputerUseEntries } from "./chatComputerUseRows";
 
 export function groupedEnvelopeTurnId(row: ChatTranscriptGroupedEnvelope): string | null {
   const event = row.event;
@@ -24,9 +23,9 @@ export function describeTurnFoldRow(row: ChatTranscriptGroupedEnvelope): TurnFol
   const { event } = row;
   const described: TurnFoldRow = {
     key: row.key,
-    // Computer-use actions stay in the thread when the turn folds: they are
-    // the record of what the agent did on a screen.
-    role: event.type === "work_log_group" && hasComputerUseEntries(event.entries) ? "keep" : classifyTurnFoldEvent(event),
+    // Computer-use actions fold with the rest of the turn's work: the folded
+    // turn is what most readers see, and it reads as the answer, not a log.
+    role: classifyTurnFoldEvent(event),
     turnId: groupedEnvelopeTurnId(row),
   };
   if (event.type === "text") described.phase = event.phase ?? null;
