@@ -1830,11 +1830,14 @@ export function createMultiProjectRpcRequestHandler(
       ?? scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
     const scope = targetProjectId
-      ? await scopeRegistry.getIfBooted(targetProjectId)?.catch(() => null)
+      ? scopeRegistry.getIfReady?.(targetProjectId)
+        ?? await scopeRegistry.getIfBooted(targetProjectId)?.catch(() => null)
       : null;
-    // Keep healthy status resolution on the same active-host path it used
-    // before recovery scopes were introduced.
-    const resolvedScope = scope ?? await scopeRegistry.resolveActiveSyncHost();
+    // Only consult the ordinary resolver when no precise recovery target is
+    // known. A missing target scope must never redirect a destructive action.
+    const resolvedScope = targetProjectId
+      ? scope
+      : await scopeRegistry.resolveActiveSyncHost();
     return resolvedScope?.runtime.syncService ?? null;
   };
 

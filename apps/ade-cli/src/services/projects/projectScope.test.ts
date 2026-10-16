@@ -720,6 +720,13 @@ describe("ProjectScopeRegistry", () => {
     expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
     expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
 
+    await expect(scopeRegistry.switchSyncHost(second.projectId, { purpose: "serve" }))
+      .resolves.toMatchObject({ registryProjectId: second.projectId });
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+    await expect(scopeRegistry.switchSyncHost(second.projectId, { purpose: "serve" }))
+      .resolves.toMatchObject({ registryProjectId: second.projectId });
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+
     await scopeRegistry.disposeAll();
   });
 

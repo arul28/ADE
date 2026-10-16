@@ -151,6 +151,7 @@ export class ProjectScope {
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
+  private readonly readyScopes = new Map<ProjectId, ProjectScope>();
   private readonly failedScopes = new Map<ProjectId, FailedAttempt>();
   /**
    * Failed sync-host phases, keyed by {@link syncHostPhaseKey}. Same shape and
@@ -321,6 +322,11 @@ export class ProjectScopeRegistry {
     return this.scopes.get(projectId) ?? null;
   }
 
+  /** Return only a scope whose boot has already completed. */
+  getIfReady(projectId: ProjectId): ProjectScope | null {
+    return this.readyScopes.get(projectId) ?? null;
+  }
+
   async get(
     projectId: ProjectId,
     options: { touch?: boolean } = {},
@@ -386,6 +392,7 @@ export class ProjectScopeRegistry {
       // backoff; an abandoned boot that succeeds late must not wipe a backoff
       // a newer attempt earned.
       if (this.scopes.get(projectId) === pending) {
+        this.readyScopes.set(projectId, scope);
         this.failedScopes.delete(projectId);
       }
       return scope;
@@ -397,6 +404,7 @@ export class ProjectScopeRegistry {
       // backoff earned by the abandoned attempt.
       if (this.scopes.get(projectId) === pending) {
         this.scopes.delete(projectId);
+        this.readyScopes.delete(projectId);
         if (this.syncHostProjectId === projectId) {
           this.syncHostProjectId = null;
         }
@@ -417,6 +425,7 @@ export class ProjectScopeRegistry {
     const cached = this.scopes.get(projectId);
     if (!cached) return;
     this.scopes.delete(projectId);
+    this.readyScopes.delete(projectId);
     const scope = await cached.catch(() => null);
     scope?.dispose();
     if (this.syncHostProjectId === projectId) {
@@ -661,6 +670,7 @@ export class ProjectScopeRegistry {
 
     if (transitionId !== this.latestSyncHostTransitionId) return null;
     if (previousHostId === projectId) {
+      if (blocker && options.purpose === "serve") return scope;
       // Re-activating the project that already hosts. Both `setHostDiscovery-
       // Enabled(true)` and `setHostStartupEnabled(true)` return at once when
       // their flag is already set — which it is for the active host — so this
