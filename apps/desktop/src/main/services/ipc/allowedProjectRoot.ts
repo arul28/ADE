@@ -1,4 +1,4 @@
-import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
+import { isLexicallyWithinRoot, isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 
 /**
  * The message for a path that really is outside every allowed project root.
@@ -25,10 +25,14 @@ export const ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE = "rootPath is outside k
  *   path is outside every allowed project root, and the caller gets that
  *   message exactly as before. This is the security answer, and it is never
  *   softened into a missing-folder one.
- * - no attempt failed the containment rule (or there were no attempts to
- *   make): nothing rejected the path as outside; the filesystem did. The
- *   original failure is rethrown so the message names the real cause — for a
- *   folder that is gone that is the resolver's own `Path does not exist: <path>`.
+ * - a failure from a root that lexically contains the candidate is the real
+ *   cause (for a folder that is gone, the resolver's own
+ *   `Path does not exist: <path>`). It is rethrown only then.
+ * - a non-containment failure from a root the candidate is not lexically inside
+ *   says nothing about the candidate. The resolver reports a missing component
+ *   before it checks containment, so for a folder outside every root that
+ *   failure has to be ignored, or a probe for `/outside/<name>` would tell the
+ *   renderer whether that folder exists.
  *
  * Rejection behavior is unchanged: a root is accepted under exactly the same
  * conditions as before, so this narrows nothing and widens nothing. Only the
@@ -38,7 +42,7 @@ export function resolveWithinAllowedProjectRoots(
   allowedRoots: readonly string[],
   candidate: string,
 ): string {
-  let firstNonEscapeFailure: unknown = null;
+  let ownRootFailure: unknown = null;
   let sawEscape = false;
   for (const root of allowedRoots) {
     try {
@@ -46,13 +50,13 @@ export function resolveWithinAllowedProjectRoots(
     } catch (error) {
       if (isPathEscapeError(error)) {
         sawEscape = true;
-      } else if (firstNonEscapeFailure === null) {
-        firstNonEscapeFailure = error;
+      } else if (ownRootFailure === null && isLexicallyWithinRoot(root, candidate)) {
+        ownRootFailure = error;
       }
     }
   }
-  if (sawEscape || firstNonEscapeFailure === null) {
+  if (sawEscape || ownRootFailure === null) {
     throw new Error(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
   }
-  throw firstNonEscapeFailure;
+  throw ownRootFailure;
 }

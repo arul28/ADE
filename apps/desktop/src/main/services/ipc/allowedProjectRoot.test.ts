@@ -71,6 +71,20 @@ describe("resolveWithinAllowedProjectRoots", () => {
     expect(missing?.message).not.toBe(outside?.message);
   });
 
+  // The existence oracle: a missing folder outside every allowed root must read
+  // exactly like an existing one. The resolver reports a missing component
+  // before it checks containment, so without the lexical gate a probe for
+  // `/outside/<name>` said "does not exist" and leaked what was on disk.
+  it("gives a missing folder outside the allowed roots the allowlist message, not a missing one", () => {
+    const gone = path.join(outsideRoot, "not-there");
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, gone))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(tempRoot, "nowhere", "x")))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+    expect(() => resolveWithinAllowedProjectRoots(allowedRoots, path.join(allowedRoot, "..", "outside", "gone")))
+      .toThrow(ROOT_OUTSIDE_ALLOWED_PROJECT_ROOTS_MESSAGE);
+  });
+
   // A dangling symlink resolves to nothing, so it is a missing target rather
   // than a containment failure — but it must still be a rejection.
   it("does not call a dangling symlink an allowlist violation", (ctx) => {

@@ -403,6 +403,16 @@ export function isWithinDir(root: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/**
+ * Whether `candidate` lies inside `root` by its spelling alone, without touching
+ * the filesystem. `..` segments are collapsed first, so `root/../elsewhere` is
+ * outside. Used to decide which root a missing-path failure belongs to.
+ */
+export function isLexicallyWithinRoot(root: string, candidate: string): boolean {
+  const rootAbs = path.resolve(root);
+  return isWithinDir(rootAbs, path.resolve(rootAbs, candidate));
+}
+
 function realpathExisting(filePath: string): string {
   return typeof fs.realpathSync.native === "function"
     ? fs.realpathSync.native(filePath)

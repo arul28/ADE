@@ -67,6 +67,20 @@ describe("resolveWithinAllowedDirs", () => {
     expect(missing?.message).not.toBe(outside?.message);
   });
 
+  // The existence oracle: a missing path outside every allowed directory must
+  // read exactly like an existing one. The resolver reports a missing component
+  // before it checks containment, so without the lexical gate a probe for
+  // `/outside/<name>` said "Path does not exist" and leaked what was on disk.
+  it("gives a missing path outside the allowlist the allowlist message, not a missing-file one", () => {
+    const gone = path.join(outsideDir, "not-there.png");
+    expect(() => resolveWithinAllowedDirs(allowedDirs, gone))
+      .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(tempRoot, "nowhere", "x.png")))
+      .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    expect(() => resolveWithinAllowedDirs(allowedDirs, path.join(allowedDir, "..", "outside", "gone.png")))
+      .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+  });
+
   // A dangling symlink resolves to nothing, so it is a missing target rather
   // than a containment failure — but it must still be a rejection.
   it("does not call a dangling symlink an allowlist violation", (ctx) => {
