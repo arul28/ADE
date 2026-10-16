@@ -12,6 +12,7 @@ import {
   useProjectSidebarPrefs,
 } from "./projectSidebarPrefs";
 import { useProjectSidebarSlotTarget } from "./ProjectSidebarSlot";
+import { StarRepoPill } from "./StarRepoPill";
 import { lastSettingsRoute, rememberProjectRoute, settingsReturnRoute } from "./settingsReturnRoute";
 import {
   PROJECT_SIDEBAR_FOOTER_TABS,
@@ -47,6 +48,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const settingsActive = pathname === "/settings" || pathname.startsWith("/settings/");
   const settingsVisible = !isWebClientMode() || WEB_CLIENT_TAB_PATHS.has("/settings");
   const routeKey = bindingKey ?? (projectRoot ? `local:${projectRoot}` : null);
+  // The star pill is a desktop-only nudge, shown under the Work session list.
+  const starPillSlotActive = !isWebClientMode() && !heldRoute && activeTab === "/work";
 
   // The tab a click asked for, shown before the route commits. The tab strip
   // starts its animation on the click, and the new page mounts after it.
@@ -147,6 +150,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
       </nav>
 
       <div ref={setSlotTarget} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
+
+      {starPillSlotActive ? <StarRepoPill /> : null}
 
       <div className="ade-project-sidebar-footer shrink-0">
         {heldRoute ? (

@@ -14560,6 +14560,32 @@ final class SyncService: ObservableObject {
     return payload.dataUrl
   }
 
+  /// `@` menu entities (chats, lanes, terminals, PRs, machines) for the active
+  /// project. Roster-only on the host, so it is safe at keystroke rate; the
+  /// composer debounces it anyway. Scoped to the chat's own project when the
+  /// chat lives in another one.
+  func listChatMentionSuggestions(
+    query: String,
+    excludeSessionId: String?
+  ) async throws -> [ChatMentionSuggestionRow] {
+    let action = "chat.listMentionSuggestions"
+    try requireInvokableRemoteAction(action)
+    var args: [String: Any] = ["query": query]
+    var scope: (projectId: String?, rootPath: String?) = (nil, nil)
+    if let excludeSessionId, !excludeSessionId.isEmpty {
+      args["excludeSessionId"] = excludeSessionId
+      scope = chatCommandScope(for: excludeSessionId)
+    }
+    let result = try await sendDecodableCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: ChatMentionSuggestionResult.self
+    )
+    return result.suggestions
+  }
+
   func listPromptStashes(
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil

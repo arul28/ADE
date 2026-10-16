@@ -527,6 +527,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       const url = stringField(record, "url");
       return call("chat.resolveSmartLinkPreview", record, deriveSmartLinkPreview(url));
     },
+    resolveSmartLinkImage: (args: { url: string }) =>
+      call<{ dataUrl: string | null }>("chat.resolveSmartLinkImage", { url: args.url }, { dataUrl: null }),
     resolveSourceFavicons: (args: { domains: string[] }) =>
       call<{ icons: Record<string, string | null> }>("chat.resolveSourceFavicons", { domains: args.domains }, { icons: {} }),
     getEventHistory: async (args: unknown, pin?: RuntimePinArg) => {

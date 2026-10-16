@@ -2739,14 +2739,14 @@ function renderEvent(
               ) : null;
               if (!briefChip) {
                 return displayText ? (
-                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
+                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} attachments={event.attachments} />
                 ) : null;
               }
               return (
                 <div>
                   {briefChip}
                   {displayText ? (
-                    <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
+                    <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} attachments={event.attachments} />
                   ) : null}
                 </div>
               );
@@ -2754,12 +2754,12 @@ function renderEvent(
             if (displayText && displayText !== event.text.trim()) {
               return (
                 <div className="space-y-2 text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                  <ChipText className="whitespace-pre-wrap break-words font-medium" text={displayText} />
+                  <ChipText className="whitespace-pre-wrap break-words font-medium" text={displayText} attachments={event.attachments} />
                   <details className="group min-w-0">
                     <summary className="cursor-pointer font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/70 transition-colors hover:text-white">
                       Full prompt
                     </summary>
-                    <ChipText className="mt-2 whitespace-pre-wrap break-words text-white/90" text={event.text} />
+                    <ChipText className="mt-2 whitespace-pre-wrap break-words text-white/90" text={event.text} attachments={event.attachments} />
                   </details>
                 </div>
               );
@@ -2768,7 +2768,7 @@ function renderEvent(
             const contextSegments = splitChatOutputContextSegments(parsed.rest);
             const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
             const body = !parsed.chips.length && !hasOutputContext ? (
-              <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
+              <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} attachments={event.attachments} />
             ) : (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 {parsed.chips.length ? (

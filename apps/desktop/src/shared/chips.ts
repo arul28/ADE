@@ -33,6 +33,7 @@
 //     differs. That is what lets one renderer serve every surface.
 
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
+import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
@@ -58,7 +59,11 @@ export type ChipKind =
   | "linear_issue"
   | "web_page"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
-  | "ade_link";
+  | "ade_link"
+  /** An ADE account machine, from a `@mac:` mention. */
+  | "machine"
+  /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
+  | "attachment";
 
 /**
  * Where the chip came from, which is what a click needs in order to route.
@@ -69,7 +74,13 @@ export type ChipSource =
   | { origin: "mention"; mentionKind: ChatMentionKind; id: string }
   | { origin: "path"; path: string }
   | { origin: "deeplink"; url: string; target: DeeplinkTarget }
-  | { origin: "url"; url: string };
+  | { origin: "url"; url: string }
+  /**
+   * Positional: the k-th image (or file) of the message's own attachment list.
+   * Only the renderer holding that list can resolve it, so a surface without
+   * one draws the token as plain text.
+   */
+  | { origin: "attachment"; attachmentKind: AttachmentLabelKind; ordinal: number; name?: string };
 
 export type Chip = {
   kind: ChipKind;
@@ -112,6 +123,8 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   linear_issue: "L",
   web_page: "↗",
   ade_link: "A",
+  machine: "▢",
+  attachment: "▣",
 };
 
 export function chipGlyph(kind: ChipKind): string {
@@ -139,6 +152,8 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   linear_issue: "N",
   web_page: ">",
   ade_link: "A",
+  machine: "M",
+  attachment: "I",
 };
 
 export function chipGlyphAscii(kind: ChipKind): string {
@@ -184,9 +199,10 @@ export function chipFromPath(path: string, options: { isDirectory?: boolean } = 
   };
 }
 
-/** A `@chat:` / `@lane:` / `@term:` mention chip. */
+/** A `@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` mention chip. */
 export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?: string): Chip {
-  const kind: ChipKind = mentionKind === "terminal" ? "terminal" : mentionKind;
+  // Every mention kind names a chip kind of the same spelling.
+  const kind: ChipKind = mentionKind;
   return {
     kind,
     token: formatChatMentionToken(mentionKind, id),
@@ -198,6 +214,8 @@ export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?
 function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "chat") return `Chat ${shortId(id)}`;
   if (mentionKind === "lane") return `Lane ${shortId(id)}`;
+  if (mentionKind === "pr") return `PR ${shortId(id)}`;
+  if (mentionKind === "machine") return `Machine ${shortId(id)}`;
   return `Terminal ${shortId(id)}`;
 }
 
@@ -249,6 +267,26 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       // and the linear.app url for the same issue drew different labels.
       return { kind: "linear_issue", token: url, label: target.issueIdentifier.toUpperCase(), source };
   }
+}
+
+/**
+ * An `[Image #k]` / `[File #k: name]` attachment chip. The label drops the
+ * `#` and the file name (`Image 2`, `File 1`) — the pill is a pointer, and the
+ * thumbnail or the hover names the rest.
+ */
+export function chipFromAttachmentToken(
+  attachmentKind: AttachmentLabelKind,
+  ordinal: number,
+  token: string,
+  name?: string,
+): Chip {
+  return {
+    kind: "attachment",
+    token,
+    label: `${attachmentKind === "image" ? "Image" : "File"} ${ordinal}`,
+    detail: name ?? null,
+    source: { origin: "attachment", attachmentKind, ordinal, ...(name ? { name } : {}) },
+  };
 }
 
 /** Map one `SmartLinkPreview` onto the shared model, typing ADE links properly. */
@@ -386,6 +424,11 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
   }
 
   matches.push(...parsePathMentions(text));
+
+  for (const token of parseAttachmentTokens(text)) {
+    const chip = chipFromAttachmentToken(token.kind, token.ordinal, token.token, token.name);
+    matches.push({ ...chip, start: token.start, end: token.end });
+  }
 
   matches.sort((a, b) => a.start - b.start);
 

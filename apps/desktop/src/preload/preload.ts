@@ -367,6 +367,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
@@ -1863,8 +1864,10 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.listMentionSuggestions",
   "chat.modelCatalog",
   "chat.resolveSmartLinkPreview",
+  "chat.resolveSmartLinkImage",
   "chat.resolveSourceFavicons",
   "file.quickOpen",
+  "github.isRepoStarred",
   "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
   "terminal.preview",
@@ -7879,6 +7882,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
+    // No runtime bound: no image; the hover card shows the title alone.
+    resolveSmartLinkImage: async (args: { url: string }): Promise<{ dataUrl: string | null }> =>
+      callProjectRuntimeActionOr("chat", "resolveSmartLinkImage", { args }, async () => ({ dataUrl: null })),
     // No runtime bound: no favicons, and every Sources row keeps its initial.
     resolveSourceFavicons: async (args: { domains: string[] }): Promise<{ icons: Record<string, string | null> }> =>
       callProjectRuntimeActionOr("chat", "resolveSourceFavicons", { args }, async () => ({ icons: {} })),
@@ -10896,6 +10902,10 @@ const adeBridge = {
     getRequestBudget: async (): Promise<GitHubRequestBudget> =>
       callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
         ipcRenderer.invoke(IPC.githubGetRequestBudget),
+      ),
+    isRepoStarred: async (): Promise<GitHubRepoStarState> =>
+      callProjectRuntimeActionOr("github", "isRepoStarred", {}, () =>
+        ipcRenderer.invoke(IPC.githubIsRepoStarred),
       ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;

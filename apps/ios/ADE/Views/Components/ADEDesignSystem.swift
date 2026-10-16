@@ -1430,10 +1430,15 @@ struct ADEComposerSendButton: View {
   /// send") so users hear *why* the button is unavailable. Falls back to
   /// `accessibilityLabelText` when nil.
   var disabledAccessibilityLabel: String? = nil
+  /// The disc's size. 28pt by default; the chat composer uses 34pt.
+  var diameter: CGFloat = 28
   let action: () -> Void
 
-  /// Dark glyph color on the light disc (matches the in-session composer).
-  private let glyphColor = Color(red: 0.12, green: 0.12, blue: 0.14)
+  /// The disc inverts the page: near-white with a dark glyph in dark mode (the
+  /// desktop composer's white disc), near-black with a light glyph in light
+  /// mode, where a white disc on a white composer disappeared.
+  private let discColor = ADEColor.textPrimary
+  private let glyphColor = ADEColor.surfaceBackground
 
   private var resolvedAccessibilityLabel: String {
     if sending { return "Sending message" }
@@ -1450,15 +1455,16 @@ struct ADEComposerSendButton: View {
             .tint(enabled ? glyphColor : ADEColor.textSecondary)
         } else {
           Image(systemName: systemImageName)
-            .font(.system(size: 14, weight: .bold))
+            .font(.system(size: diameter * 0.5, weight: .bold))
         }
       }
-      .frame(width: 28, height: 28)
-      .foregroundStyle(enabled ? glyphColor : ADEColor.textSecondary.opacity(0.2))
+      .frame(width: diameter, height: diameter)
+      .foregroundStyle(enabled ? glyphColor : ADEColor.textSecondary.opacity(0.45))
       .background(
         Circle()
-          .fill(enabled ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
+          .fill(enabled ? discColor.opacity(0.92) : ADEColor.textPrimary.opacity(0.07))
       )
+      .shadow(color: Color.black.opacity(enabled ? 0.18 : 0), radius: 4, x: 0, y: 2)
       .frame(
         minWidth: minimumTapTargetSize,
         minHeight: minimumTapTargetSize

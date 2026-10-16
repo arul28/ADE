@@ -48,6 +48,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Metadata regeneration is an explicit chat affordance. Optional so older
   // phones can keep their connection and simply omit the newer action.
   "chat.regenerateSessionMetadata",
+  // Composer @-mention suggestions (chats, lanes, terminals, PRs, machines).
+  // Optional: the phone shows file suggestions only when an older brain
+  // omits it.
+  "chat.listMentionSuggestions",
   // Usage-limit "Resume now". The phone hides the button unless the host
   // advertises this action, and a viewer-role tap is refused with the standard
   // policy message rather than silently doing nothing. Optional so an older

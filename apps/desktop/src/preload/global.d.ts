@@ -451,6 +451,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
@@ -2243,6 +2244,8 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** A preview's og:image as a data URL (null: unavailable). Fetched lazily by the hover card. */
+        resolveSmartLinkImage: (args: { url: string }) => Promise<{ dataUrl: string | null }>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
         resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
@@ -3612,6 +3615,8 @@ declare global {
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;
+        // Optional for the same reason: an older runtime lacks the star check.
+        isRepoStarred?: () => Promise<GitHubRepoStarState>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
         listRepoIssues: (args?: {
           owner?: string;

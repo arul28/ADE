@@ -10,6 +10,7 @@ import type {
   GitHubAuthFailure,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRepoStarState,
 } from "../../../shared/types/git";
 import {
   githubCredentialCooldown,
@@ -204,4 +205,34 @@ export async function requestGithubRawWithCredentialFallback(args: GithubRawRequ
   }
   if (exhausted) throw exhausted;
   throw new Error("No usable GitHub credential is available for this operation.");
+}
+
+/** ADE's own repository, the one the "Star ADE on GitHub" pill points at. */
+export const ADE_GITHUB_REPO = { owner: "arul28", name: "ADE" } as const;
+
+/**
+ * Whether the authenticated user has starred ADE's repository.
+ *
+ * GitHub answers `GET /user/starred/{owner}/{repo}` with 204 when starred and
+ * 404 when not. Everything else — no credential, a network error, a rate
+ * limit, an unexpected status — is `unknown`, and this never throws: the
+ * caller is a cosmetic sidebar pill that must not surface GitHub errors.
+ */
+export async function readGithubRepoStarState(
+  requestRaw: (args: GithubRawRequestArgs) => Promise<Response>,
+): Promise<GitHubRepoStarState> {
+  try {
+    const response = await requestRaw({
+      url: `https://api.github.com/user/starred/${ADE_GITHUB_REPO.owner}/${ADE_GITHUB_REPO.name}`,
+      method: "GET",
+      capability: "read",
+    });
+    // Drain the body so the connection is released; neither answer has one.
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 204) return "starred";
+    if (response.status === 404) return "not_starred";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }

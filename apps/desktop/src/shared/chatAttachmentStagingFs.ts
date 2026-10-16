@@ -12,7 +12,11 @@
  * - The destination basename is always a fresh UUID. Nothing about the source
  *   path or the caller-supplied display name reaches it except a
  *   regex-validated extension, so a traversal-shaped filename cannot smuggle a
- *   path fragment through to the write.
+ *   path fragment through to the write. One exact exception: staged bytes named
+ *   `pasted-<epoch ms>.<txt|diff|json|log>` (a big text paste) keep that name,
+ *   because the agent reads it in the prompt's `[File #k: name]` label. The
+ *   pattern admits no separator or dot segment, and a name already taken falls
+ *   back to a UUID.
  * - The resolved destination is re-checked for containment inside the
  *   attachments directory. That cannot fail while the basename is a UUID — it
  *   fails loudly if either invariant is ever loosened.
@@ -30,6 +34,18 @@ import { MAX_CHAT_ATTACHMENT_BYTES, attachmentTooLargeMessage } from "./chatAtta
 
 /** Extensions are the only client-controlled part of a staged attachment name. */
 const SAFE_ATTACHMENT_EXTENSION_PATTERN = /^\.[A-Za-z0-9]{1,16}$/;
+
+/**
+ * The single client-chosen basename staging keeps: a pasted-text file, named
+ * as `shared/pastedTextAttachment` (and iOS) name it. Anchored, digits only,
+ * a fixed extension list — nothing path-shaped can match.
+ */
+const PASTED_TEXT_STAGED_NAME_PATTERN = /^pasted-\d{1,16}\.(?:txt|diff|json|log)$/;
+
+/** The basename a pasted-text file keeps when staged, or null for every other name. */
+export function pastedTextStagedName(filename: string | null | undefined): string | null {
+  return typeof filename === "string" && PASTED_TEXT_STAGED_NAME_PATTERN.test(filename) ? filename : null;
+}
 
 /**
  * Where a project's staged attachments live.
@@ -217,11 +233,23 @@ export async function stageAttachmentBytes(args: {
   attachmentsDir: string;
 }): Promise<{ path: string }> {
   const baseDir = path.resolve(args.attachmentsDir);
+  await fs.promises.mkdir(baseDir, { recursive: true });
+  const pastedName = pastedTextStagedName(args.filename);
+  if (pastedName) {
+    // `wx`: never overwrite. Two pastes in the same millisecond, or a stale
+    // file from an earlier session, take the UUID name below instead.
+    const namedPath = path.join(baseDir, pastedName);
+    try {
+      await fs.promises.writeFile(namedPath, args.content, { flag: "wx" });
+      return { path: namedPath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") throw error;
+    }
+  }
   const destPath = stagedAttachmentDestPath(
     baseDir,
     resolveStagedAttachmentExtension(args.filename, null) || ".png",
   );
-  await fs.promises.mkdir(baseDir, { recursive: true });
   await fs.promises.writeFile(destPath, args.content);
   return { path: destPath };
 }

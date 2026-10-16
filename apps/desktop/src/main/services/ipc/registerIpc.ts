@@ -317,6 +317,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
@@ -10785,6 +10786,12 @@ export function registerIpc({
     return await ctx.githubService.getRequestBudget();
   });
 
+  // Feeds the "Star ADE on GitHub" pill; answers `unknown` rather than throwing.
+  ipcMain.handle(IPC.githubIsRepoStarred, async (): Promise<GitHubRepoStarState> => {
+    const ctx = getCtx();
+    return await ctx.githubService.isRepoStarred();
+  });
+
   const resolveGithubRepoRef = async (
     githubService: ReturnType<typeof createGithubService>,
     arg?: { owner?: string; name?: string } | null
@@ -12697,6 +12704,8 @@ export function registerIpc({
 
   return {
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
+    /** The account machine directory, for the in-process `@mac:` mention path. */
+    listAccountMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
     readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,

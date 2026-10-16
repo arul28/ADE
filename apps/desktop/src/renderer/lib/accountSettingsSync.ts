@@ -46,6 +46,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
+import { mergeStarPillPrefs } from "./starPill";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -132,6 +133,15 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
   pref("harnessPresets", (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  // The star pill's counters live under their own storage key rather than in
+  // the preferences blob (see `STAR_PILL_STORAGE_KEY`). Applying merges rather
+  // than replaces: every field only grows, and a whole-value overwrite would
+  // let one machine's chat counter erase another machine's star or snooze.
+  pref(
+    "starPill",
+    (state) => state.starPill,
+    (state, value: unknown) => state.updateStarPill((local) => mergeStarPillPrefs(local, value)),
+  ),
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,

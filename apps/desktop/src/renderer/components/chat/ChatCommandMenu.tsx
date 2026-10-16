@@ -13,20 +13,28 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   ChatCircleDots,
   Command,
+  Desktop,
   File,
   GitBranch,
+  GitPullRequest,
   MagnifyingGlass,
   SpinnerGap,
   Terminal as TerminalIcon,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { composerFileSearchQuery, type ComposerTrigger } from "../../../shared/composerTriggers";
-import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND, CHAT_MENTION_MAX_RESULTS } from "../../../shared/chatMentions";
+import {
+  CHAT_MENTION_KINDS,
+  CHAT_MENTION_MAX_PER_KIND,
+  CHAT_MENTION_MAX_RESULTS,
+  CHAT_MENTION_SECTION_LIMIT,
+  parseChatMentionKindFilter,
+} from "../../../shared/chatMentions";
 import { composerAtFileRankFields, rankComposerAtMenuItems } from "../../../shared/composerAtMenuRanking";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
 import { prStateTone } from "../../lib/prChatScope";
-import type { PrSummary } from "../../../shared/types";
+import type { PrChecksStatus, PrSummary } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,8 +70,9 @@ type ChatCommandMenuProps = {
   /** File search callback. When omitted, @ file suggestions are unavailable. */
   onFileSearch?: (query: string) => Promise<Array<{ path: string; isDirectory?: boolean }>>;
   /**
-   * Entity mention search (chats / lanes / terminals in the active project).
-   * When omitted the @ menu shows files only.
+   * Entity mention search (chats / lanes / terminals / pull requests in the
+   * active project, plus account machines). When omitted the @ menu shows
+   * files only.
    */
   onMentionSearch?: (query: string) => Promise<ChatMentionSuggestion[]>;
   /**
@@ -224,7 +233,30 @@ const MENTION_SECTION_ICON: Record<ChatMentionKind, PhosphorIcon> = {
   chat: ChatCircleDots,
   lane: GitBranch,
   terminal: TerminalIcon,
+  pr: GitPullRequest,
+  machine: Desktop,
 };
+
+const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
+  chat: "Chats",
+  lane: "Lanes",
+  terminal: "Terminals",
+  pr: "Pull requests",
+  machine: "Machines",
+};
+
+/** Browse order for a bare `@`: entities first, files last. */
+const BROWSE_SECTION_ORDER: ChatMentionKind[] = ["chat", "lane", "terminal", "pr", "machine"];
+
+/** Checks rollup as one glyph: passing, pending, failing. Nothing for "none"/"not run". */
+function prChecksGlyph(checks: PrChecksStatus): { glyph: string; className: string; label: string } | null {
+  switch (checks) {
+    case "passing": return { glyph: "✓", className: "text-emerald-400/80", label: "Checks passing" };
+    case "pending": return { glyph: "…", className: "text-amber-400/80", label: "Checks pending" };
+    case "failing": return { glyph: "✕", className: "text-red-400/80", label: "Checks failing" };
+    default: return null;
+  }
+}
 
 /** One row, with its flat keyboard index already resolved by the sections memo. */
 type MenuRowEntry = { item: ChatCommandMenuItem; index: number };
@@ -317,12 +349,18 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     // ---- @ sources: files + entity mentions, each independently debounced ----
     const atQuery = triggerType === "at" ? triggerQuery.trim() : "";
-    const fileQuery = triggerType === "at" ? composerFileSearchQuery(triggerQuery) : "";
     const atActive = triggerType === "at";
+    // `@pr`, `@mac`, `@chat`, `@lane`, `@term` narrow the menu to one kind.
+    // The mention service parses the same prefix, so the raw query goes to it.
+    const atFilter = useMemo(
+      () => (atActive ? parseChatMentionKindFilter(triggerQuery) : { kind: null, rest: "" }),
+      [atActive, triggerQuery],
+    );
+    const fileQuery = atActive && !atFilter.kind ? composerFileSearchQuery(triggerQuery) : "";
 
     // `triggerType` is null while the menu is closed, which drops both caches.
     const { results: fileResults, loading: fileLoading } = useDebouncedSuggestions<FileResult>(
-      atActive,
+      atActive && !atFilter.kind,
       fileQuery,
       onFileSearch,
       MAX_FILE_RESULTS,
@@ -380,6 +418,42 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         ];
       }
       const out: MenuSection[] = [];
+      if (atFilter.kind) {
+        // One kind, best match on the text after the kind word.
+        const kind = atFilter.kind;
+        const rows = rankComposerAtMenuItems(
+          [],
+          mentionResults.filter((mention) => mention.kind === kind),
+          atFilter.rest,
+          CHAT_MENTION_MAX_RESULTS,
+        );
+        if (rows.length) {
+          out.push({ key: `kind:${kind}`, label: MENTION_SECTION_LABEL[kind], Icon: MENTION_SECTION_ICON[kind], rows: withIndices(rows) });
+        }
+        return out;
+      }
+      if (!atQuery) {
+        // A bare `@` browses: recent rows grouped by kind, capped per section.
+        for (const kind of BROWSE_SECTION_ORDER) {
+          const rows = mentionResults
+            .filter((mention) => mention.kind === kind)
+            .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+            .slice(0, CHAT_MENTION_SECTION_LIMIT)
+            .map((mention): ChatCommandMenuItem => ({ type: "mention", mention }));
+          if (rows.length) {
+            out.push({ key: `kind:${kind}`, label: MENTION_SECTION_LABEL[kind], Icon: MENTION_SECTION_ICON[kind], rows: withIndices(rows) });
+          }
+        }
+        const files = fileResults
+          .slice(0, CHAT_MENTION_SECTION_LIMIT)
+          .map((file): ChatCommandMenuItem => ({
+            type: "file",
+            path: file.path,
+            ...(file.isDirectory ? { isDirectory: true } : {}),
+          }));
+        if (files.length) out.push({ key: "files", label: "Files", Icon: File, rows: withIndices(files) });
+        return out;
+      }
       const mixed = rankComposerAtMenuItems(fileResults, mentionResults, atQuery, CHAT_MENTION_MAX_RESULTS);
       if (mixed.length) {
         out.push({
@@ -390,7 +464,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         });
       }
       return out;
-    }, [trigger, filteredCommands, fileResults, mentionResults, prResults, atQuery]);
+    }, [trigger, filteredCommands, fileResults, mentionResults, prResults, atQuery, atFilter]);
 
     const items: ChatCommandMenuItem[] = useMemo(
       () => sections.flatMap((section) => section.rows.map((row) => row.item)),
@@ -500,7 +574,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
               // workspace genuinely had nothing to list, not "type first".
               ? (items.length === 0
                   ? (onMentionSearch
-                      ? "No files, chats, lanes, or terminals to browse — type to search"
+                      ? "Nothing to browse yet — type to search files, chats, lanes, PRs, and machines"
                       : "No files to browse — type to search")
                   : null)
               : isHashTrigger
@@ -508,7 +582,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 : "Type to search commands")
           : items.length === 0
             ? (isAtTrigger
-                ? `No matches for "${query}"`
+                ? (atFilter.kind && !atFilter.rest
+                    ? `No ${MENTION_SECTION_LABEL[atFilter.kind].toLowerCase()} to mention`
+                    : `No matches for "${query}"`)
                 : isHashTrigger
                   ? `No pull requests match "${query}"`
                   : `No commands match "${query}"`)
@@ -532,7 +608,13 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 <>
                   <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
                   <span className="text-[10px] font-medium tracking-wide text-fg/46">
-                    {onMentionSearch ? "Best match · files, chats, lanes, terminals" : "File search"}
+                    {!onMentionSearch
+                      ? "File search"
+                      : atFilter.kind
+                        ? MENTION_SECTION_LABEL[atFilter.kind]
+                        : atQuery
+                          ? "Best match · files, chats, lanes, terminals, PRs, machines"
+                          : "Recent · type pr, mac, chat, lane, or term to narrow"}
                   </span>
                 </>
               ) : isHashTrigger ? (
@@ -612,6 +694,66 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                           <span className="truncate text-fg/60">{item.pr.title}</span>
                           {item.pr.repo ? (
                             <span className="ml-auto max-w-[40%] shrink-0 truncate text-fg/34">{item.pr.repo}</span>
+                          ) : null}
+                        </MenuRow>
+                      );
+                    }
+
+                    if (item.type === "mention" && item.mention.kind === "pr" && item.mention.pr) {
+                      const prMeta = item.mention.pr;
+                      const checks = prChecksGlyph(prMeta.checks);
+                      const number = `#${prMeta.number}`;
+                      const titleText = item.mention.title.startsWith(`${number} `)
+                        ? item.mention.title.slice(number.length + 1)
+                        : item.mention.title;
+                      return (
+                        <MenuRow
+                          key={`pr-mention:${item.mention.id}`}
+                          index={index}
+                          selected={isSelected}
+                          onHover={setSelectedIndex}
+                          onSelect={handleSelect}
+                        >
+                          <span
+                            className={cn("h-1.5 w-1.5 shrink-0 rounded-full", prStateTone(prMeta.state).dot)}
+                            aria-label={prStateTone(prMeta.state).label}
+                          />
+                          <span className={cn("shrink-0 font-medium", labelClass)}>{number}</span>
+                          <span className="truncate text-fg/60">{titleText}</span>
+                          {checks ? (
+                            <span className={cn("shrink-0", checks.className)} title={checks.label} aria-label={checks.label}>
+                              {checks.glyph}
+                            </span>
+                          ) : null}
+                          {item.mention.subtitle ? (
+                            <span className="ml-auto max-w-[40%] shrink-0 truncate text-fg/34">
+                              {item.mention.subtitle}
+                            </span>
+                          ) : null}
+                        </MenuRow>
+                      );
+                    }
+
+                    if (item.type === "mention" && item.mention.kind === "machine") {
+                      const online = item.mention.machine?.online === true;
+                      return (
+                        <MenuRow
+                          key={`machine:${item.mention.id}`}
+                          index={index}
+                          selected={isSelected}
+                          onHover={setSelectedIndex}
+                          onSelect={handleSelect}
+                        >
+                          <Desktop size={13} weight="duotone" className={iconClass} />
+                          <span
+                            className={cn("h-1.5 w-1.5 shrink-0 rounded-full", online ? "bg-emerald-400" : "bg-fg/20")}
+                            aria-label={online ? "Online" : "Offline"}
+                          />
+                          <span className={cn("truncate", labelClass)}>{item.mention.title}</span>
+                          {item.mention.subtitle ? (
+                            <span className="ml-auto max-w-[55%] shrink-0 truncate text-fg/34">
+                              {item.mention.subtitle}
+                            </span>
                           ) : null}
                         </MenuRow>
                       );

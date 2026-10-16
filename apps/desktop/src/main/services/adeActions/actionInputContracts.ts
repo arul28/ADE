@@ -464,6 +464,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
     },
+    resolveSmartLinkImage: {
+      description: "Fetch a link preview's og:image (public hosts only, max 256 KiB, bitmap image types) as a data URL; null when unavailable.",
+      input: "object { url: string }",
+      example: "ade actions run chat.resolveSmartLinkImage --input-json '{\"url\":\"https://example.com/og.png\"}' --json",
+    },
     resolveSourceFavicons: {
       description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
       input: "object { domains?: string[] (max 48), domain?: string, url?: string }",

@@ -874,6 +874,66 @@ h6 {
   min-height: 0;
 }
 
+/* "Star ADE on GitHub" pill above the footer (StarRepoPill.tsx). */
+.ade-star-pill {
+  flex-shrink: 0;
+  padding: 6px 8px 2px;
+  transition: opacity 320ms ease;
+}
+.ade-star-pill[data-leaving] {
+  opacity: 0;
+}
+.ade-star-pill-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-star-pill-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ade-star-pill-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.ade-star-pill-burst {
+  position: relative;
+  display: inline-flex;
+}
+.ade-star-pill-burst[data-animate] > svg {
+  animation: ade-star-pill-pop 420ms cubic-bezier(0.2, 0, 0, 1.4);
+}
+.ade-star-pill-spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  opacity: 0;
+  animation: ade-star-pill-spark 700ms ease-out 80ms;
+}
+@keyframes ade-star-pill-pop {
+  from { transform: scale(0.4); }
+  to { transform: scale(1); }
+}
+@keyframes ade-star-pill-spark {
+  from { opacity: 1; transform: rotate(var(--spark-turn)) translateY(0); }
+  to { opacity: 0; transform: rotate(var(--spark-turn)) translateY(-11px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-star-pill { transition: none; }
+  .ade-star-pill-burst > svg,
+  .ade-star-pill-spark { animation: none; }
+}
+
 .ade-project-sidebar-footer {
   display: flex;
   align-items: center;

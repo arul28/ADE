@@ -435,6 +435,7 @@ ade code remote session --target mac --project ADE --session chat-1
                                          # open a specific remote chat or provider CLI terminal session
 ade login                                # sign in to the required ADE account
 ade machines list --text                # list available, unreachable, and offline machines
+ade machines show "Mac Studio" --text    # read-only: status, projects, lanes, recent chats (any role)
 ade machines connect <machine-key> --project ADE
                                          # pair if needed, then open ADE Code
 ade machines hop <device-id> --session chat-1

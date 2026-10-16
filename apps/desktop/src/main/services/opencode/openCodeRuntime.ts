@@ -83,6 +83,11 @@ export type OpenCodePromptFile = {
   path: string;
   mime: string;
   filename?: string;
+  /**
+   * `[Image #k]` / `[File #k: name]`. Sent as a text part right before the file
+   * part, so the label in the user's prompt points at this exact file.
+   */
+  label?: string;
 };
 
 export type DiscoveredLocalModelEntry = {
@@ -658,6 +663,7 @@ export function buildOpenCodePromptParts(args: {
     text: args.prompt,
   });
   for (const file of args.files ?? []) {
+    if (file.label) parts.push({ type: "text", text: file.label });
     parts.push({
       type: "file",
       mime: file.mime,

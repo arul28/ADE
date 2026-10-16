@@ -13,6 +13,7 @@ import {
   exceedsProviderInlineLimit,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
+import { labelAttachments } from "../../../shared/attachmentLabels";
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath?: string;
@@ -79,6 +80,19 @@ export type SDKUserMessagePartial = {
   };
 };
 
+/**
+ * A non-inlined attachment as prompt text: its label, then the path the agent
+ * can read. `[File #1: notes.txt] (notes.txt)` — the label is what the user's
+ * own `[File #1: …]` chip in the prompt refers to.
+ */
+function attachmentPathHint(token: string | undefined, attachmentPath: string): string {
+  return token ? `${token} (${attachmentPath})` : `[File attached: ${attachmentPath}]`;
+}
+
+function labelPrefix(token: string | undefined): string {
+  return token ? `${token} ` : "";
+}
+
 type BuildClaudeV2MessageOptions = {
   baseDir?: string;
   sessionId?: string | null;
@@ -99,9 +113,10 @@ export async function buildClaudeV2MessageAsync(
   });
 
   const imageAttachments = attachments.filter((a) => a.type === "image");
+  const labels = labelAttachments(attachments);
   if (!imageAttachments.length) {
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      ? `${promptText}\n\n${attachments.map((a, index) => attachmentPathHint(labels[index]?.token, a.path)).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -110,22 +125,23 @@ export async function buildClaudeV2MessageAsync(
     { type: "text", text: promptText },
   ];
 
-  for (const attachment of attachments) {
+  for (const [index, attachment] of attachments.entries()) {
+    const token = labels[index]?.token;
     if (attachment.type !== "image") {
-      content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+      content.push({ type: "text", text: `\n${attachmentPathHint(token, attachment.path)}` });
       continue;
     }
 
     try {
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
+        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image attached (${mediaType}): ${attachment.path}]` });
         continue;
       }
       const secureRoot = attachment._rootPath ?? options.baseDir;
       const resolvedPath = attachment._resolvedPath ?? attachment.path;
       if (!secureRoot) {
-        content.push({ type: "text", text: `\n[Image unavailable: ${attachment.path}]` });
+        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}]` });
         continue;
       }
       const data = await readAgentAccessibleFileBytes({
@@ -137,9 +153,13 @@ export async function buildClaudeV2MessageAsync(
       // request outright, so an attachment past the inline ceiling becomes the
       // same path hint a non-image attachment gets. The turn still runs.
       if (exceedsProviderInlineLimit(data.byteLength)) {
+        if (token) content.push({ type: "text", text: `\n${token}` });
         content.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
         continue;
       }
+      // The label goes right before the image block, so `[Image #2]` in the
+      // prompt points the model at this exact image.
+      if (token) content.push({ type: "text", text: `\n${token}` });
       content.push({
         type: "image",
         source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
@@ -147,7 +167,7 @@ export async function buildClaudeV2MessageAsync(
     } catch (error) {
       content.push({
         type: "text",
-        text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
+        text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
       });
     }
   }
@@ -189,10 +209,11 @@ export function buildClaudeV2Message(
   });
 
   const imageAttachments = attachments.filter((a) => a.type === "image");
+  const labels = labelAttachments(attachments);
   if (!imageAttachments.length) {
     // No images -- include file paths as text hints, return plain string
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      ? `${promptText}\n\n${attachments.map((a, index) => attachmentPathHint(labels[index]?.token, a.path)).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -203,16 +224,17 @@ export function buildClaudeV2Message(
     { type: "text", text: promptText },
   ];
 
-  for (const attachment of attachments) {
+  for (const [index, attachment] of attachments.entries()) {
+    const token = labels[index]?.token;
     if (attachment.type !== "image") {
-      content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+      content.push({ type: "text", text: `\n${attachmentPathHint(token, attachment.path)}` });
       continue;
     }
 
     try {
       const mediaType = inferAttachmentMediaType(attachment);
       if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
-        content.push({ type: "text", text: `\n[Image attached (${mediaType}): ${attachment.path}]` });
+        content.push({ type: "text", text: `\n${labelPrefix(token)}[Image attached (${mediaType}): ${attachment.path}]` });
         continue;
       }
       const secureRoot = attachment._rootPath ?? options.baseDir;
@@ -220,6 +242,7 @@ export function buildClaudeV2Message(
       const data = secureRoot
         ? readFileWithinRootSecure(secureRoot, resolvedPath)
         : fs.readFileSync(resolvedPath);
+      if (token) content.push({ type: "text", text: `\n${token}` });
       content.push({
         type: "image",
         source: { type: "base64", media_type: mediaType, data: data.toString("base64") },
@@ -227,7 +250,7 @@ export function buildClaudeV2Message(
     } catch (error) {
       content.push({
         type: "text",
-        text: `\n[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
+        text: `\n${labelPrefix(token)}[Image unavailable: ${attachment.path}${error instanceof Error ? ` (${error.message})` : ""}]`,
       });
     }
   }

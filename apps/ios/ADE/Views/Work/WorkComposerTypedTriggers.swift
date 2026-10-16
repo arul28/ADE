@@ -97,6 +97,10 @@ struct WorkSmartLink: Equatable {
     case webPage
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
     case adeLink
+    /// An `@mac:<machineKey>` mention: one of the account's machines.
+    case machine
+    /// An `[Image #k]` attachment token: the k-th image the message carries.
+    case image
 
     /// Single-cell glyphs, matching `CHIP_GLYPH` on the desktop.
     var glyph: String {
@@ -116,8 +120,43 @@ struct WorkSmartLink: Equatable {
       case .artifact: return "◈"
       case .webPage: return "↗"
       case .adeLink: return "A"
+      case .machine: return "▢"
+      case .image: return "🖼"
       }
     }
+
+    /// The SF Symbol a composer pill or an @-menu row draws for this kind. The
+    /// glyph above stays the text form (copy, accessibility, sent bubbles).
+    var symbolName: String {
+      switch self {
+      case .pullRequest: return "arrow.triangle.pull"
+      case .issue: return "smallcircle.filled.circle"
+      case .repository: return "book.closed"
+      case .commit: return "smallcircle.circle"
+      case .branch: return "arrow.triangle.branch"
+      case .actionsRun: return "gearshape"
+      case .linearIssue: return "circle.dashed"
+      case .lane: return "square.stack.3d.up"
+      case .chat: return "bubble.left.and.bubble.right"
+      case .terminal: return "terminal"
+      case .file: return "doc.text"
+      case .folder: return "folder"
+      case .artifact: return "shippingbox"
+      case .webPage: return "globe"
+      case .adeLink: return "link"
+      case .machine: return "desktopcomputer"
+      case .image: return "photo"
+      }
+    }
+  }
+
+  /// Short, favicon-less label for a composer pill: a web page reads as its
+  /// host, every typed link keeps its compact label.
+  var pillLabel: String {
+    guard kind == .webPage else { return compactLabel }
+    guard let host = URLComponents(string: url)?.host, !host.isEmpty else { return url }
+    let lowered = host.lowercased()
+    return lowered.hasPrefix("www.") ? String(lowered.dropFirst(4)) : lowered
   }
 
   var kind: Kind {
@@ -330,25 +369,32 @@ enum WorkSmartLinkDetector {
 
 // MARK: - Chat mentions
 
-/// Swift twin of the `@chat:` / `@lane:` / `@term:` grammar in
-/// `apps/desktop/src/shared/chatMentions.ts`.
+/// Swift twin of the `@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` grammar
+/// in `apps/desktop/src/shared/chatMentions.ts`.
 ///
 /// A mention is a POINTER, never an attachment: the token is the canonical text
 /// and the label is display only, so the same draft round-trips through the
 /// desktop composer, the `ade code` TUI, and this app without changing meaning.
 struct WorkChatMention: Equatable {
-  enum Kind: Equatable {
+  enum Kind: Equatable, CaseIterable {
     case chat
     case lane
     case terminal
+    /// An ADE pull request, by its internal id (not the GitHub number).
+    case pullRequest
+    /// One of the account's machines, by machine key. Read-only by contract:
+    /// the expansion tells the agent it may only read from it.
+    case machine
 
-    /// Token prefix per kind. `term` is deliberately short for typing, matching
-    /// `CHAT_MENTION_TOKEN_PREFIX` on the desktop.
+    /// Token prefix per kind. `term` and `mac` are deliberately short for
+    /// typing, matching `CHAT_MENTION_TOKEN_PREFIX` on the desktop.
     var tokenPrefix: String {
       switch self {
       case .chat: return "chat"
       case .lane: return "lane"
       case .terminal: return "term"
+      case .pullRequest: return "pr"
+      case .machine: return "mac"
       }
     }
 
@@ -357,6 +403,20 @@ struct WorkChatMention: Equatable {
       case "chat": return .chat
       case "lane": return .lane
       case "term": return .terminal
+      case "pr": return .pullRequest
+      case "mac": return .machine
+      default: return nil
+      }
+    }
+
+    /// The `kind` string `chat.listMentionSuggestions` reports for this kind.
+    static func from(suggestionKind: String) -> Kind? {
+      switch suggestionKind.lowercased() {
+      case "chat": return .chat
+      case "lane": return .lane
+      case "terminal": return .terminal
+      case "pr": return .pullRequest
+      case "machine": return .machine
       default: return nil
       }
     }
@@ -368,6 +428,8 @@ struct WorkChatMention: Equatable {
       case .chat: return .chat
       case .lane: return .lane
       case .terminal: return .terminal
+      case .pullRequest: return .pullRequest
+      case .machine: return .machine
       }
     }
   }
@@ -386,6 +448,8 @@ struct WorkChatMention: Equatable {
     case .chat: return "Chat \(short)"
     case .lane: return "Lane \(short)"
     case .terminal: return "Terminal \(short)"
+    case .pullRequest: return "PR \(short)"
+    case .machine: return "Machine \(short)"
     }
   }
 }
@@ -401,7 +465,7 @@ enum WorkChatMentionDetector {
   // and the token must sit at a word boundary so emails and `foo@chat:bar`
   // substrings never match.
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term):([A-Za-z0-9._-]+)",
+    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term|pr|mac):([A-Za-z0-9._-]+)",
     options: []
   )
 
@@ -536,6 +600,104 @@ enum WorkChipPathDetector {
   }
 }
 
+// MARK: - Attachment tokens
+
+/// One `[Image #k]` / `[File #k: name]` token — the Swift twin of
+/// `apps/desktop/src/shared/attachmentLabels.ts`.
+///
+/// Numbering is positional: the k-th IMAGE attachment (counting only images,
+/// `image-url` included) is `[Image #k]`, and the k-th non-image attachment is
+/// `[File #k: <basename>]`. The token never stores a path or an id, so drafts
+/// and sent messages stay plain text, and a token whose ordinal has no
+/// attachment is not a chip — it stays text.
+struct WorkAttachmentToken: Equatable {
+  enum Kind: Equatable {
+    case image
+    case file
+  }
+
+  let kind: Kind
+  /// 1-based position among attachments of the same kind.
+  let ordinal: Int
+  /// The name a file token carries. Informational only; resolution is by ordinal.
+  let name: String?
+  let token: String
+  let range: NSRange
+}
+
+enum WorkAttachmentTokenGrammar {
+  // Character-for-character the desktop's `ATTACHMENT_TOKEN_RE`.
+  private static let regex = try! NSRegularExpression(
+    pattern: "\\[(?:Image #(\\d{1,4})|File #(\\d{1,4}): ([^\\]\\[\\r\\n]{1,240}))\\]",
+    options: []
+  )
+
+  /// Mirrors `sanitizeTokenName`: a name that contains a bracket or a newline
+  /// would end the token early, so those characters become `_`.
+  static func sanitizedName(_ name: String) -> String {
+    let cleaned = name
+      .map { "[]\r\n".contains($0) ? "_" : String($0) }
+      .joined()
+      .trimmingCharacters(in: .whitespaces)
+    return cleaned.isEmpty ? "file" : cleaned
+  }
+
+  static func token(kind: WorkAttachmentToken.Kind, ordinal: Int, name: String? = nil) -> String {
+    switch kind {
+    case .image: return "[Image #\(ordinal)]"
+    case .file: return "[File #\(ordinal): \(sanitizedName(name ?? ""))]"
+    }
+  }
+
+  /// Every token in `text`, in document order.
+  static func tokens(in text: NSString) -> [WorkAttachmentToken] {
+    guard text.length > 0, text.range(of: "[").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      let imageRange = match.range(at: 1)
+      let fileRange = match.range(at: 2)
+      if imageRange.location != NSNotFound,
+         let ordinal = Int(text.substring(with: imageRange)), ordinal >= 1 {
+        return WorkAttachmentToken(
+          kind: .image,
+          ordinal: ordinal,
+          name: nil,
+          token: text.substring(with: match.range),
+          range: match.range
+        )
+      }
+      if fileRange.location != NSNotFound,
+         let ordinal = Int(text.substring(with: fileRange)), ordinal >= 1 {
+        let nameRange = match.range(at: 3)
+        return WorkAttachmentToken(
+          kind: .file,
+          ordinal: ordinal,
+          name: nameRange.location == NSNotFound ? nil : text.substring(with: nameRange),
+          token: text.substring(with: match.range),
+          range: match.range
+        )
+      }
+      return nil
+    }
+  }
+
+  /// Index of the attachment the token points at, or nil when the ordinal has
+  /// none. `isImage` classifies each element the same way the host does.
+  static func resolve<T>(
+    _ token: WorkAttachmentToken,
+    in attachments: [T],
+    isImage: (T) -> Bool
+  ) -> Int? {
+    var seen = 0
+    for (index, attachment) in attachments.enumerated() {
+      guard isImage(attachment) == (token.kind == .image) else { continue }
+      seen += 1
+      if seen == token.ordinal { return index }
+    }
+    return nil
+  }
+}
+
 // MARK: - Unified chips
 
 /// One pill, whichever grammar produced it — the Swift twin of the `Chip` type
@@ -548,6 +710,8 @@ struct WorkChip: Equatable {
     case mention(WorkChatMention)
     case link(WorkSmartLink)
     case path(WorkChipPath)
+    /// A resolved `[Image #k]` / `[File #k: …]` token and the ref it names.
+    case attachment(WorkAttachmentToken, AgentChatFileRef)
   }
 
   let kind: WorkSmartLink.Kind
@@ -582,6 +746,16 @@ struct WorkChip: Equatable {
     origin = .path(path)
   }
 
+  init(attachment: WorkAttachmentToken, ref: AgentChatFileRef) {
+    kind = attachment.kind == .image ? .image : .file
+    token = attachment.token
+    label = attachment.kind == .image
+      ? "Image \(attachment.ordinal)"
+      : workChatAttachmentDisplayName(ref)
+    range = attachment.range
+    origin = .attachment(attachment, ref)
+  }
+
   /// The plain text this chip serializes back to. Mention and link tokens are
   /// already the literal source text; a path token deliberately is NOT — it
   /// omits the `@` the grammar needs, exactly as `chipFromPath().token` does on
@@ -611,10 +785,28 @@ enum WorkChipDetector {
   /// screen — but it is still bounded, so a pathological paste cannot fan out.
   static let canonicalTextChipLimit = 512
 
-  static func chips(in text: NSString, limit: Int = defaultLimit) -> [WorkChip] {
+  /// `attachments` is the message's attachment list. Attachment tokens are only
+  /// chips when they resolve against it, so passing nil (a composer draft that
+  /// resolves its own tokens, a surface with no attachments) leaves every
+  /// `[Image #k]` as text.
+  static func chips(
+    in text: NSString,
+    limit: Int = defaultLimit,
+    attachments: [AgentChatFileRef]? = nil
+  ) -> [WorkChip] {
     guard text.length > 0, limit > 0 else { return [] }
 
     var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    if let attachments, !attachments.isEmpty {
+      for token in WorkAttachmentTokenGrammar.tokens(in: text) {
+        guard let index = WorkAttachmentTokenGrammar.resolve(
+          token,
+          in: attachments,
+          isImage: workChatAttachmentIsImage
+        ) else { continue }
+        candidates.append(WorkChip(attachment: token, ref: attachments[index]))
+      }
+    }
     candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
     // Last, like the desktop: the sort below puts them in document order and
     // the `consumedTo` loop drops any that overlap a link, so a path that lives
@@ -644,9 +836,13 @@ enum WorkChipDetector {
     return out
   }
 
-  static func parts(in text: String, limit: Int = defaultLimit) -> [WorkChipTextPart] {
+  static func parts(
+    in text: String,
+    limit: Int = defaultLimit,
+    attachments: [AgentChatFileRef]? = nil
+  ) -> [WorkChipTextPart] {
     let ns = text as NSString
-    let matches = chips(in: ns, limit: limit)
+    let matches = chips(in: ns, limit: limit, attachments: attachments)
     guard !matches.isEmpty else { return text.isEmpty ? [] : [.text(text)] }
 
     var parts: [WorkChipTextPart] = []
@@ -897,6 +1093,127 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   /// changes what commit does, because an iOS `@` commit splices text and
   /// stages nothing.
   var isDirectory: Bool = false
+  /// Set on `@` entity rows (`chat.listMentionSuggestions`). Nil for files.
+  var mentionKind: WorkChatMention.Kind? = nil
+
+  /// Which group of the `@` menu this row belongs to.
+  var section: WorkComposerSuggestionSection {
+    switch kind {
+    case .slash: return .commands
+    case .hash: return .pullRequests
+    case .at:
+      switch mentionKind {
+      case .chat: return .chats
+      case .lane: return .lanes
+      case .terminal: return .terminals
+      case .pullRequest: return .pullRequests
+      case .machine: return .machines
+      case nil: return .files
+      }
+    }
+  }
+
+  /// Chip kind of the pill a commit inserts.
+  var pillKind: WorkSmartLink.Kind {
+    switch kind {
+    case .slash: return .adeLink
+    case .hash: return .pullRequest
+    case .at:
+      if let mentionKind { return mentionKind.chipKind }
+      return isDirectory ? .folder : .file
+    }
+  }
+
+  /// SF Symbol for the row and for the pill it becomes.
+  var symbolName: String {
+    kind == .slash ? "command" : pillKind.symbolName
+  }
+}
+
+/// Groups of the `@` menu, in display order. A typed prefix (`@pr`, `@mac`,
+/// `@chat`, `@lane`, `@term`, `@file`) narrows the menu to one group.
+enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
+  case chats
+  case lanes
+  case terminals
+  case pullRequests
+  case machines
+  case files
+  case commands
+
+  static let atMenuOrder: [WorkComposerSuggestionSection] = [
+    .chats, .lanes, .terminals, .pullRequests, .machines, .files,
+  ]
+
+  var title: String {
+    switch self {
+    case .chats: return "Chats"
+    case .lanes: return "Lanes"
+    case .terminals: return "Terminals"
+    case .pullRequests: return "Pull requests"
+    case .machines: return "Machines"
+    case .files: return "Files"
+    case .commands: return "Commands"
+    }
+  }
+
+  var symbolName: String {
+    switch self {
+    case .chats: return WorkSmartLink.Kind.chat.symbolName
+    case .lanes: return WorkSmartLink.Kind.lane.symbolName
+    case .terminals: return WorkSmartLink.Kind.terminal.symbolName
+    case .pullRequests: return WorkSmartLink.Kind.pullRequest.symbolName
+    case .machines: return WorkSmartLink.Kind.machine.symbolName
+    case .files: return "doc.text"
+    case .commands: return "command"
+    }
+  }
+
+  /// `@pr`, `@pr:`, `@pr fix…` → (.pullRequests, "fix…"). Anything else is an
+  /// unfiltered query, so `@prompt.ts` still searches every group.
+  static func parseAtQuery(_ query: String) -> (filter: WorkComposerSuggestionSection?, rest: String) {
+    // The host's own kind words (`chat.listMentionSuggestions` narrows on the
+    // same list), plus `file`, which only this menu has.
+    let prefixes: [(String, WorkComposerSuggestionSection)] = [
+      ("chat", .chats), ("chats", .chats),
+      ("lane", .lanes), ("lanes", .lanes),
+      ("term", .terminals), ("terminal", .terminals), ("terminals", .terminals),
+      ("pr", .pullRequests), ("prs", .pullRequests),
+      ("mac", .machines), ("machine", .machines), ("machines", .machines),
+      ("file", .files), ("files", .files),
+    ]
+    let lowered = query.lowercased()
+    for (prefix, section) in prefixes.sorted(by: { $0.0.count > $1.0.count }) {
+      guard lowered.hasPrefix(prefix) else { continue }
+      let remainder = query.dropFirst(prefix.count)
+      if remainder.isEmpty { return (section, "") }
+      guard let next = remainder.first, next == ":" || next == " " else { continue }
+      return (section, String(remainder.dropFirst()).trimmingCharacters(in: .whitespaces))
+    }
+    return (nil, query)
+  }
+}
+
+/// Titles the @ menu showed for each committed mention token, so a pill that is
+/// re-hydrated from text (a draft restore, a failed-send restore) reads as the
+/// chat or PR it points at rather than as `Chat 1a2b3c4d`. Display only.
+@MainActor
+enum WorkComposerMentionTitleCache {
+  private static var titles: [String: String] = [:]
+  private static var order: [String] = []
+  private static let limit = 256
+
+  static func remember(token: String, title: String) {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    if titles[token] == nil { order.append(token) }
+    titles[token] = trimmed
+    while order.count > limit {
+      titles.removeValue(forKey: order.removeFirst())
+    }
+  }
+
+  static func title(for token: String) -> String? { titles[token] }
 }
 
 /// Curated per-provider slash commands, ported from the retired
@@ -986,7 +1303,7 @@ final class WorkComposerSuggestionController: ObservableObject {
         if let match = activeMatch, match.kind == .at {
           // An @ trigger typed against the previous lane re-fetches against
           // the new one instead of keeping the superseded results.
-          scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
+          scheduleAtFetch(query: match.query)
         } else if isLoading {
           isLoading = false
         }
@@ -994,6 +1311,23 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
   weak var syncService: SyncService?
+  /// The chat this composer belongs to, so the @ menu never offers the chat to
+  /// itself. Nil on surfaces with no session yet.
+  var sessionId: String?
+
+  /// `@` rows arrive from two sources at different speeds: files from the
+  /// lane's quick-open, entities from `chat.listMentionSuggestions`. Each lands
+  /// in its own list and the menu is recombined, so a slow host never holds
+  /// back the file rows.
+  private var atFiles: [WorkComposerSuggestion] = []
+  private var atMentions: [WorkComposerSuggestion] = []
+  private var atFilter: WorkComposerSuggestionSection?
+  private var atFilesPending = false
+  private var atMentionsPending = false
+  private var mentionTask: Task<Void, Never>?
+  /// Bumped per `@` query; a mention response for an older query is dropped.
+  private var atGeneration = 0
+  static let mentionSuggestionAction = "chat.listMentionSuggestions"
 
   /// Wired by the text view: performs the splice on the live UITextView so
   /// first-responder state and selection survive the insertion.
@@ -1051,11 +1385,13 @@ final class WorkComposerSuggestionController: ObservableObject {
     switch match.kind {
     case .slash:
       fetchTask?.cancel()
+      mentionTask?.cancel()
       isLoading = false
       suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
     case .at:
-      scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
+      scheduleAtFetch(query: match.query)
     case .hash:
+      mentionTask?.cancel()
       schedulePrFetch(query: match.query)
     }
   }
@@ -1063,6 +1399,9 @@ final class WorkComposerSuggestionController: ObservableObject {
   func commit(_ suggestion: WorkComposerSuggestion) {
     guard let match = activeMatch else { return }
     let commitMatch = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+    if suggestion.mentionKind != nil || suggestion.kind == .hash {
+      WorkComposerMentionTitleCache.remember(token: suggestion.insertText, title: suggestion.title)
+    }
     onCommit?(suggestion, commitMatch.range)
     clear()
   }
@@ -1070,9 +1409,122 @@ final class WorkComposerSuggestionController: ObservableObject {
   func clear() {
     fetchTask?.cancel()
     fetchTask = nil
+    mentionTask?.cancel()
+    mentionTask = nil
+    atGeneration += 1
+    atFiles = []
+    atMentions = []
+    atFilter = nil
+    atFilesPending = false
+    atMentionsPending = false
     if activeMatch != nil { activeMatch = nil }
     if !suggestions.isEmpty { suggestions = [] }
     if isLoading { isLoading = false }
+  }
+
+  /// Whether the connected host can answer `@` entity suggestions. An older
+  /// brain simply omits the action, and the menu stays files-only.
+  private var mentionsAvailable: Bool {
+    syncService?.supportsViewerRemoteAction(Self.mentionSuggestionAction) == true
+  }
+
+  /// One `@` query: files and entities in parallel, merged by section.
+  private func scheduleAtFetch(query: String) {
+    let parsed = WorkComposerSuggestionSection.parseAtQuery(query)
+    atFilter = parsed.filter
+    atGeneration += 1
+    let generation = atGeneration
+
+    if parsed.filter == nil || parsed.filter == .files {
+      scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: parsed.rest))
+    } else {
+      fetchTask?.cancel()
+      fetchTask = nil
+      atFiles = []
+      atFilesPending = false
+    }
+
+    mentionTask?.cancel()
+    mentionTask = nil
+    if parsed.filter != .files, mentionsAvailable, let sync = syncService {
+      atMentionsPending = true
+      // A section filter is re-sent as the host's own kind word, so the host
+      // narrows server-side and returns that kind's full list rather than a
+      // mixed best-match list the client then thins out.
+      let mentionQuery: String
+      switch parsed.filter {
+      case .chats: mentionQuery = "chat \(parsed.rest)"
+      case .lanes: mentionQuery = "lane \(parsed.rest)"
+      case .terminals: mentionQuery = "terminal \(parsed.rest)"
+      case .pullRequests: mentionQuery = "pr \(parsed.rest)"
+      case .machines: mentionQuery = "machine \(parsed.rest)"
+      case .files, .commands, nil: mentionQuery = parsed.rest
+      }
+      let excludeSessionId = sessionId
+      mentionTask = Task { [weak self] in
+        // Debounced harder than files: this is a host round-trip per query.
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        guard !Task.isCancelled else { return }
+        let rows = (try? await sync.listChatMentionSuggestions(
+          query: mentionQuery.trimmingCharacters(in: .whitespaces),
+          excludeSessionId: excludeSessionId
+        )) ?? []
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+          guard let self, self.atGeneration == generation else { return }
+          self.atMentions = Self.mentionSuggestions(from: rows)
+          self.atMentionsPending = false
+          self.recombineAt()
+        }
+      }
+    } else {
+      atMentions = []
+      atMentionsPending = false
+    }
+    recombineAt()
+  }
+
+  /// Pure — and deliberately `nonisolated` — so the token form is testable
+  /// without a sync service or a main-actor hop.
+  nonisolated static func mentionSuggestions(from rows: [ChatMentionSuggestionRow]) -> [WorkComposerSuggestion] {
+    rows.compactMap { row -> WorkComposerSuggestion? in
+      guard let kind = WorkChatMention.Kind.from(suggestionKind: row.kind) else { return nil }
+      let id = row.id.trimmingCharacters(in: .whitespacesAndNewlines)
+      // The token grammar only admits this charset; an id outside it would
+      // serialize into a token no surface can parse back.
+      guard !id.isEmpty,
+            id.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
+      else { return nil }
+      let title = row.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      return WorkComposerSuggestion(
+        id: "mention:\(kind.tokenPrefix):\(id)",
+        kind: .at,
+        title: title.isEmpty ? id : title,
+        subtitle: row.subtitle,
+        insertText: WorkChatMentionDetector.formatToken(kind: kind, id: id),
+        mentionKind: kind
+      )
+    }
+  }
+
+  /// Rebuilds the visible `@` list from the two sources. Unfiltered, each
+  /// section shows a few recent rows; a prefix filter shows one section deep.
+  private func recombineAt() {
+    guard activeMatch?.kind == .at else { return }
+    let sections = atFilter.map { [$0] } ?? WorkComposerSuggestionSection.atMenuOrder
+    // Five per section unfiltered, matching the desktop menu.
+    let mentionCap = atFilter == nil ? 5 : 20
+    let fileCap = atFilter == nil ? 8 : 20
+    var rows: [WorkComposerSuggestion] = []
+    for section in sections {
+      if section == .files {
+        rows.append(contentsOf: atFiles.prefix(fileCap))
+      } else {
+        rows.append(contentsOf: atMentions.filter { $0.section == section }.prefix(mentionCap))
+      }
+    }
+    isLoading = atFilesPending || atMentionsPending
+    suggestions = rows
   }
 
   private func scheduleFileFetch(query: String) {
@@ -1080,10 +1532,11 @@ final class WorkComposerSuggestionController: ObservableObject {
     let cacheKey = query.lowercased()
     if let cached = cachedFiles(cacheKey) {
       fetchTask = nil
-      isLoading = false
+      atFilesPending = false
       finishFiles(cached)
       return
     }
+    atFilesPending = true
     isLoading = true
     let laneId = laneId
     let sync = syncService
@@ -1160,8 +1613,9 @@ final class WorkComposerSuggestionController: ObservableObject {
     // Only apply while an `@` trigger is still active — a later slash/no trigger
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
-    isLoading = false
-    suggestions = items
+    atFiles = items
+    atFilesPending = false
+    recombineAt()
   }
 
   /// `#` rows come from the pull requests this project has ALREADY synced, so
@@ -1260,37 +1714,959 @@ final class WorkComposerSuggestionController: ObservableObject {
   }
 }
 
-// MARK: - Chip styling
+// MARK: - Composer pills
 
 extension NSAttributedString.Key {
-  /// Marks a run as a committed chip token; carries the pill tint the layout
-  /// manager draws behind it.
-  static let workComposerChipTint = NSAttributedString.Key("workComposerChipTint")
+  /// The raw grammar token a composer pill stands for (`@chat:abc`, a URL,
+  /// `@src/foo.ts`, or `attachment:<uuid>` for an attachment pill, whose
+  /// `[Image #k]` number is only decided at serialization time). Inspection
+  /// aid; serialization reads the pill's own source.
+  static let workComposerPillToken = NSAttributedString.Key("workComposerPillToken")
 }
 
-/// Draws a rounded, tinted pill behind any run bearing `.workComposerChipTint`,
-/// giving `/command` and `@path` tokens a distinct chip treatment inline with
-/// the editable text.
-final class WorkComposerChipLayoutManager: NSLayoutManager {
-  override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
-    super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-    guard let textStorage else { return }
-    let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-    textStorage.enumerateAttribute(.workComposerChipTint, in: charRange, options: []) { value, range, _ in
-      guard let color = value as? UIColor else { return }
-      let glyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-      guard let container = textContainer(forGlyphAt: glyphRange.location, effectiveRange: nil) else { return }
-      enumerateEnclosingRects(
-        forGlyphRange: glyphRange,
-        withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
-        in: container
-      ) { rect, _ in
-        let pill = rect.insetBy(dx: -4, dy: -1).offsetBy(dx: origin.x, dy: origin.y)
-        let path = UIBezierPath(roundedRect: pill, cornerRadius: 6)
-        color.withAlphaComponent(0.16).setFill()
-        path.fill()
+/// What a pill draws: an icon (or a 14pt thumbnail) and a short label.
+struct WorkComposerPillSpec {
+  var symbolName: String
+  var label: String
+  var monospaced = false
+  var thumbnail: UIImage? = nil
+  var isWarning = false
+  var isPending = false
+
+  func drawsSame(as other: WorkComposerPillSpec) -> Bool {
+    symbolName == other.symbolName
+      && label == other.label
+      && monospaced == other.monospaced
+      && thumbnail === other.thumbnail
+      && isWarning == other.isWarning
+      && isPending == other.isPending
+  }
+}
+
+/// One pill in the composer's text storage: a single U+FFFC character whose
+/// attachment carries what it serializes back to.
+///
+/// The storage is NOT the draft. The draft (`draftState.text`, the persisted
+/// draft, what `chat.send` carries) is the grammar text that
+/// `WorkComposerPillEngine.serialize` rebuilds from these pills, so every
+/// surface that reads plain text keeps reading the same tokens.
+final class WorkComposerPillAttachment: NSTextAttachment {
+  enum Source: Equatable {
+    /// A fixed token: a mention, a link, an `@path`, a slash command.
+    case token(String)
+    /// A staged attachment. Its `[Image #k]` / `[File #k: name]` token follows
+    /// the attachment's position, so removing an earlier one renumbers it.
+    case attachment(UUID)
+  }
+
+  let source: Source
+  let spec: WorkComposerPillSpec
+
+  init(source: Source, spec: WorkComposerPillSpec) {
+    self.source = source
+    self.spec = spec
+    super.init(data: nil, ofType: nil)
+    // Read by VoiceOver in place of the object-replacement character.
+    accessibilityLabel = spec.label
+  }
+
+  required init?(coder: NSCoder) {
+    return nil
+  }
+}
+
+/// The over-limit notice is a failed tray row, not an attachment: it has no
+/// number and no pill.
+func workChatInputAttachmentIsLimitNotice(_ attachment: WorkChatInputAttachment) -> Bool {
+  attachment.filename == "attachment-limit" && attachment.errorMessage != nil
+}
+
+/// Where an attachment sits in the shared numbering.
+struct WorkComposerAttachmentNumber: Equatable {
+  let kind: WorkAttachmentToken.Kind
+  let ordinal: Int
+  let token: String
+}
+
+enum WorkComposerPillRenderer {
+  static let maxLabelWidth: CGFloat = 180
+  static let iconSide: CGFloat = 14
+
+  /// Rasterizes one pill. Colors are resolved against `traits`, so a light /
+  /// dark switch re-renders (see `WorkComposerPastingTextView.onTraitsChange`).
+  static func render(
+    _ spec: WorkComposerPillSpec,
+    tint: UIColor,
+    font: UIFont,
+    traits: UITraitCollection
+  ) -> (image: UIImage, bounds: CGRect) {
+    let labelSize = max(11, font.pointSize - 2)
+    let labelFont: UIFont = spec.monospaced
+      ? .monospacedSystemFont(ofSize: labelSize - 1, weight: .semibold)
+      : .systemFont(ofSize: labelSize, weight: .semibold)
+    let isDark = traits.userInterfaceStyle == .dark
+    let resolvedTint = (spec.isWarning ? UIColor(ADEColor.warning) : tint).resolvedColor(with: traits)
+    let textColor = UIColor(ADEColor.textPrimary).resolvedColor(with: traits)
+
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byTruncatingTail
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: labelFont,
+      .foregroundColor: textColor,
+      .paragraphStyle: paragraph,
+    ]
+    let label = spec.label as NSString
+    let labelWidth = min(ceil(label.size(withAttributes: attributes).width), maxLabelWidth)
+    let horizontalPadding: CGFloat = 6
+    let gap: CGFloat = 4
+    let margin: CGFloat = 1.5
+    let height = ceil(labelFont.lineHeight) + 5
+    let pillWidth = horizontalPadding + iconSide + gap + labelWidth + horizontalPadding + 1
+    let size = CGSize(width: pillWidth + margin * 2, height: height)
+
+    let format = UIGraphicsImageRendererFormat(for: traits)
+    format.opaque = false
+    let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+      if spec.isPending { context.cgContext.setAlpha(0.55) }
+      let pillRect = CGRect(x: margin, y: 0.5, width: pillWidth, height: height - 1)
+      let shape = UIBezierPath(roundedRect: pillRect, cornerRadius: min(8, pillRect.height / 2))
+      resolvedTint.withAlphaComponent(isDark ? 0.22 : 0.12).setFill()
+      shape.fill()
+      resolvedTint.withAlphaComponent(isDark ? 0.42 : 0.30).setStroke()
+      shape.lineWidth = 0.75
+      shape.stroke()
+
+      let iconRect = CGRect(
+        x: margin + horizontalPadding,
+        y: (height - iconSide) / 2,
+        width: iconSide,
+        height: iconSide
+      )
+      if let thumbnail = spec.thumbnail {
+        context.cgContext.saveGState()
+        UIBezierPath(roundedRect: iconRect, cornerRadius: 3.5).addClip()
+        drawAspectFill(thumbnail, in: iconRect)
+        context.cgContext.restoreGState()
+        resolvedTint.withAlphaComponent(0.35).setStroke()
+        let ring = UIBezierPath(roundedRect: iconRect, cornerRadius: 3.5)
+        ring.lineWidth = 0.5
+        ring.stroke()
+      } else {
+        let configuration = UIImage.SymbolConfiguration(pointSize: labelSize - 3, weight: .semibold)
+        if let symbol = UIImage(systemName: spec.symbolName, withConfiguration: configuration)?
+          .withTintColor(resolvedTint, renderingMode: .alwaysOriginal) {
+          let symbolSize = symbol.size
+          symbol.draw(in: CGRect(
+            x: iconRect.midX - symbolSize.width / 2,
+            y: iconRect.midY - symbolSize.height / 2,
+            width: symbolSize.width,
+            height: symbolSize.height
+          ))
+        }
+      }
+
+      let labelRect = CGRect(
+        x: iconRect.maxX + gap,
+        y: (height - labelFont.lineHeight) / 2,
+        width: labelWidth,
+        height: ceil(labelFont.lineHeight)
+      )
+      label.draw(
+        with: labelRect,
+        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+        attributes: attributes,
+        context: nil
+      )
+    }
+    // Centre the pill on the cap height so it sits on the text line rather
+    // than hanging from the baseline.
+    let center = font.capHeight / 2
+    let bounds = CGRect(x: 0, y: (center - size.height / 2).rounded(), width: size.width, height: size.height)
+    return (image, bounds)
+  }
+
+  /// A small square thumbnail for an image pill, so a 2400px upload render is
+  /// not redrawn into a 14pt box on every re-render.
+  static func thumbnail(_ image: UIImage, side: CGFloat = 42) -> UIImage {
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    format.opaque = false
+    let rect = CGRect(x: 0, y: 0, width: side, height: side)
+    return UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
+      drawAspectFill(image, in: rect)
+    }
+  }
+
+  private static func drawAspectFill(_ image: UIImage, in rect: CGRect) {
+    let size = image.size
+    guard size.width > 0, size.height > 0 else { return }
+    let scale = max(rect.width / size.width, rect.height / size.height)
+    let drawn = CGSize(width: size.width * scale, height: size.height * scale)
+    image.draw(in: CGRect(
+      x: rect.midX - drawn.width / 2,
+      y: rect.midY - drawn.height / 2,
+      width: drawn.width,
+      height: drawn.height
+    ))
+  }
+}
+
+// MARK: - Big paste → file
+
+/// A text paste over 40 lines or 3,000 characters becomes a temp text file
+/// attachment instead of flooding the prompt. Shared rule with the desktop
+/// composer; keep the thresholds and the extension sniffing in step.
+enum WorkComposerBigPaste {
+  static let lineThreshold = 40
+  static let characterThreshold = 3000
+
+  /// Lines in the paste, with CRLF / CR treated as LF and one trailing newline
+  /// not counting as an extra empty line.
+  static func lineCount(_ text: String) -> Int {
+    var normalized = text
+      .replacingOccurrences(of: "\r\n", with: "\n")
+      .replacingOccurrences(of: "\r", with: "\n")
+    if normalized.hasSuffix("\n") { normalized.removeLast() }
+    guard !normalized.isEmpty else { return 0 }
+    return normalized.split(separator: "\n", omittingEmptySubsequences: false).count
+  }
+
+  /// Strictly more than the thresholds; the character count is UTF-16 units,
+  /// the same unit the desktop's `string.length` counts.
+  static func qualifies(_ text: String) -> Bool {
+    lineCount(text) > lineThreshold || (text as NSString).length > characterThreshold
+  }
+
+  private static let logLineRegex = try! NSRegularExpression(
+    pattern: "^\\s*\\[?(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}|\\d{2}:\\d{2}:\\d{2}|(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\\b)",
+    options: [.caseInsensitive]
+  )
+
+  /// `.diff` for a git diff, `.json` for a JSON object or array, `.log` when
+  /// most lines open with a timestamp or a level, `.txt` otherwise.
+  static func fileExtension(for text: String) -> String {
+    let lines = text
+      .replacingOccurrences(of: "\r\n", with: "\n")
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .map(String.init)
+    if lines.contains(where: { $0.hasPrefix("diff --git ") })
+      || (lines.contains(where: { $0.hasPrefix("--- ") })
+        && lines.contains(where: { $0.hasPrefix("+++ ") })
+        && lines.contains(where: { $0.hasPrefix("@@") })) {
+      return "diff"
+    }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let first = trimmed.first, first == "{" || first == "[",
+       let parsed = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8)),
+       parsed is [Any] || parsed is [String: Any] {
+      return "json"
+    }
+    let nonEmpty = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    if nonEmpty.count >= 3 {
+      let matching = nonEmpty.filter { line in
+        logLineRegex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) != nil
+      }.count
+      if Double(matching) / Double(nonEmpty.count) >= 0.6 { return "log" }
+    }
+    return "txt"
+  }
+
+  static func filename(for text: String, at date: Date) -> String {
+    "pasted-\(Int64(date.timeIntervalSince1970 * 1000)).\(fileExtension(for: text))"
+  }
+
+  /// The staged file. It rides the same chunked file upload as a picked
+  /// document (`workChatStageAttachmentOnHost`, kind `.file`).
+  static func attachment(for text: String, at date: Date = Date()) -> WorkChatInputAttachment {
+    let filename = filename(for: text, at: date)
+    let mimeType: String
+    switch (filename as NSString).pathExtension {
+    case "json": mimeType = "application/json"
+    case "diff": mimeType = "text/x-diff"
+    default: mimeType = "text/plain"
+    }
+    return WorkChatInputAttachment(
+      uploadData: Data(text.utf8),
+      filename: filename,
+      mimeType: mimeType,
+      kind: .file,
+      state: .ready
+    )
+  }
+}
+
+private let workComposerPastedFilenameRegex = try! NSRegularExpression(
+  pattern: "^pasted-\\d+\\.(txt|log|json|diff)$",
+  options: []
+)
+
+func workComposerIsPastedTextFilename(_ name: String) -> Bool {
+  workComposerPastedFilenameRegex.firstMatch(
+    in: name,
+    range: NSRange(location: 0, length: (name as NSString).length)
+  ) != nil
+}
+
+// MARK: - Pill engine
+
+/// Owns the composer's pills: turning grammar text into pills (hydrate), pills
+/// back into grammar text (serialize), and keeping attachment pills and the
+/// staged attachment list in lockstep in both directions.
+///
+/// Shared by the chat composer and the start-chat composer, so the two cannot
+/// drift on what a pill means.
+@MainActor
+final class WorkComposerPillEngine {
+  weak var textView: UITextView?
+
+  /// The draft as SwiftUI holds it, and how to write it back.
+  var readDraft: () -> String = { "" }
+  var writeDraft: (String) -> Void = { _ in }
+  /// Staged attachments. Nil on surfaces that stage none.
+  var attachmentsBinding: () -> Binding<[WorkChatInputAttachment]>? = { nil }
+  /// Whether a big text paste may become a file attachment here.
+  var acceptsPastedFiles: () -> Bool = { false }
+  var tint: () -> UIColor = { UIColor(ADEColor.accent) }
+
+  /// The draft text this engine last agreed with SwiftUI on. A draft that no
+  /// longer matches it was changed from outside (send-clear, a restore,
+  /// dictation, a stash) and is hydrated again.
+  private(set) var syncedText = ""
+  /// A serialization queued for SwiftUI from inside a view update. While it is
+  /// pending, the stale draft must not be read back as an outside change.
+  private var pendingPublish: String?
+  private var lastAttachmentSignature = ""
+  private var knownAttachmentPillIds: Set<UUID> = []
+  private var chipifyAfterPaste = false
+  private var thumbnails: [UUID: UIImage] = [:]
+  private var pastedLineCounts: [UUID: Int] = [:]
+
+  var font: UIFont { UIFont.preferredFont(forTextStyle: .body) }
+
+  var baseAttributes: [NSAttributedString.Key: Any] {
+    [
+      .font: font,
+      .foregroundColor: UIColor(ADEColor.textPrimary),
+    ]
+  }
+
+  // MARK: Attachments + numbering
+
+  var attachments: [WorkChatInputAttachment] {
+    attachmentsBinding()?.wrappedValue ?? []
+  }
+
+  /// Attachments that carry a number, in tray order.
+  var numberedAttachments: [WorkChatInputAttachment] {
+    attachments.filter { !workChatInputAttachmentIsLimitNotice($0) }
+  }
+
+  /// Positional numbering, the same rule the host labels attachments with:
+  /// images count among images, everything else among files.
+  static func attachmentNumbers(_ list: [WorkChatInputAttachment]) -> [UUID: WorkComposerAttachmentNumber] {
+    var images = 0
+    var files = 0
+    var out: [UUID: WorkComposerAttachmentNumber] = [:]
+    for attachment in list {
+      if attachment.kind == .image {
+        images += 1
+        out[attachment.id] = WorkComposerAttachmentNumber(
+          kind: .image,
+          ordinal: images,
+          token: WorkAttachmentTokenGrammar.token(kind: .image, ordinal: images)
+        )
+      } else {
+        files += 1
+        out[attachment.id] = WorkComposerAttachmentNumber(
+          kind: .file,
+          ordinal: files,
+          token: WorkAttachmentTokenGrammar.token(kind: .file, ordinal: files, name: attachment.filename)
+        )
       }
     }
+    return out
+  }
+
+  private var attachmentSignature: String {
+    attachments.map { attachment in
+      let state: String
+      switch attachment.state {
+      case .loading: state = "l"
+      case .ready: state = "r"
+      case .failed: state = "f"
+      }
+      return "\(attachment.id.uuidString):\(state):\(attachment.image == nil ? 0 : 1):\(attachment.filename)"
+    }.joined(separator: ",")
+  }
+
+  // MARK: Serialize
+
+  /// The grammar text for `range` (default: everything). A pill becomes its
+  /// token; an attachment pill whose attachment is gone becomes nothing.
+  func serialize(range: NSRange? = nil) -> String {
+    guard let storage = textView?.textStorage else { return "" }
+    let full = range ?? NSRange(location: 0, length: storage.length)
+    guard full.length > 0, NSMaxRange(full) <= storage.length else { return "" }
+    let ns = storage.string as NSString
+    let numbers = Self.attachmentNumbers(numberedAttachments)
+    var out = ""
+    var cursor = full.location
+    storage.enumerateAttribute(.attachment, in: full, options: []) { value, run, _ in
+      guard let pill = value as? WorkComposerPillAttachment else { return }
+      if run.location > cursor {
+        out += ns.substring(with: NSRange(location: cursor, length: run.location - cursor))
+      }
+      let token: String
+      switch pill.source {
+      case .token(let raw): token = raw
+      case .attachment(let id): token = numbers[id]?.token ?? ""
+      }
+      out += String(repeating: token, count: run.length)
+      cursor = NSMaxRange(run)
+    }
+    if cursor < NSMaxRange(full) {
+      out += ns.substring(with: NSRange(location: cursor, length: NSMaxRange(full) - cursor))
+    }
+    return out.replacingOccurrences(of: "\u{FFFC}", with: "")
+  }
+
+  /// The storage text with every pill read as a space. Same UTF-16 length, so
+  /// offsets line up with the storage, and a pill bounds a token the way
+  /// whitespace would.
+  func scanningString() -> NSString {
+    guard let storage = textView?.textStorage else { return "" }
+    return storage.string.replacingOccurrences(of: "\u{FFFC}", with: " ") as NSString
+  }
+
+  // MARK: Pills
+
+  func pillString(source: WorkComposerPillAttachment.Source, spec: WorkComposerPillSpec) -> NSAttributedString {
+    let attachment = WorkComposerPillAttachment(source: source, spec: spec)
+    render(attachment)
+    var attributes = baseAttributes
+    attributes[.attachment] = attachment
+    switch source {
+    case .token(let raw): attributes[.workComposerPillToken] = raw
+    case .attachment(let id): attributes[.workComposerPillToken] = "attachment:\(id.uuidString)"
+    }
+    return NSAttributedString(string: "\u{FFFC}", attributes: attributes)
+  }
+
+  private func render(_ attachment: WorkComposerPillAttachment) {
+    let traits = textView?.traitCollection ?? UITraitCollection.current
+    let rendered = WorkComposerPillRenderer.render(attachment.spec, tint: tint(), font: font, traits: traits)
+    attachment.image = rendered.image
+    attachment.bounds = rendered.bounds
+  }
+
+  func pillString(for chip: WorkChip) -> NSAttributedString {
+    let label: String
+    switch chip.origin {
+    case .mention:
+      label = WorkComposerMentionTitleCache.title(for: chip.canonicalText) ?? chip.label
+    case .link(let link):
+      label = WorkComposerMentionTitleCache.title(for: link.url) ?? link.pillLabel
+    case .path, .attachment:
+      label = chip.label
+    }
+    return pillString(
+      source: .token(chip.canonicalText),
+      spec: WorkComposerPillSpec(symbolName: chip.kind.symbolName, label: label)
+    )
+  }
+
+  func pillString(for suggestion: WorkComposerSuggestion) -> NSAttributedString {
+    let label: String
+    switch suggestion.kind {
+    case .slash: label = suggestion.insertText
+    case .hash, .at: label = suggestion.title
+    }
+    return pillString(
+      source: .token(suggestion.insertText),
+      spec: WorkComposerPillSpec(
+        symbolName: suggestion.symbolName,
+        label: label,
+        monospaced: suggestion.kind == .slash
+      )
+    )
+  }
+
+  func pillString(forAttachment id: UUID) -> NSAttributedString? {
+    let list = numberedAttachments
+    guard let attachment = list.first(where: { $0.id == id }),
+          let number = Self.attachmentNumbers(list)[id] else { return nil }
+    return pillString(source: .attachment(id), spec: spec(for: attachment, number: number))
+  }
+
+  private func spec(for attachment: WorkChatInputAttachment, number: WorkComposerAttachmentNumber) -> WorkComposerPillSpec {
+    var spec: WorkComposerPillSpec
+    if attachment.kind == .image {
+      spec = WorkComposerPillSpec(symbolName: "photo", label: "Image \(number.ordinal)")
+      spec.thumbnail = thumbnail(for: attachment)
+    } else {
+      spec = WorkComposerPillSpec(
+        symbolName: attachment.kind == .video ? "film" : "doc.text",
+        label: fileLabel(for: attachment)
+      )
+    }
+    if attachment.errorMessage != nil {
+      spec.symbolName = "exclamationmark.triangle.fill"
+      spec.thumbnail = nil
+      spec.isWarning = true
+    }
+    spec.isPending = attachment.isLoading
+    return spec
+  }
+
+  private func fileLabel(for attachment: WorkChatInputAttachment) -> String {
+    if let lines = pastedLineCount(for: attachment) {
+      return "Pasted · \(lines) \(lines == 1 ? "line" : "lines")"
+    }
+    return attachment.filename
+  }
+
+  private func pastedLineCount(for attachment: WorkChatInputAttachment) -> Int? {
+    guard workComposerIsPastedTextFilename(attachment.filename) else { return nil }
+    if let cached = pastedLineCounts[attachment.id] { return cached }
+    guard let data = attachment.uploadData,
+          let text = String(data: data, encoding: .utf8) else { return nil }
+    let count = WorkComposerBigPaste.lineCount(text)
+    pastedLineCounts[attachment.id] = count
+    return count
+  }
+
+  private func thumbnail(for attachment: WorkChatInputAttachment) -> UIImage? {
+    if let cached = thumbnails[attachment.id] { return cached }
+    guard let image = attachment.image else { return nil }
+    let thumbnail = WorkComposerPillRenderer.thumbnail(image)
+    thumbnails[attachment.id] = thumbnail
+    return thumbnail
+  }
+
+  /// Attachment ids that have a pill, in document order.
+  func attachmentPillIds() -> [UUID] {
+    guard let storage = textView?.textStorage, storage.length > 0 else { return [] }
+    var ids: [UUID] = []
+    storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+      guard let pill = value as? WorkComposerPillAttachment,
+            case .attachment(let id) = pill.source else { return }
+      ids.append(id)
+    }
+    return ids
+  }
+
+  /// The pill under a point in the text view's own coordinates.
+  func pill(at point: CGPoint) -> (pill: WorkComposerPillAttachment, range: NSRange)? {
+    guard let textView else { return nil }
+    let storage = textView.textStorage
+    let layoutManager = textView.layoutManager
+    let adjusted = CGPoint(
+      x: point.x - textView.textContainerInset.left,
+      y: point.y - textView.textContainerInset.top
+    )
+    let glyph = layoutManager.glyphIndex(for: adjusted, in: textView.textContainer)
+    guard glyph < layoutManager.numberOfGlyphs else { return nil }
+    let hitRect = layoutManager
+      .boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer)
+      .insetBy(dx: -4, dy: -4)
+    guard hitRect.contains(adjusted) else { return nil }
+    let character = layoutManager.characterIndexForGlyph(at: glyph)
+    guard character < storage.length,
+          let pill = storage.attribute(.attachment, at: character, effectiveRange: nil) as? WorkComposerPillAttachment
+    else { return nil }
+    return (pill, NSRange(location: character, length: 1))
+  }
+
+  // MARK: Hydrate
+
+  /// Grammar text → pills. Mentions, links and `@paths` always become pills;
+  /// `[Image #k]` / `[File #k: …]` only when attachment k exists, and each
+  /// attachment at most once, so a stray duplicate token stays text.
+  func hydrate(_ text: String, includeAttachments: Bool = true) -> NSAttributedString {
+    let ns = text.replacingOccurrences(of: "\u{FFFC}", with: "") as NSString
+    var candidates: [(range: NSRange, pill: NSAttributedString)] = []
+    if includeAttachments {
+      let list = numberedAttachments
+      var used = Set<UUID>()
+      for token in WorkAttachmentTokenGrammar.tokens(in: ns) {
+        guard let index = WorkAttachmentTokenGrammar.resolve(token, in: list, isImage: { $0.kind == .image })
+        else { continue }
+        let id = list[index].id
+        guard used.insert(id).inserted, let pill = pillString(forAttachment: id) else { continue }
+        candidates.append((token.range, pill))
+      }
+    }
+    for chip in WorkChipDetector.chips(in: ns, limit: WorkChipDetector.canonicalTextChipLimit) {
+      candidates.append((chip.range, pillString(for: chip)))
+    }
+    let ordered = candidates.enumerated()
+      .sorted { lhs, rhs in
+        lhs.element.range.location == rhs.element.range.location
+          ? lhs.offset < rhs.offset
+          : lhs.element.range.location < rhs.element.range.location
+      }
+      .map(\.element)
+
+    let out = NSMutableAttributedString()
+    var cursor = 0
+    for candidate in ordered where candidate.range.location >= cursor {
+      if candidate.range.location > cursor {
+        out.append(NSAttributedString(
+          string: ns.substring(with: NSRange(location: cursor, length: candidate.range.location - cursor)),
+          attributes: baseAttributes
+        ))
+      }
+      out.append(candidate.pill)
+      cursor = NSMaxRange(candidate.range)
+    }
+    if cursor < ns.length {
+      out.append(NSAttributedString(string: ns.substring(from: cursor), attributes: baseAttributes))
+    }
+    return out
+  }
+
+  // MARK: Edits
+
+  /// Replaces a storage range and keeps the caret where the user expects it.
+  /// Programmatic storage edits do not reach `textViewDidChange`; callers
+  /// publish afterwards.
+  func replace(_ range: NSRange, with string: NSAttributedString) {
+    guard let textView else { return }
+    let storage = textView.textStorage
+    guard NSMaxRange(range) <= storage.length else { return }
+    let selection = textView.selectedRange
+    storage.replaceCharacters(in: range, with: string)
+    let delta = string.length - range.length
+    var location = selection.location
+    if location >= NSMaxRange(range) {
+      location += delta
+    } else if location > range.location {
+      location = range.location + string.length
+    }
+    textView.selectedRange = NSRange(location: min(max(0, location), storage.length), length: 0)
+    textView.typingAttributes = baseAttributes
+  }
+
+  private func plain(_ text: String) -> NSAttributedString {
+    NSAttributedString(string: text, attributes: baseAttributes)
+  }
+
+  private func isWhitespace(_ character: unichar) -> Bool {
+    character == 0x20 || character == 0x09 || character == 0x0A || character == 0x0D
+  }
+
+  /// Inserts attachment pills at `range` (the caret, for a paste), padded with
+  /// a space on each side so they never fuse with a neighbouring word.
+  func insertAttachmentPills(_ ids: [UUID], at range: NSRange) {
+    guard let textView, !ids.isEmpty else { return }
+    let storage = textView.textStorage
+    let safe = NSMaxRange(range) <= storage.length ? range : NSRange(location: storage.length, length: 0)
+    let scan = scanningString()
+    let insertion = NSMutableAttributedString()
+    if safe.location > 0, !isWhitespace(scan.character(at: safe.location - 1)) {
+      insertion.append(plain(" "))
+    }
+    for (index, id) in ids.enumerated() {
+      guard let pill = pillString(forAttachment: id) else { continue }
+      if index > 0 { insertion.append(plain(" ")) }
+      insertion.append(pill)
+    }
+    let end = NSMaxRange(safe)
+    if end >= scan.length || !isWhitespace(scan.character(at: end)) {
+      insertion.append(plain(" "))
+    }
+    storage.replaceCharacters(in: safe, with: insertion)
+    textView.selectedRange = NSRange(location: safe.location + insertion.length, length: 0)
+    textView.typingAttributes = baseAttributes
+    knownAttachmentPillIds = Set(attachmentPillIds())
+    lastAttachmentSignature = attachmentSignature
+  }
+
+  /// Removes a pill (and one neighbouring space, so no double space is left).
+  /// An attachment pill takes its attachment with it.
+  func removePill(at range: NSRange) {
+    guard let textView, NSMaxRange(range) <= textView.textStorage.length else { return }
+    let scan = scanningString()
+    var removal = range
+    let end = NSMaxRange(range)
+    if end < scan.length, scan.character(at: end) == 0x20,
+       range.location == 0 || isWhitespace(scan.character(at: range.location - 1)) {
+      removal.length += 1
+    }
+    replace(removal, with: NSAttributedString())
+    syncRemovedAttachmentPills()
+    publishNow()
+  }
+
+  /// Turns finished plain tokens into pills. While typing, a token is
+  /// finished once whitespace follows it, so a URL or a mention being typed
+  /// is left alone; after a paste everything pasted is finished.
+  @discardableResult
+  func chipifyCompletedTokens(requireTrailingDelimiter: Bool) -> Bool {
+    guard let textView else { return false }
+    let scan = scanningString()
+    guard scan.length > 0 else { return false }
+    let caret = textView.selectedRange.location
+    let chips = WorkChipDetector.chips(in: scan, limit: WorkChipDetector.canonicalTextChipLimit)
+    var changed = false
+    for chip in chips.reversed() {
+      let end = NSMaxRange(chip.range)
+      if requireTrailingDelimiter {
+        // Only the token the user just closed: the whitespace at `end` is the
+        // character they typed. Anything else is either already a pill or text
+        // the caret is not finishing — typing `https://` straight in front of
+        // a word would otherwise read `https://word` as a finished link.
+        guard end < scan.length,
+              end == caret - 1,
+              isWhitespace(scan.character(at: end)) else { continue }
+      }
+      replace(chip.range, with: pillString(for: chip))
+      changed = true
+    }
+    return changed
+  }
+
+  /// First Backspace on an attachment pill selects it; the second deletes it
+  /// (and its attachment). Deleting an attachment is destructive, so it takes
+  /// a deliberate second press.
+  func interceptsDeletion(range: NSRange, replacement: String) -> Bool {
+    guard let textView,
+          replacement.isEmpty,
+          range.length == 1,
+          textView.selectedRange.length == 0,
+          range.location < textView.textStorage.length,
+          let pill = textView.textStorage.attribute(.attachment, at: range.location, effectiveRange: nil)
+            as? WorkComposerPillAttachment,
+          case .attachment = pill.source
+    else { return false }
+    textView.selectedRange = range
+    return true
+  }
+
+  /// An attachment pill the user deleted takes its attachment with it.
+  /// Returns whether any attachment was removed.
+  @discardableResult
+  func syncRemovedAttachmentPills() -> Bool {
+    let current = Set(attachmentPillIds())
+    let removed = knownAttachmentPillIds.subtracting(current)
+    knownAttachmentPillIds = current
+    guard !removed.isEmpty, let binding = attachmentsBinding() else { return false }
+    let before = binding.wrappedValue.count
+    binding.wrappedValue.removeAll { removed.contains($0.id) }
+    guard binding.wrappedValue.count != before else { return false }
+    lastAttachmentSignature = attachmentSignature
+    rerenderPills(attachmentsOnly: true)
+    return true
+  }
+
+  /// Brings attachment pills in line with the staged list:
+  /// a removed attachment's pill goes, a `[Image #k]` typed or restored as
+  /// text becomes a pill once attachment k exists, and an attachment with no
+  /// pill (a picker add, a restore whose text has no token) gets one at the end.
+  func reconcileAttachments() {
+    guard let textView else { return }
+    let storage = textView.textStorage
+    let list = numberedAttachments
+    let liveIds = Set(list.map(\.id))
+
+    var stale: [NSRange] = []
+    if storage.length > 0 {
+      storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+        guard let pill = value as? WorkComposerPillAttachment,
+              case .attachment(let id) = pill.source,
+              !liveIds.contains(id) else { return }
+        stale.append(range)
+      }
+    }
+    for range in stale.reversed() {
+      let scan = scanningString()
+      var removal = range
+      let end = NSMaxRange(range)
+      if end < scan.length, scan.character(at: end) == 0x20,
+         range.location == 0 || isWhitespace(scan.character(at: range.location - 1)) {
+        removal.length += 1
+      }
+      replace(removal, with: NSAttributedString())
+    }
+
+    var present = Set(attachmentPillIds())
+    var planned: [(range: NSRange, id: UUID)] = []
+    for token in WorkAttachmentTokenGrammar.tokens(in: scanningString()) {
+      guard let index = WorkAttachmentTokenGrammar.resolve(token, in: list, isImage: { $0.kind == .image })
+      else { continue }
+      let id = list[index].id
+      guard !present.contains(id) else { continue }
+      present.insert(id)
+      planned.append((token.range, id))
+    }
+    for entry in planned.reversed() {
+      guard let pill = pillString(forAttachment: entry.id) else { continue }
+      replace(entry.range, with: pill)
+    }
+
+    let missing = list.filter { !present.contains($0.id) }
+    if !missing.isEmpty {
+      let caretAtEnd = textView.selectedRange.location >= storage.length
+      let scan = scanningString()
+      let appended = NSMutableAttributedString()
+      if scan.length > 0, !isWhitespace(scan.character(at: scan.length - 1)) {
+        appended.append(plain(" "))
+      }
+      for attachment in missing {
+        guard let pill = pillString(forAttachment: attachment.id) else { continue }
+        appended.append(pill)
+        appended.append(plain(" "))
+      }
+      storage.append(appended)
+      if caretAtEnd {
+        textView.selectedRange = NSRange(location: storage.length, length: 0)
+      }
+      textView.typingAttributes = baseAttributes
+    }
+
+    // Prune per-attachment caches for attachments that are gone.
+    thumbnails = thumbnails.filter { liveIds.contains($0.key) }
+    pastedLineCounts = pastedLineCounts.filter { liveIds.contains($0.key) }
+
+    rerenderPills(attachmentsOnly: true)
+    knownAttachmentPillIds = Set(attachmentPillIds())
+    lastAttachmentSignature = attachmentSignature
+  }
+
+  /// Re-renders pills whose drawing changed: attachment pills after a
+  /// renumber or a load, every pill after a light/dark or text-size change.
+  func rerenderPills(attachmentsOnly: Bool) {
+    guard let storage = textView?.textStorage, storage.length > 0 else { return }
+    let list = numberedAttachments
+    let numbers = Self.attachmentNumbers(list)
+    var updates: [(range: NSRange, attachment: WorkComposerPillAttachment)] = []
+    storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+      guard let pill = value as? WorkComposerPillAttachment else { return }
+      switch pill.source {
+      case .attachment(let id):
+        guard let attachment = list.first(where: { $0.id == id }), let number = numbers[id] else { return }
+        let next = spec(for: attachment, number: number)
+        guard !attachmentsOnly || !next.drawsSame(as: pill.spec) else { return }
+        updates.append((range, WorkComposerPillAttachment(source: pill.source, spec: next)))
+      case .token:
+        guard !attachmentsOnly else { return }
+        updates.append((range, WorkComposerPillAttachment(source: pill.source, spec: pill.spec)))
+      }
+    }
+    guard !updates.isEmpty else { return }
+    storage.beginEditing()
+    for update in updates {
+      render(update.attachment)
+      storage.addAttribute(.attachment, value: update.attachment, range: update.range)
+    }
+    storage.endEditing()
+  }
+
+  // MARK: SwiftUI sync
+
+  /// Called from `updateUIView`. Applies an outside draft change, then any
+  /// attachment change, and queues the resulting serialization for SwiftUI.
+  /// Returns whether the storage was rebuilt.
+  @discardableResult
+  func syncFromSwiftUI() -> Bool {
+    guard let textView else { return false }
+    var changed = false
+    let draft = readDraft()
+    if pendingPublish == nil, draft != syncedText {
+      textView.textStorage.setAttributedString(hydrate(draft))
+      textView.selectedRange = NSRange(location: textView.textStorage.length, length: 0)
+      textView.typingAttributes = baseAttributes
+      knownAttachmentPillIds = Set(attachmentPillIds())
+      syncedText = draft
+      changed = true
+    }
+    if changed || attachmentSignature != lastAttachmentSignature {
+      reconcileAttachments()
+      changed = true
+    }
+    if changed { publishDeferred() }
+    return changed
+  }
+
+  /// Seeds the storage on mount without publishing anything back.
+  func load(_ text: String) {
+    guard let textView else { return }
+    syncedText = text
+    textView.textStorage.setAttributedString(hydrate(text))
+    textView.selectedRange = NSRange(location: textView.textStorage.length, length: 0)
+    textView.typingAttributes = baseAttributes
+    reconcileAttachments()
+    publishDeferred()
+  }
+
+  /// From a UIKit callback: write the draft now.
+  func publishNow() {
+    pendingPublish = nil
+    let serialized = serialize()
+    syncedText = serialized
+    if readDraft() != serialized { writeDraft(serialized) }
+  }
+
+  /// From a SwiftUI update: writing a published value there is a re-entrant
+  /// view update, so the write hops one turn.
+  private func publishDeferred() {
+    let serialized = serialize()
+    guard serialized != syncedText else { return }
+    syncedText = serialized
+    pendingPublish = serialized
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.pendingPublish == serialized else { return }
+      self.pendingPublish = nil
+      if self.readDraft() != serialized { self.writeDraft(serialized) }
+    }
+  }
+
+  /// After a user edit, outside marked text.
+  func userDidEdit() {
+    let afterPaste = chipifyAfterPaste
+    chipifyAfterPaste = false
+    chipifyCompletedTokens(requireTrailingDelimiter: !afterPaste)
+    syncRemovedAttachmentPills()
+  }
+
+  // MARK: Paste
+
+  /// Pasted images join the tray and land as pills at the caret.
+  func pasteImages(_ images: [UIImage], via stage: ([UIImage]) -> Void) {
+    guard let textView else {
+      stage(images)
+      return
+    }
+    let before = Set(attachments.map(\.id))
+    let caret = textView.selectedRange
+    stage(images)
+    let added = numberedAttachments.filter { !before.contains($0.id) }.map(\.id)
+    guard !added.isEmpty else { return }
+    insertAttachmentPills(added, at: caret)
+    publishNow()
+  }
+
+  /// A big text paste becomes a file attachment with a pill at the caret.
+  /// Returns false to let the ordinary paste run, which then pills its links
+  /// and mentions.
+  func pasteText(_ text: String) -> Bool {
+    guard let textView,
+          acceptsPastedFiles(),
+          let binding = attachmentsBinding(),
+          WorkComposerBigPaste.qualifies(text),
+          binding.wrappedValue.filter({ !workChatInputAttachmentIsLimitNotice($0) }).count < workChatInputAttachmentLimit
+    else {
+      chipifyAfterPaste = true
+      return false
+    }
+    let caret = textView.selectedRange
+    let attachment = WorkComposerBigPaste.attachment(for: text)
+    binding.wrappedValue.append(attachment)
+    if numberedAttachments.contains(where: { $0.id == attachment.id }) {
+      insertAttachmentPills([attachment.id], at: caret)
+    }
+    publishNow()
+    return true
   }
 }
 
@@ -1298,12 +2674,32 @@ final class WorkComposerChipLayoutManager: NSLayoutManager {
 
 final class WorkComposerPastingTextView: UITextView {
   var onPasteImages: (([UIImage]) -> Bool)?
+  /// Text paste hook. Returns true when the paste was consumed (a big paste
+  /// that became a file).
+  var onPasteText: ((String) -> Bool)?
+  /// Serializes a selection back to grammar text, so copy and cut put tokens
+  /// — never U+FFFC — on the clipboard.
+  var serializeRange: ((NSRange) -> String)?
+  /// Pills are rasterized with resolved colors; a light/dark or text-size
+  /// change re-renders them.
+  var onTraitsChange: (() -> Void)?
+  private var traitRegistration: (any UITraitChangeRegistration)?
 
   private var pastedImages: [UIImage] {
     let images = UIPasteboard.general.images ?? []
     if !images.isEmpty { return Array(images.prefix(workChatInputAttachmentLimit + 1)) }
     if let image = UIPasteboard.general.image { return [image] }
     return []
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    guard window != nil, traitRegistration == nil else { return }
+    traitRegistration = registerForTraitChanges(
+      [UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]
+    ) { (textView: WorkComposerPastingTextView, _: UITraitCollection) in
+      textView.onTraitsChange?()
+    }
   }
 
   override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -1321,53 +2717,103 @@ final class WorkComposerPastingTextView: UITextView {
        onPasteImages?(images) == true {
       return
     }
+    if let onPasteText,
+       UIPasteboard.general.hasStrings,
+       let string = UIPasteboard.general.string,
+       onPasteText(string) {
+      return
+    }
     super.paste(sender)
+  }
+
+  override func copy(_ sender: Any?) {
+    guard let serializeRange, selectedRange.length > 0 else {
+      super.copy(sender)
+      return
+    }
+    UIPasteboard.general.string = serializeRange(selectedRange)
+  }
+
+  override func cut(_ sender: Any?) {
+    guard let serializeRange, selectedRange.length > 0, isEditable else {
+      super.cut(sender)
+      return
+    }
+    UIPasteboard.general.string = serializeRange(selectedRange)
+    // Through the normal input path, so the delegate sees the deletion and an
+    // attachment pill takes its attachment with it.
+    deleteBackward()
   }
 }
 
+/// Long-press menu and tap handling for pills.
 @MainActor
-private final class WorkSmartLinkContextMenuController: NSObject, UIContextMenuInteractionDelegate {
+private final class WorkComposerPillInteractionController: NSObject, UIContextMenuInteractionDelegate, UIGestureRecognizerDelegate {
   weak var textView: UITextView?
-  var onRemove: ((WorkSmartLink) -> Void)?
+  weak var engine: WorkComposerPillEngine?
+  var onOpenAttachment: ((UUID) -> Void)?
 
-  init(textView: UITextView, onRemove: @escaping (WorkSmartLink) -> Void) {
+  init(textView: UITextView, engine: WorkComposerPillEngine) {
     self.textView = textView
-    self.onRemove = onRemove
+    self.engine = engine
     super.init()
     textView.addInteraction(UIContextMenuInteraction(delegate: self))
+    let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+    tap.cancelsTouchesInView = false
+    tap.delegate = self
+    textView.addGestureRecognizer(tap)
+  }
+
+  @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+    guard gesture.state == .ended,
+          let textView,
+          let onOpenAttachment,
+          let hit = engine?.pill(at: gesture.location(in: textView)),
+          case .attachment(let id) = hit.pill.source
+    else { return }
+    onOpenAttachment(id)
+  }
+
+  func gestureRecognizer(
+    _ gestureRecognizer: UIGestureRecognizer,
+    shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+  ) -> Bool {
+    true
   }
 
   func contextMenuInteraction(
     _ interaction: UIContextMenuInteraction,
     configurationForMenuAtLocation location: CGPoint
   ) -> UIContextMenuConfiguration? {
-    guard let textView,
-          let link = link(at: location, in: textView)
-    else { return nil }
-    return UIContextMenuConfiguration(identifier: link.url as NSString, previewProvider: nil) { [weak self] _ in
-      let copy = UIAction(title: "Copy link", image: UIImage(systemName: "doc.on.doc")) { _ in
-        UIPasteboard.general.string = link.url
+    guard let engine, let hit = engine.pill(at: location) else { return nil }
+    let token = engine.serialize(range: hit.range)
+    let range = hit.range
+    let isLink = token.contains("://")
+    var attachmentId: UUID?
+    if case .attachment(let id) = hit.pill.source { attachmentId = id }
+    return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+      var children: [UIMenuElement] = []
+      if let attachmentId, let open = self?.onOpenAttachment {
+        children.append(UIAction(title: "Open", image: UIImage(systemName: "eye")) { _ in
+          open(attachmentId)
+        })
+      } else {
+        children.append(UIAction(
+          title: isLink ? "Copy link" : "Copy",
+          image: UIImage(systemName: "doc.on.doc")
+        ) { _ in
+          UIPasteboard.general.string = token
+        })
       }
-      let remove = UIAction(title: "Remove link", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
-        self?.onRemove?(link)
-      }
-      return UIMenu(children: [copy, remove])
+      children.append(UIAction(
+        title: attachmentId == nil ? "Remove" : "Remove attachment",
+        image: UIImage(systemName: "trash"),
+        attributes: .destructive
+      ) { _ in
+        self?.engine?.removePill(at: range)
+      })
+      return UIMenu(children: children)
     }
-  }
-
-  private func link(at point: CGPoint, in textView: UITextView) -> WorkSmartLink? {
-    let adjusted = CGPoint(
-      x: point.x + textView.contentOffset.x - textView.textContainerInset.left,
-      y: point.y + textView.contentOffset.y - textView.textContainerInset.top
-    )
-    let glyph = textView.layoutManager.glyphIndex(for: adjusted, in: textView.textContainer)
-    guard glyph < textView.layoutManager.numberOfGlyphs else { return nil }
-    let hitRect = textView.layoutManager
-      .boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer)
-      .insetBy(dx: -6, dy: -6)
-    guard hitRect.contains(adjusted) else { return nil }
-    let character = textView.layoutManager.characterIndexForGlyph(at: glyph)
-    return WorkSmartLinkDetector.links(in: textView.text as NSString).first { NSLocationInRange(character, $0.range) }
   }
 }
 
@@ -1421,8 +2867,24 @@ private final class WorkComposerFocusScheduler {
   }
 }
 
-/// Plain UITextView composer for start-chat surfaces that do not need typed
-/// trigger chips but still need multiline sizing and image-paste interception.
+/// Builds the explicit TextKit 1 stack both composers use, so attachment pills
+/// render through `NSTextAttachment.image`.
+@MainActor
+private func workComposerMakeTextKit1TextView() -> (WorkComposerPastingTextView, NSTextStorage, NSLayoutManager) {
+  let textStorage = NSTextStorage()
+  let layoutManager = NSLayoutManager()
+  textStorage.addLayoutManager(layoutManager)
+  let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+  container.widthTracksTextView = true
+  container.lineFragmentPadding = 0
+  layoutManager.addTextContainer(container)
+  let textView = WorkComposerPastingTextView(frame: .zero, textContainer: container)
+  return (textView, textStorage, layoutManager)
+}
+
+/// Start-chat composer (new chat, hub, personal chats). No typed-trigger menu,
+/// but the same pills as the chat composer: links and mentions in the text,
+/// and — where an attachment list is passed — image and file pills.
 struct WorkPlainComposerTextView: UIViewRepresentable {
   @Binding var text: String
   @Binding var isFocused: Bool
@@ -1430,6 +2892,11 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
   let placeholder: String
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  /// Staged attachments, when this surface has a tray.
+  var attachments: Binding<[WorkChatInputAttachment]>? = nil
+  /// Whether a big text paste may become a file attachment.
+  var acceptsPastedFiles = false
+  var onOpenAttachment: ((UUID) -> Void)? = nil
 
   private var maxHeight: CGFloat {
     ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * 6) + 8
@@ -1440,14 +2907,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
   }
 
   func makeUIView(context: Context) -> UITextView {
-    let textStorage = NSTextStorage()
-    let layoutManager = WorkComposerChipLayoutManager()
-    textStorage.addLayoutManager(layoutManager)
-    let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-    container.widthTracksTextView = true
-    container.lineFragmentPadding = 0
-    layoutManager.addTextContainer(container)
-    let textView = WorkComposerPastingTextView(frame: .zero, textContainer: container)
+    let (textView, textStorage, layoutManager) = workComposerMakeTextKit1TextView()
     context.coordinator.textStorage = textStorage
     context.coordinator.layoutManager = layoutManager
     textView.delegate = context.coordinator
@@ -1467,18 +2927,13 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.StartChat.Composer.TextView"
-    textView.accessibilityHint = "Long press a link for copy and remove actions."
-    textView.onPasteImages = acceptsPastedImages
-      ? { [weak coordinator = context.coordinator] images in
-          coordinator?.handlePasteImages(images) ?? false
-        }
-      : nil
+    textView.accessibilityHint = "Long press a chip for copy and remove actions."
 
     context.coordinator.textView = textView
-    context.coordinator.installSmartLinkMenu(on: textView)
+    context.coordinator.attach(to: textView)
+    context.coordinator.applyHooks(to: textView)
     context.coordinator.applyPlaceholder(placeholder)
-    if !text.isEmpty { textView.text = text }
-    context.coordinator.restyleSmartLinks()
+    context.coordinator.engine.load(text)
     context.coordinator.updatePlaceholderVisibility()
     context.coordinator.updateHeight()
     return textView
@@ -1486,16 +2941,8 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
 
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.parent = self
-    if let textView = textView as? WorkComposerPastingTextView {
-      textView.onPasteImages = acceptsPastedImages
-        ? { [weak coordinator = context.coordinator] images in
-            coordinator?.handlePasteImages(images) ?? false
-          }
-        : nil
-    }
-    if textView.text != text {
-      textView.text = text
-      context.coordinator.restyleSmartLinks()
+    context.coordinator.applyHooks(to: textView)
+    if context.coordinator.engine.syncFromSwiftUI() {
       context.coordinator.updatePlaceholderVisibility()
     }
     context.coordinator.applyPlaceholder(placeholder)
@@ -1508,13 +2955,35 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     var parent: WorkPlainComposerTextView
     weak var textView: UITextView?
     var textStorage: NSTextStorage?
-    var layoutManager: WorkComposerChipLayoutManager?
-    private var smartLinkMenu: WorkSmartLinkContextMenuController?
+    var layoutManager: NSLayoutManager?
+    let engine = WorkComposerPillEngine()
+    private var interactions: WorkComposerPillInteractionController?
     private var placeholderLabel: UILabel?
     private let focusScheduler = WorkComposerFocusScheduler()
 
     init(_ parent: WorkPlainComposerTextView) {
       self.parent = parent
+      super.init()
+      engine.readDraft = { [weak self] in self?.parent.text ?? "" }
+      engine.writeDraft = { [weak self] value in self?.parent.text = value }
+      engine.attachmentsBinding = { [weak self] in self?.parent.attachments }
+      engine.acceptsPastedFiles = { [weak self] in self?.parent.acceptsPastedFiles ?? false }
+    }
+
+    func attach(to textView: WorkComposerPastingTextView) {
+      engine.textView = textView
+      interactions = WorkComposerPillInteractionController(textView: textView, engine: engine)
+      textView.serializeRange = { [weak engine] range in engine?.serialize(range: range) ?? "" }
+      textView.onPasteText = { [weak engine] text in engine?.pasteText(text) ?? false }
+      textView.onTraitsChange = { [weak engine] in engine?.rerenderPills(attachmentsOnly: false) }
+    }
+
+    func applyHooks(to textView: UITextView) {
+      interactions?.onOpenAttachment = parent.onOpenAttachment
+      guard let textView = textView as? WorkComposerPastingTextView else { return }
+      textView.onPasteImages = parent.acceptsPastedImages
+        ? { [weak self] images in self?.handlePasteImages(images) ?? false }
+        : nil
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {
@@ -1526,12 +2995,14 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     }
 
     func textViewDidChange(_ textView: UITextView) {
-      if parent.text != textView.text {
-        parent.text = textView.text
-      }
-      if textView.markedTextRange == nil { restyleSmartLinks() }
+      if textView.markedTextRange == nil { engine.userDidEdit() }
+      engine.publishNow()
       updatePlaceholderVisibility()
       updateHeight()
+    }
+
+    func textViewDidChangeSelection(_ textView: UITextView) {
+      textView.typingAttributes = engine.baseAttributes
     }
 
     func textView(
@@ -1539,62 +3010,8 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
       shouldChangeTextIn range: NSRange,
       replacementText text: String
     ) -> Bool {
-      guard let deletionRange = WorkSmartLinkDetector.atomicDeletionRange(
-        in: textView.text as NSString,
-        range: range,
-        replacementText: text
-      ) else { return true }
-      remove(range: deletionRange)
-      return false
-    }
-
-    func textView(
-      _ textView: UITextView,
-      shouldInteractWith URL: URL,
-      in characterRange: NSRange,
-      interaction: UITextItemInteraction
-    ) -> Bool {
-      false
-    }
-
-    func installSmartLinkMenu(on textView: UITextView) {
-      smartLinkMenu = WorkSmartLinkContextMenuController(textView: textView) { [weak self] link in
-        self?.remove(range: link.range)
-      }
-    }
-
-    func restyleSmartLinks() {
-      guard let textView else { return }
-      let storage = textView.textStorage
-      let fullRange = NSRange(location: 0, length: storage.length)
-      let baseAttributes: [NSAttributedString.Key: Any] = [
-        .font: UIFont.preferredFont(forTextStyle: .body),
-        .foregroundColor: UIColor(ADEColor.textPrimary),
-      ]
-      textView.typingAttributes = baseAttributes
-      guard fullRange.length > 0 else { return }
-      let tint = UIColor(ADEColor.accent)
-      storage.beginEditing()
-      storage.setAttributes(baseAttributes, range: fullRange)
-      for link in WorkSmartLinkDetector.links(in: storage.string as NSString) {
-        storage.addAttributes([
-          .font: UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold),
-          .foregroundColor: tint,
-          .workComposerChipTint: tint,
-          .link: link.url,
-        ], range: link.range)
-      }
-      storage.endEditing()
-    }
-
-    private func remove(range: NSRange) {
-      guard let textView, NSMaxRange(range) <= (textView.text as NSString).length else { return }
-      textView.textStorage.replaceCharacters(in: range, with: "")
-      textView.selectedRange = NSRange(location: min(range.location, textView.textStorage.length), length: 0)
-      if parent.text != textView.text { parent.text = textView.text }
-      restyleSmartLinks()
-      updatePlaceholderVisibility()
-      updateHeight()
+      textView.typingAttributes = engine.baseAttributes
+      return !engine.interceptsDeletion(range: range, replacement: text)
     }
 
     @discardableResult
@@ -1607,7 +3024,9 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
             let onPasteImages = parent.onPasteImages,
             !images.isEmpty
       else { return false }
-      onPasteImages(images)
+      engine.pasteImages(images, via: onPasteImages)
+      updatePlaceholderVisibility()
+      updateHeight()
       return true
     }
 
@@ -1633,7 +3052,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     }
 
     func updatePlaceholderVisibility() {
-      placeholderLabel?.isHidden = !(textView?.text.isEmpty ?? true)
+      placeholderLabel?.isHidden = (textView?.textStorage.length ?? 0) > 0
     }
 
     func updateHeight() {
@@ -1656,8 +3075,11 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
 
 /// UITextView-backed composer input. SwiftUI's `TextField` exposes neither the
 /// cursor position (needed for cursor-relative trigger detection) nor inline
-/// styled runs (needed for chips), so the composer drops to UIKit here while
-/// keeping `draftState.text` as the plain-text source of truth that gets sent.
+/// attachments (needed for pills), so the composer drops to UIKit here.
+///
+/// `draftState.text` stays the plain-text source of truth that gets sent and
+/// persisted: it is the GRAMMAR form (`@chat:abc`, `[Image #1]`, URLs), which
+/// `WorkComposerPillEngine` rebuilds from the pills on every edit.
 struct WorkComposerTextView: UIViewRepresentable {
   @ObservedObject var draftState: WorkChatComposerDraftState
   @ObservedObject var controller: WorkComposerSuggestionController
@@ -1666,6 +3088,13 @@ struct WorkComposerTextView: UIViewRepresentable {
   @Binding var measuredHeight: CGFloat
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  /// Staged attachments. Every attachment is a pill in the draft; deleting
+  /// either one removes the other.
+  var attachments: Binding<[WorkChatInputAttachment]>? = nil
+  /// Whether a big text paste may become a file attachment.
+  var acceptsPastedFiles = false
+  /// Tapping an image or file pill opens the attachment preview.
+  var onOpenAttachment: ((UUID) -> Void)? = nil
   var maxLines = 6
   /// Folded composer. The field keeps its measured height and is clipped to one
   /// line by the SwiftUI frame above it; here it only means "pin the draft to
@@ -1687,17 +3116,8 @@ struct WorkComposerTextView: UIViewRepresentable {
   }
 
   func makeUIView(context: Context) -> UITextView {
-    // Explicit TextKit 1 stack so our custom layout manager (chip backgrounds)
-    // is guaranteed to be the one in use.
-    let textStorage = NSTextStorage()
-    let layoutManager = WorkComposerChipLayoutManager()
-    textStorage.addLayoutManager(layoutManager)
-    let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-    container.widthTracksTextView = true
-    container.lineFragmentPadding = 0
-    layoutManager.addTextContainer(container)
-
-    let textView = WorkComposerPastingTextView(frame: .zero, textContainer: container)
+    // Explicit TextKit 1 stack so pills render through NSTextAttachment.image.
+    let (textView, textStorage, layoutManager) = workComposerMakeTextKit1TextView()
     // UITextView retains only the text container of a manually-built TextKit 1
     // stack; keep the storage + layout manager alive on the coordinator or the
     // stack deallocates out from under the view.
@@ -1718,28 +3138,22 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.smartDashesType = .no
     textView.tintColor = UIColor(ADEColor.accent)
     textView.adjustsFontForContentSizeCategory = true
-    textView.typingAttributes = context.coordinator.baseAttributes
+    textView.typingAttributes = context.coordinator.engine.baseAttributes
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.Chat.Composer.TextView"
-    textView.accessibilityHint = "Long press a link for copy and remove actions."
-    textView.onPasteImages = acceptsPastedImages
-      ? { [weak coordinator = context.coordinator] images in
-          coordinator?.handlePasteImages(images) ?? false
-        }
-      : nil
+    textView.accessibilityHint = "Long press a chip for copy and remove actions."
 
     context.coordinator.textView = textView
-    context.coordinator.installSmartLinkMenu(on: textView)
+    context.coordinator.attach(to: textView)
+    context.coordinator.applyHooks(to: textView)
     context.coordinator.observeFoldPan(on: textView)
     // Route committed suggestions straight to the live text view.
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
     }
 
-    if !draftState.text.isEmpty {
-      context.coordinator.setText(draftState.text, resetChips: true)
-    }
+    context.coordinator.engine.load(draftState.text)
     context.coordinator.applyPlaceholder(placeholder)
     context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
@@ -1749,19 +3163,14 @@ struct WorkComposerTextView: UIViewRepresentable {
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.parent = self
     textView.isEditable = canCompose
-    if let textView = textView as? WorkComposerPastingTextView {
-      textView.onPasteImages = acceptsPastedImages
-        ? { [weak coordinator = context.coordinator] images in
-            coordinator?.handlePasteImages(images) ?? false
-          }
-        : nil
-    }
+    context.coordinator.applyHooks(to: textView)
     context.coordinator.applyPlaceholder(placeholder)
 
-    // Reflect external mutations to the source of truth (dictation insert,
-    // send-clear, restore-unsent) that didn't originate from this text view.
-    if draftState.text != textView.text {
-      context.coordinator.setText(draftState.text, resetChips: false)
+    // Reflect outside changes to the source of truth (dictation insert,
+    // send-clear, restore-unsent, a stash) and to the staged attachments.
+    if context.coordinator.engine.syncFromSwiftUI() {
+      context.coordinator.updatePlaceholderVisibility()
+      context.coordinator.detectTrigger()
     }
     context.coordinator.applyFocusRequest(draftState.isFocused, to: textView)
     context.coordinator.updateHeight()
@@ -1774,14 +3183,12 @@ struct WorkComposerTextView: UIViewRepresentable {
     weak var textView: UITextView?
     // Strong owners of the manual TextKit 1 stack (see makeUIView).
     var textStorage: NSTextStorage?
-    var layoutManager: WorkComposerChipLayoutManager?
-    /// Committed chip spans, kept in sync with edits so we know which runs to
-    /// keep styled and which to de-chip when they're edited into.
-    private var chips: [(range: NSRange, text: String)] = []
+    var layoutManager: NSLayoutManager?
+    let engine = WorkComposerPillEngine()
+    private var interactions: WorkComposerPillInteractionController?
     private var placeholderLabel: UILabel?
     private var triggerInputTraitsActive = false
     private let focusScheduler = WorkComposerFocusScheduler()
-    private var smartLinkMenu: WorkSmartLinkContextMenuController?
     /// Whether the pan that is running started with the draft scrolled to its
     /// top. Dragging down inside a draft the reader has scrolled into is that
     /// draft scrolling, not a fold.
@@ -1789,13 +3196,39 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
+      super.init()
+      engine.readDraft = { [weak self] in self?.parent.draftState.text ?? "" }
+      engine.writeDraft = { [weak self] value in self?.parent.draftState.text = value }
+      engine.attachmentsBinding = { [weak self] in self?.parent.attachments }
+      engine.acceptsPastedFiles = { [weak self] in self?.parent.acceptsPastedFiles ?? false }
+      engine.tint = { [weak self] in
+        UIColor(ADEColor.providerChatAccent(for: self?.parent.controller.provider))
+      }
     }
 
-    var baseAttributes: [NSAttributedString.Key: Any] {
-      [
-        .font: UIFont.preferredFont(forTextStyle: .body),
-        .foregroundColor: UIColor(ADEColor.textPrimary),
-      ]
+    func attach(to textView: WorkComposerPastingTextView) {
+      engine.textView = textView
+      interactions = WorkComposerPillInteractionController(textView: textView, engine: engine)
+      textView.serializeRange = { [weak engine] range in engine?.serialize(range: range) ?? "" }
+      textView.onPasteText = { [weak self] text in
+        guard let self else { return false }
+        let consumed = self.engine.pasteText(text)
+        if consumed {
+          self.parent.controller.clear()
+          self.updatePlaceholderVisibility()
+          self.updateHeight()
+        }
+        return consumed
+      }
+      textView.onTraitsChange = { [weak engine] in engine?.rerenderPills(attachmentsOnly: false) }
+    }
+
+    func applyHooks(to textView: UITextView) {
+      interactions?.onOpenAttachment = parent.onOpenAttachment
+      guard let textView = textView as? WorkComposerPastingTextView else { return }
+      textView.onPasteImages = parent.acceptsPastedImages
+        ? { [weak self] images in self?.handlePasteImages(images) ?? false }
+        : nil
     }
 
     /// Rides the text view's own pan recognizer. `keyboardDismissMode` already
@@ -1857,32 +3290,6 @@ struct WorkComposerTextView: UIViewRepresentable {
       focusScheduler.apply(isFocused, to: textView)
     }
 
-    private func chipAttributes(kind: WorkComposerTriggerKind) -> [NSAttributedString.Key: Any] {
-      let tint = UIColor(ADEColor.providerChatAccent(for: parent.controller.provider))
-      let font: UIFont
-      switch kind {
-      case .slash:
-        let body = UIFont.preferredFont(forTextStyle: .body)
-        font = UIFont.monospacedSystemFont(ofSize: body.pointSize - 1, weight: .semibold)
-      case .at, .hash:
-        font = UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold)
-      }
-      return [
-        .font: font,
-        .foregroundColor: tint,
-        .workComposerChipTint: tint,
-      ]
-    }
-
-    private var smartLinkAttributes: [NSAttributedString.Key: Any] {
-      let tint = UIColor(ADEColor.accent)
-      return [
-        .font: UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold),
-        .foregroundColor: tint,
-        .workComposerChipTint: tint,
-      ]
-    }
-
     private func applyPromptInputTraits(protectingTrigger: Bool) {
       guard let textView else { return }
       guard triggerInputTraitsActive != protectingTrigger else { return }
@@ -1896,35 +3303,6 @@ struct WorkComposerTextView: UIViewRepresentable {
       }
     }
 
-    // MARK: Text sync
-
-    func setText(_ text: String, resetChips: Bool) {
-      guard let textView else { return }
-      if resetChips {
-        chips = []
-      } else {
-        chips = revalidatedChips(against: text as NSString)
-      }
-      let selection = textView.selectedRange
-      textView.text = text
-      restyle()
-      let clamped = min(selection.location, (text as NSString).length)
-      textView.selectedRange = NSRange(location: clamped, length: 0)
-      textView.typingAttributes = baseAttributes
-      updatePlaceholderVisibility()
-      detectTrigger()
-    }
-
-    /// Keep only chips whose exact substring still lives at the same offset —
-    /// enough to preserve chips through appends (dictation) while dropping any
-    /// invalidated by a clear/prepend.
-    private func revalidatedChips(against text: NSString) -> [(range: NSRange, text: String)] {
-      chips.filter { chip in
-        chip.range.location + chip.range.length <= text.length
-          && text.substring(with: chip.range) == chip.text
-      }
-    }
-
     // MARK: Delegate
 
     func textView(
@@ -1932,67 +3310,20 @@ struct WorkComposerTextView: UIViewRepresentable {
       shouldChangeTextIn range: NSRange,
       replacementText text: String
     ) -> Bool {
-      if let deletionRange = WorkSmartLinkDetector.atomicDeletionRange(
-        in: textView.text as NSString,
-        range: range,
-        replacementText: text
-      ) {
-        remove(range: deletionRange)
-        return false
-      }
-      let delta = (text as NSString).length - range.length
-      let editStart = range.location
-      let editEnd = range.location + range.length
-      var next: [(range: NSRange, text: String)] = []
-      for chip in chips {
-        let cStart = chip.range.location
-        let cEnd = chip.range.location + chip.range.length
-        if range.length > 0, NSIntersectionRange(chip.range, range).length > 0 {
-          continue  // deletion/replacement touches the chip -> de-chip it
-        }
-        if range.length == 0, editStart > cStart, editStart < cEnd {
-          continue  // insertion inside the chip -> de-chip it
-        }
-        if editEnd <= cStart {
-          next.append((NSRange(location: cStart + delta, length: chip.range.length), chip.text))
-        } else if editStart >= cEnd {
-          next.append(chip)
-        } else if range.length == 0, editStart == cStart {
-          next.append((NSRange(location: cStart + delta, length: chip.range.length), chip.text))
-        } else {
-          next.append(chip)
-        }
-      }
-      chips = next
-      return true
-    }
-
-    func installSmartLinkMenu(on textView: UITextView) {
-      smartLinkMenu = WorkSmartLinkContextMenuController(textView: textView) { [weak self] link in
-        self?.remove(range: link.range)
-      }
-    }
-
-    func textView(
-      _ textView: UITextView,
-      shouldInteractWith URL: URL,
-      in characterRange: NSRange,
-      interaction: UITextItemInteraction
-    ) -> Bool {
-      false
+      // Typing right after a pill must not inherit its attachment attribute.
+      textView.typingAttributes = engine.baseAttributes
+      return !engine.interceptsDeletion(range: range, replacement: text)
     }
 
     func textViewDidChange(_ textView: UITextView) {
-      if parent.draftState.text != textView.text {
-        parent.draftState.text = textView.text
-      }
-      // Skip restyle AND trigger detection while marked text (IME/multistage
+      // Skip pilling AND trigger detection while marked text (IME/multistage
       // input) is active: uncommitted composition can transiently contain
       // `/`/`@` and must not pop the suggestion strip. Detection re-runs on
       // the post-commit didChange/didChangeSelection callbacks.
       if textView.markedTextRange == nil {
-        restyle()
+        engine.userDidEdit()
       }
+      engine.publishNow()
       updatePlaceholderVisibility()
       updateHeight()
       if textView.markedTextRange == nil {
@@ -2001,6 +3332,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
+      textView.typingAttributes = engine.baseAttributes
       if textView.markedTextRange == nil {
         detectTrigger()
       }
@@ -2010,14 +3342,16 @@ struct WorkComposerTextView: UIViewRepresentable {
       guard parent.acceptsPastedImages,
             let onPasteImages = parent.onPasteImages,
             !images.isEmpty else { return false }
-      onPasteImages(images)
+      engine.pasteImages(images, via: onPasteImages)
       parent.controller.clear()
+      updatePlaceholderVisibility()
+      updateHeight()
       return true
     }
 
     // MARK: Detection + commit
 
-    private func detectTrigger() {
+    func detectTrigger() {
       guard let textView else { return }
       guard textView.isFirstResponder else {
         applyPromptInputTraits(protectingTrigger: false)
@@ -2031,105 +3365,26 @@ struct WorkComposerTextView: UIViewRepresentable {
         parent.controller.clear()
         return
       }
+      // Pills read as spaces, so a committed pill closes any trigger before it
+      // and a trigger typed right after a pill still opens.
       let match = WorkComposerTriggerDetector.detect(
-        in: textView.text as NSString,
+        in: engine.scanningString(),
         cursor: selection.location
       )
-      let resolvedMatch = match.flatMap { candidate in
-        WorkComposerTriggerDetector.hasConfirmedChipPrefix(
-          candidate,
-          in: textView.text as NSString,
-          chipRanges: chips.map { $0.range }
-        ) ? nil : candidate
-      }
-      applyPromptInputTraits(protectingTrigger: resolvedMatch != nil)
-      parent.controller.update(match: resolvedMatch)
+      applyPromptInputTraits(protectingTrigger: match != nil)
+      parent.controller.update(match: match)
     }
 
     func commit(_ suggestion: WorkComposerSuggestion, replacing range: NSRange) {
       guard let textView else { return }
-      let full = textView.text as NSString
-      guard range.location + range.length <= full.length else { return }
-      let chipText = suggestion.insertText
-      let insertion = chipText + " "
-
-      // Shift any chips after the replaced span by the length delta, and drop
-      // any that overlapped the trigger span.
-      let delta = (insertion as NSString).length - range.length
-      let editEnd = range.location + range.length
-      var next: [(range: NSRange, text: String)] = []
-      for chip in chips {
-        if NSIntersectionRange(chip.range, range).length > 0 { continue }
-        if chip.range.location >= editEnd {
-          next.append((NSRange(location: chip.range.location + delta, length: chip.range.length), chip.text))
-        } else {
-          next.append(chip)
-        }
-      }
-      // A `#` selection inserts a pull-request URL. `restyle()` already draws
-      // every smart link and `atomicDeletionRange` already deletes one whole,
-      // so registering a composer chip over the same range would double-own it.
-      if suggestion.kind != .hash {
-        let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
-        next.append((chipRange, chipText))
-      }
-      chips = next
-
-      let storage = textView.textStorage
-      storage.replaceCharacters(in: range, with: insertion)
-      restyle()
-
-      let caret = range.location + (insertion as NSString).length
-      textView.selectedRange = NSRange(location: caret, length: 0)
-      textView.typingAttributes = baseAttributes
-
-      if parent.draftState.text != textView.text {
-        parent.draftState.text = textView.text
-      }
+      guard NSMaxRange(range) <= textView.textStorage.length else { return }
+      let insertion = NSMutableAttributedString(attributedString: engine.pillString(for: suggestion))
+      insertion.append(NSAttributedString(string: " ", attributes: engine.baseAttributes))
+      engine.replace(range, with: insertion)
+      textView.selectedRange = NSRange(location: range.location + insertion.length, length: 0)
+      engine.publishNow()
       updatePlaceholderVisibility()
       updateHeight()
-    }
-
-    // MARK: Styling
-
-    private func restyle() {
-      guard let textView else { return }
-      let storage = textView.textStorage
-      let fullRange = NSRange(location: 0, length: storage.length)
-      guard fullRange.length > 0 else { return }
-      storage.beginEditing()
-      storage.setAttributes(baseAttributes, range: fullRange)
-      for chip in chips where chip.range.location + chip.range.length <= storage.length {
-        // Resolve each chip's kind from its leading trigger char so slash and
-        // file chips can style differently.
-        let kind: WorkComposerTriggerKind = chip.text.hasPrefix("/") ? .slash : .at
-        storage.addAttributes(chipAttributes(kind: kind), range: chip.range)
-      }
-      for link in WorkSmartLinkDetector.links(in: storage.string as NSString) {
-        var attributes = smartLinkAttributes
-        attributes[.link] = link.url
-        storage.addAttributes(attributes, range: link.range)
-      }
-      storage.endEditing()
-    }
-
-    private func remove(range: NSRange) {
-      guard let textView, NSMaxRange(range) <= (textView.text as NSString).length else { return }
-      chips = chips.compactMap { chip in
-        if NSIntersectionRange(chip.range, range).length > 0 { return nil }
-        if chip.range.location >= NSMaxRange(range) {
-          return (NSRange(location: chip.range.location - range.length, length: chip.range.length), chip.text)
-        }
-        return chip
-      }
-      textView.textStorage.replaceCharacters(in: range, with: "")
-      textView.selectedRange = NSRange(location: min(range.location, textView.textStorage.length), length: 0)
-      textView.typingAttributes = baseAttributes
-      if parent.draftState.text != textView.text { parent.draftState.text = textView.text }
-      restyle()
-      updatePlaceholderVisibility()
-      updateHeight()
-      detectTrigger()
     }
 
     // MARK: Placeholder + height
@@ -2155,8 +3410,8 @@ struct WorkComposerTextView: UIViewRepresentable {
       updatePlaceholderVisibility()
     }
 
-    private func updatePlaceholderVisibility() {
-      placeholderLabel?.isHidden = !(textView?.text.isEmpty ?? true)
+    func updatePlaceholderVisibility() {
+      placeholderLabel?.isHidden = (textView?.textStorage.length ?? 0) > 0
     }
 
     func updateHeight() {
@@ -2177,15 +3432,6 @@ struct WorkComposerTextView: UIViewRepresentable {
   var minHeight: CGFloat { 24 }
 }
 
-private extension UIFont {
-  func withWeight(_ weight: UIFont.Weight) -> UIFont {
-    let descriptor = fontDescriptor.addingAttributes([
-      .traits: [UIFontDescriptor.TraitKey.weight: weight]
-    ])
-    return UIFont(descriptor: descriptor, size: pointSize)
-  }
-}
-
 // MARK: - Inline suggestion strip
 
 /// Compact suggestion strip pinned directly above the composer text field. Rows
@@ -2194,80 +3440,110 @@ private extension UIFont {
 struct WorkComposerSuggestionStrip: View {
   @ObservedObject var controller: WorkComposerSuggestionController
 
+  /// Rows grouped by section, in the order the controller produced them. The
+  /// `@` menu has several groups; `/` and `#` have one.
+  private var groups: [(section: WorkComposerSuggestionSection, rows: [WorkComposerSuggestion])] {
+    var out: [(section: WorkComposerSuggestionSection, rows: [WorkComposerSuggestion])] = []
+    for suggestion in controller.suggestions {
+      if let last = out.last, last.section == suggestion.section {
+        out[out.count - 1].rows.append(suggestion)
+      } else {
+        out.append((suggestion.section, [suggestion]))
+      }
+    }
+    return out
+  }
+
   var body: some View {
     if controller.isVisible {
       VStack(alignment: .leading, spacing: 0) {
-        header
-        if controller.isLoading && controller.suggestions.isEmpty {
+        if controller.suggestions.isEmpty {
+          header(title: fallbackTitle, symbol: fallbackSymbol, showsProgress: true)
           loadingRow
         } else {
           ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-              ForEach(controller.suggestions) { suggestion in
-                Button {
-                  controller.commit(suggestion)
-                } label: {
-                  row(suggestion)
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+              ForEach(Array(groups.enumerated()), id: \.element.section) { index, group in
+                Section {
+                  ForEach(group.rows) { suggestion in
+                    Button {
+                      controller.commit(suggestion)
+                    } label: {
+                      row(suggestion)
+                    }
+                    .buttonStyle(.plain)
+                  }
+                } header: {
+                  header(
+                    title: group.section.title,
+                    symbol: group.section.symbolName,
+                    showsProgress: index == 0 && controller.isLoading
+                  )
                 }
-                .buttonStyle(.plain)
               }
             }
           }
-          .frame(maxHeight: 176)
+          .frame(maxHeight: 248)
         }
       }
       .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(.ultraThinMaterial)
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .fill(ADEColor.glassBackground)
       )
+      .glassEffect(in: .rect(cornerRadius: 16))
       .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
           .stroke(ADEColor.glassBorder, lineWidth: 0.75)
       )
-      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .shadow(color: Color.black.opacity(0.10), radius: 12, y: 4)
       .transition(.opacity.combined(with: .move(edge: .bottom)))
       .accessibilityIdentifier("Work.Chat.Composer.SuggestionStrip")
     }
   }
 
-  private var headerIcon: String {
+  private var fallbackSymbol: String {
     switch controller.activeMatch?.kind {
-    case .at: return "doc.text"
-    case .hash: return "arrow.triangle.pull"
-    default: return "command"
+    case .at: return "at"
+    case .hash: return WorkComposerSuggestionSection.pullRequests.symbolName
+    default: return WorkComposerSuggestionSection.commands.symbolName
     }
   }
 
-  private var headerTitle: String {
+  private var fallbackTitle: String {
     switch controller.activeMatch?.kind {
-    case .at: return "Files"
-    case .hash: return "Pull requests"
-    default: return "Commands"
+    case .at: return "Mention"
+    case .hash: return WorkComposerSuggestionSection.pullRequests.title
+    default: return WorkComposerSuggestionSection.commands.title
     }
   }
 
-  private var header: some View {
+  private func header(title: String, symbol: String, showsProgress: Bool) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: headerIcon)
+      Image(systemName: symbol)
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text(headerTitle)
+      Text(title.uppercased())
         .font(.caption2.weight(.bold))
         .tracking(0.6)
         .foregroundStyle(ADEColor.textMuted)
       Spacer(minLength: 0)
-      if controller.isLoading {
+      if showsProgress {
         ProgressView().controlSize(.mini)
       }
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 8)
+    .padding(.top, 8)
+    .padding(.bottom, 4)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(.ultraThinMaterial)
+    .accessibilityAddTraits(.isHeader)
   }
 
   private var loadingRow: some View {
     HStack(spacing: 8) {
       ProgressView().controlSize(.mini)
-      Text(controller.activeMatch?.kind == .hash ? "Searching pull requests…" : "Searching files…")
+      Text(loadingCopy)
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 0)
@@ -2276,20 +3552,24 @@ struct WorkComposerSuggestionStrip: View {
     .padding(.bottom, 10)
   }
 
-  private func rowIcon(for suggestion: WorkComposerSuggestion) -> String {
-    switch suggestion.kind {
-    case .at: return suggestion.isDirectory ? "folder" : "doc"
-    case .hash: return "arrow.triangle.pull"
-    case .slash: return "chevron.right.circle"
+  private var loadingCopy: String {
+    switch controller.activeMatch?.kind {
+    case .hash: return "Searching pull requests…"
+    case .at: return "Searching…"
+    default: return "Loading commands…"
     }
   }
 
   private func row(_ suggestion: WorkComposerSuggestion) -> some View {
     HStack(spacing: 10) {
-      Image(systemName: rowIcon(for: suggestion))
+      Image(systemName: suggestion.symbolName)
         .font(.footnote.weight(.semibold))
         .foregroundStyle(ADEColor.providerChatAccent(for: controller.provider))
-        .frame(width: 18)
+        .frame(width: 26, height: 26)
+        .background(
+          ADEColor.providerChatAccent(for: controller.provider).opacity(0.12),
+          in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
         // Decorative: the title and subtitle already say what the row is, and
         // VoiceOver reading "arrow triangle pull" before every PR is noise.
         .accessibilityHidden(true)
@@ -2300,7 +3580,7 @@ struct WorkComposerSuggestionStrip: View {
             : .footnote.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-          .truncationMode(suggestion.kind == .at ? .middle : .tail)
+          .truncationMode(suggestion.section == .files ? .middle : .tail)
         if let subtitle = suggestion.subtitle, !subtitle.isEmpty {
           Text(subtitle)
             .font(.caption2)
@@ -2312,11 +3592,27 @@ struct WorkComposerSuggestionStrip: View {
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 8)
+    .padding(.vertical, 6)
     // A row with no subtitle (a slash command, a root-level file) is otherwise
     // barely 33pt tall. The tap target is the whole row, so it holds the 44pt
     // floor rather than the text's intrinsic height.
     .frame(minHeight: 44)
     .contentShape(Rectangle())
+    .accessibilityLabel(rowAccessibilityLabel(suggestion))
+  }
+
+  private func rowAccessibilityLabel(_ suggestion: WorkComposerSuggestion) -> String {
+    let kind: String
+    switch suggestion.section {
+    case .chats: kind = "Chat"
+    case .lanes: kind = "Lane"
+    case .terminals: kind = "Terminal"
+    case .pullRequests: kind = "Pull request"
+    case .machines: kind = "Machine"
+    case .files: kind = suggestion.isDirectory ? "Folder" : "File"
+    case .commands: kind = "Command"
+    }
+    let subtitle = suggestion.subtitle.map { ", \($0)" } ?? ""
+    return "\(kind): \(suggestion.title)\(subtitle)"
   }
 }

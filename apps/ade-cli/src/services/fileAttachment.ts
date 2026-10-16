@@ -7,6 +7,7 @@ import {
 } from "../../../desktop/src/shared/chatAttachmentLimits";
 import {
   commitStagedAttachmentPart,
+  pastedTextStagedName,
   projectAttachmentsDir,
   resolveStagedAttachmentExtension,
   stagedAttachmentDestPath,
@@ -296,11 +297,19 @@ export function createChunkedAttachmentStagingRegistry(options?: {
       const attachmentsDir = path.resolve(projectAttachmentsDir(root));
       lastSweep = sweepStaleParts(attachmentsDir).catch(() => {});
       // Same UUID-basename rule as every other staging path: the client's name
-      // contributes a validated extension and nothing else.
-      const destPath = stagedAttachmentDestPath(
-        attachmentsDir,
-        resolveStagedAttachmentExtension(name, null),
-      );
+      // contributes a validated extension and nothing else. The one exception
+      // is a pasted-text file, which keeps its name because the agent reads it
+      // in the prompt's `[File #k: name]` label. `finish` renames over the
+      // target, so a name that exists on disk or belongs to another live
+      // upload takes the UUID name instead.
+      const pastedName = pastedTextStagedName(name);
+      const pastedPath = pastedName ? path.join(attachmentsDir, pastedName) : null;
+      const pastedPathFree = pastedPath != null
+        && !fs.existsSync(pastedPath)
+        && ![...pending.values()].some((entry) => entry.destPath === pastedPath);
+      const destPath = pastedPathFree && pastedPath
+        ? pastedPath
+        : stagedAttachmentDestPath(attachmentsDir, resolveStagedAttachmentExtension(name, null));
       const uploadId = randomUUID();
       pending.set(uploadId, {
         uploadId,

@@ -2639,11 +2639,14 @@ private struct WorkChatComposerDraftInput: View {
   let onSent: () -> Void
 
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.colorScheme) private var colorScheme
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   /// Collapsed composer: the keyboard is down, the field is one line, the
   /// suggestion strip is hidden and the tray is chips. A view mode only —
@@ -2786,13 +2789,37 @@ private struct WorkChatComposerDraftInput: View {
       }
   }
 
+  /// The composer is the one floating glass card on the screen: the liquid
+  /// glass material, the composer tint over it, a soft top highlight and a
+  /// low shadow so it reads as lifted off the transcript in both appearances.
   private var composerSurface: some View {
-    RoundedRectangle(cornerRadius: 24, style: .continuous)
-      .fill(ADEColor.composerBackground)
+    let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+    return Color.clear
+      .background(ADEColor.composerBackground, in: shape)
+      .glassEffect(in: .rect(cornerRadius: 24))
       .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 1)
+        shape
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(colorScheme == .dark ? 0.08 : 0.35), .clear],
+              startPoint: .top,
+              endPoint: .center
+            )
+          )
+          .allowsHitTesting(false)
       )
+      .overlay(shape.stroke(ADEColor.glassBorder, lineWidth: 0.75))
+      .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.40 : 0.10), radius: 18, x: 0, y: 6)
+      .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.05), radius: 2, x: 0, y: 1)
+  }
+
+  /// Whether a big text paste may become a file here: the host must take the
+  /// chunked file route, and personal chats are images-only.
+  private var acceptsPastedFiles: Bool {
+    canAttach
+      && attachmentsAvailable
+      && !isPersonalChat
+      && syncService.supportsViewerRemoteAction(workChatFileAttachmentHostAction)
   }
 
   private var sendEnabled: Bool {
@@ -2878,7 +2905,8 @@ private struct WorkChatComposerDraftInput: View {
       attachments: $inputAttachments,
       compact: composerCollapsed,
       onExpand: { applyFold(.expand) },
-      chatSessionId: sessionId.isEmpty ? nil : sessionId
+      chatSessionId: sessionId.isEmpty ? nil : sessionId,
+      openRequest: $attachmentPreviewRequest
     )
   }
 
@@ -2915,6 +2943,9 @@ private struct WorkChatComposerDraftInput: View {
               onPasteImages: { images in
                 workChatInputPasteImages(images, into: $inputAttachments)
               },
+              attachments: $inputAttachments,
+              acceptsPastedFiles: acceptsPastedFiles,
+              onOpenAttachment: { attachmentPreviewRequest = $0 },
               maxLines: 1,
               collapsed: composerCollapsed,
               onFoldSwipeDown: { applyFold(.collapse) }
@@ -2944,6 +2975,9 @@ private struct WorkChatComposerDraftInput: View {
           onPasteImages: { images in
             workChatInputPasteImages(images, into: $inputAttachments)
           },
+          attachments: $inputAttachments,
+          acceptsPastedFiles: acceptsPastedFiles,
+          onOpenAttachment: { attachmentPreviewRequest = $0 },
           maxLines: composerMaxLines,
           collapsed: composerCollapsed,
           onFoldSwipeDown: { applyFold(.collapse) }
@@ -3218,6 +3252,7 @@ private struct WorkChatComposerDraftInput: View {
         accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
         systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
+        diameter: 32,
         action: { performSend(mode: effectiveActiveSendMode) }
       )
 
@@ -3301,6 +3336,7 @@ private struct WorkChatComposerDraftInput: View {
     suggestionController.provider = chatSummary.provider
     suggestionController.laneId = laneId.isEmpty ? nil : laneId
     suggestionController.syncService = syncService
+    suggestionController.sessionId = sessionId.isEmpty ? nil : sessionId
   }
 
   @ViewBuilder
@@ -3831,6 +3867,9 @@ private struct WorkChatComposerTextField: View {
   let placeholder: String
   var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
+  var attachments: Binding<[WorkChatInputAttachment]>? = nil
+  var acceptsPastedFiles = false
+  var onOpenAttachment: ((UUID) -> Void)? = nil
   var maxLines = 6
   /// Folded composer. The field keeps its measured height and is clipped to one
   /// line from the top, so folding a long draft animates one frame height
@@ -3862,6 +3901,9 @@ private struct WorkChatComposerTextField: View {
       measuredHeight: $measuredHeight,
       acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
+      attachments: attachments,
+      acceptsPastedFiles: acceptsPastedFiles,
+      onOpenAttachment: onOpenAttachment,
       maxLines: maxLines,
       collapsed: collapsed,
       onFoldSwipeDown: onFoldSwipeDown
@@ -3881,7 +3923,10 @@ private struct WorkChatComposerSendButton: View {
   let sending: Bool
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
-  var minimumTapTargetSize: CGFloat = 28
+  var minimumTapTargetSize: CGFloat = 34
+  /// The disc. 34pt in the chat composer; the active-turn split control keeps
+  /// it at its 32pt row height.
+  var diameter: CGFloat = 34
   /// The send itself lives on the composer, not here: the retry row runs the
   /// exact same action, and two copies of "clear the field, stage, restore on
   /// failure" is how the two drift apart.
@@ -3902,7 +3947,8 @@ private struct WorkChatComposerSendButton: View {
       sending: sending,
       accessibilityLabelText: accessibilityLabelText,
       systemImageName: systemImageName,
-      minimumTapTargetSize: minimumTapTargetSize
+      minimumTapTargetSize: minimumTapTargetSize,
+      diameter: diameter
     ) {
       action()
     }

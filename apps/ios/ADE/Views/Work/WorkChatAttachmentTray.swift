@@ -134,6 +134,59 @@ final class WorkPendingUploadPreviewStore {
   }
 }
 
+/// 16pt rounded thumbnails for `[Image #k]` chips inside sent bubbles, keyed
+/// by the attachment's host path. Filled by the bubble's own attachment tiles
+/// as they load (and by the pending-upload store for the phone's own sends),
+/// so the inline chip never fetches bytes on its own.
+@MainActor
+final class WorkChatAttachmentThumbnailStore: ObservableObject {
+  static let shared = WorkChatAttachmentThumbnailStore()
+  private static let limit = 64
+  private static let side: CGFloat = 16
+
+  /// Bumped when a thumbnail lands, so observing bubbles redraw.
+  @Published private(set) var revision = 0
+  private var thumbnailsByPath: [String: UIImage] = [:]
+  private var insertionOrder: [String] = []
+
+  private init() {}
+
+  func inlineThumbnail(forPath path: String) -> UIImage? {
+    if let cached = thumbnailsByPath[path] { return cached }
+    guard let local = WorkPendingUploadPreviewStore.shared.image(forPath: path) else { return nil }
+    return Self.render(local)
+  }
+
+  func store(_ image: UIImage, forPath path: String) {
+    guard thumbnailsByPath[path] == nil else { return }
+    insertionOrder.append(path)
+    thumbnailsByPath[path] = Self.render(image)
+    while insertionOrder.count > Self.limit {
+      thumbnailsByPath.removeValue(forKey: insertionOrder.removeFirst())
+    }
+    revision &+= 1
+  }
+
+  private static func render(_ image: UIImage) -> UIImage {
+    let rect = CGRect(x: 0, y: 0, width: side, height: side)
+    let format = UIGraphicsImageRendererFormat.default()
+    format.opaque = false
+    return UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
+      UIBezierPath(roundedRect: rect, cornerRadius: 4).addClip()
+      let size = image.size
+      guard size.width > 0, size.height > 0 else { return }
+      let scale = max(side / size.width, side / size.height)
+      let drawn = CGSize(width: size.width * scale, height: size.height * scale)
+      image.draw(in: CGRect(
+        x: (side - drawn.width) / 2,
+        y: (side - drawn.height) / 2,
+        width: drawn.width,
+        height: drawn.height
+      ))
+    }
+  }
+}
+
 /// Downscales the composer's upload-sized render to chip size. Returns the
 /// original when it is already small enough.
 @MainActor
@@ -679,6 +732,9 @@ struct WorkChatInputAttachmentTray: View {
   /// Routes a preview's byte fetch to the right project scope. Nil on the
   /// projectless "new chat" composers, which fall back to the active project.
   var chatSessionId: String?
+  /// Set by the composer when an image or file pill is tapped. The tray opens
+  /// that attachment's preview and clears the request.
+  var openRequest: Binding<UUID?>? = nil
   /// ONE presentation state, not two. Two `.sheet(item:)` modifiers on the same
   /// view are not a supported SwiftUI arrangement — whichever one loses can
   /// silently never present — and the two states are mutually exclusive anyway:
@@ -703,6 +759,32 @@ struct WorkChatInputAttachmentTray: View {
   }
 
   var body: some View {
+    trayContent
+      .onChange(of: openRequest?.wrappedValue) { _, requested in
+        guard let requested else { return }
+        openRequest?.wrappedValue = nil
+        guard let attachment = attachments.first(where: { $0.id == requested }) else { return }
+        if compact { onExpand?() }
+        open(attachment)
+      }
+      .sheet(item: $preview) { item in
+        switch item {
+        case let .image(attachment):
+          WorkChatInputAttachmentPreview(
+            attachment: attachment,
+            onRemove: {
+              attachments.removeAll { $0.id == attachment.id }
+              preview = nil
+            }
+          )
+        case let .file(request):
+          WorkChatAttachmentPreviewSheet(request: request)
+        }
+      }
+  }
+
+  @ViewBuilder
+  private var trayContent: some View {
     if attachments.isEmpty {
       EmptyView()
     } else if compact {
@@ -735,43 +817,26 @@ struct WorkChatInputAttachmentTray: View {
   @ViewBuilder
   private var expandedTray: some View {
     if !attachments.isEmpty {
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(spacing: 6) {
-          Image(systemName: trayGlyph)
-            .font(.system(size: 11, weight: .semibold))
-          Text(attachmentCountLabel)
-            .font(.caption2.weight(.semibold))
-          Spacer(minLength: 0)
-        }
-        .foregroundStyle(ADEColor.textMuted)
-
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            ForEach(attachments) { attachment in
-              WorkChatInputAttachmentThumb(attachment: attachment) {
-                open(attachment)
-              } onRemove: {
-                attachments.removeAll { $0.id == attachment.id }
-              }
+      // One row of 44pt thumbnails. The count header is gone: every
+      // attachment also has a numbered pill in the text, which says the same
+      // thing where the user is looking.
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(attachments) { attachment in
+            WorkChatInputAttachmentThumb(attachment: attachment) {
+              open(attachment)
+            } onRemove: {
+              attachments.removeAll { $0.id == attachment.id }
             }
           }
         }
+        // Room for the remove badge, which sits over the thumbnail's corner.
+        .padding(.top, 4)
+        .padding(.trailing, 4)
       }
       .padding(.horizontal, 2)
-      .sheet(item: $preview) { item in
-        switch item {
-        case let .image(attachment):
-          WorkChatInputAttachmentPreview(
-            attachment: attachment,
-            onRemove: {
-              attachments.removeAll { $0.id == attachment.id }
-              preview = nil
-            }
-          )
-        case let .file(request):
-          WorkChatAttachmentPreviewSheet(request: request)
-        }
-      }
+      .accessibilityElement(children: .contain)
+      .accessibilityLabel(attachmentCountLabel)
     }
   }
 
@@ -848,43 +913,51 @@ private struct WorkChatInputAttachmentThumb: View {
   let onOpen: () -> Void
   let onRemove: () -> Void
 
+  private let side: CGFloat = 44
+  private let radius: CGFloat = 10
+
   var body: some View {
     ZStack(alignment: .topTrailing) {
       Button(action: onOpen) {
         ZStack {
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
+          RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(ADEColor.surfaceBackground.opacity(0.42))
-            .frame(width: 72, height: 72)
-            .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.34), lineWidth: 0.8)
-            )
+            .frame(width: side, height: side)
 
           if let image = attachment.image {
             Image(uiImage: image)
               .resizable()
               .scaledToFill()
-              .frame(width: 72, height: 72)
-              .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+              .frame(width: side, height: side)
+              .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
           } else if attachment.kind != .image, attachment.errorMessage == nil, !attachment.isLoading {
             documentFace
           } else {
             placeholder
           }
         }
+        .overlay(
+          RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+        )
+        .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1)
       }
       .buttonStyle(.plain)
       .accessibilityLabel(accessibilityLabel)
 
       Button(action: onRemove) {
         Image(systemName: "xmark")
-          .font(.system(size: 8, weight: .bold))
+          .font(.system(size: 7, weight: .bold))
           .foregroundStyle(Color.white)
-          .frame(width: 18, height: 18)
-          .background(Color.black.opacity(0.62), in: Circle())
+          .frame(width: 16, height: 16)
+          .background(Color.black.opacity(0.66), in: Circle())
+          .overlay(Circle().stroke(Color.white.opacity(0.7), lineWidth: 1))
       }
       .buttonStyle(.plain)
-      .padding(4)
+      // The 16pt badge keeps a 32pt hit area without growing the tile.
+      .frame(width: 32, height: 32, alignment: .topTrailing)
+      .contentShape(Rectangle())
+      .offset(x: 6, y: -6)
       // The tray now stages videos and documents too, so the label follows the
       // chip's kind rather than always saying "image".
       .accessibilityLabel("Remove \(attachment.kind.rawValue)")
@@ -894,18 +967,16 @@ private struct WorkChatInputAttachmentThumb: View {
   /// Non-image chips carry a glyph and their name — a video or a PDF has no
   /// thumbnail the composer can render without decoding the whole file.
   private var documentFace: some View {
-    VStack(spacing: 5) {
-      Image(systemName: attachment.kind.glyph)
-        .font(.system(size: 20, weight: .semibold))
+    VStack(spacing: 2) {
+      Image(systemName: attachment.kind == .file ? "doc.text" : attachment.kind.glyph)
+        .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-      Text(attachment.filename)
-        .font(.system(size: 9, weight: .semibold))
+      Text((attachment.filename as NSString).pathExtension.uppercased())
+        .font(.system(size: 8, weight: .bold))
         .foregroundStyle(ADEColor.textMuted)
         .lineLimit(1)
-        .truncationMode(.middle)
-        .padding(.horizontal, 4)
     }
-    .frame(width: 72, height: 72)
+    .frame(width: side, height: side)
   }
 
   @ViewBuilder
@@ -917,16 +988,12 @@ private struct WorkChatInputAttachmentThumb: View {
         .tint(ADEColor.textSecondary)
     case .ready:
       Image(systemName: "photo")
-        .font(.system(size: 18, weight: .semibold))
+        .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
     case .failed:
-      VStack(spacing: 4) {
-        Image(systemName: "photo.badge.exclamationmark")
-          .font(.system(size: 17, weight: .semibold))
-        Text("Failed")
-          .font(.system(size: 9, weight: .semibold))
-      }
-      .foregroundStyle(ADEColor.warning)
+      Image(systemName: "photo.badge.exclamationmark")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
     }
   }
 
@@ -1113,6 +1180,11 @@ private struct WorkChatAttachmentChip: View {
     }
     .task(id: workChatAttachmentStableIdentity(attachment)) {
       await loadPreviewIfNeeded()
+    }
+    // The same picture feeds the bubble's inline `[Image #k]` chip.
+    .onChange(of: previewImage) { _, image in
+      guard let image, !workAttachmentIsPendingUpload(attachment) else { return }
+      WorkChatAttachmentThumbnailStore.shared.store(image, forPath: attachment.path)
     }
   }
 

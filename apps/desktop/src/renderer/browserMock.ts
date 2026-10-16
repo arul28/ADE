@@ -43,6 +43,7 @@ import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
   CHAT_MENTION_MAX_RESULTS,
+  parseChatMentionKindFilter,
   rankChatMentionSuggestions,
 } from "../shared/chatMentions";
 import {
@@ -5657,18 +5658,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             subtitle: [row.laneName, row.status].filter(Boolean).join(" · "),
             lastActivityAt: epoch(row.endedAt) ?? epoch(row.startedAt),
           }));
+        const machines: ChatMentionSuggestion[] = [{
+          kind: "machine",
+          id: "mock-machine-key",
+          title: "Mock Mac Studio",
+          subtitle: "online · 2 projects",
+          lastActivityAt: Date.now(),
+          machine: { online: true, isThisMachine: false },
+        }];
         const byKind: Record<ChatMentionKind, ChatMentionSuggestion[]> = {
           chat: chats,
           lane: lanes,
           terminal: terminals,
+          pr: [],
+          machine: machines,
         };
+        // Same shape as chatMentionService: a kind word narrows, an empty
+        // query browses per kind, anything else is one best-match list.
+        const filter = parseChatMentionKindFilter(query);
+        const kinds = filter.kind ? [filter.kind] : CHAT_MENTION_KINDS;
+        const perKind = kinds.flatMap((kind) =>
+          rankChatMentionSuggestions(byKind[kind], filter.rest, CHAT_MENTION_MAX_PER_KIND));
         return {
-          suggestions: rankChatMentionSuggestions(
-            CHAT_MENTION_KINDS.flatMap((kind) =>
-              rankChatMentionSuggestions(byKind[kind], query, CHAT_MENTION_MAX_PER_KIND)),
-            query,
-            CHAT_MENTION_MAX_RESULTS,
-          ),
+          suggestions: filter.kind || !filter.rest
+            ? perKind
+            : rankChatMentionSuggestions(perKind, filter.rest, CHAT_MENTION_MAX_RESULTS),
         };
       },
       getTurnFileDiff: resolvedArg(null),
@@ -5697,6 +5711,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
+      resolveSmartLinkImage: async () => ({ dataUrl: null }),
       resolveSourceFavicons: async () => ({ icons: {} }),
       getEventHistory: async (arg: {
         sessionId: string;
@@ -6890,6 +6905,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         error: null,
       }),
       getRequestBudget: resolved({ pausedUntil: null, failureKind: null, retryAt: null }),
+      isRepoStarred: resolved("unknown"),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
       getAppInstallationStatus: resolved({
         repo: { owner: "arul28", name: "ADE" },

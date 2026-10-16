@@ -86,6 +86,7 @@ import {
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
+import { rememberMentionSuggestionLabels } from "./mentionChipLabels";
 import { isSettledSteerDeliveryState, parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
@@ -348,6 +349,7 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
+import { recordStarPillMessageSent, recordStarPillThreadCreated } from "../../lib/starPillActivity";
 import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
@@ -8801,7 +8803,10 @@ export function AgentChatPane({
         },
         pin,
       );
-      return result?.suggestions ?? [];
+      const suggestions = result?.suggestions ?? [];
+      // Sent `@pr:` / `@mac:` chips reuse these titles instead of a short id.
+      rememberMentionSuggestionLabels(suggestions);
+      return suggestions;
     } catch {
       return [];
     }
@@ -9743,6 +9748,7 @@ export function AgentChatPane({
         throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
+      recordStarPillThreadCreated();
       rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -10747,6 +10753,9 @@ export function AgentChatPane({
     pendingRendererRef.current = configuredLane;
     void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
+      // The unsupported fallback creates its chat through `createSessionForLane`,
+      // which counts it there.
+      if (outcome === "started") recordStarPillThreadCreated();
     });
     return true;
   }, [
@@ -11594,6 +11603,7 @@ export function AgentChatPane({
       }
     }
     clearPromptSuggestionForSession(selectedSessionId);
+    if (draft.trim().length || attachments.length) recordStarPillMessageSent();
 
     if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
       // The lane is still being set up (or earlier queued messages still wait
@@ -11744,6 +11754,7 @@ export function AgentChatPane({
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
+          recordStarPillThreadCreated();
         }
 
         if (canRefreshPinnedProject(launchBinding)) {

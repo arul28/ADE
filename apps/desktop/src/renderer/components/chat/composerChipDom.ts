@@ -8,6 +8,8 @@
 
 /** Chip kind whose text is stashed behind a placeholder across whitespace collapsing. */
 const CHAT_CONTEXT_CHIP = "chat-context";
+/** Inline `[Image #k]` / `[File #k: name]` chip; see `shared/attachmentLabels`. */
+const ATTACHMENT_CHIP = "attachment";
 
 export type SerializedComposerDom = {
   text: string;
@@ -44,7 +46,12 @@ export function serializeComposerDom(root: Node): SerializedComposerDom {
       } else {
         parts.push(chipText);
       }
-      const label = node.querySelector<HTMLElement>("[data-composer-chip-label]")?.textContent?.trim();
+      // An attachment chip's label ("Image 2") is derived from its position,
+      // not a name to carry across a paste: the pasted token re-chips against
+      // whatever attachments the target composer holds.
+      const label = node.dataset.composerChip === ATTACHMENT_CHIP
+        ? null
+        : node.querySelector<HTMLElement>("[data-composer-chip-label]")?.textContent?.trim();
       if (label && label !== chipText) labels.set(chipText, label);
       return;
     }

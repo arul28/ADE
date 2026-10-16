@@ -2038,6 +2038,8 @@ private struct WorkNewChatComposerBar: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
+  /// Set by a tap on an image or file pill; the tray opens that preview.
+  @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
   @State private var composerTextHeight: CGFloat = 28
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
@@ -2091,7 +2093,7 @@ private struct WorkNewChatComposerBar: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      WorkChatInputAttachmentTray(attachments: $attachments)
+      WorkChatInputAttachmentTray(attachments: $attachments, openRequest: $attachmentPreviewRequest)
         .fixedSize(horizontal: false, vertical: true)
         .layoutPriority(2)
 
@@ -2104,7 +2106,11 @@ private struct WorkNewChatComposerBar: View {
           acceptsPastedImages: attachmentsAvailable,
           onPasteImages: { images in
             workChatInputPasteImages(images, into: $attachments)
-          }
+          },
+          attachments: $attachments,
+          acceptsPastedFiles: attachmentsAvailable
+            && syncService.supportsViewerRemoteAction(workChatFileAttachmentHostAction),
+          onOpenAttachment: { attachmentPreviewRequest = $0 }
         )
         .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
 

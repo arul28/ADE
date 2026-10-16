@@ -446,7 +446,7 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              WorkChipMessageText(text: message.markdown)
+              WorkChipMessageText(text: message.markdown, attachments: attachments)
             }
             if hasAttachments {
               WorkChatAttachmentTray(
@@ -575,13 +575,25 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
     // its in-app Files view, and iOS has no counterpart to navigate to from a
     // chat bubble. A readable pointer beats a tap that silently does nothing.
     return nil
+  case .attachment:
+    // The attachment's own tile sits in the same bubble and opens it.
+    return nil
   case .mention(let mention):
     switch mention.kind {
     case .lane:
       return URL(string: LaneDeeplinkHelpers.laneLink(laneId: mention.id, form: .ade))
     case .chat:
       return URL(string: LaneDeeplinkHelpers.sessionLink(sessionId: mention.id, laneId: nil, form: .ade))
-    case .terminal:
+    case .pullRequest:
+      // `ade://pr/<prId>`: the router resolves a non-numeric single segment
+      // as the PR's internal id, which is exactly what the token carries.
+      guard let encoded = mention.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+        return nil
+      }
+      return URL(string: "ade://pr/\(encoded)")
+    case .terminal, .machine:
+      // No surface navigates to a terminal session or to another machine
+      // from a chat bubble; a readable pointer beats a dead tap.
       return nil
     }
   }
@@ -601,10 +613,11 @@ func workChipAttributedMessage(
   _ text: String,
   chipForeground: Color,
   chipBackground: Color,
-  limit: Int = WorkChipDetector.defaultLimit
+  limit: Int = WorkChipDetector.defaultLimit,
+  attachments: [AgentChatFileRef]? = nil
 ) -> AttributedString {
   var out = AttributedString()
-  for part in WorkChipDetector.parts(in: text, limit: limit) {
+  for part in WorkChipDetector.parts(in: text, limit: limit, attachments: attachments) {
     switch part {
     case .text(let run):
       out.append(AttributedString(run))
@@ -635,6 +648,9 @@ func workChipAttributedMessage(
 /// still copies `message.markdown` verbatim, which is the canonical token form.
 struct WorkChipMessageText: View {
   let text: String
+  /// The message's attachments. `[Image #k]` / `[File #k: …]` tokens resolve
+  /// against these; with none, every such token stays text.
+  var attachments: [AgentChatFileRef] = []
   var foreground: Color = .white
   var chipBackground: Color = Color.white.opacity(0.22)
 
@@ -642,24 +658,34 @@ struct WorkChipMessageText: View {
   /// messages contain no chip at all, and this view is rebuilt for every
   /// visible bubble on every transcript pass.
   private var mayContainChip: Bool {
-    text.contains("@") || text.contains("://")
+    text.contains("@") || text.contains("://") || (!attachments.isEmpty && text.contains("["))
+  }
+
+  /// Image tokens get a real thumbnail, which needs the composed-`Text` path.
+  private var hasImageTokens: Bool {
+    text.contains("[Image #") && attachments.contains(where: workChatAttachmentIsImage)
   }
 
   var body: some View {
     Group {
-      if mayContainChip {
+      if hasImageTokens {
+        WorkChipMessageThumbnailText(
+          text: text,
+          attachments: attachments,
+          foreground: foreground,
+          chipBackground: chipBackground
+        )
+        .environment(\.openURL, workChipOpenURLAction)
+      } else if mayContainChip {
         Text(
           workChipAttributedMessage(
             text,
             chipForeground: foreground,
-            chipBackground: chipBackground
+            chipBackground: chipBackground,
+            attachments: attachments.isEmpty ? nil : attachments
           )
         )
-        .environment(\.openURL, OpenURLAction { url in
-          guard url.scheme?.lowercased() == "ade" else { return .systemAction }
-          DeepLinkRouter.shared.handle(url)
-          return .handled
-        })
+        .environment(\.openURL, workChipOpenURLAction)
       } else {
         Text(text)
       }
@@ -670,6 +696,57 @@ struct WorkChipMessageText: View {
     .multilineTextAlignment(.leading)
     .fixedSize(horizontal: false, vertical: true)
     .textSelection(.enabled)
+  }
+}
+
+@MainActor
+private var workChipOpenURLAction: OpenURLAction {
+  OpenURLAction { url in
+    guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+    DeepLinkRouter.shared.handle(url)
+    return .handled
+  }
+}
+
+/// A sent message whose text names images: each `[Image #k]` chip leads with a
+/// 16pt thumbnail of that image, resolved from the message's own attachments.
+/// Observes the thumbnail store so a chip upgrades from the glyph to the
+/// picture once the bubble's tile has loaded it — only bubbles that name an
+/// image pay for that observation.
+private struct WorkChipMessageThumbnailText: View {
+  let text: String
+  let attachments: [AgentChatFileRef]
+  let foreground: Color
+  let chipBackground: Color
+  @ObservedObject private var thumbnails = WorkChatAttachmentThumbnailStore.shared
+
+  var body: some View {
+    var composed = Text(verbatim: "")
+    for part in WorkChipDetector.parts(in: text, attachments: attachments) {
+      switch part {
+      case .text(let run):
+        composed = Text("\(composed)\(Text(verbatim: run))")
+      case .chip(let chip):
+        if case .attachment(let token, let ref) = chip.origin, token.kind == .image,
+           let thumbnail = thumbnails.inlineThumbnail(forPath: ref.path) {
+          var label = AttributedString(" \(chip.label)")
+          label.foregroundColor = foreground
+          label.backgroundColor = chipBackground
+          label.font = .body.weight(.semibold)
+          composed = Text("\(composed)\(Text(Image(uiImage: thumbnail)).baselineOffset(-2))\(Text(label))")
+        } else {
+          var pill = AttributedString(workChipInlineLabel(chip))
+          pill.foregroundColor = foreground
+          pill.backgroundColor = chipBackground
+          pill.font = .body.weight(.semibold)
+          if let url = workChipNavigationURL(chip) {
+            pill.link = url
+          }
+          composed = Text("\(composed)\(Text(pill))")
+        }
+      }
+    }
+    return composed
   }
 }
 

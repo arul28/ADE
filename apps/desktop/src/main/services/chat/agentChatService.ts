@@ -54,6 +54,12 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import {
+  formatAttachedImageLegend,
+  labelAttachments,
+  labelAttachmentsByRef,
+  type AttachmentLabel,
+} from "../../../shared/attachmentLabels";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
@@ -671,7 +677,7 @@ import {
   type EvictableRuntime,
   type RuntimeBudgetParticipant,
 } from "./chatRuntimeBudget";
-import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
+import { createChatMentionService, markChatMentionsExpanded, type ChatMentionServiceDeps } from "./chatMentionService";
 import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
@@ -4458,13 +4464,15 @@ function toOpenCodePromptFiles(
 ): { files: OpenCodePromptFile[]; unsent: ResolvedAgentChatFileRef[] } {
   const files: OpenCodePromptFile[] = [];
   const unsent: ResolvedAgentChatFileRef[] = [];
-  for (const attachment of resolvedAttachments) {
+  const labels = labelAttachments(resolvedAttachments);
+  for (const [index, attachment] of resolvedAttachments.entries()) {
     const filePath = attachment._resolvedPath;
     if (filePath && fs.existsSync(filePath)) {
       files.push({
         path: filePath,
         mime: inferAttachmentMediaType(attachment),
         filename: path.basename(filePath),
+        label: labels[index]?.token,
       });
     } else {
       unsent.push(attachment);
@@ -4477,13 +4485,50 @@ function toOpenCodePromptFiles(
  * Name attachments the prompt cannot carry as file parts. One formatter for the
  * running-turn v1 send and the v2 inline steer so the two never diverge on how a
  * dropped attachment is described.
+ *
+ * Each line carries the attachment's `[Image #k]` / `[File #k: name]` label,
+ * numbered against `allAttachments` (the turn's whole list) when `items` is a
+ * subset of it, so the label matches the one the user's prompt text uses.
  */
-function formatAttachedContextHint(
-  items: ReadonlyArray<{ type: string; path: string }>,
+function formatAttachedContextHint<T extends { type: string; path: string }>(
+  items: readonly T[],
+  allAttachments: readonly T[] = items,
 ): string {
-  return items.length
-    ? `\n\nAttached context:\n${items.map((item) => `- ${item.type}: ${item.path}`).join("\n")}`
-    : "";
+  if (!items.length) return "";
+  const labels = labelAttachmentsByRef(allAttachments);
+  return `\n\nAttached context:\n${items.map((item) => {
+    const label = labels.get(item);
+    return label ? `- ${label.token}: ${item.path}` : `- ${item.type}: ${item.path}`;
+  }).join("\n")}`;
+}
+
+/**
+ * Codex input items for the turn's attachments, each preceded by a text item
+ * carrying its `[Image #k]` / `[File #k: name]` label. One builder for the
+ * turn-start and steer paths so the two cannot label differently.
+ */
+async function buildCodexAttachmentInputItems(
+  attachments: readonly ResolvedAgentChatFileRef[],
+  stageAttachment: (attachment: ResolvedAgentChatFileRef) => Promise<string>,
+): Promise<Array<Record<string, unknown>>> {
+  const labels = labelAttachments(attachments);
+  const items: Array<Record<string, unknown>> = [];
+  for (const [index, attachment] of attachments.entries()) {
+    const label = labels[index];
+    if (label) items.push({ type: "text", text: label.token, text_elements: [] });
+    if (attachment.type === "image-url") {
+      items.push({ type: "image", url: attachment.url });
+      continue;
+    }
+    const stagedPath = await stageAttachment(attachment);
+    if (attachment.type === "image") {
+      items.push({ type: "localImage", path: stagedPath });
+      continue;
+    }
+    const name = path.basename(attachment.path) || attachment.path;
+    items.push({ type: "mention", name, path: stagedPath });
+  }
+  return items;
 }
 
 type ResolvedChatConfig = {
@@ -7442,8 +7487,13 @@ async function buildStreamingUserContent(
   const parts: Array<{ type: "text"; text: string } | ImagePart | FilePart> = [
     { type: "text", text: args.baseText },
   ];
+  const labels = labelAttachments(args.attachments);
 
-  for (const attachment of args.attachments) {
+  for (const [index, attachment] of args.attachments.entries()) {
+    // Every attachment's block is preceded by its `[Image #k]` /
+    // `[File #k: name]` label, so a label in the prompt names this block.
+    const token = labels[index]?.token;
+    if (token) parts.push({ type: "text", text: `\n${token}` });
     try {
       if (attachment.type === "image-url") {
         parts.push({
@@ -9517,6 +9567,15 @@ export function createAgentChatService(args: {
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   /**
+   * Brain-side account reads behind `@mac:` mentions: the machine directory,
+   * account Activity, and this machine's directory key. Absent in hosts that
+   * hold no account, where machine mentions resolve as unavailable.
+   */
+  accountMachineMentions?: Pick<
+    ChatMentionServiceDeps,
+    "listAccountMachines" | "getAccountActivity" | "getLocalMachineKey"
+  > | null;
+  /**
    * Content-free hook for the one product question a handoff replay raises: did
    * the conversation reach the new model whole, in part, or not at all. Fired
    * once when the handoff pre-flight resolves, and once per overflow-recovery
@@ -9618,6 +9677,7 @@ export function createAgentChatService(args: {
     onClaudeHooksIgnored,
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
+    accountMachineMentions,
     onChatHandoffReplay,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
@@ -23558,19 +23618,7 @@ export function createAgentChatService(args: {
         text_elements: []
       });
 
-      for (const attachment of resolvedAttachments) {
-        if (attachment.type === "image-url") {
-          input.push({ type: "image", url: attachment.url });
-          continue;
-        }
-        const stagedPath = await stageAttachmentForCodexInput(attachment);
-        if (attachment.type === "image") {
-          input.push({ type: "localImage", path: stagedPath });
-          continue;
-        }
-        const name = path.basename(attachment.path) || attachment.path;
-        input.push({ type: "mention", name, path: stagedPath });
-      }
+      input.push(...await buildCodexAttachmentInputItems(resolvedAttachments, stageAttachmentForCodexInput));
       runtime.awaitingTurnStart = true;
       runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
       result = await runtime.request<{ turn?: { id?: string } }>("turn/start", {
@@ -28217,13 +28265,15 @@ export function createAgentChatService(args: {
     if (reconstructionContext.length) {
       persistChatState(managed);
     }
+    const attachmentLabels = labelAttachments(args.resolvedAttachments);
     const attachmentText = args.resolvedAttachments.length
       ? [
           "ADE attached files/images for this turn:",
-          ...args.resolvedAttachments.map((attachment) => {
+          ...args.resolvedAttachments.map((attachment, index) => {
             const pathText = attachment._resolvedPath || attachment.path;
             const label = path.basename(pathText) || pathText;
-            return `- ${label}: ${pathText}`;
+            const token = attachmentLabels[index]?.token;
+            return token ? `- ${token} ${label}: ${pathText}` : `- ${label}: ${pathText}`;
           }),
         ].join("\n")
       : null;
@@ -44422,11 +44472,16 @@ export function createAgentChatService(args: {
   const buildAgentPromptBlocks = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
+    labels: ReadonlyMap<ResolvedAgentChatFileRef, AttachmentLabel> = labelAttachmentsByRef(resolvedAttachments),
   ): Promise<Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>> => {
     const blocks: Array<
       { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
+      // A file's text block opens with its `[File #k: name]` label, numbered
+      // against the whole attachment list rather than this filtered subset.
+      const label = labels.get(attachment);
+      const labelPrefix = label ? `${label.token} ` : "";
       try {
         let buf: Buffer;
         if (attachment.type === "image") {
@@ -44448,7 +44503,7 @@ export function createAgentChatService(args: {
             if (fileSize > MAX_INLINE_BYTES) {
               blocks.push({
                 type: "text",
-                text: `[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
+                text: `${labelPrefix}[File: ${attachment.path} omitted: size ${fileSize} bytes]`,
               });
               continue;
             }
@@ -44467,20 +44522,20 @@ export function createAgentChatService(args: {
           if (hasNullByte(buf)) {
             blocks.push({
               type: "text",
-              text: `[File: ${attachment.path} omitted: binary or unsupported type]`,
+              text: `${labelPrefix}[File: ${attachment.path} omitted: binary or unsupported type]`,
             });
           } else {
             const text = buf.toString("utf-8");
             blocks.push({
               type: "text",
-              text: `[File: ${attachment.path}]\n${text}`,
+              text: `${labelPrefix}[File: ${attachment.path}]\n${text}`,
             });
           }
         } else {
           // File is too large to inline -- push a placeholder with a truncated preview.
           blocks.push({
             type: "text",
-            text: `[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
+            text: `${labelPrefix}[File: ${attachment.path} omitted: size ${buf.length} bytes]`,
           });
         }
       } catch {
@@ -44497,6 +44552,7 @@ export function createAgentChatService(args: {
     const promptBlocks = await buildAgentPromptBlocks(
       promptText,
       resolvedAttachments.filter((attachment) => attachment.type !== "image" && attachment.type !== "image-url"),
+      labelAttachmentsByRef(resolvedAttachments),
     );
     return promptBlocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
@@ -44504,51 +44560,87 @@ export function createAgentChatService(args: {
       .join("\n\n");
   };
 
+  /** One local image as a path-only worker image, or null when it has no root. */
+  const pathImageFromResolved = (
+    attachment: ResolvedAgentChatFileRef,
+  ): { path: string; mimeType: string; rootPath: string } | null => {
+    if (attachment.type !== "image") return null;
+    const rootPath = attachment._rootPath.trim();
+    if (!rootPath) return null;
+    return workerPathImagesFromAttachments([{
+      path: attachment.path,
+      resolvedPath: attachment._resolvedPath,
+      rootPath,
+    }])[0] ?? null;
+  };
+
   const pathImagesFromResolved = (
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Array<{ path: string; mimeType: string; rootPath: string }> => (
-    workerPathImagesFromAttachments(
-      resolvedAttachments.flatMap((attachment) => {
-        if (attachment.type !== "image") return [];
-        const rootPath = attachment._rootPath.trim();
-        if (!rootPath) return [];
-        return [{
-          path: attachment.path,
-          resolvedPath: attachment._resolvedPath,
-          rootPath,
-        }];
-      }),
-    )
+    resolvedAttachments.flatMap((attachment) => {
+      const image = pathImageFromResolved(attachment);
+      return image ? [image] : [];
+    })
   );
 
+  /**
+   * Cursor carries images beside the prompt, not inside it, so a label cannot
+   * sit right before each image block. The images go in attachment-list order
+   * instead (local and URL images interleaved, exactly as the user attached
+   * them), and the prompt ends with a legend naming each one, so `[Image #2]`
+   * in the prompt is the second image the model receives.
+   */
   const buildCursorWorkerPrompt = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
-  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => ({
-    promptText: await promptTextWithoutInlineImages(promptText, resolvedAttachments),
-    images: [
-      ...pathImagesFromResolved(resolvedAttachments),
-      ...resolvedAttachments.flatMap((attachment) => {
-        if (attachment.type !== "image-url") return [];
+  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => {
+    const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
+    const labels = labelAttachments(resolvedAttachments);
+    const images: WorkerIpcImage[] = [];
+    const sentLabels: AttachmentLabel[] = [];
+    resolvedAttachments.forEach((attachment, index) => {
+      const label = labels[index];
+      let image: WorkerIpcImage | null = null;
+      if (attachment.type === "image-url") {
         const url = attachment.url?.trim();
-        if (!url) return [];
-        return [{ url }];
-      }),
-    ],
-  });
+        image = url ? { url } : null;
+      } else {
+        image = pathImageFromResolved(attachment);
+      }
+      if (!image) return;
+      images.push(image);
+      if (label) sentLabels.push(label);
+    });
+    const legend = formatAttachedImageLegend(sentLabels);
+    return {
+      promptText: [...(text ? [text] : []), ...(legend ? [legend] : [])].join("\n\n"),
+      images,
+    };
+  };
 
   const buildPathOnlyWorkerPrompt = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Promise<{ promptText: string; images: Array<{ path: string; mimeType: string; rootPath: string }> }> => {
     const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
-    const urlHints = resolvedAttachments.flatMap((attachment) => {
-      if (attachment.type !== "image-url") return [];
-      const url = attachment.url?.trim();
-      return url ? [`Image URL: ${url}`] : [];
+    const labels = labelAttachments(resolvedAttachments);
+    // Path images travel beside the prompt, URL images as text. The legend
+    // names the path images in the order they are sent; each URL hint carries
+    // its own label, so every `[Image #k]` the prompt uses resolves.
+    const sentImageLabels: AttachmentLabel[] = [];
+    const urlHints: string[] = [];
+    resolvedAttachments.forEach((attachment, index) => {
+      const label = labels[index];
+      if (attachment.type === "image-url") {
+        const url = attachment.url?.trim();
+        if (url) urlHints.push(label ? `${label.token} Image URL: ${url}` : `Image URL: ${url}`);
+        return;
+      }
+      if (label && pathImageFromResolved(attachment)) sentImageLabels.push(label);
     });
+    const legend = formatAttachedImageLegend(sentImageLabels);
     return {
-      promptText: [...(text ? [text] : []), ...urlHints].join("\n\n"),
+      promptText: [...(text ? [text] : []), ...urlHints, ...(legend ? [legend] : [])].join("\n\n"),
       images: pathImagesFromResolved(resolvedAttachments),
     };
   };
@@ -49028,9 +49120,11 @@ export function createAgentChatService(args: {
     // same files as `{uri}` through the runtime module's builder. A file that is
     // not on disk (an http(s) image-url attachment) cannot be sent as a part,
     // so it is named in the prompt text exactly as a normal OpenCode send names
-    // it, instead of being silently dropped.
-    const { files, unsent } = toOpenCodePromptFiles(steer.resolvedAttachments);
-    const attachmentHint = formatAttachedContextHint(unsent);
+    // it, instead of being silently dropped. The v2 `{uri}` input has no slot
+    // for a per-file label, so every attachment is listed with its
+    // `[Image #k]` / `[File #k: name]` label — the v1 send lists all of them too.
+    const { files } = toOpenCodePromptFiles(steer.resolvedAttachments);
+    const attachmentHint = formatAttachedContextHint(steer.resolvedAttachments);
     const text = contextPrompt
       ? `${contextPrompt}\n\n${steer.text}${attachmentHint}`
       : `${steer.text}${attachmentHint}`;
@@ -49662,19 +49756,10 @@ export function createAgentChatService(args: {
           text_elements: [],
         });
       }
-      for (const attachment of preparedSteer.resolvedAttachments) {
-        if (attachment.type === "image-url") {
-          input.push({ type: "image", url: attachment.url });
-          continue;
-        }
-        const stagedPath = await stageAttachmentForCodexInput(attachment);
-        if (attachment.type === "image") {
-          input.push({ type: "localImage", path: stagedPath });
-          continue;
-        }
-        const name = path.basename(attachment.path) || attachment.path;
-        input.push({ type: "mention", name, path: stagedPath });
-      }
+      input.push(...await buildCodexAttachmentInputItems(
+        preparedSteer.resolvedAttachments,
+        stageAttachmentForCodexInput,
+      ));
 
       let deliveredTurnId = runtime.activeTurnId;
       if (codexTurnRejectsSteer(runtime)) {
@@ -59441,6 +59526,9 @@ export function createAgentChatService(args: {
       : null,
     logger,
     onMentionsExpanded: onChatMentionsExpanded ?? null,
+    listAccountMachines: accountMachineMentions?.listAccountMachines ?? null,
+    getAccountActivity: accountMachineMentions?.getAccountActivity ?? null,
+    getLocalMachineKey: accountMachineMentions?.getLocalMachineKey ?? null,
   });
 
   const listMentionSuggestions = (

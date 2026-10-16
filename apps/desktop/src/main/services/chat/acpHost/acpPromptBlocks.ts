@@ -11,6 +11,7 @@
 
 import path from "node:path";
 import type { AgentChatFileRef } from "../../../../shared/types/chat";
+import { labelAttachments } from "../../../../shared/attachmentLabels";
 import { hasNullByte } from "../../shared/utils";
 import {
   exceedsProviderInlineLimit,
@@ -64,8 +65,13 @@ export async function buildAcpPromptBlocks(
   args: BuildAcpPromptBlocksArgs,
 ): Promise<AcpContentBlock[]> {
   const blocks: AcpContentBlock[] = [textBlock(args.promptText)];
+  const labels = labelAttachments(args.attachments);
 
-  for (const attachment of args.attachments) {
+  for (const [index, attachment] of args.attachments.entries()) {
+    // The `[Image #k]` / `[File #k: name]` label goes right before the
+    // attachment's own block, so a label in the prompt names this block.
+    const token = labels[index]?.token;
+    if (token) blocks.push(textBlock(`\n${token}`));
     if (attachment.type === "image-url") {
       const url = attachment.url?.trim();
       if (!url) {

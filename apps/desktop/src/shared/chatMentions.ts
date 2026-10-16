@@ -1,5 +1,5 @@
 // Grammar + send-time expansion for composer @-mentions of ADE chats, lanes,
-// and terminals. Pure and surface-agnostic on purpose: the desktop composer,
+// terminals, pull requests, and account machines. Pure and surface-agnostic on purpose: the desktop composer,
 // the `ade code` TUI, and iOS all serialize the same chip tokens, and the chat
 // service expands them in exactly one place (see `prepareChatMentionExpansion`
 // callers in agentChatService).
@@ -14,11 +14,16 @@
 
 import type { ChatMentionDetail, ChatMentionKind } from "./types/chatMentions";
 
-/** Chip token prefix per kind. `term` is deliberately short for typing. */
+/**
+ * Chip token prefix per kind. `term` and `mac` are deliberately short for
+ * typing. iOS (`WorkChatMentionDetector`) mirrors this table; keep them equal.
+ */
 const CHAT_MENTION_TOKEN_PREFIX: Record<ChatMentionKind, string> = {
   chat: "chat",
   lane: "lane",
   terminal: "term",
+  pr: "pr",
+  machine: "mac",
 };
 
 // Derived from the prefix table above so the grammar has exactly one source of
@@ -33,8 +38,11 @@ const TOKEN_PREFIX_ALTERNATION = Object.values(CHAT_MENTION_TOKEN_PREFIX).join("
 /** Canonical kind order (suggestion payloads, mocks). */
 export const CHAT_MENTION_KINDS = Object.keys(CHAT_MENTION_TOKEN_PREFIX) as ChatMentionKind[];
 
-/** Max rows the @ menu returns after mixing files, chats, lanes, and terminals. */
+/** Max rows the @ menu returns after mixing files and entity mentions. */
 export const CHAT_MENTION_MAX_RESULTS = 16;
+
+/** Rows per section when a bare `@` browses recent items grouped by kind. */
+export const CHAT_MENTION_SECTION_LIMIT = 5;
 
 /**
  * Per-source fetch budget before the mixed ranker runs. Kept so a single
@@ -80,6 +88,47 @@ export function chatMentionKindFromToken(token: string): ChatMentionKind | null 
   if (separator <= 0) return null;
   if (!MENTION_TOKEN_BODY_RE.test(body)) return null;
   return PREFIX_TO_KIND[body.slice(0, separator)] ?? null;
+}
+
+const MENTION_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+/** True when `id` can be serialized into a mention token without escaping. */
+export function isChatMentionId(id: string): boolean {
+  return MENTION_ID_RE.test(id);
+}
+
+/**
+ * Words that narrow the @ menu to one kind. The token prefixes plus their
+ * spelled-out forms, so `@mac` and `@machine` both open the machine section.
+ */
+const KIND_FILTER_WORDS: Record<string, ChatMentionKind> = {
+  ...PREFIX_TO_KIND,
+  chats: "chat",
+  lanes: "lane",
+  terminal: "terminal",
+  terminals: "terminal",
+  prs: "pr",
+  machine: "machine",
+  machines: "machine",
+};
+
+/**
+ * Split an @ query into a kind filter and the remaining search text.
+ *
+ * `pr` and `pr fix login` narrow to pull requests (searching "" and
+ * "fix login"); `prService` does not, because the kind word must stand alone
+ * or be followed by whitespace. Shared by the desktop menu, the suggestion
+ * service, and (mirrored) iOS, so every surface filters the same way.
+ */
+export function parseChatMentionKindFilter(query: string): {
+  kind: ChatMentionKind | null;
+  rest: string;
+} {
+  const trimmed = query.trimStart();
+  const match = /^([A-Za-z]+)(?:[ \t]+([\s\S]*))?$/.exec(trimmed);
+  const kind = match ? KIND_FILTER_WORDS[match[1]!.toLowerCase()] : undefined;
+  if (!match || !kind) return { kind: null, rest: query.trim() };
+  return { kind, rest: (match[2] ?? "").trim() };
 }
 
 export type ParsedChatMention = {
@@ -351,14 +400,22 @@ export function rankChatMentionSuggestions<
 export function renderUnresolvedChatMentionBlock(
   kind: ChatMentionKind,
   id: string,
+  /** Why it did not resolve, when the resolver knows better than "not found". */
+  reason?: string | null,
 ): string {
+  const defaultHint = kind === "machine"
+    ? "No machine with this id is in the ADE account directory right now. The account may be signed out, "
+      + "the directory unreachable, or the machine removed. Do not guess its state."
+    : kind === "pr"
+      ? "No pull request with this id is tracked in the active project on this machine. "
+        + "It may have been unlinked, or it belongs to another project. Do not guess its contents."
+      : `No ${kind} with this id is available in the active project on this machine. `
+        + "It may have been archived, deleted, or it belongs to another project. Do not guess its contents.";
   return renderChatMentionBlock({
     kind,
     id,
     title: "(unresolved)",
     attributes: [["resolved", "false"]],
-    hint:
-      `No ${kind} with this id is available in the active project on this machine. ` +
-      "It may have been archived, deleted, or it belongs to another project. Do not guess its contents.",
+    hint: reason?.trim() ? `${reason.trim()} Do not guess its state.` : defaultHint,
   });
 }

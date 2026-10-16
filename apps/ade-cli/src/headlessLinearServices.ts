@@ -37,6 +37,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRepoRef,
   GitHubRateLimitState,
+  GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
@@ -60,6 +61,7 @@ import {
   type AppUserAuthFailure,
 } from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
 import {
+  readGithubRepoStarState,
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "../../desktop/src/main/services/github/githubRawRequest";
@@ -2278,6 +2280,10 @@ export function createHeadlessGitHubService(
       emitStatusChanged();
     },
     requestRawWithCredentialFallback,
+    /** Runtime-owned twin of the desktop service's star check. */
+    async isRepoStarred(): Promise<GitHubRepoStarState> {
+      return await readGithubRepoStarState(requestRawWithCredentialFallback);
+    },
     apiRequest,
     createRepository,
     getRepository,

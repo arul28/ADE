@@ -279,7 +279,7 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
-import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { resolveSmartLinkImage, resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
   createPromptStash,
@@ -4605,6 +4605,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       linearIssueTracker,
     });
   });
+  // A link hover card's og:image. Machine-level and public-only (the resolver
+  // pins DNS to public hosts on every hop), so no project is needed.
+  register("chat.resolveSmartLinkImage", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    resolveSmartLinkImage({ url: requireString(payload.url, "chat.resolveSmartLinkImage requires url.") }), "runtime");
   // Sources favicons (hosted web, iOS). Machine-level: no project needed, so a
   // personal chat's Sources list gets icons too. The resolver only ever talks
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
@@ -4614,6 +4618,16 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
     ));
+  // Composer @-mention suggestions for iOS. Read-only and project-scoped, like
+  // the slash-command list; machine rows are read inside the brain, so a
+  // viewer never needs the CTO-only account actions.
+  register("chat.listMentionSuggestions", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listMentionSuggestions({
+      query: typeof payload.query === "string" ? payload.query : "",
+      ...(typeof payload.excludeSessionId === "string" && payload.excludeSessionId.trim()
+        ? { excludeSessionId: payload.excludeSessionId.trim() }
+        : {}),
+    }));
   register("chat.getParallelLaunchState", { viewerAllowed: true }, async (payload) => {
     const db = requireService(args.db, "Database not available.");
     const parsed = parseAgentChatParallelLaunchStateArgs(payload);

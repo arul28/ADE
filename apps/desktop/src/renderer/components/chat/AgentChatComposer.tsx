@@ -104,10 +104,26 @@ import { ContextUsageDial } from "./usage/ContextUsageDial";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import type { ContextUsageViewModel } from "./usage/contextUsageModel";
 import {
+  ChatAttachmentPreviewDialog,
   ChatAttachmentTray,
   CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR,
   type ChatAttachmentPendingImage,
 } from "./ChatAttachmentTray";
+import { AttachmentPeekCard, useAttachmentThumbnail } from "./AttachmentChipPeek";
+import {
+  isImageAttachmentRef,
+  labelAttachments,
+  parseAttachmentTokens,
+  resolveAttachmentToken,
+  type AttachmentLabel,
+} from "../../../shared/attachmentLabels";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
+import {
+  pastedTextChipLabel,
+  pastedTextFilename,
+  pastedTextLineCount,
+  shouldPasteTextAsFile,
+} from "../../../shared/pastedTextAttachment";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
@@ -254,6 +270,111 @@ const COMPOSER_MENTION_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
 const COMPOSER_TOKEN_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
+
+// Inline attachment chips: `[Image #k]` / `[File #k: name]` in the draft, a
+// pill keyed to its attachment's path in the editor. The path, not the token,
+// is the chip's identity, so removing Image 1 renumbers the old Image 2 chip in
+// place instead of orphaning it.
+const COMPOSER_ATTACHMENT_CHIP_SELECTOR = "[data-composer-chip='attachment']";
+const COMPOSER_ATTACHMENT_THUMB_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 overflow-hidden rounded-[3px]";
+/** Linked-hover and armed-for-delete ring, in the chat accent the tray glow uses. */
+const COMPOSER_ATTACHMENT_RING_CLASSES = [
+  "ring-1",
+  "ring-[color:color-mix(in_srgb,var(--chat-accent)_60%,transparent)]",
+];
+/** How long a queued chip waits for its attachment to land in the tray. */
+const ATTACHMENT_CHIP_QUEUE_TTL_MS = 15_000;
+const COMPOSER_IMAGE_CHIP_GLYPH_SVG =
+  '<svg viewBox="0 0 16 16" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.6"/><circle cx="6" cy="6.6" r="1.1"/><path d="M3 11.8l3.2-3.2 2.4 2.4 1.8-1.8 2.6 2.6"/></svg>';
+
+/**
+ * Where a not-yet-staged attachment's chip goes once the attachment lands.
+ * Offsets are in serialized draft text (chips count as their token), which is
+ * the one coordinate that survives a textarea → rich-editor switch.
+ */
+type AttachmentChipPlacement =
+  | { kind: "offset"; offset: number; refocus: boolean }
+  | { kind: "afterChip"; path: string; fallback: AttachmentChipPlacement }
+  | { kind: "end" };
+
+function collectAttachmentChipPaths(editor: HTMLElement): Set<string> {
+  const paths = new Set<string>();
+  editor.querySelectorAll<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
+    const path = chip.dataset.composerAttachmentPath;
+    if (path) paths.add(path);
+  });
+  return paths;
+}
+
+function findAttachmentChip(editor: HTMLElement, path: string): HTMLElement | null {
+  for (const chip of Array.from(editor.querySelectorAll<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR))) {
+    if (chip.dataset.composerAttachmentPath === path) return chip;
+  }
+  return null;
+}
+
+function setAttachmentChipRing(chip: HTMLElement, lit: boolean): void {
+  for (const name of COMPOSER_ATTACHMENT_RING_CLASSES) chip.classList.toggle(name, lit);
+}
+
+/**
+ * A collapsed range at a serialized-text offset. Mirrors the composer's
+ * `getRichCursorTextOffset` walk exactly (chips count as their token, context
+ * chips count as nothing), so an offset read there lands back in the same spot.
+ */
+function rangeAtComposerTextOffset(editor: HTMLElement, requestedOffset: number): Range {
+  const range = document.createRange();
+  let remaining = Math.max(0, requestedOffset);
+  let placed = false;
+  const visit = (node: Node) => {
+    if (placed) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const length = node.textContent?.length ?? 0;
+      if (remaining <= length) {
+        range.setStart(node, remaining);
+        placed = true;
+        return;
+      }
+      remaining -= length;
+      return;
+    }
+    if (!(node instanceof HTMLElement)) return;
+    if (node.dataset.iosContextId || node.dataset.appControlContextId || node.dataset.builtInBrowserContextId) return;
+    const chipText = node.dataset.composerChipText;
+    if (chipText != null) {
+      if (remaining <= chipText.length) {
+        if (remaining < chipText.length / 2) range.setStartBefore(node);
+        else range.setStartAfter(node);
+        placed = true;
+        return;
+      }
+      remaining -= chipText.length;
+      return;
+    }
+    node.childNodes.forEach(visit);
+  };
+  editor.childNodes.forEach(visit);
+  if (!placed) {
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  range.collapse(true);
+  return range;
+}
+
+/** The character just before a collapsed range, when it sits inside a text node. */
+function characterBeforeRange(range: Range): string | null {
+  const container = range.startContainer;
+  if (container.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
+    return container.textContent?.charAt(range.startOffset - 1) ?? null;
+  }
+  const previous = container.childNodes[range.startOffset - 1] ?? null;
+  if (previous?.nodeType === Node.TEXT_NODE) {
+    const text = previous.textContent ?? "";
+    return text ? text.charAt(text.length - 1) : null;
+  }
+  return null;
+}
 
 const voiceShimmerStyleId = "ade-voice-shimmer-effects";
 
@@ -2054,6 +2175,38 @@ export function AgentChatComposer({
   const [pendingImageAttachments, setPendingImageAttachments] = useState<ChatAttachmentPendingImage[]>([]);
   const [imagePreviewUrls, setImagePreviewUrls] = useState<Record<string, string>>({});
   const [attachmentSizes, setAttachmentSizes] = useState<Record<string, number>>({});
+  // Inline attachment chips. Latest-value refs because the chip DOM is driven
+  // from the layout effect and from event handlers, not from render.
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const imagePreviewUrlsRef = useRef(imagePreviewUrls);
+  imagePreviewUrlsRef.current = imagePreviewUrls;
+  const queuedAttachmentChipsRef = useRef<Array<{ path: string; placement: AttachmentChipPlacement; queuedAt: number }>>([]);
+  // Chip paths present after the last reconcile; an edit that drops one
+  // removes that attachment.
+  const attachmentChipPathsRef = useRef<Set<string>>(new Set());
+  const pastedTextLineCountsRef = useRef<Map<string, number>>(new Map());
+  const pastedTextFilesRef = useRef<WeakMap<File, number>>(new WeakMap());
+  const armedAttachmentChipRef = useRef<HTMLElement | null>(null);
+  const [hoveredAttachmentPath, setHoveredAttachmentPath] = useState<string | null>(null);
+  const hoveredAttachmentPathRef = useRef(hoveredAttachmentPath);
+  hoveredAttachmentPathRef.current = hoveredAttachmentPath;
+  const [attachmentChipPeek, setAttachmentChipPeek] = useState<{ anchor: HTMLElement; path: string } | null>(null);
+  const [attachmentChipPreview, setAttachmentChipPreview] = useState<{
+    path: string;
+    title: string;
+    fallbackImageDataUrl: string | null;
+  } | null>(null);
+  // Hover peek for an image chip: the tray's preview when it has one, else one
+  // read through the machine that owns the attachment.
+  const peekAttachment = attachmentChipPeek
+    ? attachments.find((entry) => entry.path === attachmentChipPeek.path && isImageAttachmentRef(entry)) ?? null
+    : null;
+  const peekThumbnail = useAttachmentThumbnail(
+    peekAttachment,
+    composerMachineBinding ?? null,
+    peekAttachment ? imagePreviewUrls[peekAttachment.path] ?? null : null,
+  );
 
   useEffect(() => {
     if (!attachNotice) return;
@@ -2089,6 +2242,21 @@ export function AgentChatComposer({
     () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
+  /**
+   * Put an inline chip for `path` at `placement` once the attachment is in the
+   * tray. Chips are only ever created for an attachment that exists, so the
+   * number on a chip is always the number the agent will see.
+   *
+   * A textarea composer switches to the rich editor here, the same way a
+   * pasted link promotes it; the queued offset survives the switch.
+   */
+  const queueAttachmentChip = useCallback((path: string, placement: AttachmentChipPlacement) => {
+    queuedAttachmentChipsRef.current = [
+      ...queuedAttachmentChipsRef.current.filter((entry) => entry.path !== path),
+      { path, placement, queuedAt: Date.now() },
+    ];
+    setSmartLinkEditorEnabled(true);
+  }, []);
   // The CTO identity session cannot queue: the host turns a queued delivery
   // into an inline (or interrupt) one, so the menu must not offer the wait.
   const liveRedirectOnlyDispatch = surfaceProfile === "persistent_identity";
@@ -2140,10 +2308,16 @@ export function AgentChatComposer({
   const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {
-    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0) {
+    if (
+      hasChatOutputContext(draft)
+      || parseChatMentions(draft).length > 0
+      // A restored `[Image #k]` whose attachment exists is a chip, and chips
+      // live in the rich editor.
+      || parseAttachmentTokens(draft).some((token) => resolveAttachmentToken(attachments, token) != null)
+    ) {
       setSmartLinkEditorEnabled(true);
     }
-  }, [draft]);
+  }, [attachments, draft]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -2802,10 +2976,21 @@ export function AgentChatComposer({
       return;
     }
     onAddAttachment(attachment);
+    // A picked attachment has no caret position to belong to: its chip goes
+    // at the end of the prompt.
+    if (!attachedPaths.has(attachment.path)) queueAttachmentChip(attachment.path, { kind: "end" });
     setAttachmentPickerOpen(false);
   };
 
-  const addFileAttachments = async (files: FileList | File[] | null | undefined) => {
+  /**
+   * Stage files and hand them to the parent. `chipPlacement` is where their
+   * inline chips go — the caret for a paste or a drop, the end for the picker.
+   * A batch keeps its order: each later chip goes right after the one before.
+   */
+  const addFileAttachments = async (
+    files: FileList | File[] | null | undefined,
+    options: { chipPlacement?: AttachmentChipPlacement } = {},
+  ) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
@@ -2821,6 +3006,7 @@ export function AgentChatComposer({
     setAttachError(null);
     setAttachRetryFiles(null);
     const retryable: File[] = [];
+    let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
@@ -2894,7 +3080,11 @@ export function AgentChatComposer({
             rememberPreviewUrl(staged.path, staged.previewDataUrl ?? pendingImage?.previewUrl);
           }
           rememberAttachmentSize(staged.path, file.size);
+          const pastedLineCount = pastedTextFilesRef.current.get(file);
+          if (pastedLineCount != null) pastedTextLineCountsRef.current.set(staged.path, pastedLineCount);
           onAddAttachment({ path: staged.path, type: attachmentType });
+          queueAttachmentChip(staged.path, chipPlacement);
+          chipPlacement = { kind: "afterChip", path: staged.path, fallback: chipPlacement };
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           addedInBatch += 1;
         } catch (error) {
@@ -2913,7 +3103,7 @@ export function AgentChatComposer({
   };
   addFileAttachmentsRef.current = addFileAttachments;
 
-  const addNativeClipboardImageAttachment = async () => {
+  const addNativeClipboardImageAttachment = async (chipPlacement: AttachmentChipPlacement = { kind: "end" }) => {
     if (attachmentPersistenceUnavailableReason) {
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
@@ -2946,6 +3136,7 @@ export function AgentChatComposer({
       }
       rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
+      queueAttachmentChip(tempPath, chipPlacement);
       dropPendingImageAttachment(pendingImage.id);
     } catch {
       dropPendingImageAttachment(pendingImage.id);
@@ -2968,17 +3159,19 @@ export function AgentChatComposer({
 
   const addImageUrlFromTransfer = useCallback((
     data: DataTransfer | React.ClipboardEvent<HTMLElement>["clipboardData"],
-    options?: { showNotice?: boolean },
+    options?: { showNotice?: boolean; chipPlacement?: AttachmentChipPlacement },
   ): boolean => {
     const url = normalizeImageAttachmentUrl(data.getData("text/uri-list"))
       ?? normalizeImageAttachmentUrl(data.getData("text/plain"));
     if (!url) return false;
+    const alreadyAttached = attachmentsRef.current.some((attachment) => attachment.path === url);
     const attached = addImageUrlAttachment(url);
+    if (attached && !alreadyAttached) queueAttachmentChip(url, options?.chipPlacement ?? { kind: "end" });
     if (attached && options?.showNotice) {
       setAttachNotice({ message: "Image URL attached", undoPath: url });
     }
     return attached;
-  }, [addImageUrlAttachment]);
+  }, [addImageUrlAttachment, queueAttachmentChip]);
 
   const canAttachRef = useRef(canAttach);
   canAttachRef.current = canAttach;
@@ -3114,6 +3307,28 @@ export function AgentChatComposer({
     editor.childNodes.forEach(visit);
     return offset;
   }, [serializeRichEditor]);
+
+  /**
+   * Where a chip for an attachment arriving now should go: the caret, as a
+   * serialized-text offset. Read at the moment of the paste or drop, because
+   * staging is async and the chip lands after the bytes do.
+   */
+  const captureAttachmentChipPlacement = (): AttachmentChipPlacement => {
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      const selection = window.getSelection();
+      const live = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      const range = live && editor?.contains(live.startContainer) ? live : richSelectionRef.current;
+      if (!editor || !range || !editor.contains(range.startContainer)) return { kind: "end" };
+      return { kind: "offset", offset: getRichCursorTextOffset(), refocus: document.activeElement === editor };
+    }
+    const textarea = textareaRef.current;
+    if (textarea && document.activeElement === textarea) {
+      return { kind: "offset", offset: textarea.selectionEnd ?? textarea.value.length, refocus: true };
+    }
+    const lastCaret = lastPlainSelectionRef.current;
+    return lastCaret != null ? { kind: "offset", offset: lastCaret, refocus: false } : { kind: "end" };
+  };
 
   const updateSmartLinkChipNode = useCallback((chip: HTMLElement, preview: SmartLinkPreview) => {
     // Label and glyph come from the shared chip model, not from smartLinks'
@@ -3295,12 +3510,13 @@ export function AgentChatComposer({
     syncRichDraft();
   }, [syncRichDraft]);
 
-  const removeAdjacentSmartLink = useCallback((direction: "backward" | "forward"): boolean => {
+  /** The element right before (or after) a collapsed caret in the editor, if any. */
+  const findAdjacentEditorElement = useCallback((direction: "backward" | "forward"): HTMLElement | null => {
     const editor = richEditorRef.current;
     const selection = window.getSelection();
-    if (!editor || !selection || !selection.rangeCount) return false;
+    if (!editor || !selection || !selection.rangeCount) return null;
     const range = selection.getRangeAt(0);
-    if (!range.collapsed || !editor.contains(range.startContainer)) return false;
+    if (!range.collapsed || !editor.contains(range.startContainer)) return null;
     let candidate: Node | null = null;
     if (range.startContainer.nodeType === Node.TEXT_NODE) {
       const text = range.startContainer.textContent ?? "";
@@ -3309,11 +3525,16 @@ export function AgentChatComposer({
     } else {
       candidate = range.startContainer.childNodes[direction === "backward" ? range.startOffset - 1 : range.startOffset] ?? null;
     }
-    if (!(candidate instanceof HTMLElement)) return false;
+    return candidate instanceof HTMLElement ? candidate : null;
+  }, []);
+
+  const removeAdjacentSmartLink = useCallback((direction: "backward" | "forward"): boolean => {
+    const candidate = findAdjacentEditorElement(direction);
+    if (!candidate) return false;
     if (!candidate.dataset.smartLinkUrl && candidate.dataset.composerChip !== "chat-context") return false;
     removeSmartLinkNode(candidate);
     return true;
-  }, [removeSmartLinkNode]);
+  }, [findAdjacentEditorElement, removeSmartLinkNode]);
 
   const setRichEditorText = useCallback((text: string) => {
     const editor = richEditorRef.current;
@@ -3421,6 +3642,276 @@ export function AgentChatComposer({
     label.textContent = chipLabel ?? text;
     chip.appendChild(label);
     return chip;
+  }, []);
+
+  /**
+   * Bring one attachment chip in line with its attachment's current label:
+   * token, visible text, and icon (the thumbnail once a preview URL exists).
+   */
+  const updateAttachmentChipNode = useCallback((
+    chip: HTMLElement,
+    attachment: AgentChatFileRef,
+    label: AttachmentLabel,
+  ) => {
+    chip.dataset.composerChipText = label.token;
+    const pastedLines = label.kind === "file" ? pastedTextLineCountsRef.current.get(attachment.path) : undefined;
+    const display = pastedLines != null
+      ? pastedTextChipLabel(pastedLines)
+      : `${label.kind === "image" ? "Image" : "File"} ${label.ordinal}`;
+    const labelNode = chip.querySelector<HTMLElement>("[data-composer-chip-label]");
+    if (labelNode && labelNode.textContent !== display) labelNode.textContent = display;
+    const title = `${label.token} — ${label.name}`;
+    if (chip.title !== title) chip.title = title;
+    chip.setAttribute("aria-label", `${display}: ${label.name}`);
+
+    const icon = chip.querySelector<HTMLElement>("[data-composer-chip-icon]");
+    if (!icon) return;
+    const thumbnail = label.kind !== "image"
+      ? null
+      : attachment.type === "image-url"
+        ? attachment.url
+        : imagePreviewUrlsRef.current[attachment.path] ?? null;
+    if (thumbnail) {
+      if (icon.querySelector("img")?.getAttribute("src") === thumbnail) return;
+      icon.className = COMPOSER_ATTACHMENT_THUMB_CLASS;
+      const image = document.createElement("img");
+      image.src = thumbnail;
+      image.alt = "";
+      image.draggable = false;
+      image.className = "h-full w-full object-cover";
+      icon.replaceChildren(image);
+      return;
+    }
+    const glyphKind = label.kind === "image" ? "image" : "file";
+    if (icon.dataset.composerAttachmentGlyph === glyphKind) return;
+    icon.dataset.composerAttachmentGlyph = glyphKind;
+    icon.className = COMPOSER_TOKEN_CHIP_ICON_CLASS;
+    icon.innerHTML = glyphKind === "image" ? COMPOSER_IMAGE_CHIP_GLYPH_SVG : mentionChipMarkSvg("file");
+  }, []);
+
+  const createAttachmentChipNode = useCallback((attachment: AgentChatFileRef, label: AttachmentLabel): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.composerChip = "attachment";
+    chip.dataset.composerAttachmentPath = attachment.path;
+    chip.className = `${COMPOSER_MENTION_CHIP_CLASS} cursor-pointer transition-shadow`;
+    const icon = document.createElement("span");
+    icon.dataset.composerChipIcon = "true";
+    icon.setAttribute("aria-hidden", "true");
+    const labelNode = document.createElement("span");
+    labelNode.dataset.composerChipLabel = "true";
+    labelNode.className = "truncate";
+    chip.append(icon, labelNode);
+    updateAttachmentChipNode(chip, attachment, label);
+    return chip;
+  }, [updateAttachmentChipNode]);
+
+  /**
+   * Insert a chip at a placement, with a space after it so typing continues
+   * outside the pill, and a space before it when it would otherwise glue onto
+   * a word. Moves the caret past it only when the editor has (or should get)
+   * focus — a chip landing while the user is elsewhere must not steal it.
+   */
+  const insertAttachmentChipAt = useCallback((
+    editor: HTMLElement,
+    chip: HTMLElement,
+    placement: AttachmentChipPlacement,
+  ) => {
+    let range: Range | null = null;
+    let refocus = false;
+    let target: AttachmentChipPlacement | null = placement;
+    while (target && !range) {
+      if (target.kind === "afterChip") {
+        const previous = findAttachmentChip(editor, target.path);
+        if (previous) {
+          range = document.createRange();
+          const next = previous.nextSibling;
+          if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) range.setStart(next, 1);
+          else range.setStartAfter(previous);
+          range.collapse(true);
+          target = null;
+        } else {
+          target = target.fallback;
+        }
+      } else if (target.kind === "offset") {
+        range = rangeAtComposerTextOffset(editor, target.offset);
+        refocus = target.refocus;
+        target = null;
+      } else {
+        target = null;
+      }
+    }
+    if (!range) {
+      range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    }
+    const fragment = document.createDocumentFragment();
+    const before = characterBeforeRange(range);
+    if (before && !/\s/.test(before)) fragment.append(document.createTextNode(" "));
+    fragment.append(chip);
+    const after = document.createTextNode(" ");
+    fragment.append(after);
+    range.insertNode(fragment);
+    if (refocus || document.activeElement === editor) {
+      if (document.activeElement !== editor) editor.focus({ preventScroll: true });
+      const caret = document.createRange();
+      caret.setStart(after, 1);
+      caret.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(caret);
+      richSelectionRef.current = caret.cloneRange();
+    }
+  }, []);
+
+  /**
+   * Keep the editor's attachment chips in step with the tray. Returns true when
+   * the serialized draft may have changed.
+   *
+   *  1. A chip whose attachment left the tray leaves with it; every other chip
+   *     takes its attachment's current number (removing Image 1 renumbers the
+   *     old Image 2 chip in place).
+   *  2. A plain-text token whose attachment exists becomes a chip — a restored
+   *     draft, a pasted token. One with no such attachment stays text.
+   *  3. Queued chips whose attachment has landed are inserted.
+   */
+  const reconcileAttachmentChipsInEditor = useCallback((editor: HTMLElement): boolean => {
+    const current = attachmentsRef.current;
+    const labels = labelAttachments(current);
+    const indexByPath = new Map(current.map((attachment, index) => [attachment.path, index]));
+    let changed = false;
+
+    editor.querySelectorAll<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
+      const index = indexByPath.get(chip.dataset.composerAttachmentPath ?? "");
+      if (index == null) {
+        const next = chip.nextSibling;
+        chip.remove();
+        if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) {
+          next.textContent = next.textContent.slice(1);
+        }
+        if (armedAttachmentChipRef.current === chip) armedAttachmentChipRef.current = null;
+        changed = true;
+        return;
+      }
+      const previousToken = chip.dataset.composerChipText;
+      updateAttachmentChipNode(chip, current[index]!, labels[index]!);
+      if (chip.dataset.composerChipText !== previousToken) changed = true;
+    });
+
+    if (current.length) {
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (!parent || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return (node.textContent ?? "").includes("[") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        },
+      });
+      const nodes: Text[] = [];
+      let node = walker.nextNode();
+      while (node) {
+        nodes.push(node as Text);
+        node = walker.nextNode();
+      }
+      // Hydrating a token the user just finished typing replaces the text node
+      // under the caret; put the caret back where it was in the draft.
+      let caretOffset: number | null = null;
+      for (const textNode of nodes) {
+        const text = textNode.textContent ?? "";
+        const tokens = parseAttachmentTokens(text).flatMap((token) => {
+          const attachment = resolveAttachmentToken(current, token);
+          const index = attachment ? indexByPath.get(attachment.path) : undefined;
+          return index == null ? [] : [{ token, index }];
+        });
+        if (!tokens.length) continue;
+        if (caretOffset == null && document.activeElement === editor) caretOffset = getRichCursorTextOffset();
+        const fragment = document.createDocumentFragment();
+        let offset = 0;
+        for (const { token, index } of tokens) {
+          if (token.start > offset) fragment.append(document.createTextNode(text.slice(offset, token.start)));
+          fragment.append(createAttachmentChipNode(current[index]!, labels[index]!));
+          offset = token.end;
+        }
+        if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+        textNode.replaceWith(fragment);
+        changed = true;
+      }
+      if (caretOffset != null) restoreRichCaretAtTextOffset(editor, caretOffset);
+    }
+
+    const now = Date.now();
+    const pending: typeof queuedAttachmentChipsRef.current = [];
+    for (const entry of queuedAttachmentChipsRef.current) {
+      const index = indexByPath.get(entry.path);
+      if (index == null) {
+        if (now - entry.queuedAt < ATTACHMENT_CHIP_QUEUE_TTL_MS) pending.push(entry);
+        continue;
+      }
+      if (findAttachmentChip(editor, entry.path)) continue;
+      insertAttachmentChipAt(editor, createAttachmentChipNode(current[index]!, labels[index]!), entry.placement);
+      changed = true;
+    }
+    queuedAttachmentChipsRef.current = pending;
+    attachmentChipPathsRef.current = collectAttachmentChipPaths(editor);
+    return changed;
+  }, [createAttachmentChipNode, getRichCursorTextOffset, insertAttachmentChipAt, restoreRichCaretAtTextOffset, updateAttachmentChipNode]);
+
+  const disarmAttachmentChip = useCallback(() => {
+    const armed = armedAttachmentChipRef.current;
+    if (!armed) return;
+    armedAttachmentChipRef.current = null;
+    delete armed.dataset.composerChipArmed;
+    setAttachmentChipRing(armed, armed.dataset.composerAttachmentPath === hoveredAttachmentPathRef.current);
+  }, []);
+
+  const armAttachmentChip = useCallback((chip: HTMLElement) => {
+    disarmAttachmentChip();
+    armedAttachmentChipRef.current = chip;
+    chip.dataset.composerChipArmed = "true";
+    setAttachmentChipRing(chip, true);
+  }, [disarmAttachmentChip]);
+
+  /** Delete a chip AND its attachment — the second Backspace of a safe delete. */
+  const removeAttachmentChipNode = useCallback((chip: HTMLElement) => {
+    const editor = richEditorRef.current;
+    const path = chip.dataset.composerAttachmentPath;
+    if (armedAttachmentChipRef.current === chip) armedAttachmentChipRef.current = null;
+    removeSmartLinkNode(chip);
+    if (!editor) return;
+    attachmentChipPathsRef.current = collectAttachmentChipPaths(editor);
+    // Another chip for the same attachment (a token typed twice) keeps it.
+    if (path && !attachmentChipPathsRef.current.has(path)) handleRemoveAttachment(path);
+  }, [handleRemoveAttachment, removeSmartLinkNode]);
+
+  /**
+   * A user edit that deleted an attachment chip deletes its attachment, so the
+   * tray and the prompt cannot disagree. A cut or a drag only moves the token
+   * (it comes back as a chip on paste/drop), so those keep the attachment.
+   */
+  const removeAttachmentsForDeletedChips = useCallback((editor: HTMLElement, inputType: string) => {
+    const previous = attachmentChipPathsRef.current;
+    const present = collectAttachmentChipPaths(editor);
+    attachmentChipPathsRef.current = present;
+    if (armedAttachmentChipRef.current && !armedAttachmentChipRef.current.isConnected) {
+      armedAttachmentChipRef.current = null;
+    }
+    if (inputType === "deleteByCut" || inputType === "deleteByDrag" || inputType === "insertFromDrop") return;
+    for (const path of previous) {
+      if (!present.has(path)) handleRemoveAttachment(path);
+    }
+  }, [handleRemoveAttachment]);
+
+  const openAttachmentChipPreview = useCallback((path: string) => {
+    const attachment = attachmentsRef.current.find((entry) => entry.path === path);
+    if (!attachment) return;
+    const directUrl = attachment.type === "image-url" ? attachment.url : null;
+    setAttachmentChipPreview({
+      path,
+      title: basenameCrossPlatform(directUrl ?? path) || path,
+      fallbackImageDataUrl: directUrl ?? imagePreviewUrlsRef.current[path] ?? null,
+    });
   }, []);
 
   const hydrateMentionChipsInEditor = useCallback((): boolean => {
@@ -3832,6 +4323,7 @@ export function AgentChatComposer({
 
     hydrateMentionChipsInEditor();
     hydrateChatOutputContextChipsInEditor(editor);
+    reconcileAttachmentChipsInEditor(editor);
 
     const isFocusedInsideEditor = document.activeElement === editor;
     const insertChipFragment = (chip: HTMLElement) => {
@@ -3910,7 +4402,19 @@ export function AgentChatComposer({
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, askQuestionActive, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, attachments, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, imagePreviewUrls, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, reconcileAttachmentChipsInEditor, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+
+  // Linked hover glow, composer side: the chip(s) of the hovered tray item
+  // light up. An armed chip (first Backspace of a safe delete) keeps its ring.
+  useEffect(() => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR).forEach((chip) => {
+      const lit = chip.dataset.composerChipArmed === "true"
+        || (hoveredAttachmentPath != null && chip.dataset.composerAttachmentPath === hoveredAttachmentPath);
+      setAttachmentChipRing(chip, lit);
+    });
+  }, [attachments, draft, hoveredAttachmentPath, useRichComposer]);
 
   // ── Chip selection highlight ─────────────────────────────────────────────
   // The native selection is not painted over contentEditable="false" chips, so
@@ -4667,6 +5171,25 @@ export function AgentChatComposer({
           return;
         }
       }
+      // Safe delete for attachment chips: deleting one also drops the
+      // attachment, so the first Backspace (or Delete) only arms the chip with
+      // a ring, and the second removes chip and attachment together.
+      if (event.key === "Backspace" || event.key === "Delete") {
+        const armed = armedAttachmentChipRef.current;
+        if (armed?.isConnected && event.currentTarget.contains(armed)) {
+          event.preventDefault();
+          removeAttachmentChipNode(armed);
+          return;
+        }
+        const adjacent = findAdjacentEditorElement(event.key === "Backspace" ? "backward" : "forward");
+        if (adjacent?.dataset.composerChip === "attachment") {
+          event.preventDefault();
+          armAttachmentChip(adjacent);
+          return;
+        }
+      } else if (!["Shift", "Meta", "Control", "Alt"].includes(event.key)) {
+        disarmAttachmentChip();
+      }
       if (event.key === "Backspace" && removeAdjacentSmartLink("backward")) {
         event.preventDefault();
         return;
@@ -4682,6 +5205,8 @@ export function AgentChatComposer({
     // event this is insuring against, so on web the insurance is pure cost.
     if (isMacPasteShortcut(event) && !isWebClientMode()) {
       const handledPasteGeneration = clipboardImagePasteHandledRef.current;
+      // The caret at Cmd+V, not wherever it is when the timer fires.
+      const fallbackChipPlacement = captureAttachmentChipPlacement();
       if (clipboardImagePasteFallbackTimerRef.current != null) {
         window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
       }
@@ -4694,7 +5219,7 @@ export function AgentChatComposer({
         // attaching the same clipboard image a second time.
         clipboardImagePasteHandledRef.current += 1;
         clipboardImagePasteFallbackAttachedRef.current = true;
-        void addNativeClipboardImageAttachment();
+        void addNativeClipboardImageAttachment(fallbackChipPlacement);
       }, CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS);
     }
 
@@ -4959,19 +5484,38 @@ export function AgentChatComposer({
         if (file) collected.push(file);
       }
     }
+    // Pasted attachments get an inline chip where the caret was.
+    const chipPlacement = captureAttachmentChipPlacement();
     if (!collected.length) {
       if (hasImageItem) {
         event.preventDefault();
         if (fallbackAlreadyAttached) return;
         clipboardImagePasteHandledRef.current += 1;
-        void addNativeClipboardImageAttachment();
+        void addNativeClipboardImageAttachment(chipPlacement);
         return;
       }
-      if (addImageUrlFromTransfer(event.clipboardData, { showNotice: true })) {
+      if (addImageUrlFromTransfer(event.clipboardData, { showNotice: true, chipPlacement })) {
         event.preventDefault();
         return;
       }
       const pastedText = event.clipboardData.getData("text/plain");
+      // A big paste becomes a file attachment with a "Pasted · N lines" chip,
+      // instead of burying the prompt. Only when it can actually be staged;
+      // otherwise the text pastes as it always did.
+      if (
+        pastedText
+        && shouldPasteTextAsFile(pastedText)
+        && !composerInputLocked
+        && !attachmentPersistenceUnavailableReason
+        && !fileAddInProgressRef.current
+        && !(parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS)
+      ) {
+        event.preventDefault();
+        const file = new File([pastedText], pastedTextFilename(pastedText), { type: "text/plain" });
+        pastedTextFilesRef.current.set(file, pastedTextLineCount(pastedText));
+        void addFileAttachments([file], { chipPlacement });
+        return;
+      }
       if (pastedText && findSmartLinks(pastedText).length > 0) {
         if (event.currentTarget instanceof HTMLTextAreaElement) {
           const node = event.currentTarget;
@@ -4992,7 +5536,7 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
-    void addFileAttachments(collected);
+    void addFileAttachments(collected, { chipPlacement });
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5017,9 +5561,11 @@ export function AgentChatComposer({
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!hasFiles && !hasUriList)) return;
     event.preventDefault();
-    if (!hasFiles && !addImageUrlFromTransfer(event.dataTransfer)) return;
+    // A drop onto the prompt puts its chips at the caret, like a paste.
+    const chipPlacement = captureAttachmentChipPlacement();
+    if (!hasFiles && !addImageUrlFromTransfer(event.dataTransfer, { chipPlacement })) return;
     if (hasFiles) {
-      void addFileAttachments(event.dataTransfer.files);
+      void addFileAttachments(event.dataTransfer.files, { chipPlacement });
     }
   };
 
@@ -5135,6 +5681,8 @@ export function AgentChatComposer({
     pendingDraftEditIntentRef.current = null;
     clearPromptHistory();
     const inputType = (event?.nativeEvent as InputEvent | undefined)?.inputType ?? "";
+    disarmAttachmentChip();
+    removeAttachmentsForDeletedChips(editor, inputType);
     if (!imeComposingRef.current && (inputType === "insertParagraph" || /\s$/.test(editor.textContent ?? ""))) {
       if (tokenizeSmartLinksInEditor()) return;
     }
@@ -5160,7 +5708,7 @@ export function AgentChatComposer({
     const anchor = getCommandMenuAnchor(editor);
     if (anchor) setCommandMenuAnchor(anchor);
     captureRichSelection();
-  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, disarmAttachmentChip, getRichTriggerContext, onDraftChange, removeAttachmentsForDeletedChips, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
@@ -5934,6 +6482,8 @@ export function AgentChatComposer({
               }}
               onRemovePendingImageAttachment={removePendingImageAttachment}
               onFocusPrompt={focusComposerInput}
+              highlightedPath={hoveredAttachmentPath}
+              onHoverAttachment={setHoveredAttachmentPath}
               className="px-3 py-0"
             />
           </div>
@@ -6639,13 +7189,36 @@ export function AgentChatComposer({
                   onMouseUp={() => {
                     cancelPromptHistorySequence();
                     captureRichSelection();
+                    disarmAttachmentChip();
                   }}
                   onBlur={() => {
                     cancelPromptHistorySequence();
                     captureRichSelection();
+                    disarmAttachmentChip();
+                  }}
+                  onMouseOver={(event) => {
+                    const chip = (event.target as HTMLElement | null)?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);
+                    const path = chip?.dataset.composerAttachmentPath;
+                    if (!chip || !path) return;
+                    setHoveredAttachmentPath(path);
+                    setAttachmentChipPeek((current) => (current?.anchor === chip ? current : { anchor: chip, path }));
+                  }}
+                  onMouseOut={(event) => {
+                    const chip = (event.target as HTMLElement | null)?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);
+                    if (!chip || chip.contains(event.relatedTarget as Node | null)) return;
+                    setHoveredAttachmentPath(null);
+                    setAttachmentChipPeek(null);
                   }}
                   onClick={(event) => {
                     const target = event.target as HTMLElement | null;
+                    const attachmentChip = target?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);
+                    if (attachmentChip?.dataset.composerAttachmentPath) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setAttachmentChipPeek(null);
+                      openAttachmentChipPreview(attachmentChip.dataset.composerAttachmentPath);
+                      return;
+                    }
                     const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
                     if (smartLinkChip?.dataset.smartLinkUrl) {
                       event.preventDefault();
@@ -6811,6 +7384,18 @@ export function AgentChatComposer({
                 onRemove={removeSmartLinkNode}
               />
             ) : null}
+            {attachmentChipPeek?.anchor.isConnected && peekAttachment ? (
+              <AttachmentPeekCard
+                anchor={attachmentChipPeek.anchor}
+                src={peekThumbnail}
+                name={basenameCrossPlatform(peekAttachment.path) || peekAttachment.path}
+              />
+            ) : null}
+            <ChatAttachmentPreviewDialog
+              target={attachmentChipPreview}
+              pin={composerMachineBinding}
+              onClose={() => setAttachmentChipPreview(null)}
+            />
           </div>
         </div>
         );
