@@ -351,6 +351,20 @@ function currentJournalMode(db: DatabaseSyncType): string {
   return String(row?.journal_mode ?? "").trim().toLowerCase();
 }
 
+/**
+ * Runs one read on the short attempt timeout, so a peer's commit can hold this
+ * thread for at most one attempt before the read gives up. The connection keeps
+ * its 5,000 ms default timeout for everything after the open.
+ */
+function withAttemptBusyTimeout<T>(db: DatabaseSyncType, read: () => T): T {
+  runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
+  try {
+    return read();
+  } finally {
+    runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+  }
+}
+
 /** A macrotask turn, so the peer can make progress while this process waits. */
 const waitForWalConversionRetry = (): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, WAL_CONVERSION_RETRY_DELAY_MS); });
@@ -370,7 +384,7 @@ const waitForWalConversionRetry = (): Promise<void> =>
  * writes, so the conversion is worth waiting for.
  */
 async function ensureWalJournalMode(db: DatabaseSyncType, logger?: Logger): Promise<void> {
-  if (currentJournalMode(db) === "wal") return;
+  if (withAttemptBusyTimeout(db, () => currentJournalMode(db)) === "wal") return;
 
   const deadline = Date.now() + WAL_CONVERSION_BUDGET_MS;
   runStatement(db, `pragma busy_timeout = ${WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS}`);
@@ -4726,7 +4740,7 @@ export async function openKvDb(
     getDb: () => db,
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
-  const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadata(db);
+  const hadCrsqlMetadataBeforeOpen = withAttemptBusyTimeout(db, () => hasCrsqlMetadata(db));
 
   try {
     // Inside the try so a conversion error that is not a lock still closes the

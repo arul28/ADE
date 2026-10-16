@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   openKvDb,
   rebuildTableInTransaction,
@@ -448,25 +448,92 @@ describe("openKvDb against a peer holding the database", () => {
     });
 
     const warnings: string[] = [];
+    const settled: Array<{ attempt: number }> = [];
     const logger = {
       debug: () => {},
-      info: () => {},
+      info: (event: string, data: { attempt: number }) => { if (event === "db.wal_conversion_settled") settled.push(data); },
       warn: (event: string) => { warnings.push(event); },
       error: () => {},
     };
-    const startedAt = Date.now();
     const db = await openKvDb(dbPath, logger as never);
-    const elapsedMs = Date.now() - startedAt;
     activeDisposers.push(async () => db.close());
 
     // The conversion still won — an open left in rollback mode would make every
-    // later write wait on the peer instead — and it did so without spending the
-    // connection's 5,000 ms write timeout on one blocked call.
+    // later write wait on the peer instead — and it won on a retry after one
+    // short attempt, not by spending the connection's 5,000 ms write timeout on
+    // one blocked call.
     expect(db.all<{ journal_mode: string }>("pragma journal_mode")[0]?.journal_mode).toBe("wal");
-    expect(elapsedMs).toBeLessThan(3000);
+    expect(settled).toEqual([{ attempt: 2 }]);
     expect(warnings).not.toContain("db.wal_conversion_deferred");
     db.setJson("wal:contended", { ok: true });
     expect(db.getJson<{ ok: boolean }>("wal:contended")).toEqual({ ok: true });
+  });
+
+  it("defers the WAL conversion after one attempt when the budget runs out, and still opens", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-wal-budget-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    // Initialise the schema, then drop the database back to rollback mode.
+    (await openKvDb(dbPath, createLogger() as any)).close();
+    const reset = new DatabaseSync(dbPath);
+    reset.exec("PRAGMA journal_mode = DELETE");
+    reset.close();
+
+    const peer = new DatabaseSync(dbPath);
+    peer.exec("BEGIN");
+    peer.prepare("select * from kv").all();
+    let peerInTransaction = true;
+    const releasePeer = () => {
+      if (!peerInTransaction) return;
+      peerInTransaction = false;
+      peer.exec("ROLLBACK");
+    };
+    activeDisposers.push(async () => {
+      releasePeer();
+      peer.close();
+    });
+
+    // The conversion budget is 8 s of wall clock. Advance the clock past it on
+    // the read after the first failed attempt, so the test does not wait the
+    // budget out. The peer still holds its lock through that one attempt.
+    const realNow = Date.now();
+    let clockReads = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => (clockReads++ === 0 ? realNow : realNow + 60_000));
+
+    const warnings: string[] = [];
+    let deferredAttempts: number | undefined;
+    const logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (event: string, data: { attempts?: number }) => {
+        warnings.push(event);
+        if (event !== "db.wal_conversion_deferred") return;
+        deferredAttempts = data.attempts;
+        // Stand in for the peer finishing once this process has moved on: the
+        // open's own writes (migrations) then go through on their own budget.
+        releasePeer();
+      },
+      error: () => {},
+    };
+    let db: Awaited<ReturnType<typeof openKvDb>>;
+    const startedAt = performance.now();
+    try {
+      db = await openKvDb(dbPath, logger as never);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const elapsedMs = performance.now() - startedAt;
+    activeDisposers.push(async () => db.close());
+
+    // The conversion gave up after its single attempt rather than retrying for
+    // the budget, and the open still produced a usable database. The final
+    // journal mode is not pinned here: a later open step may convert it again.
+    expect(warnings).toContain("db.wal_conversion_deferred");
+    expect(deferredAttempts).toBe(1);
+    // One blocked attempt is 150 ms; the 5,000 ms connection timeout must not
+    // be spent on the blocked conversion.
+    expect(elapsedMs).toBeLessThan(3000);
+    db.setJson("wal:deferred", { ok: true });
+    expect(db.getJson<{ ok: boolean }>("wal:deferred")).toEqual({ ok: true });
   });
 });
 
