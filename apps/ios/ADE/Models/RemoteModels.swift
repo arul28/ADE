@@ -1179,6 +1179,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
@@ -1303,6 +1304,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.musePermissionMode == rhs.musePermissionMode
+      && lhs.copilotPermissionMode == rhs.copilotPermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
@@ -1371,6 +1373,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeId: String?
   /// True when the event carried `cursorModeId: null` (an intentional clear the
   /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
@@ -1410,6 +1413,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case opencodePermissionMode
     case droidPermissionMode
     case musePermissionMode
+    case copilotPermissionMode
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
@@ -1444,6 +1448,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     musePermissionMode = try c.decodeIfPresent(String.self, forKey: .musePermissionMode)
+    copilotPermissionMode = try c.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
     // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
     // present-but-null key means the host cleared the cursor mode.
@@ -1503,6 +1508,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
       || musePermissionMode != nil
+      || copilotPermissionMode != nil
       || cursorModeId != nil
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
@@ -1539,6 +1545,7 @@ extension AgentChatSessionSummary {
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
     if let v = update.musePermissionMode { musePermissionMode = v }
+    if let v = update.copilotPermissionMode { copilotPermissionMode = v }
     if let v = update.cursorModeId {
       cursorModeId = v
       cursorModeIdWasCleared = false
@@ -1616,6 +1623,7 @@ extension AgentChatSessionSummary {
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
     if let v = other.musePermissionMode { musePermissionMode = v }
+    if let v = other.copilotPermissionMode { copilotPermissionMode = v }
     if other.cursorModeIdWasCleared == true {
       cursorModeId = nil
       cursorModeIdWasCleared = true
@@ -2083,6 +2091,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -2127,6 +2136,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case opencodePermissionMode
     case droidPermissionMode
     case musePermissionMode
+    case copilotPermissionMode
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -2172,6 +2182,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     musePermissionMode = try container.decodeIfPresent(String.self, forKey: .musePermissionMode)
+    copilotPermissionMode = try container.decodeIfPresent(String.self, forKey: .copilotPermissionMode)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -2216,6 +2227,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
     try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
     try container.encodeIfPresent(musePermissionMode, forKey: .musePermissionMode)
+    try container.encodeIfPresent(copilotPermissionMode, forKey: .copilotPermissionMode)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -4805,6 +4817,7 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeId: String?
   var updatedAt: String
 }
@@ -5022,6 +5035,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?

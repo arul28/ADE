@@ -2099,11 +2099,12 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
   }
-  // ACP providers, before the model-name heuristics below. Their registry ids
-  // carry the upstream vendor — `github-copilot/claude-sonnet-4.6` contains
-  // "claude", `github-copilot/gpt-5.4` contains "gpt" — so checking them later
-  // would file a Copilot model under Claude or Codex. The OpenCode checks stay
-  // ahead of these, because an OpenCode-routed Kimi or Grok belongs to OpenCode.
+  // Qwen, Kimi, Grok and Copilot, before the model-name heuristics below. Their
+  // ids carry the upstream vendor: a legacy ACP registry id such as
+  // `github-copilot/claude-sonnet-4.6` contains "claude", and `github-copilot/gpt-5.4`
+  // contains "gpt". Checking them later would file a Copilot model under Claude
+  // or Codex. The OpenCode checks stay ahead of these, because an OpenCode-routed
+  // Kimi or Grok belongs to OpenCode.
   if provider == "qwen" || modelId.hasPrefix("qwen/") {
     return "qwen"
   }

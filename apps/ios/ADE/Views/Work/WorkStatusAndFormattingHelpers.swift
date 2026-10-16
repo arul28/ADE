@@ -900,7 +900,8 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "droid" || raw == "factory" || raw.hasPrefix("droid") {
     return "droid"
   }
-  // ACP providers. Each folds its brand aliases onto the ADE provider id, so a
+  // Qwen, Kimi, Grok and Copilot each fold their brand aliases onto the ADE
+  // provider id, so a
   // session labelled "moonshot" and one labelled "kimi-chat" resolve to one
   // family and cannot draw different marks for the same runtime.
   if raw.hasPrefix("qwen") { return "qwen" }
@@ -1106,6 +1107,17 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
       WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
+  // Copilot runs on ADE's permission ladder (`PERMISSION_LEVELS` in the desktop
+  // shared permissionLadder). Auto edit approves reads and writes in the lane
+  // worktree and asks for the rest; Full access approves without asking unless
+  // managed policy requires a decision.
+  case "copilot":
+    return [
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "ask", title: "Ask"),
+      WorkRuntimeModeOption(id: "auto-edit", title: "Auto edit"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
+    ]
   // Muse's own approval modes (`AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS`), plus
   // ADE's plan mode, which runs on `denyUnmatched` with plan guidance.
   case "muse":
@@ -1183,6 +1195,13 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "allowAll", "full-auto": return "Full access"
     default: return "Auto"
     }
+  case "copilot":
+    switch mode {
+    case "plan": return "Plan"
+    case "auto-edit": return "Auto edit"
+    case "full-auto": return "Full access"
+    default: return "Ask"
+    }
   case "pi":
     switch mode {
     case "edit": return "Edit access"
@@ -1239,6 +1258,13 @@ func workRuntimeModeTint(provider: String, mode: String) -> Color {
     case "onRequest", "default": return ADEColor.warning
     default: return ADEColor.success
     }
+  case "copilot":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    case "auto-edit": return ADEColor.warning
+    default: return ADEColor.success
+    }
   case "pi":
     switch mode {
     case "full-auto": return ADEColor.danger
@@ -1273,6 +1299,7 @@ func workDefaultRuntimeMode(provider: String) -> String {
   case "cursor": return "default"
   case "droid", "factory": return "auto-low"
   case "muse": return "onRequest"
+  case "copilot": return "ask"
   default: return ""
   }
 }
@@ -1288,6 +1315,7 @@ struct WorkRuntimeWireFields {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var musePermissionMode: String?
+  var copilotPermissionMode: String?
   var cursorModeId: String?
 }
 
@@ -1385,6 +1413,10 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
     }
+  case "copilot":
+    // The ladder level the desktop reads from `copilotPermissionMode`. Only the
+    // level travels; the generic permissionMode stays empty for Copilot.
+    fields.copilotPermissionMode = workCopilotPermissionLevel(mode)
   case "muse":
     // Mirrors `musePermissionModeFromLegacyPermissionMode` in
     // shared/modelPermissions.ts, and plan rides interactionMode the way the
@@ -1467,7 +1499,8 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
       ? nil
       : (summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot)),
     droidPermissionMode: summary.droidPermissionMode,
-    musePermissionMode: summary.musePermissionMode
+    musePermissionMode: summary.musePermissionMode,
+    copilotPermissionMode: summary.copilotPermissionMode
   )
 }
 
@@ -1484,7 +1517,8 @@ func workRuntimeMode(
   opencodePermissionMode: String?,
   cursorModeId: String?,
   droidPermissionMode: String?,
-  musePermissionMode: String? = nil
+  musePermissionMode: String? = nil,
+  copilotPermissionMode: String? = nil
 ) -> String {
   switch providerFamilyKey(provider) {
   case "claude":
@@ -1542,6 +1576,8 @@ func workRuntimeMode(
       default: return "onRequest"
       }
     }
+  case "copilot":
+    return workCopilotPermissionLevel(copilotPermissionMode ?? "")
   case "pi":
     switch permissionMode {
     case "edit": return "edit"
@@ -1562,6 +1598,15 @@ func workNormalizedOpenCodeRuntimeMode(_ mode: String?) -> String {
     return mode ?? "edit"
   default:
     return "edit"
+  }
+}
+
+/// Copilot's permission ladder, spelled as the desktop's `PERMISSION_LEVELS`.
+/// Anything else, including an empty or unknown value, is the ask tier.
+func workCopilotPermissionLevel(_ mode: String) -> String {
+  switch mode {
+  case "plan", "auto-edit", "full-auto": return mode
+  default: return "ask"
   }
 }
 

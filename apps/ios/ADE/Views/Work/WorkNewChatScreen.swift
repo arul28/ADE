@@ -807,7 +807,8 @@ struct WorkNewChatScreen: View {
       opencodePermissionMode: defaults.opencodePermissionMode,
       cursorModeId: defaults.cursorModeId,
       droidPermissionMode: defaults.droidPermissionMode,
-      musePermissionMode: defaults.musePermissionMode
+      musePermissionMode: defaults.musePermissionMode,
+      copilotPermissionMode: defaults.copilotPermissionMode
     )
     runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
     checkModelOnMachine()
@@ -1709,6 +1710,7 @@ struct WorkNewChatScreen: View {
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
+        copilotPermissionMode: wire.copilotPermissionMode,
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,

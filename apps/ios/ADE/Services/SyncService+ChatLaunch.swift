@@ -135,6 +135,7 @@ extension SyncService {
       opencodePermissionMode: request.chat.opencodePermissionMode,
       droidPermissionMode: request.chat.droidPermissionMode,
       musePermissionMode: request.chat.musePermissionMode,
+      copilotPermissionMode: request.chat.copilotPermissionMode,
       cursorModeId: request.chat.cursorModeId,
       cursorConfigValues: nil,
       computerUse: nil,

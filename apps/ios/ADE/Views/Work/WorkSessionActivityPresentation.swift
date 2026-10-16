@@ -1,5 +1,3 @@
-private let workCopilotPlanModeId = "https://agentclientprotocol.com/protocol/session-modes#plan"
-
 private func workCursorPlanningModeId(_ snapshot: RemoteJSONValue?) -> String? {
   guard case .object(let object)? = snapshot,
         case .string(let currentModeId)? = object["currentModeId"]
@@ -54,8 +52,9 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
     guard summary.acpConfigSnapshotWasCleared != true else { return false }
     return workAcpCurrentModeId(summary.acpConfigSnapshot) == "plan"
   case "copilot":
-    guard summary.acpConfigSnapshotWasCleared != true else { return false }
-    return workAcpCurrentModeId(summary.acpConfigSnapshot) == workCopilotPlanModeId
+    // Copilot is an SDK provider now: its Plan is the ladder level the host
+    // reports, not an ACP session-mode id.
+    return summary.copilotPermissionMode == "plan"
   default:
     return false
   }

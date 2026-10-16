@@ -736,6 +736,7 @@ extension WorkSessionDestinationView {
       || wire.opencodePermissionMode != nil
       || wire.droidPermissionMode != nil
       || wire.musePermissionMode != nil
+      || wire.copilotPermissionMode != nil
       || wire.cursorModeId != nil
     else { return false }
 
@@ -751,6 +752,7 @@ extension WorkSessionDestinationView {
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
         musePermissionMode: wire.musePermissionMode,
+        copilotPermissionMode: wire.copilotPermissionMode,
         cursorModeId: wire.cursorModeId
       )
       await refreshChatStateAfterAction(forceRemote: true)

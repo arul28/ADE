@@ -14278,6 +14278,7 @@ final class SyncService: ObservableObject {
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
+    copilotPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14306,6 +14307,7 @@ final class SyncService: ObservableObject {
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
       musePermissionMode: musePermissionMode,
+      copilotPermissionMode: copilotPermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14373,6 +14375,7 @@ final class SyncService: ObservableObject {
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
+    copilotPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -14401,6 +14404,7 @@ final class SyncService: ObservableObject {
       opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: droidPermissionMode,
       musePermissionMode: musePermissionMode,
+      copilotPermissionMode: copilotPermissionMode,
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
@@ -14465,6 +14469,7 @@ final class SyncService: ObservableObject {
     opencodePermissionMode: String?,
     droidPermissionMode: String?,
     musePermissionMode: String? = nil,
+    copilotPermissionMode: String? = nil,
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
@@ -14527,6 +14532,9 @@ final class SyncService: ObservableObject {
     }
     if let musePermissionMode, !musePermissionMode.isEmpty {
       args["musePermissionMode"] = musePermissionMode
+    }
+    if let copilotPermissionMode, !copilotPermissionMode.isEmpty {
+      args["copilotPermissionMode"] = copilotPermissionMode
     }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
@@ -15690,6 +15698,7 @@ final class SyncService: ObservableObject {
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
+    copilotPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -15717,6 +15726,7 @@ final class SyncService: ObservableObject {
         opencodePermissionMode: opencodePermissionMode,
         droidPermissionMode: droidPermissionMode,
         musePermissionMode: musePermissionMode,
+        copilotPermissionMode: copilotPermissionMode,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
@@ -25260,6 +25270,7 @@ extension SyncService {
     opencodePermissionMode: String? = nil,
     droidPermissionMode: String? = nil,
     musePermissionMode: String? = nil,
+    copilotPermissionMode: String? = nil,
     cursorModeId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     try requireInvokableRemoteAction("personalChats.create")
@@ -25288,6 +25299,7 @@ extension SyncService {
     if let opencodePermissionMode, !opencodePermissionMode.isEmpty { args["opencodePermissionMode"] = opencodePermissionMode }
     if let droidPermissionMode, !droidPermissionMode.isEmpty { args["droidPermissionMode"] = droidPermissionMode }
     if let musePermissionMode, !musePermissionMode.isEmpty { args["musePermissionMode"] = musePermissionMode }
+    if let copilotPermissionMode, !copilotPermissionMode.isEmpty { args["copilotPermissionMode"] = copilotPermissionMode }
     if let cursorModeId, !cursorModeId.isEmpty { args["cursorModeId"] = cursorModeId }
 
     let summary = try await sendDecodableCommand(
