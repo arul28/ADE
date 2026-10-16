@@ -894,6 +894,50 @@ export function createSyncService(args: SyncServiceArgs) {
     args.onStatusChanged?.(await service.getStatus());
   };
 
+  /**
+   * Offer a status snapshot without making the caller wait for it.
+   *
+   * `emitStatus` builds a whole `SyncRoleSnapshot`, and building one is not
+   * free: `getStatus` awaits `getTransferReadiness`, which enumerates
+   * `agentChatService.listSessions` and `sessionService.list`. `refreshRoleState`
+   * is the shared drain every role change joins, and `projectScope.ts` calls it
+   * as the sync-host "activation" phase under a 10 s budget, so a slow snapshot
+   * was reported as "Sync host activation … timed out" even when the host was
+   * up. The drain now finishes reaching the role and offers the snapshot after
+   * it; a caller that wants a snapshot reads `getStatus()` itself, which is what
+   * every one of them already did.
+   *
+   * The snapshot is still the same snapshot: the first offer calls
+   * `getStatus()` synchronously, at the exact point `await emitStatus()` used
+   * to, so it reads the same state and is built no later than before. Offers are
+   * serialized and coalesced, so a burst of role changes cannot run several
+   * enumerations at once and a listener never sees an older snapshot after a
+   * newer one — dropping a superseded snapshot is what `syncStatusEventPublisher`
+   * already does with them downstream.
+   */
+  let statusEmitInFlight: Promise<void> | null = null;
+  let statusEmitQueued = false;
+  const scheduleStatusEmit = (): void => {
+    if (statusEmitInFlight) {
+      statusEmitQueued = true;
+      return;
+    }
+    statusEmitInFlight = emitStatus()
+      .catch((error) => {
+        // Reaching the role succeeded; only the notification failed. Failing
+        // the caller for it is the confusion this path exists to remove.
+        args.logger.warn("sync.status_emit_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        statusEmitInFlight = null;
+        if (!statusEmitQueued || disposed) return;
+        statusEmitQueued = false;
+        scheduleStatusEmit();
+      });
+  };
+
   const releaseHostSingletonLease = (): void => {
     const lease = hostSingletonLease;
     hostSingletonLease = null;
@@ -1382,7 +1426,9 @@ export function createSyncService(args: SyncServiceArgs) {
             }
           }
         } finally {
-          await emitStatus();
+          // Offered, not awaited: reaching the role is what a caller of this
+          // drain is waiting for, and the snapshot is a notification about it.
+          scheduleStatusEmit();
         }
       } while (refreshQueued && !disposed);
       } finally {
