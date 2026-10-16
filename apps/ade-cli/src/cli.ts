@@ -25661,6 +25661,15 @@ async function runServe(
     return startSyncHostInFlight;
   };
   const startSyncHostOnce = async () => {
+    // Every deliberate start — the startup loop's own retry, "Fix connection",
+    // "Start sync", "Reconnect this computer", a phone's repair — comes through
+    // here, and each of them is asking for a real attempt now. Drop the
+    // sync-host phase failures a backoff is holding so the attempt below runs
+    // instead of being refused. One site on purpose: the repairs reach the
+    // registry by different closures, and a second clear beside any of them
+    // would drift. A caller that JOINS an attempt already in flight is not a
+    // fresh attempt and clears nothing; the next one does.
+    scopeRegistry.clearSyncHostPhaseBackoff();
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
     >;
@@ -25899,10 +25908,6 @@ async function runServe(
       const { configureSyncHostRecovery } = await import("./services/sync/syncHostRecovery");
       configureSyncHostRecovery({
         startSyncHost: async () => {
-          // A repair is a deliberate retry: forget the sync-host failures the
-          // backoff is still holding, so the repair runs the real activation
-          // now instead of being served a recorded timeout.
-          scopeRegistry.clearSyncHostPhaseBackoff();
           await startSyncHost();
         },
         prove: async () => {
