@@ -1778,8 +1778,20 @@ describe("runtime session actions", () => {
       headBranchRef: "hotfix-auth",
     }));
     const resolveBranchDrift = vi.fn(async () => ({ resolution: "switch-back" }));
+    const getChildren = vi.fn(async () => [{ id: "lane-child" }]);
+    const getStackChain = vi.fn(async () => [{ laneId: "lane-1" }]);
+    const getDeleteRisk = vi.fn(async () => ({ laneId: "lane-1", dirty: false }));
+    const cancelDelete = vi.fn(() => ({ cancelled: false }));
     const runtime = {
-      laneService: { getSummary, getBranchDrift, resolveBranchDrift },
+      laneService: {
+        getSummary,
+        getBranchDrift,
+        resolveBranchDrift,
+        getChildren,
+        getStackChain,
+        getDeleteRisk,
+        cancelDelete,
+      },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const laneActions = getAdeActionDomainServices(runtime).lane as Record<
       string,
@@ -1819,6 +1831,25 @@ describe("runtime session actions", () => {
     await expect(laneActions.resolveBranchDrift({ laneId: "lane-1", resolution: "rebase" }))
       .rejects.toThrow(/'switch-back' or 'keep-head'/);
     expect(resolveBranchDrift).toHaveBeenCalledTimes(1);
+
+    // These four take a bare lane id and hand it straight to a `select * from
+    // lanes` lookup. An automation step and `run_ade_action`'s `args` send the
+    // object the action editor renders, `{ laneId }`; `ade lanes children` /
+    // `ade lanes stack` send it positionally. Both must reach the service as
+    // the scalar, or `node:sqlite` refuses the object as a bound parameter.
+    for (const [action, forward] of [
+      ["getChildren", getChildren],
+      ["getStackChain", getStackChain],
+      ["getDeleteRisk", getDeleteRisk],
+      ["cancelDelete", cancelDelete],
+    ] as const) {
+      await expect(laneActions[action]!({ laneId: "lane-1" })).resolves.toBeDefined();
+      expect(forward).toHaveBeenLastCalledWith("lane-1");
+      await expect(laneActions[action]!("lane-1")).resolves.toBeDefined();
+      expect(forward).toHaveBeenLastCalledWith("lane-1");
+      await expect(laneActions[action]!({})).rejects.toThrow(/laneId/);
+      await expect(laneActions[action]!(undefined)).rejects.toThrow(/laneId/);
+    }
   });
 
   it("dismisses pending chat input before settling through the session action", async () => {

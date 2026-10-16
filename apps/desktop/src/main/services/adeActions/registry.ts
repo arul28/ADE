@@ -2027,6 +2027,22 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       folder: lane.folder ?? null,
     });
   };
+  /**
+   * The lane id a positional lane action runs against. Two callers hand it over
+   * two ways: `ade lanes children` / `ade lanes stack` send it positionally (an
+   * `argsList` holding one string), while an automation step — whose editor
+   * renders the schema's `laneId` param — and `run_ade_action`'s `args` send the
+   * object `{ laneId }`. `getChildren`, `getStackChain`, `getDeleteRisk` and
+   * `cancelDelete` take a bare lane id and pass it straight to a
+   * `select * from lanes` lookup, and `node:sqlite` refuses an object as a bound
+   * parameter ("Unsupported database value at parameter 1: object"), so reading
+   * both shapes here is what keeps the object out of the query. `lane.getSummary`
+   * needs only the object shape; these four also have positional callers.
+   */
+  const readLaneIdActionArg = (args: unknown, actionName: string): string =>
+    typeof args === "string"
+      ? requireNonEmptyString(args, "laneId")
+      : requireNonEmptyString(readObjectActionArg(args, actionName).laneId, "laneId");
   return {
     ...laneService,
     getSummary: async (args?: unknown) => {
@@ -2036,6 +2052,14 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         includeStatus: record.includeStatus !== false,
       });
     },
+    getChildren: async (args?: unknown) =>
+      runtime.laneService.getChildren(readLaneIdActionArg(args, "lane.getChildren")),
+    getStackChain: async (args?: unknown) =>
+      runtime.laneService.getStackChain(readLaneIdActionArg(args, "lane.getStackChain")),
+    getDeleteRisk: async (args?: unknown) =>
+      runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    cancelDelete: async (args?: unknown) =>
+      runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
       const lanes = await runtime.laneService.list({
         includeArchived: Boolean(args?.includeArchived),
