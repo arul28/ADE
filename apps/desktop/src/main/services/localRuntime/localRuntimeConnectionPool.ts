@@ -2907,19 +2907,8 @@ export class LocalRuntimeConnectionPool {
         recoveryCode = "brain_not_installed";
       } else if (!await probeSocketHasOwner(socketPath)) {
         recoveryCode = "socket_stale_no_owner";
-      } else if (this.serviceOwnsEndpoint()) {
-        // Something IS listening, and it is this machine's own service child,
-        // not another copy of ADE: the health snapshot above is fresh
-        // (`maxAgeMs: 0`) and reports the service running, and a service child
-        // is what binds the primary socket. `socket_owned_by_other` means a
-        // *different copy* of ADE holds the endpoint, and it is the one code
-        // whose screen offers no repair and tells the person to quit a copy
-        // that does not exist here — a dead end for a brain that is simply up
-        // and not answering. The crash-loop record the message already prints
-        // is the honest code; with no record, the failure is better said
-        // unexplained than misattributed to an app nobody can quit.
-        recoveryCode = crashLooping ? "brain_crash_looping" : "unknown";
       } else {
+        // Service/supervisor state is not endpoint identity.
         recoveryCode = "socket_owned_by_other";
       }
       const crashLoopDetail = crashLooping && lastFailure
@@ -2942,23 +2931,6 @@ export class LocalRuntimeConnectionPool {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
       throw error;
     }
-  }
-
-  /**
-   * Whether an endpoint a probe just found a listener on belongs to this
-   * machine's own service child rather than to another copy of ADE.
-   *
-   * A service brain is the only thing that binds the primary channel socket
-   * while the supervisor reports the service running, so "the service is
-   * running and something is listening" identifies the owner without a second
-   * handshake. The install's own `starting` flag counts the same way: it is
-   * set when the installer left a live replacement that had not answered yet,
-   * which is that same child. Both readings come from the moment of the
-   * failure — the caller refreshes health with `maxAgeMs: 0` first — so this is
-   * never decided from a stale snapshot.
-   */
-  private serviceOwnsEndpoint(): boolean {
-    return this.serviceHealthStatus.running === true || this.serviceInstallStatus.starting === true;
   }
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {

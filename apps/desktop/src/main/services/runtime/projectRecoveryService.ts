@@ -734,11 +734,10 @@ export class ProjectRecoveryService {
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),
     ];
 
-    // Something is listening on the machine endpoint while this machine's own
-    // service is running, so that listener is ADE's own brain — a service child
-    // is what binds the primary socket — and never "another copy of ADE". See
-    // `serviceOwnsEndpoint`.
-    const endpointOwnedByOwnService = socketReachable && this.serviceOwnsEndpoint(serviceStatus);
+    // Service state alone cannot identify a socket owner. In particular, the
+    // Windows supervisor can remain running while another process owns the
+    // per-user pipe. Only a successful ADE ping establishes endpoint identity.
+    const endpointOwnedByOwnService = socketReachable && endpointHealthy;
 
     let state: ProjectRecoveryDiagnosis["state"];
     let code: AdeRecoveryErrorCode;
@@ -884,18 +883,23 @@ export class ProjectRecoveryService {
     let dbHealthy: boolean | null = null;
     let chatsTotal: number | null = null;
     let chatsNeedingAttention: number | null = null;
+    let serviceMayBeUninstalled = false;
 
     const addStep = (id: RepairStepId, status: RepairStepResult["status"], detail?: string): void => {
       const step = { id, label: STEP_LABELS[id], status, ...(detail ? { detail } : {}) };
       steps.push(step);
       opts.onStep?.(step);
     };
-    const fail = (
+    const fail = async (
       id: RepairStepId,
       failureCode: AdeRecoveryErrorCode,
       nextAction: string,
       detail: string,
-    ): ProjectRepairReport => {
+    ): Promise<ProjectRepairReport> => {
+      if (serviceMayBeUninstalled) {
+        await this.deps.connectionPool.installServiceBestEffort();
+        serviceMayBeUninstalled = false;
+      }
       addStep(id, "failed", detail);
       for (const skippedId of STEP_ORDER.slice(STEP_ORDER.indexOf(id) + 1)) {
         addStep(skippedId, "skipped", "Not run because an earlier step needs attention.");
@@ -957,6 +961,7 @@ export class ProjectRecoveryService {
       }
       let stopped = false;
       try {
+        serviceMayBeUninstalled = true;
         await this.stopService();
         stopped = await this.waitForSocketState(this.socketPath, false, 10_000);
       } catch (error) {
@@ -1022,6 +1027,7 @@ export class ProjectRecoveryService {
     }
 
     const restart = await this.restartServiceAndWait(false);
+    serviceMayBeUninstalled = restart.ok;
     if (!restart.ok && restart.reason === "background_blocked") {
       return fail("restart_service", "background_item_blocked", BACKGROUND_BLOCKED_NEXT_ACTION, restart.detail);
     }

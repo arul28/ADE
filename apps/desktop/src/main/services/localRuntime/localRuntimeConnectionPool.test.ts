@@ -3931,17 +3931,9 @@ describe("local runtime connection pool", () => {
     }
   });
 
-  it.each([
-    // A service child is what binds the primary socket, so a live listener
-    // with the supervisor reporting the service running is ADE's own brain.
-    // "Another copy of ADE is open" is the one code whose screen offers no
-    // repair and tells the person to quit a copy that does not exist here.
-    { serviceRunning: true, expected: "brain_crash_looping" },
-    // The service is down: a live listener on its socket is somebody else.
-    { serviceRunning: false, expected: "socket_owned_by_other" },
-  ])(
-    "codes a live primary endpoint as $expected when the service is running=$serviceRunning",
-    async ({ serviceRunning, expected }) => {
+  it.each([true, false])(
+    "codes a live primary endpoint as socket_owned_by_other when the service is running=%s",
+    async (serviceRunning) => {
       const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-owned-endpoint-"));
       vi.stubEnv("ADE_HOME", adeHome);
       vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
@@ -3982,7 +3974,7 @@ describe("local runtime connection pool", () => {
         vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
 
         const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
-        expect(error.code).toBe(expected);
+        expect(error.code).toBe("socket_owned_by_other");
         pool.dispose();
       } finally {
         await new Promise<void>((resolve) => listener.close(() => resolve()));
