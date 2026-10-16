@@ -1,7 +1,34 @@
 import crypto from "node:crypto";
 import http from "node:http";
 
+/**
+ * How long one loopback probe waits for the listener's 426 before it gives up.
+ *
+ * This is a bound on "the peer never answers at all", not a patience budget for
+ * a slow peer: ADE's own listener answers this exact request in a few
+ * milliseconds (measured 1-9ms on a quiet loopback), and the listener shares
+ * this process's event loop, so nothing in ADE's path can legitimately need
+ * more. A peer that is not ADE and does not speak HTTP at all (a wedged or
+ * suspended process holding 127.0.0.1:<port>, or a raw TCP listener) is what
+ * this deadline exists to bound.
+ */
 export const SYNC_LOOPBACK_PROBE_TIMEOUT_MS = 1_500;
+
+/**
+ * Attempts one loopback assertion may spend before it declares a port shadowed.
+ *
+ * A timeout is not evidence about who owns the port. The answer can have been
+ * written by our own listener and simply not read in time, because this process
+ * blocked its event loop between the listener's write and the probe's read (a
+ * long synchronous sqlite/JSON/gzip step is enough): with the answer already in
+ * the socket buffer, the expired deadline wins and the probe reports exactly
+ * the timeout a shadowed port reports. Re-probing once separates the two — a
+ * shadowed port stays silent (or answers with a foreign identity), while the
+ * port that was merely busy answers on the second attempt, when the loop has
+ * drained. Only a probe with NO answer is repeated; a peer that answered is
+ * decided on that answer.
+ */
+export const SYNC_LOOPBACK_PROBE_ATTEMPTS = 2;
 
 /**
  * Identity header ADE's sync WebSocket servers stamp on the 426 Upgrade
@@ -53,6 +80,13 @@ export type SyncLoopbackProbeResult = {
   markerValue: string | null;
   checkedAt: string;
   reason: string | null;
+  /**
+   * The probe got no answer before its deadline. Distinct from the other
+   * failures, which are answers about the port: a timeout says only that
+   * nothing was read in time, so {@link assertAdeLoopbackListener} re-probes it
+   * instead of treating it as proof of a foreign owner.
+   */
+  timedOut?: boolean;
 };
 
 export type SyncLoopbackValidationStatus = {
@@ -95,6 +129,9 @@ export async function probeAdeLoopbackListener(
   const checkedAt = new Date().toISOString();
   return await new Promise<SyncLoopbackProbeResult>((resolve) => {
     let settled = false;
+    // Set by the socket deadline below, so the failure it produces can be told
+    // apart from an answer about the port.
+    let timedOut = false;
     const finish = (result: Omit<SyncLoopbackProbeResult, "port" | "checkedAt">): void => {
       if (settled) return;
       settled = true;
@@ -134,6 +171,7 @@ export async function probeAdeLoopbackListener(
       });
     });
     request.setTimeout(timeoutMs, () => {
+      timedOut = true;
       request.destroy(new Error(`Loopback ADE probe timed out after ${timeoutMs}ms.`));
     });
     request.once("error", (error) => {
@@ -142,6 +180,7 @@ export async function probeAdeLoopbackListener(
         statusCode: null,
         statusMessage: null,
         markerValue: null,
+        timedOut,
         reason: `ADE loopback probe failed on 127.0.0.1:${port}: ${error.message}`,
       });
     });
@@ -153,7 +192,19 @@ export async function assertAdeLoopbackListener(
   expectedNonce: string,
   probe: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult> = probeAdeLoopbackListener,
 ): Promise<SyncLoopbackProbeResult> {
-  const result = await probe(port, expectedNonce);
+  let result = await probe(port, expectedNonce);
+  // Only a probe that read no answer is repeated (see
+  // SYNC_LOOPBACK_PROBE_ATTEMPTS): the port may be ours with the answer lost to
+  // a busy event loop. A foreign peer that answers is decided immediately, and
+  // a foreign peer that stays silent is still declared shadowed once the
+  // attempts run out, so a shadow never gets through.
+  for (
+    let attempt = 1;
+    attempt < SYNC_LOOPBACK_PROBE_ATTEMPTS && !result.ok && result.timedOut === true;
+    attempt += 1
+  ) {
+    result = await probe(port, expectedNonce);
+  }
   if (!result.ok) {
     throw new LoopbackShadowedError(
       port,
