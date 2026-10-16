@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { cn } from "../ui/cn";
 import { claudeCacheCountdown, formatClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import { useTicker } from "../../lib/ticker";
 
 export function ClaudeCacheTtlBadge({
   idleSinceAt,
@@ -13,45 +14,53 @@ export function ClaudeCacheTtlBadge({
   cache: ClaudePromptCache | null | undefined;
   className?: string;
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const ttl = cache?.ttl;
   const since = cache?.since;
+  const [armed, setArmed] = useState(false);
+  // Ticks on the renderer's shared one-second timer instead of one of its own,
+  // so a column of countdowns costs a single timer rather than one per row.
+  const nowMs = useTicker(1_000, armed);
 
   useEffect(() => {
-    if (!idleSinceAt || !ttl) return;
-    const cache = { ttl, since };
-    const now = Date.now();
-    setNowMs(now);
-    const { remainingMs: remainingAtMount, showInMs } = claudeCacheCountdown(idleSinceAt, cache, now);
+    if (!idleSinceAt || !ttl) {
+      setArmed(false);
+      return undefined;
+    }
+    const { remainingMs: remainingAtMount, showInMs: showInAtMount } = claudeCacheCountdown(
+      idleSinceAt,
+      { ttl, since },
+      Date.now(),
+    );
     // Already expired at mount: publish the final state, install no timer.
-    if (remainingAtMount <= 0) return;
-    let intervalId: number | null = null;
-    const startTicking = () => {
-      setNowMs(Date.now());
-      intervalId = window.setInterval(() => {
-        const tickNow = Date.now();
-        setNowMs(tickNow);
-        // Publish the final expired state, then stop the one-second interval while
-        // the component stays mounted. An expired badge must not keep waking the
-        // renderer once per second (offscreen cards / retained Work trees amplify
-        // this). Cleanup below still fires on prop change and unmount.
-        if (intervalId != null && claudeCacheCountdown(idleSinceAt, cache, tickNow).remainingMs <= 0) {
-          window.clearInterval(intervalId);
-          intervalId = null;
-        }
-      }, 1000);
-    };
-    // A 1-hour cache shows nothing for most of the hour: one timeout, no ticks.
-    const timeoutId = showInMs > 0 ? window.setTimeout(startTicking, showInMs) : null;
-    if (timeoutId == null) startTicking();
-    return () => {
-      if (timeoutId != null) window.clearTimeout(timeoutId);
-      if (intervalId != null) window.clearInterval(intervalId);
-    };
+    if (remainingAtMount <= 0) {
+      setArmed(false);
+      return undefined;
+    }
+    // A 1-hour cache shows nothing for most of the hour: arm when the window
+    // opens instead of ticking through it.
+    if (showInAtMount <= 0) {
+      setArmed(true);
+      return undefined;
+    }
+    setArmed(false);
+    const timeoutId = window.setTimeout(() => setArmed(true), showInAtMount);
+    return () => window.clearTimeout(timeoutId);
   }, [idleSinceAt, ttl, since]);
 
   const { remainingMs, showInMs } = claudeCacheCountdown(idleSinceAt, cache, nowMs);
-  if (remainingMs <= 0 || showInMs > 0) return null;
+
+  // Publish the final expired state, then drop the subscription while the
+  // component stays mounted. An expired badge must not keep waking the renderer
+  // once per second (offscreen cards / retained Work trees amplify this).
+  useEffect(() => {
+    if (armed && remainingMs <= 0) setArmed(false);
+  }, [armed, remainingMs]);
+
+  // Visible implies advancing: while `armed` is false the reading below is the
+  // one frozen before the window opened, so it must not be painted. Without
+  // this the countdown could appear for the few milliseconds between a render
+  // and the effect that arms it, showing a value that never moves.
+  if (!armed || remainingMs <= 0 || showInMs > 0) return null;
 
   return (
     <span

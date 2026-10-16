@@ -5402,11 +5402,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function broadcastBrainStatus(): void {
     if (disposed) return;
+    // Building the status is not free: it reads the local device row (a
+    // replicating CRR write), the database version and the running-session
+    // list. With nothing connected there is nobody to publish to, and a peer
+    // that connects is sent a fresh status by its own handshake, so an idle
+    // host should not pay for the build every five seconds.
+    const recipients = [...peers].filter(
+      (peer) => peer.authenticated && peer.ws.readyState === WebSocket.OPEN,
+    );
+    if (recipients.length === 0) return;
     const payload = buildBrainStatus();
-    for (const peer of peers) {
-      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
-      send(peer.ws, "brain_status", payload);
-    }
+    for (const peer of recipients) send(peer.ws, "brain_status", payload);
   }
 
 

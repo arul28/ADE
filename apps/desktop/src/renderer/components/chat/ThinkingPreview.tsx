@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useTicker } from "../../lib/ticker";
 import { CircleNotch } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
@@ -17,8 +18,9 @@ import { parseTimestampMs } from "../../../shared/timestamps";
  * full text in the grey block.
  *
  * Perf contract (see docs/features/chat/transcript-and-turns.md):
- * - the only timer is one 1s interval per visible live header, owned by the
- *   tiny `ThinkingElapsed` leaf so a tick never re-renders the text;
+ * - the header's `ThinkingElapsed` leaf subscribes to the renderer's shared 1s
+ *   timer (one timer for every subscriber), so a tick never re-renders the
+ *   text;
  * - the paced reveal re-renders only the `LiveThoughtText` leaf;
  * - tail-following is one rAF-coalesced `scrollTop` write per frame, driven by
  *   refs when the text or the content's size changes;
@@ -160,15 +162,13 @@ export function countThinkingFencesBeforeCut(fenceEnds: readonly number[], cut: 
   return low;
 }
 
-/** The only ticking state: re-renders this span once per second, nothing else. */
+/**
+ * The only ticking state: the span re-renders once per second, on the
+ * renderer's shared one-second timer rather than an interval of its own, so a
+ * transcript holding many thinking blocks runs one timer, not one per block.
+ */
 function ThinkingElapsed({ startedAtMs }: { startedAtMs: number | null }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (startedAtMs == null) return;
-    setNow(Date.now());
-    const interval = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(interval);
-  }, [startedAtMs]);
+  const now = useTicker(1_000, startedAtMs != null);
   if (startedAtMs == null) return null;
   return (
     <span className="shrink-0 tabular-nums text-fg/38" data-testid="thinking-elapsed">

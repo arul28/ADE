@@ -1,31 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { CaretDown, CaretRight, Check, Square, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useLiveDurationMs } from "../../lib/liveDuration";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { pluralCount } from "../../../shared/formatting";
 import type { BackgroundJobGroupMember, BackgroundJobLineRenderEvent } from "./chatTranscriptRows";
 import { backgroundJobStatusWord, countBackgroundJobs } from "./chatBackgroundJobRuns";
-
-/**
- * Live elapsed since a start timestamp, ticking once a second while `running`.
- * Anchored to the real start timestamp, so a row scrolled out of the
- * virtualizer and back keeps the true elapsed. A state tick on a leaf that
- * renders one line, so the per-second commit never reaches the memoized rows
- * around it. Null for an absent or unparseable timestamp.
- */
-function useLiveDurationMs(startedAt: string | null, running: boolean): number | null {
-  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const anchored = Number.isFinite(startMs) ? startMs : null;
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running || anchored == null) return undefined;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(id);
-  }, [running, anchored]);
-  if (anchored == null) return null;
-  return Math.max(0, nowMs - anchored);
-}
 
 /**
  * A job's duration: live while it runs, the recorded one once it ends. A job
