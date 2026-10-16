@@ -428,12 +428,7 @@ describe("ProjectRecoveryService.repair", () => {
     expect(openDatabase).not.toHaveBeenCalled();
   });
 
-  it("reads an endpoint held by this machine's own service as a crash loop, not another copy of ADE", async () => {
-    // The service is running and something is listening, but it will not
-    // answer. A service child is what binds the primary socket, so the owner
-    // is ADE's own brain: "another copy of ADE is open" is the one diagnosis
-    // that offers no repair and tells the person to quit a copy that is not
-    // there.
+  it("does not infer endpoint ownership from service health", async () => {
     const service = createProjectRecoveryService(deps({
       connectionPool: pool(status({
         serviceHealth: {
@@ -447,8 +442,28 @@ describe("ProjectRecoveryService.repair", () => {
 
     const diagnosis = await service.diagnose(tempRoot());
 
-    expect(diagnosis.state).toBe("brain_crash_looping");
-    expect(diagnosis.canAutoRepair).toBe(true);
+    expect(diagnosis.state).toBe("socket_owned_by_other");
+    expect(diagnosis.canAutoRepair).toBe(false);
+  });
+
+  it("reinstalls the service when an unresponsive foreign endpoint does not release", async () => {
+    const connectionPool = pool(status({
+      serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+    }));
+    const service = createProjectRecoveryService(deps({
+      connectionPool,
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => false),
+      waitForSocketState: vi.fn(async () => false),
+      stopService: undefined,
+    }));
+
+    const report = await service.repair(tempRoot());
+
+    expect(connectionPool.uninstallServiceBestEffort).toHaveBeenCalledTimes(1);
+    expect(connectionPool.installServiceBestEffort).toHaveBeenCalledTimes(1);
+    expect(report.steps[1]).toMatchObject({ id: "stop_service", status: "failed" });
+    expect(report.failureCode).toBe("socket_owned_by_other");
   });
 
   it("stops this machine's own service when the endpoint will not identify itself", async () => {
