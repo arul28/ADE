@@ -36,6 +36,16 @@ type ActionRequest = {
  */
 export const ACCOUNT_ACTION_TIMEOUT_MS = 8_000;
 
+/**
+ * `sync` is the one action that is network work: it uploads this machine's
+ * queue and pulls up to `MAX_PULL_PAGES` relay pages, after the brain may have
+ * had to connect. On a slow link that routinely outlives the 8s bound above,
+ * so every sync answered "unavailable" and the caller never learned it had
+ * synced. This budget is still under the renderer's 30-second IPC timer, so the
+ * ordinary unavailable answer lands before the opaque IPC timeout does.
+ */
+export const ACCOUNT_ACTION_SYNC_TIMEOUT_MS = 25_000;
+
 /** The deadline fired: the brain did not answer, which is not a brain error. */
 class AccountActionDeadlineError extends Error {
   constructor(readonly timeoutMs: number) {
@@ -139,7 +149,7 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
           action,
           argsList: extra ? [...argsList, extra] : argsList,
         }),
-        ACCOUNT_ACTION_TIMEOUT_MS,
+        action === "sync" ? ACCOUNT_ACTION_SYNC_TIMEOUT_MS : ACCOUNT_ACTION_TIMEOUT_MS,
       );
       const raw = unwrap(response?.result);
       if (callOptions.rejectFalse && raw === false) return rejected<T>();

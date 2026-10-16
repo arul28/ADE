@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACCOUNT_ACTION_TIMEOUT_MS } from "./accountActionBridge";
+import { IPC } from "../../../shared/ipc";
+import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
+import { ACCOUNT_ACTION_SYNC_TIMEOUT_MS, ACCOUNT_ACTION_TIMEOUT_MS } from "./accountActionBridge";
 import {
   ACCOUNT_SETTINGS_REJECTED_MESSAGE,
   ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
@@ -220,7 +222,7 @@ describe("accountActionBridge call bound (main)", () => {
         settled = true;
         return value;
       });
-      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_TIMEOUT_MS - 1);
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_SYNC_TIMEOUT_MS - 1);
       expect(settled).toBe(false);
 
       await vi.advanceTimersByTimeAsync(1);
@@ -231,11 +233,43 @@ describe("accountActionBridge call bound (main)", () => {
       });
       expect(debug).toHaveBeenCalledWith("account_settings.call_timed_out", {
         action: "sync",
-        timeoutMs: ACCOUNT_ACTION_TIMEOUT_MS,
+        timeoutMs: ACCOUNT_ACTION_SYNC_TIMEOUT_MS,
       });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("gives a sync the longer budget and keeps the short bound for every other action", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = createAccountSettingsSyncService({
+        getPool: stalledPool,
+        getRootPath: () => "/repo",
+      });
+
+      // Past the 8s bound a list gives up, while a sync is still waiting on
+      // its network round trip: the sync must not answer "unavailable" early.
+      const list = service.list();
+      const sync = service.sync();
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_TIMEOUT_MS);
+      expect(await list).toMatchObject({ ok: false, unavailable: true });
+      let syncSettled = false;
+      void sync.then(() => { syncSettled = true; });
+      await Promise.resolve();
+      expect(syncSettled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(ACCOUNT_ACTION_SYNC_TIMEOUT_MS - ACCOUNT_ACTION_TIMEOUT_MS);
+      expect(await sync).toMatchObject({ ok: false, unavailable: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the sync budget under the renderer's 30s IPC timer for the sync channel", () => {
+    expect(ACCOUNT_ACTION_SYNC_TIMEOUT_MS).toBeLessThan(
+      ipcInvokeTimeoutMs(IPC.accountSettingsSync),
+    );
   });
 
   it("answers a stalled write as unavailable, not rejected, and runs no post-write hook", async () => {

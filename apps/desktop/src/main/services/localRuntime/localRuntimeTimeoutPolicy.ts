@@ -110,14 +110,32 @@ export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
  * delivering it. 8s matches LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS, the existing
  * budget for "a local runtime read that must not hold its caller".
  *
- * The bound covers the whole read, `connect()` included: on Windows a cold
- * runtime start is allowed 30s inside `connect` alone, so a transport-only
- * budget would still race the IPC timer. A read that loses the race lands in
- * the already-designed degraded state (buildMachineOnlySyncSnapshot), whose
+ * This budget is the RPC transport's clock, and it starts only once the
+ * connection is up: `callSync` awaits `connect()` before it sends, so a cold
+ * runtime start (up to 10s on macOS, 30s on Windows) never spends this budget.
+ * Counting connect against it produced a false "listener not bound" card and
+ * a degraded reading on every cold start.
+ *
+ * The whole handler is still capped at LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
+ * which covers connect. A read that loses either race lands in the
+ * already-designed degraded state (buildMachineOnlySyncSnapshot), whose
  * `degradedReason` tells the renderer's shared reader to back off and retry —
  * never in a snapshot that claims the machine is healthy or reachable.
  */
 export const LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS = 8_000;
+
+/**
+ * The firm cap on one machine-scope sync status read, connect included.
+ *
+ * It must stay under the 30s IPC timer for `sync.getLocalStatus`, so the
+ * handler's own fallback answer, not the opaque IPC timeout, is what the
+ * renderer sees. 25s leaves 5s for building that fallback and delivering it.
+ * On macOS it sits well clear of a cold connect (10s) plus a read (8s). On
+ * Windows a cold connect may legitimately take up to 30s, which this cap cuts
+ * short; that case still returns the honest degraded snapshot rather than the
+ * IPC timeout. Raising it would need the IPC timer raised too.
+ */
+export const LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS = 25_000;
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 /**

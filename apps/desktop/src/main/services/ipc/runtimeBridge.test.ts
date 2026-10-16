@@ -5,7 +5,10 @@ import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { ATTENTION_CONTRACT_VERSION, type AttentionItem } from "../../../shared/types/attention";
 import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
-import { LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import {
+  LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import type {
   OpenProjectBinding,
@@ -3529,7 +3532,7 @@ describe("registerIpc sync bridge", () => {
       const settled = vi.fn();
       void read.then(settled, settled);
 
-      await vi.advanceTimersByTimeAsync(LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS);
       expect(settled).toHaveBeenCalledTimes(1);
 
       // Not a reading of the machine, and marked as such: this is the marker
@@ -3539,11 +3542,50 @@ describe("registerIpc sync bridge", () => {
       expect(typeof snapshot.degradedReason).toBe("string");
       expect(snapshot.degradedReason).not.toBe("");
 
-      // The invariant the 30s-vs-30s collision broke: the read's own bound
-      // expires before this channel's IPC timer, so the read's reason wins.
-      expect(LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS).toBeLessThan(
+      // The invariant the 30s-vs-30s collision broke: the overall cap expires
+      // before this channel's IPC timer, so the handler's reason wins.
+      expect(LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS).toBeLessThan(
         ipcInvokeTimeoutMs(IPC.syncGetLocalStatus),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not count a cold runtime connect against the sync status read budget", async () => {
+    vi.useFakeTimers();
+    try {
+      // A cold start: connect() takes longer than the read budget, then the
+      // read answers promptly. Only the overall cap may end the wait, so this
+      // must come back as the real reading, not the degraded fallback.
+      const coldStartMs = LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS + 5_000;
+      const localStatus = { mode: "standalone", role: "brain", client: { state: "connected" } };
+      const localRuntimeConnectionPool = {
+        callSync: vi.fn(() => new Promise((resolve) => {
+          setTimeout(() => resolve(localStatus), coldStartMs);
+        })),
+        syncStatusForRoot: vi.fn(),
+      };
+      registerIpc({
+        getCtx: () => ({
+          logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+          syncService: null,
+        }) as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: null,
+          binding: null,
+        }),
+        localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+        switchProjectFromDialog: vi.fn(),
+        closeCurrentProject: vi.fn(),
+        closeProjectByPath: vi.fn(),
+        globalStatePath: "/tmp/ade-state.json",
+      });
+
+      const read = ipcHandlers.get(IPC.syncGetLocalStatus)?.(eventForSender(), {}) as Promise<unknown>;
+      await vi.advanceTimersByTimeAsync(coldStartMs);
+      await expect(read).resolves.toBe(localStatus);
     } finally {
       vi.useRealTimers();
     }

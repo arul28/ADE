@@ -1036,6 +1036,7 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import {
+  LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
@@ -6330,10 +6331,10 @@ export function registerIpc({
       try {
         // Machine-level call: intentionally bypasses the window's local/remote
         // project binding so Connections can always describe this computer.
-        // Bounded on both legs: the transport budget drops this call's pending
-        // entry instead of leaving it queued, and the handler's deadline covers
-        // the connect in front of it. See
-        // LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS.
+        // The transport budget starts once connect() has returned, so it bounds
+        // only the read; the handler's overall cap covers the connect in front
+        // of it. See LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS and
+        // LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS.
         const snapshot = await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
           "sync.getStatus",
           params,
@@ -6395,7 +6396,7 @@ export function registerIpc({
     // understands instead of the opaque IPC timeout that used to win this race.
     const snapshot = await withDeadline(
       readLocalSyncStatus(arg),
-      LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
+      LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
     ).catch((error: unknown) => {
       warnLocalStatusDegraded(error instanceof Error ? error.message : String(error));
       return buildMachineOnlySyncSnapshot(error);

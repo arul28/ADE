@@ -232,7 +232,12 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
 };
 
 // Legacy internal/wire role names kept for sync protocol compatibility.
-export type SyncConnectionState = "disconnected" | "connecting" | "connected" | "error";
+/**
+ * `unknown` is only for a snapshot the desktop synthesized because the runtime
+ * could not be read (see buildMachineOnlySyncSnapshot). It says nothing about
+ * whether the client is connected, so it must not read as "disconnected".
+ */
+export type SyncConnectionState = "disconnected" | "connecting" | "connected" | "error" | "unknown";
 
 export type SyncRole = "brain" | "viewer";
 
